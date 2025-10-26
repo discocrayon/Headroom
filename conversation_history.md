@@ -97,3 +97,31 @@ Consolidated two identical `_make_safe_variable_name` functions that existed in 
 #### Rationale
 
 Both functions were completely identical, violating the DRY (Don't Repeat Yourself) principle. Consolidating them into a shared utility module (`utils.py`) improves maintainability by ensuring there's a single source of truth. The function was made public (renamed from `_make_safe_variable_name` to `make_safe_variable_name`) since it's now part of the module's public API. Using a separate `utils.py` file avoids circular import issues and complies with Python import best practices (E402 flake8 rule).
+
+## 2025-10-26, 12:35 PM - Fixed misleading "root-account" naming in test_parse_results.py
+
+### Changes Made
+
+Renamed "root-account" to "management-account" and added clarifying comments to avoid confusion between organization root IDs and account IDs.
+
+#### Files Updated
+
+1. **tests/test_parse_results.py**
+   - Line 64: Changed "root-account" to "management-account" in mock response
+   - Line 116: Changed "root-account" to "management-account" in AccountOrgPlacement
+   - Line 156: Changed "root-account" to "management-account" in mock response
+   - Line 928: Added clarifying comment: "Note: r-1234 is the org root ID, not an account. Accounts are placed under it."
+   - Line 970: Added clarifying comment: "Note: r-1234 is the org root ID. Accounts can be placed under it or under OUs."
+
+#### Rationale
+
+AWS Organizations uses different ID formats:
+- Organization root IDs: Start with "r-" (e.g., "r-1234")
+- Organizational unit IDs: Start with "ou-" (e.g., "ou-1234")
+- Account IDs: 12-digit numbers (e.g., "111111111111")
+
+The previous naming of "root-account" was confusing because:
+1. It suggested the account ID might be "r-1234" (which is actually an org root ID, not an account)
+2. "root account" could be confused with AWS root user or management account
+
+The test data was actually representing an account placed directly under the organization root (not in any OU), which is valid but needed clearer naming. Changing to "management-account" and adding comments makes the distinction crystal clear: r-1234 is the organization root container, and accounts (with 12-digit IDs) are placed either under it or under OUs.

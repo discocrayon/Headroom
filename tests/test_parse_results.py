@@ -60,8 +60,8 @@ class TestOrganizationStructureAnalysis:
         mock_org_client.list_accounts_for_parent.side_effect = [
             # Accounts under Production OU
             {"Accounts": [{"Id": "222222222222", "Name": "prod-account"}]},
-            # Accounts under root
-            {"Accounts": [{"Id": "111111111111", "Name": "root-account"}]},
+            # Accounts directly under root (not in any OU)
+            {"Accounts": [{"Id": "111111111111", "Name": "management-account"}]},
         ]
 
         result = analyze_organization_structure(mock_session)
@@ -113,7 +113,7 @@ class TestOrganizationStructureAnalysis:
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "root-account", "r-1234", ["Root"]),
+                "111111111111": AccountOrgPlacement("111111111111", "management-account", "r-1234", ["Root"]),
                 "222222222222": AccountOrgPlacement("222222222222", "prod-account", "ou-1234", ["Production"])
             }
         )
@@ -153,7 +153,7 @@ class TestOrganizationStructureAnalysis:
                 "ListAccountsForParent"
             ),
             # Second call succeeds
-            {"Accounts": [{"Id": "111111111111", "Name": "root-account"}]},
+            {"Accounts": [{"Id": "111111111111", "Name": "management-account"}]},
         ]
 
         # Should not raise exception, should handle errors gracefully
@@ -925,6 +925,7 @@ class TestGenerateSCPTerraform:
         """Test generating Terraform files for root-level SCP recommendations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
+            # Note: r-1234 is the org root ID, not an account. Accounts are placed under it.
             hierarchy = OrganizationHierarchy(
                 root_id="r-1234",
                 organizational_units={},
@@ -966,6 +967,7 @@ class TestGenerateSCPTerraform:
         """Test generating Terraform files for mixed account, OU, and root level recommendations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
+            # Note: r-1234 is the org root ID. Accounts can be placed under it or under OUs.
             hierarchy = OrganizationHierarchy(
                 root_id="r-1234",
                 organizational_units={
