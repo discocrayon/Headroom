@@ -28,7 +28,7 @@ class TestWriteCheckResults:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
             results_data: Dict[str, Any] = {
                 "summary": {
                     "account_name": account_name,
@@ -65,7 +65,7 @@ class TestWriteCheckResults:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
             results_data: Dict[str, Any] = {"summary": {}}
 
             # Ensure check directory doesn't exist yet
@@ -88,7 +88,7 @@ class TestWriteCheckResults:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "test_check"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
             results_data: Dict[str, Any] = {
                 "summary": {"key": "value"},
                 "violations": []
@@ -114,7 +114,7 @@ class TestWriteCheckResults:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
 
             # Write first version
             results_data_v1: Dict[str, Any] = {"summary": {"version": 1}}
@@ -146,7 +146,7 @@ class TestWriteCheckResults:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "test_check"
             account_name = "test-account-with-dashes"
-            account_id = "123456789012"
+            account_id = "111111111111"
             results_data: Dict[str, Any] = {"summary": {}}
 
             write_check_results(
@@ -166,7 +166,7 @@ class TestWriteCheckResults:
 
         check_name = "test_check"
         account_name = "test-account"
-        account_id = "123456789012"
+        account_id = "111111111111"
         results_data: Dict[str, Any] = {"summary": {}}
 
         # Create a mock that raises IOError when write is called
@@ -197,7 +197,7 @@ class TestWriteCheckResults:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
             results_data: Dict[str, Any] = {
                 "summary": {
                     "account_name": account_name,
@@ -229,7 +229,7 @@ class TestWriteCheckResults:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
             results_data: Dict[str, Any] = {"summary": {}}
 
             write_check_results(
@@ -278,11 +278,11 @@ class TestGetResultsPath:
         """Test that get_results_path returns the correct file path."""
         check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
-        account_id = "123456789012"
+        account_id = "111111111111"
         results_base_dir = "/path/to/results"
 
         result = get_results_path(check_name, account_name, account_id, results_base_dir)
-        expected = Path("/path/to/results/deny_imds_v1_ec2/test-account_123456789012.json")
+        expected = Path("/path/to/results/deny_imds_v1_ec2/test-account_111111111111.json")
         assert result == expected
 
     def test_get_results_path_returns_path_object(self) -> None:
@@ -294,7 +294,7 @@ class TestGetResultsPath:
         """Test that get_results_path excludes account_id from filename when exclude_account_ids=True."""
         check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
-        account_id = "123456789012"
+        account_id = "111111111111"
         results_base_dir = "/path/to/results"
 
         result = get_results_path(
@@ -316,7 +316,7 @@ class TestResultsExist:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
 
             # Create the file
             results_data: Dict[str, Any] = {"summary": {}}
@@ -336,7 +336,7 @@ class TestResultsExist:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
 
             assert results_exist(check_name, account_name, account_id, temp_dir) is False
 
@@ -344,7 +344,7 @@ class TestResultsExist:
         """Test that results_exist returns False when directory doesn't exist."""
         check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
-        account_id = "123456789012"
+        account_id = "111111111111"
         results_base_dir = "/nonexistent/directory"
 
         assert results_exist(check_name, account_name, account_id, results_base_dir) is False
@@ -354,7 +354,7 @@ class TestResultsExist:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
 
             # Create file without account_id in filename
             results_data: Dict[str, Any] = {"summary": {}}
@@ -381,7 +381,7 @@ class TestResultsExist:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
-            account_id = "123456789012"
+            account_id = "111111111111"
 
             # Create file with old format (account_id in filename)
             results_data: Dict[str, Any] = {"summary": {}}

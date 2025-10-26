@@ -80,7 +80,7 @@ class TestCheckDenyImdsV1Ec2:
         """Test check function with mixed compliance results."""
         mock_session = MagicMock()
         account_name = "test-account"
-        account_id = "123456789012"
+        account_id = "111111111111"
 
         with (
             patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
@@ -110,7 +110,7 @@ class TestCheckDenyImdsV1Ec2:
             # Check summary
             summary = results_data["summary"]
             assert summary["account_name"] == "test-account"
-            assert summary["account_id"] == "123456789012"
+            assert summary["account_id"] == "111111111111"
             assert summary["check"] == "deny_imds_v1_ec2"
             assert summary["total_instances"] == 4
             assert summary["violations"] == 2

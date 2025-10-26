@@ -117,11 +117,11 @@ class TestGetHeadroomSession:
             mock_session = MagicMock()
             mock_session_class.return_value = mock_session
 
-            result = get_headroom_session(mock_config, mock_security_session, "123456789012")
+            result = get_headroom_session(mock_config, mock_security_session, "111111111111")
 
             # Verify STS assume_role call
             mock_sts.assume_role.assert_called_once_with(
-                RoleArn="arn:aws:iam::123456789012:role/Headroom",
+                RoleArn="arn:aws:iam::111111111111:role/Headroom",
                 RoleSessionName="HeadroomAnalysisSession"
             )
 
@@ -148,8 +148,8 @@ class TestGetHeadroomSession:
             "AssumeRole"
         )
 
-        with pytest.raises(RuntimeError, match="Failed to assume Headroom role in account 123456789012"):
-            get_headroom_session(mock_config, mock_security_session, "123456789012")
+        with pytest.raises(RuntimeError, match="Failed to assume Headroom role in account 111111111111"):
+            get_headroom_session(mock_config, mock_security_session, "111111111111")
 
     def test_get_headroom_session_different_account_ids(self, mock_config: HeadroomConfig) -> None:
         """Test get_headroom_session with different account IDs."""

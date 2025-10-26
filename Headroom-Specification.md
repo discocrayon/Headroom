@@ -221,7 +221,7 @@ class DenyImdsV1Ec2:
 {
   "summary": {
     "account_name": "account-name",
-    "account_id": "123456789012",
+    "account_id": "111111111111",
     "check": "deny_imds_v1_ec2",
     "total_instances": 10,
     "violations": 3,
@@ -832,11 +832,11 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
 ### Basic Configuration
 ```yaml
 # config.yaml
-management_account_id: '345678901234'
+management_account_id: '222222222222'
 
 # Optional: only specify if running from the management account
 # If omitted, assumes already running in the security analysis account
-security_analysis_account_id: '123456789012'
+security_analysis_account_id: '111111111111'
 
 exclude_account_ids: false
 

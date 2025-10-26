@@ -90,7 +90,7 @@ graph LR
     end
 ```
 
-## Sample Output 
+## Sample Output
 
 ```
 $ python -m headroom --config sample_config.yaml

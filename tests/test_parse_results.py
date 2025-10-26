@@ -340,13 +340,13 @@ class TestResultFileParsing:
             }
 
             # Write file with account_id in filename but not in JSON
-            with open(check_dir / "test-account_123456789012.json", 'w') as f:
+            with open(check_dir / "test-account_111111111111.json", 'w') as f:
                 json.dump(test_data, f)
 
             result = parse_result_files(temp_dir)
 
             assert len(result) == 1
-            assert result[0].account_id == "123456789012"
+            assert result[0].account_id == "111111111111"
             assert result[0].account_name == "test-account"
             assert result[0].violations == 0
 
@@ -537,8 +537,8 @@ class TestParseResultsIntegration:
                 name="Name",
                 owner="Owner"
             ),
-            security_analysis_account_id="123456789012",
-            management_account_id="345678901234"
+            security_analysis_account_id="111111111111",
+            management_account_id="222222222222"
         )
 
         # Mock the security session and management account session
@@ -579,7 +579,7 @@ class TestParseResultsIntegration:
                 name="Name",
                 owner="Owner"
             ),
-            security_analysis_account_id="123456789012",
+            security_analysis_account_id="111111111111",
             management_account_id=None  # Missing management account ID
         )
 
@@ -598,8 +598,8 @@ class TestParseResultsIntegration:
                 name="Name",
                 owner="Owner"
             ),
-            security_analysis_account_id="123456789012",
-            management_account_id="345678901234"
+            security_analysis_account_id="111111111111",
+            management_account_id="222222222222"
         )
 
         mock_security_session = Mock()
@@ -636,8 +636,8 @@ class TestParseResultsIntegration:
                 name="Name",
                 owner="Owner"
             ),
-            security_analysis_account_id="123456789012",
-            management_account_id="345678901234"
+            security_analysis_account_id="111111111111",
+            management_account_id="222222222222"
         )
 
         mock_security_session = Mock()
@@ -663,8 +663,8 @@ class TestParseResultsIntegration:
                 name="Name",
                 owner="Owner"
             ),
-            security_analysis_account_id="123456789012",
-            management_account_id="345678901234"
+            security_analysis_account_id="111111111111",
+            management_account_id="222222222222"
         )
 
         mock_security_session = Mock()
@@ -694,8 +694,8 @@ class TestParseResultsIntegration:
                 name="Name",
                 owner="Owner"
             ),
-            security_analysis_account_id="123456789012",
-            management_account_id="345678901234"
+            security_analysis_account_id="111111111111",
+            management_account_id="222222222222"
         )
 
         mock_security_session = Mock()
@@ -746,8 +746,8 @@ class TestParseResultsIntegration:
                 name="Name",
                 owner="Owner"
             ),
-            security_analysis_account_id="123456789012",
-            management_account_id="345678901234"
+            security_analysis_account_id="111111111111",
+            management_account_id="222222222222"
         )
 
         mock_security_session = Mock()

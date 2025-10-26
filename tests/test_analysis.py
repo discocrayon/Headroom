@@ -9,7 +9,7 @@ from headroom.config import HeadroomConfig, AccountTagLayout
 class TestSecurityAnalysisSession:
     def test_get_security_analysis_session_success(self) -> None:
         config = HeadroomConfig(
-            security_analysis_account_id="123456789012",
+            security_analysis_account_id="111111111111",
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
@@ -28,7 +28,7 @@ class TestSecurityAnalysisSession:
             session = get_security_analysis_session(config)
             client_patch.assert_called_once_with("sts")
             mock_sts.assume_role.assert_called_once_with(
-                RoleArn="arn:aws:iam::123456789012:role/OrganizationAccountAccessRole",
+                RoleArn="arn:aws:iam::111111111111:role/OrganizationAccountAccessRole",
                 RoleSessionName="HeadroomSecurityAnalysisSession"
             )
             session_patch.assert_called_once_with(
@@ -66,7 +66,7 @@ class TestSecurityAnalysisSession:
 
     def test_get_security_analysis_session_sts_failure(self) -> None:
         config = HeadroomConfig(
-            security_analysis_account_id="123456789012",
+            security_analysis_account_id="111111111111",
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
@@ -81,7 +81,7 @@ class TestPerformAnalysis:
     def test_perform_analysis_success(self) -> None:
         config = HeadroomConfig(
             management_account_id="222222222222",
-            security_analysis_account_id="123456789012",
+            security_analysis_account_id="111111111111",
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
