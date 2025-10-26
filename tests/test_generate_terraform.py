@@ -7,10 +7,10 @@ Tests Terraform configuration generation for AWS Organizations structure data.
 from unittest.mock import Mock, patch
 
 
+from headroom.terraform import make_safe_variable_name
 from headroom.terraform.generate_org_info import (
     generate_terraform_org_info,
     _generate_terraform_content,
-    _make_safe_variable_name,
 )
 from headroom.types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
 
@@ -155,22 +155,22 @@ class TestTerraformNamedLocals:
 
     def test_make_safe_variable_name_basic(self) -> None:
         """Test basic variable name conversion."""
-        assert _make_safe_variable_name("Production") == "production"
-        assert _make_safe_variable_name("Dev-Test") == "dev_test"
-        assert _make_safe_variable_name("Staging Environment") == "staging_environment"
+        assert make_safe_variable_name("Production") == "production"
+        assert make_safe_variable_name("Dev-Test") == "dev_test"
+        assert make_safe_variable_name("Staging Environment") == "staging_environment"
 
     def test_make_safe_variable_name_special_chars(self) -> None:
         """Test variable name conversion with special characters."""
-        assert _make_safe_variable_name("OU-123") == "ou_123"
-        assert _make_safe_variable_name("Test@#$%") == "test"
-        assert _make_safe_variable_name("123-OU") == "ou_123_ou"
+        assert make_safe_variable_name("OU-123") == "ou_123"
+        assert make_safe_variable_name("Test@#$%") == "test"
+        assert make_safe_variable_name("123-OU") == "ou_123_ou"
 
     def test_make_safe_variable_name_edge_cases(self) -> None:
         """Test edge cases for variable name conversion."""
-        assert _make_safe_variable_name("") == ""
-        assert _make_safe_variable_name("   ") == ""
-        assert _make_safe_variable_name("A") == "a"
-        assert _make_safe_variable_name("123") == "ou_123"
+        assert make_safe_variable_name("") == ""
+        assert make_safe_variable_name("   ") == ""
+        assert make_safe_variable_name("A") == "a"
+        assert make_safe_variable_name("123") == "ou_123"
 
     def test_generate_terraform_content_with_named_locals(self) -> None:
         """Test Terraform content generation with named local variables."""

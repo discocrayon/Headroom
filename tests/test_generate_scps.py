@@ -12,9 +12,9 @@ from headroom.types import (
     OrganizationHierarchy,
     SCPPlacementRecommendations,
 )
+from headroom.terraform import make_safe_variable_name
 from headroom.terraform.generate_scps import (
     generate_scp_terraform,
-    _make_safe_variable_name,
 )
 
 
@@ -66,7 +66,7 @@ def test_generate_scp_terraform_warn_missing_ou(tmp_path: Path, caplog: pytest.L
 
 
 def test_make_safe_variable_name_edge_cases() -> None:
-    assert _make_safe_variable_name("My  Name--X") == "my_name_x"
-    assert _make_safe_variable_name("a__b---c  d") == "a_b_c_d"
+    assert make_safe_variable_name("My  Name--X") == "my_name_x"
+    assert make_safe_variable_name("a__b---c  d") == "a_b_c_d"
     # Starts with digit -> prefixed
-    assert _make_safe_variable_name("123bad-name") == "ou_123bad_name"
+    assert make_safe_variable_name("123bad-name") == "ou_123bad_name"

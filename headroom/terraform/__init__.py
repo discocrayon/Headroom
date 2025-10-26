@@ -12,8 +12,10 @@ Modules:
 
 from .generate_org_info import generate_terraform_org_info
 from .generate_scps import generate_scp_terraform
+from .utils import make_safe_variable_name
 
 __all__ = [
     "generate_terraform_org_info",
     "generate_scp_terraform",
+    "make_safe_variable_name",
 ]

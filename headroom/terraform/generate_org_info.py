@@ -11,6 +11,7 @@ from typing import Dict, List
 
 import boto3  # type: ignore
 
+from .utils import make_safe_variable_name
 from ..aws.organization import analyze_organization_structure
 from ..types import OrganizationHierarchy, AccountOrgPlacement
 
@@ -79,7 +80,7 @@ def _generate_terraform_content(organization_hierarchy: OrganizationHierarchy) -
         top_level_ous = [ou for ou in organization_hierarchy.organizational_units.values() if ou.parent_ou_id is None]
 
         for ou in top_level_ous:
-            safe_name = _make_safe_variable_name(ou.name)
+            safe_name = make_safe_variable_name(ou.name)
             content_parts.extend([
                 f'data "aws_organizations_organizational_unit_child_accounts" "{safe_name}_accounts" {{',
                 "  parent_id = [",
@@ -111,7 +112,7 @@ def _generate_terraform_content(organization_hierarchy: OrganizationHierarchy) -
             ])
 
             for ou in top_level_ous:
-                safe_name = _make_safe_variable_name(ou.name)
+                safe_name = make_safe_variable_name(ou.name)
                 content_parts.extend([
                     f"  # Validation for {ou.name} OU",
                     f"  validation_check_{safe_name}_ou = (length([for ou in data.aws_organizations_organizational_units.root_ou.children : ou.id if ou.name == \"{ou.name}\"]) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {ou.name} OU, found ${{length([for ou in data.aws_organizations_organizational_units.root_ou.children : ou.id if ou.name == \"{ou.name}\"])}}\")",
@@ -151,10 +152,10 @@ def _generate_terraform_content(organization_hierarchy: OrganizationHierarchy) -
         for top_level_ou_id, accounts in accounts_by_top_level_ou.items():
             if top_level_ou_id in organization_hierarchy.organizational_units:
                 ou_name = organization_hierarchy.organizational_units[top_level_ou_id].name
-                safe_ou_name = _make_safe_variable_name(ou_name)
+                safe_ou_name = make_safe_variable_name(ou_name)
 
                 for account in accounts:
-                    safe_account_name = _make_safe_variable_name(account.account_name)
+                    safe_account_name = make_safe_variable_name(account.account_name)
                     content_parts.extend([
                         f"  # Validation for {account.account_name} account",
                         f"  validation_check_{safe_account_name}_account = (length([for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts : account.id if account.name == \"{account.account_name}\"]) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {account.account_name} account, found ${{length([for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts : account.id if account.name == \"{account.account_name}\"])}}\")",
@@ -169,28 +170,3 @@ def _generate_terraform_content(organization_hierarchy: OrganizationHierarchy) -
     content_parts.append("}")
 
     return "\n".join(content_parts) + "\n"
-
-
-def _make_safe_variable_name(name: str) -> str:
-    """
-    Convert a name to a safe Terraform variable name.
-
-    Args:
-        name: Original name
-
-    Returns:
-        Safe variable name with special characters replaced
-    """
-    # Replace spaces and special characters with underscores
-    safe_name = name.lower().replace(" ", "_").replace("-", "_")
-    # Remove any remaining special characters except underscores
-    safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in safe_name)
-    # Remove multiple consecutive underscores
-    while "__" in safe_name:
-        safe_name = safe_name.replace("__", "_")
-    # Remove leading/trailing underscores
-    safe_name = safe_name.strip("_")
-    # Ensure it starts with a letter
-    if safe_name and not safe_name[0].isalpha():
-        safe_name = "ou_" + safe_name
-    return safe_name

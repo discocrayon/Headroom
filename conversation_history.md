@@ -56,3 +56,44 @@ Replaced all references to AWS account IDs with standardized values:
 #### Rationale
 
 Using consistent, standardized account IDs across all documentation and tests makes the codebase more coherent and easier to understand. The new IDs follow a more memorable pattern (111111111111 for security analysis, 222222222222 for management account).
+
+## 2025-10-26, 12:30 PM - Refactored duplicate _make_safe_variable_name functions
+
+### Changes Made
+
+Consolidated two identical `_make_safe_variable_name` functions that existed in both `generate_scps.py` and `generate_org_info.py` into a single shared function in a new `utils.py` module.
+
+#### Files Created
+
+1. **headroom/terraform/utils.py** (new file)
+   - Created shared utilities module for Terraform generation
+   - Added `make_safe_variable_name` function (public, without underscore prefix)
+   - Function converts names to Terraform-safe variable names by replacing spaces and special characters with underscores, removing consecutive underscores, and ensuring the name starts with a letter
+
+#### Files Updated
+
+1. **headroom/terraform/__init__.py**
+   - Added import: `from .utils import make_safe_variable_name`
+   - Added to `__all__` exports
+
+2. **headroom/terraform/generate_scps.py**
+   - Removed duplicate `_make_safe_variable_name` function (lines 161-185)
+   - Changed import from `from . import make_safe_variable_name` to `from .utils import make_safe_variable_name`
+   - Updated 2 function calls from `_make_safe_variable_name` to `make_safe_variable_name`
+
+3. **headroom/terraform/generate_org_info.py**
+   - Removed duplicate `_make_safe_variable_name` function (lines 174-196)
+   - Changed import from `from . import make_safe_variable_name` to `from .utils import make_safe_variable_name`
+   - Updated 4 function calls from `_make_safe_variable_name` to `make_safe_variable_name`
+
+4. **tests/test_generate_scps.py**
+   - Updated import to: `from headroom.terraform import make_safe_variable_name`
+   - Updated 3 function calls from `_make_safe_variable_name` to `make_safe_variable_name`
+
+5. **tests/test_generate_terraform.py**
+   - Updated import to: `from headroom.terraform import make_safe_variable_name`
+   - Updated 9 function calls from `_make_safe_variable_name` to `make_safe_variable_name`
+
+#### Rationale
+
+Both functions were completely identical, violating the DRY (Don't Repeat Yourself) principle. Consolidating them into a shared utility module (`utils.py`) improves maintainability by ensuring there's a single source of truth. The function was made public (renamed from `_make_safe_variable_name` to `make_safe_variable_name`) since it's now part of the module's public API. Using a separate `utils.py` file avoids circular import issues and complies with Python import best practices (E402 flake8 rule).

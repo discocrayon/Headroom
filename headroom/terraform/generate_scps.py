@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List
 
+from .utils import make_safe_variable_name
 from ..types import OrganizationHierarchy, SCPPlacementRecommendations
 
 # Set up logging
@@ -59,7 +60,7 @@ def generate_scp_terraform(
             continue
 
         # Convert account name to terraform-friendly format using same logic as generate_org_info.py
-        account_name = _make_safe_variable_name(account_info.account_name)
+        account_name = make_safe_variable_name(account_info.account_name)
         filename = f"{account_name}_scps.tf"
         filepath = output_path / filename
 
@@ -96,7 +97,7 @@ module "scps_{account_name}" {{
             continue
 
         # Convert OU name to terraform-friendly format using same logic as generate_org_info.py
-        ou_name = _make_safe_variable_name(ou_info.name)
+        ou_name = make_safe_variable_name(ou_info.name)
         filename = f"{ou_name}_ou_scps.tf"
         filepath = output_path / filename
 
@@ -156,30 +157,3 @@ module "scps_root" {
         f.write(terraform_content)
 
     logger.info(f"Generated SCP Terraform file: {filepath}")
-
-
-def _make_safe_variable_name(name: str) -> str:
-    """
-    Convert a name to a safe Terraform variable name.
-
-    Uses the same logic as generate_org_info.py to ensure consistency.
-
-    Args:
-        name: Original name
-
-    Returns:
-        Safe variable name with special characters replaced
-    """
-    # Replace spaces and special characters with underscores
-    safe_name = name.lower().replace(" ", "_").replace("-", "_")
-    # Remove any remaining special characters except underscores
-    safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in safe_name)
-    # Remove multiple consecutive underscores
-    while "__" in safe_name:
-        safe_name = safe_name.replace("__", "_")
-    # Remove leading/trailing underscores
-    safe_name = safe_name.strip("_")
-    # Ensure it starts with a letter
-    if safe_name and not safe_name[0].isalpha():
-        safe_name = "ou_" + safe_name
-    return safe_name
