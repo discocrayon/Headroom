@@ -1,0 +1,14 @@
+{
+  "summary": {
+    "account_name": "acme-co",
+    "check": "deny_imds_v1_ec2",
+    "total_instances": 0,
+    "violations": 0,
+    "exemptions": 0,
+    "compliant": 0,
+    "compliance_percentage": 100
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": []
+}

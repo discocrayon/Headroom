@@ -1,0 +1,18 @@
+management_account_id: '222222222222'
+
+# Optional: only required if running from the management account
+# If omitted, assumes the tool is already running in the security analysis account
+security_analysis_account_id: '111111111111'
+
+# Exclude account IDs from result files and filenames
+# Set to `true` here so that I can commit `test_environment/` results without disclosing all my AWS account IDs
+exclude_account_ids: true
+
+use_account_name_from_tags: false
+
+# Tag keys to look for on AWS accounts
+# All tags are optional - the tool will work even if these tags are not present on your accounts
+account_tag_layout:
+  environment: 'Environment'  # Falls back to "unknown" if tag is missing
+  name: 'Name'                # Used when use_account_name_from_tags is true; falls back to account ID if missing
+  owner: 'Owner'              # Falls back to "unknown" if tag is missing

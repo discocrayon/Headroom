@@ -1,0 +1,9 @@
+[run]
+omit =
+    */__main__.py
+    .tox/*
+    setup.py
+
+[report]
+exclude_lines =
+    pragma: no cover
