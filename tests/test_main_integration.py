@@ -599,11 +599,17 @@ class TestMainIntegration:
         mock_final_config.model_dump.return_value = valid_yaml_config
         mocks['merge'].return_value = mock_final_config
 
-        with patch('headroom.main.parse_results', return_value=[]), \
-             patch('headroom.main.get_security_analysis_session') as mock_get_sess:
+        with (
+            patch('headroom.main.parse_results', return_value=[]),
+            patch('headroom.main.get_security_analysis_session') as mock_get_sess,
+            patch('headroom.main.parse_rcp_result_files', return_value=({}, set())),
+            patch('headroom.main.analyze_organization_structure')
+        ):
             main()
 
-        mock_get_sess.assert_not_called()
+        # get_security_analysis_session is now called even with no SCP recommendations
+        # because we still check for RCP recommendations
+        mock_get_sess.assert_called_once_with(mock_final_config)
 
     def test_main_early_return_when_no_management_account_id(
         self,

@@ -1,10 +1,11 @@
 import logging
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
-from typing import List
+from typing import List, Set
 from dataclasses import dataclass
 from .config import HeadroomConfig, AccountTagLayout
 from .checks.deny_imds_v1_ec2 import check_deny_imds_v1_ec2
+from .checks.check_third_party_role_access import check_third_party_role_access
 from .write_results import results_exist
 
 # Set up logging
@@ -99,6 +100,48 @@ def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -
     return accounts
 
 
+def get_all_organization_account_ids(config: HeadroomConfig, session: boto3.Session) -> Set[str]:
+    """
+    Get all account IDs in the organization (including management account).
+
+    Args:
+        config: Headroom configuration
+        session: boto3 Session with access to security analysis account
+
+    Returns:
+        Set of all account IDs in the organization
+    """
+    if not config.management_account_id:
+        raise ValueError("management_account_id must be set in config")
+
+    role_arn = f"arn:aws:iam::{config.management_account_id}:role/OrgAndAccountInfoReader"
+    sts = session.client("sts")
+    try:
+        resp = sts.assume_role(
+            RoleArn=role_arn,
+            RoleSessionName="HeadroomOrgAccountListSession"
+        )
+    except ClientError as e:
+        raise RuntimeError(f"Failed to assume OrgAndAccountInfoReader role: {e}")
+
+    creds = resp["Credentials"]
+    mgmt_session = boto3.Session(
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"]
+    )
+
+    org_client = mgmt_session.client("organizations")
+    paginator = org_client.get_paginator("list_accounts")
+
+    account_ids: Set[str] = set()
+    for page in paginator.paginate():
+        for acct in page.get("Accounts", []):
+            account_ids.add(acct["Id"])
+
+    return account_ids
+
+
 def get_relevant_subaccounts(account_infos: List[AccountInfo]) -> List[AccountInfo]:
     """
     Filter account_infos based on CLI and configuration arguments.
@@ -131,27 +174,48 @@ def get_headroom_session(config: HeadroomConfig, security_session: boto3.Session
     )
 
 
-def run_checks(security_session: boto3.Session, relevant_account_infos: List[AccountInfo], config: HeadroomConfig) -> None:
+def run_checks(
+    security_session: boto3.Session,
+    relevant_account_infos: List[AccountInfo],
+    config: HeadroomConfig,
+    org_account_ids: Set[str]
+) -> None:
     """
     Run security checks against all relevant accounts.
 
     For each account:
     1. Checks if results already exist and skips if they do
     2. Assumes the Headroom role in that account
-    3. Runs all configured SCP checks
+    3. Runs all configured SCP/RCP checks
     4. Writes results to headroom_results folder
+
+    Args:
+        security_session: boto3 Session for security analysis account
+        relevant_account_infos: List of accounts to check
+        config: Headroom configuration
+        org_account_ids: Set of all account IDs in the organization
     """
     for account_info in relevant_account_infos:
         account_identifier = f"{account_info.name}_{account_info.account_id}"
 
         # Check if results already exist for this account
-        if results_exist(
+        imds_results_exist = results_exist(
             check_name="deny_imds_v1_ec2",
             account_name=account_info.name,
             account_id=account_info.account_id,
             results_base_dir=config.results_dir,
             exclude_account_ids=config.exclude_account_ids,
-        ):
+        )
+
+        rcp_results_exist = results_exist(
+            check_name="third_party_role_access",
+            account_name=account_info.name,
+            account_id=account_info.account_id,
+            results_base_dir=config.results_dir,
+            exclude_account_ids=config.exclude_account_ids,
+        )
+
+        if imds_results_exist and rcp_results_exist:
             logger.info(f"Results already exist for account {account_identifier}, skipping checks")
             continue
 
@@ -161,14 +225,25 @@ def run_checks(security_session: boto3.Session, relevant_account_infos: List[Acc
             headroom_session = get_headroom_session(config, security_session, account_info.account_id)
 
             # Run SCP checks
-            # TODO: Make this configurable based on which SCPs are enabled
-            check_deny_imds_v1_ec2(
-                headroom_session,
-                account_info.name,
-                account_info.account_id,
-                config.results_dir,
-                config.exclude_account_ids,
-            )
+            if not imds_results_exist:
+                check_deny_imds_v1_ec2(
+                    headroom_session,
+                    account_info.name,
+                    account_info.account_id,
+                    config.results_dir,
+                    config.exclude_account_ids,
+                )
+
+            # Run RCP checks
+            if not rcp_results_exist:
+                check_third_party_role_access(
+                    headroom_session,
+                    account_info.name,
+                    account_info.account_id,
+                    config.results_dir,
+                    org_account_ids,
+                    config.exclude_account_ids,
+                )
 
             logger.info(f"Checks completed for account: {account_identifier}")
 
@@ -178,7 +253,8 @@ def run_checks(security_session: boto3.Session, relevant_account_infos: List[Acc
 
 
 def perform_analysis(config: HeadroomConfig) -> None:
-    """Perform security analysis using the security analysis account session.
+    """
+    Perform security analysis using the security analysis account session.
 
     `get_subaccount_information` excludes the management account because it is not
     affected by SCPs/RCPs.
@@ -186,11 +262,18 @@ def perform_analysis(config: HeadroomConfig) -> None:
     logger.info("Starting security analysis")
     security_session = get_security_analysis_session(config)
     logger.info("Successfully obtained security analysis session")
+
+    # Get all organization account IDs (including management account)
+    # This is needed for RCP checks to identify third-party accounts
+    logger.info("Fetching all organization account IDs")
+    org_account_ids = get_all_organization_account_ids(config, security_session)
+    logger.info(f"Found {len(org_account_ids)} accounts in organization")
+
     account_infos = get_subaccount_information(config, security_session)
     logger.info(f"Fetched subaccount information: {account_infos}")
 
     relevant_account_infos = get_relevant_subaccounts(account_infos)
     logger.info(f"Filtered to {len(relevant_account_infos)} relevant accounts for analysis")
 
-    run_checks(security_session, relevant_account_infos, config)
+    run_checks(security_session, relevant_account_infos, config, org_account_ids)
     logger.info("Security analysis completed")

@@ -5,6 +5,7 @@ from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session
 from .parse_results import parse_results
 from .terraform.generate_scps import generate_scp_terraform
+from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform
 from .aws.organization import analyze_organization_structure
 
 
@@ -28,14 +29,9 @@ def main() -> None:
     perform_analysis(final_config)
 
     # Analyze results and determine SCP placement recommendations
-    recommendations = parse_results(final_config)
+    scp_recommendations = parse_results(final_config)
 
-    # Generate Terraform files for SCP deployment
-    if not recommendations:
-        return
-
-    # We need to get the organization hierarchy again for Terraform generation
-    # This is a temporary solution - in a real implementation, we'd pass it from parse_results
+    # Get organization hierarchy for Terraform generation
     security_session = get_security_analysis_session(final_config)
     if not final_config.management_account_id:
         return
@@ -45,7 +41,7 @@ def main() -> None:
     try:
         resp = sts.assume_role(
             RoleArn=role_arn,
-            RoleSessionName="HeadroomSCPPlacementAnalysisSession"
+            RoleSessionName="HeadroomTerraformGenerationSession"
         )
         creds = resp["Credentials"]
         mgmt_session = boto3.Session(
@@ -54,10 +50,44 @@ def main() -> None:
             aws_session_token=creds["SessionToken"]
         )
         organization_hierarchy = analyze_organization_structure(mgmt_session)
-        generate_scp_terraform(
-            recommendations,
-            organization_hierarchy,
-            final_config.scps_dir,
-        )
+
+        # Generate Terraform files for SCP deployment
+        if scp_recommendations:
+            generate_scp_terraform(
+                scp_recommendations,
+                organization_hierarchy,
+                final_config.scps_dir,
+            )
+
+        # Parse RCP results and generate RCP Terraform
+        account_third_party_map, accounts_with_wildcards = parse_rcp_result_files(final_config.results_dir)
+        if account_third_party_map:
+            rcp_recommendations = determine_rcp_placement(
+                account_third_party_map,
+                organization_hierarchy,
+                accounts_with_wildcards
+            )
+
+            if rcp_recommendations:
+                print("\n" + "=" * 80)
+                print("RCP PLACEMENT RECOMMENDATIONS")
+                print("=" * 80)
+                for rec in rcp_recommendations:
+                    print(f"\nRecommended Level: {rec.recommended_level.upper()}")
+                    if rec.target_ou_id:
+                        ou_info = organization_hierarchy.organizational_units.get(rec.target_ou_id)
+                        ou_name = ou_info.name if ou_info else rec.target_ou_id
+                        print(f"Target OU: {ou_name} ({rec.target_ou_id})")
+                    print(f"Affected Accounts: {len(rec.affected_accounts)}")
+                    print(f"Third-Party Accounts: {len(rec.third_party_account_ids)}")
+                    print(f"Reasoning: {rec.reasoning}")
+                    print("-" * 40)
+
+                generate_rcp_terraform(
+                    rcp_recommendations,
+                    organization_hierarchy,
+                    final_config.scps_dir,
+                )
+
     except ClientError as e:
         print(f"Failed to generate Terraform files: {e}")

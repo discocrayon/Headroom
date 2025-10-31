@@ -59,3 +59,23 @@ class SCPPlacementRecommendations:
     affected_accounts: List[str]
     compliance_percentage: float
     reasoning: str
+
+
+@dataclass
+class RCPCheckResult:
+    """Parsed result from third-party role access check."""
+    account_id: str
+    account_name: str
+    third_party_account_ids: List[str]
+    has_wildcard: bool
+
+
+@dataclass
+class RCPPlacementRecommendations:
+    """RCP placement recommendation for third-party access control."""
+    check_name: str
+    recommended_level: str  # "root", "ou", or "account"
+    target_ou_id: Optional[str]
+    affected_accounts: List[str]
+    third_party_account_ids: List[str]
+    reasoning: str

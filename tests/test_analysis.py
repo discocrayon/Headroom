@@ -88,13 +88,16 @@ class TestPerformAnalysis:
         mock_session = MagicMock()
         with (
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
+            patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
             patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
+            patch("headroom.analysis.run_checks") as mock_run_checks,
             patch("headroom.analysis.logger") as mock_logger,
         ):
             perform_analysis(config)
             mock_get_session.assert_called_once_with(config)
+            mock_get_org_ids.assert_called_once_with(config, mock_session)
             mock_get_subs.assert_called_once_with(config, mock_session)
-            assert mock_logger.info.call_count == 5
+            assert mock_logger.info.call_count == 7
             mock_logger.info.assert_any_call("Starting security analysis")
             mock_logger.info.assert_any_call("Successfully obtained security analysis session")
             mock_logger.info.assert_any_call("Fetched subaccount information: []")
@@ -111,13 +114,16 @@ class TestPerformAnalysis:
         mock_session = MagicMock()
         with (
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
+            patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
             patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
+            patch("headroom.analysis.run_checks") as mock_run_checks,
             patch("headroom.analysis.logger") as mock_logger,
         ):
             perform_analysis(config)
             mock_get_session.assert_called_once_with(config)
+            mock_get_org_ids.assert_called_once_with(config, mock_session)
             mock_get_subs.assert_called_once_with(config, mock_session)
-            assert mock_logger.info.call_count == 5
+            assert mock_logger.info.call_count == 7
             mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
 
 

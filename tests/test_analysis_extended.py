@@ -218,6 +218,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check,
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False)
         ):
@@ -225,7 +226,8 @@ class TestRunChecks:
             mock_headroom_session2 = MagicMock()
             mock_get_session.side_effect = [mock_headroom_session1, mock_headroom_session2]
 
-            run_checks(mock_security_session, sample_account_infos, mock_config)
+            org_account_ids = {"111111111111", "222222222222", "333333333333"}
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
 
             # Directory creation is handled by individual check functions, not run_checks
             # run_checks itself no longer creates directories
@@ -271,6 +273,8 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check,
+            patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
             patch("os.getcwd") as mock_getcwd
         ):
@@ -278,7 +282,8 @@ class TestRunChecks:
             mock_headroom_session = MagicMock()
             mock_get_session.return_value = mock_headroom_session
 
-            run_checks(mock_security_session, account_infos, mock_config)
+            org_account_ids = {"111111111111", "222222222222"}
+            run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
 
             # Verify check called with account ID as fallback name (includes results_dir and exclude_account_ids)
             mock_check.assert_called_once_with(
@@ -301,6 +306,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check,
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
@@ -309,7 +315,8 @@ class TestRunChecks:
             mock_getcwd.return_value = temp_results_dir
             mock_get_session.side_effect = RuntimeError("Failed to assume Headroom role")
 
-            run_checks(mock_security_session, sample_account_infos, mock_config)
+            org_account_ids = {"111111111111", "222222222222"}
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
 
             # Verify error logging for both accounts
             assert mock_logger.error.call_count == 2
@@ -332,16 +339,18 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check,
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
-            # Mock that results exist for first account but not second
-            mock_check_results.side_effect = [True, False]
+            # Mock that results exist for first account but not second (IMDS and RCP checks)
+            mock_check_results.side_effect = [True, True, False, False]
 
             mock_headroom_session = MagicMock()
             mock_get_session.return_value = mock_headroom_session
 
-            run_checks(mock_security_session, sample_account_infos, mock_config)
+            org_account_ids = {"111111111111", "222222222222"}
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
 
             # Verify get_headroom_session was only called for the second account
             assert mock_get_session.call_count == 1
@@ -375,10 +384,13 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check
+            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check
         ):
-            run_checks(mock_security_session, account_infos, mock_config)
+            org_account_ids = set()
+            run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
 
             # Verify no sessions or checks attempted
             mock_get_session.assert_not_called()
             mock_check.assert_not_called()
+            mock_rcp_check.assert_not_called()
