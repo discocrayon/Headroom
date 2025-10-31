@@ -125,3 +125,46 @@ The previous naming of "root-account" was confusing because:
 2. "root account" could be confused with AWS root user or management account
 
 The test data was actually representing an account placed directly under the organization root (not in any OU), which is valid but needed clearer naming. Changing to "management-account" and adding comments makes the distinction crystal clear: r-1234 is the organization root container, and accounts (with 12-digit IDs) are placed either under it or under OUs.
+
+## 2025-10-31, 12:00 PM - Created Terraform RCP module
+
+### Changes Made
+
+Created a new Terraform module for Resource Control Policies (RCPs) similar to the existing SCP module structure.
+
+#### Files Created
+
+1. **test_environment/modules/rcps/variables.tf** (new file)
+   - Added `target_id` variable with validation for account IDs, OU IDs, or root IDs
+   - Added `third_party_account_ids` variable (list of strings) with validation for 12-digit AWS account IDs
+   - Variable is used to specify which third-party accounts can assume roles in the organization
+
+2. **test_environment/modules/rcps/locals.tf** (new file)
+   - Created `rcp_1_content` using jsonencode pattern for minimized policies
+   - Added validation check for RCP maximum length of 5,120 bytes at plan time
+   - Defined `rcp_1_policy` with EnforceOrgIdentities statement that:
+     - Denies `sts:AssumeRole` actions
+     - Allows principals from the organization (via `aws:PrincipalOrgID`)
+     - Allows principals from third-party accounts (via `aws:PrincipalAccount`)
+     - Allows resources tagged with `dp:exclude:identity: true`
+     - Allows AWS service principals
+   - Used `data.aws_organizations_organization.current.id` to get the organization ID dynamically
+
+3. **test_environment/modules/rcps/rcps.tf** (new file)
+   - Created `aws_organizations_policy` resource for RCP with type `RESOURCE_CONTROL_POLICY`
+   - Created `aws_organizations_policy_attachment` resource to attach RCP to target
+   - Named policy as "Rcp1For-{target_id}"
+
+4. **test_environment/modules/rcps/README.md** (new file)
+   - Documented module overview and purpose
+   - Explained RCP policy details and conditions
+   - Provided usage example
+   - Listed variables and notes about RCP limits
+
+#### Files Already Present
+
+- **test_environment/modules/rcps/data.tf** - Already contained the `aws_organizations_organization.current` data source
+
+#### Rationale
+
+Resource Control Policies (RCPs) are AWS Organizations policies that enforce security controls on resources across an organization. This module implements an RCP that enforces organization identity for role assumptions, ensuring that only principals from the organization, approved third-party accounts, or AWS services can assume roles. The module follows the same structure as the existing SCP module for consistency and maintainability.
