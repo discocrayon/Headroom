@@ -22,17 +22,19 @@ module "account_rcp" {
   source = "./modules/rcps"
 
   target_id               = "123456789012"
-  third_party_account_ids = [
+  third_party_assumerole_account_ids = [
     "111111111111",
     "222222222222"
   ]
+  enforce_assume_role_org_identities = true
 }
 ```
 
 ## Variables
 
 - `target_id` (required): The AWS Organizations target ID (account ID, OU ID, or root ID)
-- `third_party_account_ids` (required): List of third-party AWS account IDs allowed to assume roles
+- `third_party_assumerole_account_ids` (optional, default: []): List of third-party AWS account IDs allowed to assume roles
+- `enforce_assume_role_org_identities` (required): Whether to enforce role assumptions to organization identities and specified third-party accounts
 
 ## Notes
 

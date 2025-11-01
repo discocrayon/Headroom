@@ -546,6 +546,7 @@ class TestGenerateRcpTerraform:
         assert "local.root_ou_id" in content
         assert "999999999999" in content
         assert "888888888888" in content
+        assert "enforce_assume_role_org_identities = true" in content
 
     def test_generate_ou_level_terraform(
         self,
@@ -573,6 +574,7 @@ class TestGenerateRcpTerraform:
         assert "module \"rcps_production_ou\"" in content
         assert "local.top_level_production_ou_id" in content
         assert "999999999999" in content
+        assert "enforce_assume_role_org_identities = true" in content
 
     def test_generate_account_level_terraform(
         self,
@@ -600,6 +602,7 @@ class TestGenerateRcpTerraform:
         assert "module \"rcps_prod_account_1\"" in content
         assert "local.prod_account_1_account_id" in content
         assert "999999999999" in content
+        assert "enforce_assume_role_org_identities = true" in content
 
     def test_generate_skips_missing_ou(
         self,
@@ -657,3 +660,35 @@ class TestGenerateRcpTerraform:
 
         output_path = Path(temp_output_dir)
         assert len(list(output_path.glob("*.tf"))) == 0
+
+    def test_generate_with_wildcard_disables_enforcement(
+        self,
+        temp_output_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        Test that wildcard in third_party_account_ids sets enforce_assume_role_org_identities to false.
+
+        When a wildcard is present, it means trusting all account IDs which could cause
+        outages if the RCP is deployed, so enforcement should be disabled.
+        The third_party_assumerole_account_ids parameter should not be passed when enforcement is false.
+        """
+        recommendations = [
+            RCPPlacementRecommendations(
+                check_name="third_party_role_access",
+                recommended_level="root",
+                target_ou_id=None,
+                affected_accounts=["111111111111"],
+                third_party_account_ids=["*"],
+                reasoning="Test wildcard detection"
+            )
+        ]
+
+        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
+
+        root_file = Path(temp_output_dir) / "root_rcps.tf"
+        assert root_file.exists()
+
+        content = root_file.read_text()
+        assert "enforce_assume_role_org_identities = false" in content
+        assert "third_party_assumerole_account_ids" not in content
