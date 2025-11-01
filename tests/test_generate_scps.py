@@ -29,7 +29,7 @@ def test_generate_scp_terraform_no_recommendations(tmp_path: Path) -> None:
     assert not any(tmp_path.iterdir())
 
 
-def test_generate_scp_terraform_warn_missing_account(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_generate_scp_terraform_warn_missing_account(tmp_path: Path) -> None:
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-imds-v1-ec2",
@@ -40,14 +40,12 @@ def test_generate_scp_terraform_warn_missing_account(tmp_path: Path, caplog: pyt
         reasoning="test",
     )
 
-    with caplog.at_level("WARNING"):
+    # Should raise exception for missing account
+    with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
         generate_scp_terraform([rec], org, str(tmp_path))
 
-    assert any("Account (999999999999) not found in organization hierarchy" in m for m in caplog.messages)
-    assert not any(tmp_path.iterdir())
 
-
-def test_generate_scp_terraform_warn_missing_ou(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_generate_scp_terraform_warn_missing_ou(tmp_path: Path) -> None:
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-imds-v1-ec2",
@@ -58,11 +56,9 @@ def test_generate_scp_terraform_warn_missing_ou(tmp_path: Path, caplog: pytest.L
         reasoning="test",
     )
 
-    with caplog.at_level("WARNING"):
+    # Should raise exception for missing OU
+    with pytest.raises(RuntimeError, match="OU ou-unknown not found in organization hierarchy"):
         generate_scp_terraform([rec], org, str(tmp_path))
-
-    assert any("OU ou-unknown not found in organization hierarchy" in m for m in caplog.messages)
-    assert not any(tmp_path.iterdir())
 
 
 def test_make_safe_variable_name_edge_cases() -> None:

@@ -56,8 +56,7 @@ def generate_scp_terraform(
     for account_id, account_recs in account_recommendations.items():
         account_info = organization_hierarchy.accounts.get(account_id)
         if not account_info:
-            logger.warning(f"Account ({account_id}) not found in organization hierarchy")
-            continue
+            raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
 
         # Convert account name to terraform-friendly format using same logic as generate_org_info.py
         account_name = make_safe_variable_name(account_info.account_name)
@@ -93,8 +92,7 @@ module "scps_{account_name}" {{
     for ou_id, ou_recs in ou_recommendations.items():
         ou_info = organization_hierarchy.organizational_units.get(ou_id)
         if not ou_info:
-            logger.warning(f"OU {ou_id} not found in organization hierarchy")
-            continue
+            raise RuntimeError(f"OU {ou_id} not found in organization hierarchy")
 
         # Convert OU name to terraform-friendly format using same logic as generate_org_info.py
         ou_name = make_safe_variable_name(ou_info.name)

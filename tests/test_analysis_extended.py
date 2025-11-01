@@ -306,27 +306,18 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.analysis.check_deny_imds_v1_ec2"),
             patch("headroom.analysis.check_third_party_role_access"),
-            patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
-            patch("os.getcwd") as mock_getcwd
+            patch("os.getcwd") as mock_getcwd,
+            pytest.raises(RuntimeError, match="Failed to run checks for account prod-account_111111111111: Failed to assume Headroom role")
         ):
             mock_getcwd.return_value = temp_results_dir
             mock_get_session.side_effect = RuntimeError("Failed to assume Headroom role")
 
             org_account_ids = {"111111111111", "222222222222"}
             run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
-
-            # Verify error logging for both accounts
-            assert mock_logger.error.call_count == 2
-            mock_logger.error.assert_any_call(
-                "Failed to run checks for account prod-account_111111111111: Failed to assume Headroom role"
-            )
-
-            # Verify check was never called due to session failures
-            mock_check.assert_not_called()
 
     def test_run_checks_skip_existing_results(
         self,

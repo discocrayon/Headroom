@@ -95,9 +95,8 @@ class TestParseRcpResultFiles:
 
     def test_parse_nonexistent_directory(self) -> None:
         """Test parsing when directory doesn't exist."""
-        result = parse_rcp_result_files("/nonexistent/path")
-        assert result.account_third_party_map == {}
-        assert result.accounts_with_wildcards == set()
+        with pytest.raises(RuntimeError, match="Third-party role access check directory does not exist"):
+            parse_rcp_result_files("/nonexistent/path")
 
     def test_parse_empty_directory(self, temp_results_dir: str) -> None:
         """Test parsing empty directory."""
@@ -118,24 +117,9 @@ class TestParseRcpResultFiles:
         with open(result_file, 'w') as f:
             f.write("{invalid json")
 
-        # Create valid JSON file
-        valid_data = {
-            "summary": {
-                "account_id": "111111111111",
-                "account_name": "test-account",
-                "unique_third_party_accounts": ["999999999999"],
-                "roles_with_wildcards": 0
-            }
-        }
-        valid_file = check_dir / "valid.json"
-        with open(valid_file, 'w') as f:
-            json.dump(valid_data, f)
-
-        # Should skip invalid file but parse valid one
-        result = parse_rcp_result_files(temp_results_dir)
-        assert len(result.account_third_party_map) == 1
-        assert result.account_third_party_map["111111111111"] == {"999999999999"}
-        assert len(result.accounts_with_wildcards) == 0
+        # Should raise exception on invalid JSON file
+        with pytest.raises(RuntimeError, match="Failed to parse RCP result file .*/invalid.json"):
+            parse_rcp_result_files(temp_results_dir)
 
     def test_parse_missing_summary_key(self, temp_results_dir: str) -> None:
         """Test parsing with file missing required summary key."""
@@ -371,7 +355,7 @@ class TestDetermineRcpPlacement:
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test that accounts not in the hierarchy are skipped when building OU mappings."""
+        """Test that accounts not in the hierarchy cause a failure."""
         account_third_party_map: Dict[str, Set[str]] = {
             "111111111111": {"999999999999"},
             "222222222222": {"999999999999"},
@@ -379,18 +363,9 @@ class TestDetermineRcpPlacement:
         }
         accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
-
-        # Account 111111111111 and 222222222222 should get OU-level RCP
-        # Account 999999999999 should get account-level (not in hierarchy, can't be part of OU)
-        ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
-        account_recs = [r for r in recommendations if r.recommended_level == "account"]
-
-        assert len(ou_recs) == 1
-        assert set(ou_recs[0].affected_accounts) == {"111111111111", "222222222222"}
-
-        assert len(account_recs) == 1
-        assert account_recs[0].affected_accounts == ["999999999999"]
+        # Should raise exception for account not in hierarchy
+        with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
+            determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
 
     def test_rcp_always_root_aggregates_all_third_party_accounts(
         self,
@@ -609,7 +584,7 @@ class TestGenerateRcpTerraform:
         temp_output_dir: str,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test that missing OU in hierarchy is skipped with warning."""
+        """Test that missing OU in hierarchy raises exception."""
         recommendations = [
             RCPPlacementRecommendations(
                 check_name="third_party_role_access",
@@ -621,17 +596,16 @@ class TestGenerateRcpTerraform:
             )
         ]
 
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
-
-        # No file should be created for missing OU
-        assert not any(Path(temp_output_dir).glob("*_ou_rcps.tf"))
+        # Should raise exception for missing OU
+        with pytest.raises(RuntimeError, match="OU ou-9999 not found in organization hierarchy"):
+            generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
 
     def test_generate_skips_missing_account(
         self,
         temp_output_dir: str,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test that missing account in hierarchy is skipped with warning."""
+        """Test that missing account in hierarchy raises exception."""
         recommendations = [
             RCPPlacementRecommendations(
                 check_name="third_party_role_access",
@@ -643,10 +617,9 @@ class TestGenerateRcpTerraform:
             )
         ]
 
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
-
-        # No file should be created for missing account
-        assert not any(Path(temp_output_dir).glob("*_rcps.tf"))
+        # Should raise exception for missing account
+        with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
+            generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
 
     def test_generate_no_recommendations(
         self,

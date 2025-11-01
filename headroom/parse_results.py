@@ -34,8 +34,7 @@ def parse_result_files(results_dir: str) -> List[CheckResult]:
     """
     results_path = Path(results_dir)
     if not results_path.exists():
-        logger.warning(f"Results directory {results_dir} does not exist")
-        return []
+        raise RuntimeError(f"Results directory {results_dir} does not exist")
 
     check_results: List[CheckResult] = []
 
@@ -78,8 +77,7 @@ def parse_result_files(results_dir: str) -> List[CheckResult]:
                 ))
 
             except (json.JSONDecodeError, KeyError) as e:
-                logger.warning(f"Failed to parse result file {result_file}: {e}")
-                continue
+                raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
 
     return check_results
 
@@ -128,8 +126,7 @@ def determine_scp_placement(
         for result in check_results:
             account_info = organization_hierarchy.accounts.get(result.account_id)
             if not account_info:
-                logger.warning(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
-                continue
+                raise RuntimeError(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
 
             parent_ou_id = account_info.parent_ou_id
             if parent_ou_id not in ou_violation_status:

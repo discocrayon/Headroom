@@ -78,9 +78,6 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
                         ))
 
         except ClientError as e:
-            # Log error but continue with other regions
-            # In a production environment, you might want to use proper logging
-            print(f"Warning: Could not analyze EC2 instances in region {region}: {e}")
-            continue
+            raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
 
     return results

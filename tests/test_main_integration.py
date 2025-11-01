@@ -115,7 +115,9 @@ class TestMainIntegration:
         with patch('headroom.main.parse_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert - Verify correct call sequence and parameters
@@ -158,7 +160,9 @@ class TestMainIntegration:
         with patch('headroom.main.parse_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert
@@ -206,7 +210,9 @@ class TestMainIntegration:
         with patch('headroom.main.parse_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert
@@ -524,7 +530,9 @@ class TestMainIntegration:
         with patch('headroom.main.parse_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert
@@ -560,7 +568,9 @@ class TestMainIntegration:
         with patch('headroom.main.parse_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert - Verify complete flow sequence

@@ -81,8 +81,7 @@ def _build_ou_hierarchy(
                 child_ous = [child_ou["Id"] for child_ou in child_ous_response.get("OrganizationalUnits", [])]
 
             except Exception as e:
-                logger.warning(f"Failed to get accounts/child OUs for OU {ou_id}: {e}")
-                account_ids = []
+                raise RuntimeError(f"Failed to get accounts/child OUs for OU {ou_id}: {e}")
 
             organizational_units[ou_id] = OrganizationalUnit(
                 ou_id=ou_id,
@@ -93,7 +92,7 @@ def _build_ou_hierarchy(
             )
 
     except Exception as e:
-        logger.warning(f"Failed to list OUs for parent {parent_ou_id}: {e}")
+        raise RuntimeError(f"Failed to list OUs for parent {parent_ou_id}: {e}")
 
 
 def analyze_organization_structure(session: boto3.Session) -> OrganizationHierarchy:
@@ -134,7 +133,7 @@ def analyze_organization_structure(session: boto3.Session) -> OrganizationHierar
                 ou_path=["Root"]
             )
     except Exception as e:
-        logger.warning(f"Failed to get accounts under root: {e}")
+        raise RuntimeError(f"Failed to get accounts under root: {e}")
 
     return OrganizationHierarchy(
         root_id=root_id,

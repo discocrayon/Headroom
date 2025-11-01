@@ -4,7 +4,8 @@ Tests for headroom.aws.ec2 module.
 Tests for DenyImdsV1Ec2 dataclass and get_imds_v1_ec2_analysis function.
 """
 
-from unittest.mock import MagicMock, patch
+import pytest
+from unittest.mock import MagicMock
 from typing import List, Optional
 from botocore.exceptions import ClientError  # type: ignore
 from headroom.aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
@@ -382,28 +383,14 @@ class TestGetImdsV1Ec2Analysis:
                 return mock_ec2
             elif region_name == "us-east-1":
                 return mock_regional_ec2_1
-            elif region_name == "us-west-2":
-                return mock_regional_ec2_2
-            # This covers the fallback case for ap-south-1
-            return mock_regional_ec2_fallback
+            return mock_regional_ec2_2
 
         mock_session.client.side_effect = client_side_effect
         mock_session.region_name = "us-east-1"
 
-        # Execute function - should not raise exception
-        with patch("builtins.print") as mock_print:
-            results = get_imds_v1_ec2_analysis(mock_session)
-
-        # Verify partial success - us-east-1 and ap-south-1 work, us-west-2 fails
-        assert len(results) == 2
-        instance_ids = [r.instance_id for r in results]
-        assert "i-success" in instance_ids
-        assert "i-fallback-success" in instance_ids
-
-        # Verify error was printed
-        mock_print.assert_called_once()
-        print_call = mock_print.call_args[0][0]
-        assert "Warning: Could not analyze EC2 instances in region us-west-2" in print_call
+        # Execute function - should raise exception on first regional failure
+        with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances in region us-west-2"):
+            get_imds_v1_ec2_analysis(mock_session)
 
     def test_get_imds_v1_ec2_analysis_exemption_tag_case_insensitive(self) -> None:
         """Test that exemption tag value is case insensitive."""

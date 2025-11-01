@@ -249,8 +249,7 @@ def run_checks(
             logger.info(f"Checks completed for account: {account_identifier}")
 
         except RuntimeError as e:
-            logger.error(f"Failed to run checks for account {account_identifier}: {e}")
-            continue
+            raise RuntimeError(f"Failed to run checks for account {account_identifier}: {e}")
 
 
 def perform_analysis(config: HeadroomConfig) -> None:

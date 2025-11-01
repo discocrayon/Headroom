@@ -156,13 +156,9 @@ class TestOrganizationStructureAnalysis:
             {"Accounts": [{"Id": "111111111111", "Name": "management-account"}]},
         ]
 
-        # Should not raise exception, should handle errors gracefully
-        result = analyze_organization_structure(mock_session)
-
-        assert result.root_id == "r-1234"
-        assert "ou-1234" in result.organizational_units
-        # OU should have empty accounts list due to error
-        assert result.organizational_units["ou-1234"].accounts == []
+        # Should raise exception on first error
+        with pytest.raises(RuntimeError, match="Failed to get accounts/child OUs for OU ou-1234"):
+            analyze_organization_structure(mock_session)
 
     def test_analyze_organization_structure_root_accounts_error(self) -> None:
         """Test error handling when getting accounts under root fails."""
@@ -189,11 +185,9 @@ class TestOrganizationStructureAnalysis:
             ),
         ]
 
-        # Should not raise exception, should handle errors gracefully
-        result = analyze_organization_structure(mock_session)
-
-        assert result.root_id == "r-1234"
-        assert len(result.accounts) == 0  # No accounts due to error
+        # Should raise exception on error
+        with pytest.raises(RuntimeError, match="Failed to get accounts under root"):
+            analyze_organization_structure(mock_session)
 
     def test_analyze_organization_structure_ou_listing_error(self) -> None:
         """Test error handling when listing OUs fails."""
@@ -217,11 +211,9 @@ class TestOrganizationStructureAnalysis:
             "Accounts": []
         }
 
-        # Should not raise exception, should handle errors gracefully
-        result = analyze_organization_structure(mock_session)
-
-        assert result.root_id == "r-1234"
-        assert len(result.organizational_units) == 0  # No OUs due to error
+        # Should raise exception on error
+        with pytest.raises(RuntimeError, match="Failed to list OUs for parent None"):
+            analyze_organization_structure(mock_session)
 
 
 class TestResultFileParsing:
@@ -288,8 +280,8 @@ class TestResultFileParsing:
 
     def test_parse_result_files_missing_directory(self) -> None:
         """Test handling of missing results directory."""
-        result = parse_result_files("/nonexistent/directory")
-        assert result == []
+        with pytest.raises(RuntimeError, match="Results directory /nonexistent/directory does not exist"):
+            parse_result_files("/nonexistent/directory")
 
     def test_parse_result_files_invalid_json(self) -> None:
         """Test handling of invalid JSON files."""
@@ -302,8 +294,9 @@ class TestResultFileParsing:
             with open(check_dir / "invalid.json", 'w') as f:
                 f.write("invalid json content")
 
-            result = parse_result_files(temp_dir)
-            assert result == []
+            # Should raise exception on invalid JSON
+            with pytest.raises(RuntimeError, match="Failed to parse result file .*/invalid.json"):
+                parse_result_files(temp_dir)
 
     def test_parse_result_files_non_directory_files(self) -> None:
         """Test handling of non-directory files in results directory."""
@@ -515,14 +508,9 @@ class TestSCPPlacementDetermination:
             }
         )
 
-        with patch('headroom.parse_results.logger') as mock_logger:
-            result = determine_scp_placement(results_data, mock_hierarchy)
-
-            # Verify warning was logged
-            mock_logger.warning.assert_called_with("Account unknown-account (999999999999) not found in organization hierarchy")
-
-        assert len(result) == 1
-        assert result[0].recommended_level == "account"  # Should recommend account level
+        # Should raise exception for account not in hierarchy
+        with pytest.raises(RuntimeError, match="Account unknown-account \\(999999999999\\) not found in organization hierarchy"):
+            determine_scp_placement(results_data, mock_hierarchy)
 
 
 class TestParseResultsIntegration:

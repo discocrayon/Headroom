@@ -2653,3 +2653,81 @@ Updated test expectations to match new log format:
 - All changes follow consistent format: `Account {name} ({id})` for better readability
 - No linter errors introduced
 - Account names now included in all relevant log messages throughout the codebase
+
+---
+
+## 2025-11-01 - Implement Fail-Fast Error Handling
+
+**Request:**
+Do not continue when finding something unexpected, fail fast. For example, do not do `logger.warning(f"Account ({account_id}) not found in organization hierarchy")` then continue, raise an exception. The only place where it is okay to continue is the "Get tags for the account" code.
+
+**Changes Made:**
+Converted all lenient error handling to fail-fast approach by replacing `logger.warning()` + `continue` with `raise RuntimeError()` exceptions.
+
+**Files Modified:**
+
+1. **headroom/parse_results.py**:
+   - Line 37: Results directory not existing now raises RuntimeError
+   - Line 80: Failed to parse result file now raises RuntimeError
+   - Line 129: Account not found in organization hierarchy now raises RuntimeError
+
+2. **headroom/terraform/generate_scps.py**:
+   - Line 59: Account not found in organization hierarchy now raises RuntimeError
+   - Line 95: OU not found in organization hierarchy now raises RuntimeError
+
+3. **headroom/terraform/generate_rcps.py**:
+   - Line 37: Third-party role access check directory not existing now raises RuntimeError
+   - Line 60: Failed to parse RCP result file now raises RuntimeError
+   - Line 152: Account not found in organization hierarchy (in OU mapping) now raises RuntimeError
+   - Line 387: Account not found in organization hierarchy (in terraform generation) now raises RuntimeError
+   - Line 405: OU not found in organization hierarchy now raises RuntimeError
+
+4. **headroom/aws/organization.py**:
+   - Line 84: Failed to get accounts/child OUs for OU now raises RuntimeError
+   - Line 95: Failed to list OUs for parent now raises RuntimeError
+   - Line 136: Failed to get accounts under root now raises RuntimeError
+
+5. **headroom/aws/ec2.py**:
+   - Line 81: Failed to analyze EC2 instances in region now raises RuntimeError
+
+6. **headroom/analysis.py**:
+   - Line 252: Failed to run checks for account now raises RuntimeError
+   - **Kept**: Line 85-86: Could not fetch tags for account (only place where continue is allowed per user request)
+
+**Test Updates:**
+Updated 24 tests to expect RuntimeError exceptions instead of graceful error handling:
+
+1. **tests/test_analysis_extended.py**:
+   - test_run_checks_session_failure: Now expects RuntimeError
+
+2. **tests/test_aws_ec2.py**:
+   - Added pytest import
+   - test_get_imds_v1_ec2_analysis_regional_client_error: Now expects RuntimeError
+
+3. **tests/test_generate_rcps.py**:
+   - test_parse_nonexistent_directory: Now expects RuntimeError
+   - test_parse_invalid_json: Now expects RuntimeError
+   - test_skips_accounts_not_in_hierarchy_when_building_ou_mappings: Now expects RuntimeError
+   - test_generate_skips_missing_ou: Now expects RuntimeError
+   - test_generate_skips_missing_account: Now expects RuntimeError
+
+4. **tests/test_generate_scps.py**:
+   - test_generate_scp_terraform_warn_missing_account: Now expects RuntimeError
+   - test_generate_scp_terraform_warn_missing_ou: Now expects RuntimeError
+
+5. **tests/test_parse_results.py**:
+   - test_analyze_organization_structure_client_error_handling: Now expects RuntimeError
+   - test_analyze_organization_structure_root_accounts_error: Now expects RuntimeError
+   - test_analyze_organization_structure_ou_listing_error: Now expects RuntimeError
+   - test_parse_result_files_missing_directory: Now expects RuntimeError
+   - test_parse_result_files_invalid_json: Now expects RuntimeError
+   - test_determine_scp_placement_missing_account_in_hierarchy: Now expects RuntimeError
+
+6. **tests/test_main_integration.py**:
+   - Added parse_rcp_result_files mock to all 5 integration tests to handle fail-fast behavior
+
+**Results:**
+- All 240 tests pass
+- No linter errors
+- All code now follows fail-fast principle
+- Only the "Get tags for the account" code continues on error as requested

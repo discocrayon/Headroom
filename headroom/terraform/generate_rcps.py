@@ -34,11 +34,7 @@ def parse_rcp_result_files(results_dir: str) -> RCPParseResult:
     accounts_with_wildcards: Set[str] = set()
 
     if not check_dir.exists():
-        logger.warning(f"Third-party role access check directory does not exist: {check_dir}")
-        return RCPParseResult(
-            account_third_party_map=account_third_party_map,
-            accounts_with_wildcards=accounts_with_wildcards
-        )
+        raise RuntimeError(f"Third-party role access check directory does not exist: {check_dir}")
 
     for result_file in check_dir.glob("*.json"):
         try:
@@ -61,8 +57,7 @@ def parse_rcp_result_files(results_dir: str) -> RCPParseResult:
                 account_third_party_map[account_id] = set(third_party_accounts)
 
         except (json.JSONDecodeError, KeyError) as e:
-            logger.warning(f"Failed to parse RCP result file {result_file}: {e}")
-            continue
+            raise RuntimeError(f"Failed to parse RCP result file {result_file}: {e}")
 
     return RCPParseResult(
         account_third_party_map=account_third_party_map,
@@ -154,7 +149,7 @@ def _check_ou_level_placements(
     for account_id in account_third_party_map.keys():
         account_info = organization_hierarchy.accounts.get(account_id)
         if not account_info:
-            continue
+            raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
         parent_ou_id = account_info.parent_ou_id
         if parent_ou_id not in ou_account_map:
             ou_account_map[parent_ou_id] = []
@@ -389,8 +384,7 @@ def generate_rcp_terraform(
     for account_id, rec in account_recommendations.items():
         account_info = organization_hierarchy.accounts.get(account_id)
         if not account_info:
-            logger.warning(f"Account ({account_id}) not found in organization hierarchy")
-            continue
+            raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
 
         account_name = make_safe_variable_name(account_info.account_name)
         filename = f"{account_name}_rcps.tf"
@@ -408,8 +402,7 @@ def generate_rcp_terraform(
     for ou_id, rec in ou_recommendations.items():
         ou_info = organization_hierarchy.organizational_units.get(ou_id)
         if not ou_info:
-            logger.warning(f"OU {ou_id} not found in organization hierarchy")
-            continue
+            raise RuntimeError(f"OU {ou_id} not found in organization hierarchy")
 
         ou_name = make_safe_variable_name(ou_info.name)
         filename = f"{ou_name}_ou_rcps.tf"
