@@ -2756,3 +2756,21 @@ Renamed the variable/key `roles_with_third_party_access` to `roles_third_parties
 - Total of 27 occurrences replaced across 8 files
 - All replacements verified with no remaining instances of old naming
 - The new naming is more intuitive and better conveys the meaning: "roles that third parties can access"
+
+---
+
+## Saturday, November 1, 2025
+
+**User Request:**
+In "useless_third_party_roles.tf" use a different subaccount than "provider = aws.shared_foo_bar" to hold the wildcard permissions.
+
+**Actions Taken:**
+Changed the wildcard role provider from `aws.acme_co` to `aws.fort_knox` in the test environment file.
+
+**Files Modified:**
+1. **test_environment/useless_third_party_roles.tf**: Updated the wildcard_role resource provider from `aws.acme_co` to `aws.fort_knox` (line 79)
+
+**Results:**
+- The wildcard role now uses the fort_knox subaccount instead of acme_co
+- This ensures the wildcard permissions are not in the shared_foo_bar account as requested
+- Available providers in the test environment: fort_knox, shared_foo_bar, acme_co, security_tooling

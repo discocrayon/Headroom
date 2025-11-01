@@ -76,7 +76,7 @@ resource "aws_iam_role" "third_party_vendor_b" {
 
 # Role 3: Wildcard principal (should trigger CloudTrail analysis TODO)
 resource "aws_iam_role" "wildcard_role" {
-  provider = aws.shared_foo_bar
+  provider = aws.fort_knox
   name     = "WildcardRole"
 
   assume_role_policy = jsonencode({
