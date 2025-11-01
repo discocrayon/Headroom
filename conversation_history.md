@@ -1796,7 +1796,7 @@ Replaced deprecated `inline_policy` blocks with separate `aws_iam_role_policy` r
 resource "aws_iam_role" "third_party_vendor_a" {
   name = "ThirdPartyVendorA"
   assume_role_policy = jsonencode({...})
-  
+
   inline_policy {
     name   = "DenyAll"
     policy = local.deny_all_policy
@@ -2211,10 +2211,10 @@ Replaced all remaining placeholder account IDs (111111111111, 123456789012) with
 
 #### Result
 
-✅ All 15 roles now use real, publicly disclosed security vendor account IDs  
-✅ No placeholder accounts remaining  
-✅ All roles should deploy successfully to AWS  
-✅ Comprehensive test coverage of various trust relationship patterns  
+✅ All 15 roles now use real, publicly disclosed security vendor account IDs
+✅ No placeholder accounts remaining
+✅ All roles should deploy successfully to AWS
+✅ Comprehensive test coverage of various trust relationship patterns
 ✅ Ready for real RCP analysis testing
 
 ---
@@ -2299,7 +2299,126 @@ provider "aws" {
 
 #### Result
 
-✅ All 15 test IAM roles will be created in the shared_foo_bar account  
-✅ All 15 deny-all policies will be attached in the shared_foo_bar account  
-✅ Consistent provider configuration across all resources  
+✅ All 15 test IAM roles will be created in the shared_foo_bar account
+✅ All 15 deny-all policies will be attached in the shared_foo_bar account
+✅ Consistent provider configuration across all resources
 ✅ Ready for multi-account RCP testing
+
+---
+
+## 2025-11-01 - Fixed AttributeError in IAM Trust Policy Analysis
+
+### User Request
+
+Fix `headroom/aws/iam.py`, line 152, in `analyze_iam_roles_trust_policies` "AttributeError: 'dict' object has no attribute 'split'" but maintain originally intended functionality
+
+### Problem Analysis
+
+The error occurred at line 152 where the code attempted to call `unquote()` on `role["AssumeRolePolicyDocument"]`. The code assumed this field is always a URL-encoded JSON string, but AWS IAM API can return it as either:
+1. A URL-encoded string (older behavior or depending on API version)
+2. A parsed dict (newer behavior or depending on API version)
+
+The `unquote()` function from `urllib.parse` expects a string and fails when receiving a dict.
+
+### Solution
+
+Modified `headroom/aws/iam.py` lines 150-161 to handle both cases:
+- Check if `AssumeRolePolicyDocument` is already a dict
+- If it's a dict, use it directly
+- If it's a string, URL-decode it and parse as JSON
+
+### Changes Made
+
+```python
+# Before (lines 150-157):
+# Get the trust policy (AssumeRolePolicyDocument)
+# The policy is URL-encoded JSON
+trust_policy_str = unquote(role["AssumeRolePolicyDocument"])
+try:
+    trust_policy = json.loads(trust_policy_str)
+except json.JSONDecodeError as e:
+    logger.error(f"Failed to parse trust policy JSON for role '{role_name}': {e}")
+    raise
+
+# After (lines 150-161):
+# Get the trust policy (AssumeRolePolicyDocument)
+# The policy can be either a URL-encoded JSON string or a dict
+assume_role_policy_doc = role["AssumeRolePolicyDocument"]
+if isinstance(assume_role_policy_doc, dict):
+    trust_policy = assume_role_policy_doc
+else:
+    trust_policy_str = unquote(assume_role_policy_doc)
+    try:
+        trust_policy = json.loads(trust_policy_str)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse trust policy JSON for role '{role_name}': {e}")
+        raise
+```
+
+### Testing
+
+✅ No linter errors introduced
+✅ All 27 tests in `tests/test_aws_iam.py` pass
+✅ Original functionality maintained - handles both string and dict formats
+✅ Error handling preserved for JSON decode failures
+
+### Test Coverage Enhancement
+
+Added `test_role_with_dict_trust_policy()` in `tests/test_aws_iam.py` to cover the new code path where `AssumeRolePolicyDocument` is already a dict (not URL-encoded). This test ensures that the function correctly handles both formats returned by the AWS IAM API.
+
+**Final Results:**
+✅ 228 tests passing (added 1 new test)
+✅ 100% test coverage for headroom/* (999 statements, 0 missing)
+✅ 100% test coverage for tests/* (2371 statements, 0 missing)
+✅ mypy: Success - no issues found in 36 source files
+✅ All pre-commit hooks pass
+✅ tox: congratulations :)
+
+---
+
+### When is AssumeRolePolicyDocument URL-encoded vs. dict?
+
+**AWS API Raw Response Behavior:**
+
+According to AWS IAM API documentation, different operations return the `AssumeRolePolicyDocument` in different formats:
+
+1. **URL-encoded String Format** (older/specific APIs):
+   - `GetAccountAuthorizationDetails` - explicitly returns URL-encoded policy documents
+   - `GetRolePolicy` - returns URL-encoded inline policy documents
+   - Some older API versions or direct HTTP API calls return RFC 3986 URL-encoded JSON
+
+2. **JSON String Format** (most common):
+   - `GetRole` - returns as plain JSON string (not URL-encoded)
+   - `ListRoles` - typically returns as plain JSON string
+
+**Boto3/Botocore Response Parsing:**
+
+The key complication is that **boto3 (specifically botocore) may automatically decode responses** depending on:
+
+- **Service model definitions**: Botocore uses service models (JSON files) that define the API structure and specify which fields should be automatically decoded
+- **boto3/botocore version**: Newer versions may have different response parsing behavior
+- **Response parsing configuration**: Some API responses are automatically deserialized from JSON strings to Python dicts
+
+**Why We See Both Formats:**
+
+1. **Dict format** (what caused the original error):
+   - Modern boto3 versions may automatically decode the policy document to a dict
+   - Service model updates can change parsing behavior
+   - This is more convenient but breaks code expecting strings
+
+2. **URL-encoded string format** (what the original code expected):
+   - Older boto3 versions or certain API configurations
+   - Direct API calls without automatic parsing
+   - Some specific IAM operations explicitly return URL-encoded data
+
+**Practical Reality:**
+
+The `AssumeRolePolicyDocument` format is **implementation-dependent** and can vary based on:
+- boto3/botocore version installed
+- AWS API backend updates
+- Service model definitions in botocore
+- Python environment and AWS SDK configuration
+
+**Solution:**
+
+Our fix handles **both** cases defensively - checking the actual type at runtime rather than assuming one format. This makes the code robust across different boto3 versions, AWS API changes, and execution environments.

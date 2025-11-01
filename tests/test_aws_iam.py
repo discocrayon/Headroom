@@ -539,3 +539,39 @@ class TestAnalyzeIamRolesTrustPolicies:
         org_account_ids = {"111111111111"}
         with pytest.raises(ClientError):
             analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+
+    def test_role_with_dict_trust_policy(self) -> None:
+        """Test handling of role with trust policy already as dict (not URL-encoded)."""
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Roles": [
+                    {
+                        "RoleName": "MyRole",
+                        "Arn": "arn:aws:iam::111111111111:role/MyRole",
+                        "AssumeRolePolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Principal": {
+                                        "AWS": "arn:aws:iam::999999999999:root"
+                                    },
+                                    "Action": "sts:AssumeRole"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+
+        org_account_ids = {"111111111111"}
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+
+        assert len(results) == 1
+        assert results[0].role_name == "MyRole"
+        assert results[0].third_party_account_ids == {"999999999999"}

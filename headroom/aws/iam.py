@@ -148,13 +148,17 @@ def analyze_iam_roles_trust_policies(
                 role_arn = role["Arn"]
 
                 # Get the trust policy (AssumeRolePolicyDocument)
-                # The policy is URL-encoded JSON
-                trust_policy_str = unquote(role["AssumeRolePolicyDocument"])
-                try:
-                    trust_policy = json.loads(trust_policy_str)
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse trust policy JSON for role '{role_name}': {e}")
-                    raise
+                # The policy can be either a URL-encoded JSON string or a dict
+                assume_role_policy_doc = role["AssumeRolePolicyDocument"]
+                if isinstance(assume_role_policy_doc, dict):
+                    trust_policy = assume_role_policy_doc
+                else:
+                    trust_policy_str = unquote(assume_role_policy_doc)
+                    try:
+                        trust_policy = json.loads(trust_policy_str)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse trust policy JSON for role '{role_name}': {e}")
+                        raise
 
                 third_party_accounts: Set[str] = set()
                 has_wildcard = False
