@@ -1561,3 +1561,217 @@ Updated `Headroom-Specification.md` to document the new features:
 - Added two new success criteria:
   - **Criterion 17**: RCP Placement Optimization with configurable always-root mode
   - **Criterion 18**: Wildcard Safety with fail-fast validation
+
+---
+
+## 2025-11-01, 4:00 PM - Created test IAM roles for RCP functionality testing
+
+### Changes Made
+
+Created a comprehensive test file with 15 different IAM roles covering various trust relationship patterns to test the RCP (Resource Control Policy) analysis functionality.
+
+#### Files Created
+
+1. **test_environment/useless_third_party_roles.tf** (new file)
+   - Created 15 test IAM roles with diverse trust policy configurations
+   - Roles are intentionally "useless" and exist solely for testing RCP analysis
+
+#### Role Coverage
+
+**Third-Party Account Principals:**
+1. `ThirdPartyVendorA` - Simple single third-party account (999999999999)
+2. `ThirdPartyVendorB` - Multiple third-party accounts (888888888888, 777777777777)
+11. `ThirdPartyUserRole` - Third-party with specific user ARN (444444444444)
+12. `PlainAccountIdRole` - Plain account ID format without ARN (333333333333)
+13. `MixedFormatsRole` - Mix of ARN and plain account ID formats (222222222222, 333333333333)
+14. `ConditionalThirdPartyRole` - Third-party with ExternalId condition (999888777666)
+
+**Wildcard Principals:**
+3. `WildcardRole` - Wildcard principal (`AWS = "*"`) to trigger CloudTrail analysis TODO
+
+**Service Principals (should be filtered out):**
+4. `LambdaExecutionRole` - Single service principal (lambda.amazonaws.com)
+5. `MultiServiceRole` - Multiple service principals (ec2, ecs-tasks, lambda)
+
+**Mixed Principals:**
+6. `MixedPrincipalsRole` - Both AWS and Service principals in same statement (666666666666)
+10. `ComplexMultiStatementRole` - Multiple statements with different principal types (555555555555)
+15. `UltraComplexRole` - AWS, Service, and Federated principals in complex multi-statement policy (999999999999, 888888888888)
+
+**Federated Principals (should be filtered out):**
+7. `SAMLFederationRole` - SAML provider with AssumeRoleWithSAML action
+8. `OIDCFederationRole` - OIDC provider (GitHub Actions) with AssumeRoleWithWebIdentity action
+
+**Organization Accounts (should be filtered out):**
+9. `OrgAccountCrossAccess` - Organization account (111111111111) that should not be flagged as third-party
+
+#### Test Coverage
+
+The roles exercise all major code paths in the RCP analysis engine:
+
+1. **Account ID Extraction:**
+   - ARN formats: `arn:aws:iam::ACCOUNT_ID:root`, `arn:aws:iam::ACCOUNT_ID:user/NAME`
+   - Plain account ID format: `ACCOUNT_ID`
+   - Single and list formats
+   - Mixed ARN and plain ID lists
+
+2. **Principal Type Handling:**
+   - AWS principals (processed)
+   - Service principals (validated and skipped)
+   - Federated principals (validated and skipped)
+   - Mixed principals in same statement
+
+3. **Edge Cases:**
+   - Wildcard detection
+   - Organization account filtering
+   - Multiple statements
+   - Conditions (ExternalId)
+   - Different assume role actions
+
+4. **Third-Party Account Detection:**
+   - 10 unique third-party account IDs across roles: 999999999999, 888888888888, 777777777777, 666666666666, 555555555555, 444444444444, 333333333333, 222222222222, 999888777666
+   - Organization account that should be filtered: 111111111111
+
+#### Rationale
+
+This comprehensive test file provides:
+- **Complete Coverage**: Tests all principal types and formats handled by the IAM analysis code
+- **Edge Cases**: Includes wildcards, mixed principals, and complex scenarios
+- **Validation**: Exercises validation logic for Service and Federated principals
+- **Filtering**: Tests both third-party detection and organization account filtering
+- **Real-World Patterns**: Includes common patterns like ExternalId conditions and GitHub OIDC
+
+The roles can be used to:
+1. Verify correct third-party account extraction
+2. Test wildcard detection and fail-fast logic
+3. Validate principal type handling (AWS, Service, Federated)
+4. Ensure organization accounts are properly filtered
+5. Test RCP placement recommendations with varied third-party patterns
+6. Verify Terraform RCP generation with aggregated account IDs
+
+---
+
+## 2025-11-01, 4:15 PM - Added explicit deny-all policies to test IAM roles
+
+### Changes Made
+
+Added inline policies with explicit `Deny *` on `*` to all 15 test IAM roles to ensure they are completely safe and cannot perform any actions.
+
+#### Files Updated
+
+1. **test_environment/useless_third_party_roles.tf**
+   - Added `inline_policy` block to all 15 IAM roles
+   - Each policy explicitly denies all actions on all resources
+   - Ensures roles are truly "useless" and safe to deploy in any environment
+
+#### Policy Structure
+
+```hcl
+inline_policy {
+  name = "DenyAll"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Deny"
+        Action   = "*"
+        Resource = "*"
+      }
+    ]
+  })
+}
+```
+
+#### Rationale
+
+**Safety First:**
+- Test roles should never grant actual permissions
+- Explicit deny ensures no risk if roles are accidentally deployed
+- Follows least-privilege principle even for test resources
+
+**IAM Deny Semantics:**
+- Explicit denies always override any allows
+- Even if someone attaches managed policies, the deny will prevent all actions
+- Provides defense-in-depth for test infrastructure
+
+**Testing Benefits:**
+- Trust policy analysis is unaffected by permission policies
+- RCP functionality tests trust relationships, not permissions
+- Roles can be safely deployed to real environments for integration testing
+- No risk of accidental privilege escalation or resource access
+
+---
+
+## 2025-11-01, 4:20 PM - DRY refactoring of test IAM roles
+
+### Changes Made
+
+Refactored the test IAM roles file to eliminate code duplication by using a Terraform `locals` block for the deny-all policy.
+
+#### Files Updated
+
+1. **test_environment/useless_third_party_roles.tf**
+   - Added `locals` block at the top of the file defining `deny_all_policy` once
+   - Replaced 15 repeated `jsonencode` blocks with references to `local.deny_all_policy`
+   - Reduced inline policy from 13 lines to 3 lines per role (10 lines saved × 15 roles = 150 lines eliminated)
+
+#### Before (repeated 15 times):
+```hcl
+inline_policy {
+  name = "DenyAll"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Deny"
+        Action   = "*"
+        Resource = "*"
+      }
+    ]
+  })
+}
+```
+
+#### After (defined once, referenced 15 times):
+```hcl
+# At top of file
+locals {
+  deny_all_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Deny"
+        Action   = "*"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# In each role
+inline_policy {
+  name   = "DenyAll"
+  policy = local.deny_all_policy
+}
+```
+
+#### Benefits
+
+**DRY Principle:**
+- Single source of truth for the deny-all policy
+- Changes to the policy only need to be made in one place
+- Eliminates ~150 lines of duplicated code
+
+**Maintainability:**
+- If policy needs to be updated, change it once in `locals` block
+- Terraform best practice for repeated values
+- Clearer intent - shows the policy is identical across all roles
+
+**File Size:**
+- Reduced from 523 lines to 400 lines (123 lines eliminated, 23.5% reduction)
+- Easier to read and navigate
+
+**Terraform Pattern:**
+- Uses standard Terraform `locals` block pattern
+- Follows infrastructure-as-code best practices
+- Makes the file more maintainable and professional
