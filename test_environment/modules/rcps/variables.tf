@@ -25,4 +25,3 @@ variable "third_party_account_ids" {
     error_message = "All third_party_account_ids must be valid 12-digit AWS account IDs."
   }
 }
-

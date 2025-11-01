@@ -28,4 +28,3 @@ def make_safe_variable_name(name: str) -> str:
     if safe_name and not safe_name[0].isalpha():
         safe_name = "ou_" + safe_name
     return safe_name
-

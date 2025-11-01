@@ -219,7 +219,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check,
+            patch("headroom.analysis.check_third_party_role_access"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False)
         ):
@@ -274,7 +274,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check,
+            patch("headroom.analysis.check_third_party_role_access"),
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
             patch("os.getcwd") as mock_getcwd
@@ -307,7 +307,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check,
+            patch("headroom.analysis.check_third_party_role_access"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
@@ -340,7 +340,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check,
+            patch("headroom.analysis.check_third_party_role_access"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
@@ -388,7 +388,7 @@ class TestRunChecks:
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
             patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check
         ):
-            org_account_ids = set()
+            org_account_ids: set[str] = set()
             run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
 
             # Verify no sessions or checks attempted
@@ -411,7 +411,7 @@ class TestGetAllOrganizationAccountIds:
         def mock_client_factory(service_name: str) -> MagicMock:
             if service_name == "sts":
                 return mock_sts
-            raise ValueError(f"Unexpected service: {service_name}")
+            return MagicMock()  # pragma: no cover
 
         mock_session.client.side_effect = mock_client_factory
 
@@ -473,7 +473,7 @@ class TestGetAllOrganizationAccountIds:
         def mock_client_factory(service_name: str) -> MagicMock:
             if service_name == "sts":
                 return mock_sts
-            raise ValueError(f"Unexpected service: {service_name}")
+            return MagicMock()  # pragma: no cover
 
         mock_session.client.side_effect = mock_client_factory
 

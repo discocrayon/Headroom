@@ -7,23 +7,25 @@ Generates Terraform files for RCP deployment based on third-party account analys
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from .utils import make_safe_variable_name
-from ..types import OrganizationHierarchy, RCPPlacementRecommendations
+from ..types import OrganizationHierarchy, RCPParseResult, RCPPlacementRecommendations
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
 
-def parse_rcp_result_files(results_dir: str) -> tuple[Dict[str, Set[str]], Set[str]]:
+def parse_rcp_result_files(results_dir: str) -> RCPParseResult:
     """
     Parse third_party_role_access check result files.
 
     Returns:
-        Tuple of:
-        - Dictionary mapping account_id -> set of third-party account IDs (only accounts without wildcards)
-        - Set of account IDs that have wildcard principals (cannot have RCPs deployed)
+        RCPParseResult containing:
+        - account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+          (only accounts without wildcards)
+        - accounts_with_wildcards: Set of account IDs that have wildcard principals
+          (cannot have RCPs deployed)
     """
     results_path = Path(results_dir)
     check_dir = results_path / "third_party_role_access"
@@ -33,7 +35,10 @@ def parse_rcp_result_files(results_dir: str) -> tuple[Dict[str, Set[str]], Set[s
 
     if not check_dir.exists():
         logger.warning(f"Third-party role access check directory does not exist: {check_dir}")
-        return account_third_party_map, accounts_with_wildcards
+        return RCPParseResult(
+            account_third_party_map=account_third_party_map,
+            accounts_with_wildcards=accounts_with_wildcards
+        )
 
     for result_file in check_dir.glob("*.json"):
         try:
@@ -58,7 +63,167 @@ def parse_rcp_result_files(results_dir: str) -> tuple[Dict[str, Set[str]], Set[s
             logger.warning(f"Failed to parse RCP result file {result_file}: {e}")
             continue
 
-    return account_third_party_map, accounts_with_wildcards
+    return RCPParseResult(
+        account_third_party_map=account_third_party_map,
+        accounts_with_wildcards=accounts_with_wildcards
+    )
+
+
+def _check_root_level_placement(
+    account_third_party_map: Dict[str, Set[str]]
+) -> Optional[RCPPlacementRecommendations]:
+    """
+    Check if all accounts have identical third-party accounts for root-level RCP.
+
+    Args:
+        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+
+    Returns:
+        Root-level RCP recommendation if all accounts match, None otherwise
+    """
+    all_third_party_sets = list(account_third_party_map.values())
+    if not all_third_party_sets:
+        return None
+
+    if all(tp_set == all_third_party_sets[0] for tp_set in all_third_party_sets):
+        common_third_party = sorted(list(all_third_party_sets[0]))
+        return RCPPlacementRecommendations(
+            check_name="third_party_role_access",
+            recommended_level="root",
+            target_ou_id=None,
+            affected_accounts=list(account_third_party_map.keys()),
+            third_party_account_ids=common_third_party,
+            reasoning=f"All {len(account_third_party_map)} accounts have identical third-party account access ({len(common_third_party)} accounts) - safe to deploy at root level"
+        )
+    return None
+
+
+def _should_skip_ou_for_rcp(
+    ou_id: str,
+    organization_hierarchy: OrganizationHierarchy,
+    accounts_with_wildcards: Set[str]
+) -> bool:
+    """
+    Determine if an OU should be skipped for RCP deployment due to wildcard accounts.
+
+    OU-level RCPs apply to ALL accounts in the OU, so we cannot deploy if any
+    account in that OU has wildcard principals.
+
+    Args:
+        ou_id: Organizational Unit ID to check
+        organization_hierarchy: Organization structure information
+        accounts_with_wildcards: Set of account IDs that have wildcard principals
+
+    Returns:
+        True if the OU should be skipped, False otherwise
+    """
+    ou_accounts_in_org = [
+        acc_id for acc_id, acc_info in organization_hierarchy.accounts.items()
+        if acc_info.parent_ou_id == ou_id
+    ]
+
+    if any(acc_id in accounts_with_wildcards for acc_id in ou_accounts_in_org):
+        ou_info = organization_hierarchy.organizational_units.get(ou_id)
+        ou_name = ou_info.name if ou_info else ou_id
+        logger.info(f"Skipping OU-level RCP for '{ou_name}' - one or more accounts have wildcard principals")
+        return True
+
+    return False
+
+
+def _check_ou_level_placements(
+    account_third_party_map: Dict[str, Set[str]],
+    organization_hierarchy: OrganizationHierarchy,
+    accounts_with_wildcards: Set[str]
+) -> List[RCPPlacementRecommendations]:
+    """
+    Check each OU for accounts with identical third-party accounts.
+
+    Args:
+        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        organization_hierarchy: Organization structure information
+        accounts_with_wildcards: Set of account IDs that have wildcard principals
+
+    Returns:
+        List of OU-level RCP recommendations
+    """
+    recommendations: List[RCPPlacementRecommendations] = []
+
+    ou_account_map: Dict[str, List[str]] = {}
+    for account_id in account_third_party_map.keys():
+        account_info = organization_hierarchy.accounts.get(account_id)
+        if not account_info:
+            continue
+        parent_ou_id = account_info.parent_ou_id
+        if parent_ou_id not in ou_account_map:
+            ou_account_map[parent_ou_id] = []
+        ou_account_map[parent_ou_id].append(account_id)
+
+    MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 2
+
+    for ou_id, ou_account_ids in ou_account_map.items():
+        if _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards):
+            continue
+
+        if len(ou_account_ids) < MIN_ACCOUNTS_FOR_OU_LEVEL_RCP:
+            continue
+
+        ou_third_party_sets = [
+            account_third_party_map[acc_id]
+            for acc_id in ou_account_ids
+            if acc_id in account_third_party_map
+        ]
+
+        if ou_third_party_sets and all(tp_set == ou_third_party_sets[0] for tp_set in ou_third_party_sets):
+            ou_info = organization_hierarchy.organizational_units.get(ou_id)
+            ou_name = ou_info.name if ou_info else ou_id
+
+            common_third_party = sorted(list(ou_third_party_sets[0]))
+            recommendations.append(RCPPlacementRecommendations(
+                check_name="third_party_role_access",
+                recommended_level="ou",
+                target_ou_id=ou_id,
+                affected_accounts=ou_account_ids,
+                third_party_account_ids=common_third_party,
+                reasoning=f"All {len(ou_account_ids)} accounts in OU '{ou_name}' have identical third-party account access ({len(common_third_party)} accounts) - safe to deploy at OU level"
+            ))
+
+    return recommendations
+
+
+def _check_account_level_placements(
+    account_third_party_map: Dict[str, Set[str]],
+    ou_recommendations: List[RCPPlacementRecommendations]
+) -> List[RCPPlacementRecommendations]:
+    """
+    Create account-level RCPs for accounts not covered by OU-level RCPs.
+
+    Args:
+        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        ou_recommendations: List of OU-level recommendations (to determine which accounts are already covered)
+
+    Returns:
+        List of account-level RCP recommendations
+    """
+    recommendations: List[RCPPlacementRecommendations] = []
+
+    ou_covered_accounts = set()
+    for rec in ou_recommendations:
+        if rec.recommended_level == "ou":
+            ou_covered_accounts.update(rec.affected_accounts)
+
+    for account_id, third_party_accounts in account_third_party_map.items():
+        if account_id not in ou_covered_accounts:
+            recommendations.append(RCPPlacementRecommendations(
+                check_name="third_party_role_access",
+                recommended_level="account",
+                target_ou_id=None,
+                affected_accounts=[account_id],
+                third_party_account_ids=sorted(list(third_party_accounts)),
+                reasoning=f"Account has unique third-party account requirements ({len(third_party_accounts)} accounts) - deploy at account level"
+            ))
+
+    return recommendations
 
 
 def determine_rcp_placement(
@@ -82,98 +247,75 @@ def determine_rcp_placement(
     Returns:
         List of RCP placement recommendations
     """
-    recommendations: List[RCPPlacementRecommendations] = []
-
     if not account_third_party_map:
         logger.info("No third-party accounts found in any account (excluding accounts with wildcards)")
-        return recommendations
+        return []
 
-    # Check if all accounts have the same third-party accounts (root level)
-    all_third_party_sets = list(account_third_party_map.values())
-    if all_third_party_sets and all(tp_set == all_third_party_sets[0] for tp_set in all_third_party_sets):
-        common_third_party = sorted(list(all_third_party_sets[0]))
-        recommendations.append(RCPPlacementRecommendations(
-            check_name="third_party_role_access",
-            recommended_level="root",
-            target_ou_id=None,
-            affected_accounts=list(account_third_party_map.keys()),
-            third_party_account_ids=common_third_party,
-            reasoning=f"All {len(account_third_party_map)} accounts have identical third-party account access ({len(common_third_party)} accounts) - safe to deploy at root level"
-        ))
-        return recommendations
+    root_recommendation = _check_root_level_placement(account_third_party_map)
+    if root_recommendation:
+        return [root_recommendation]
 
-    # Check OU level - group accounts by OU and check if they have same third-party accounts
-    ou_account_map: Dict[str, List[str]] = {}
-    for account_id in account_third_party_map.keys():
-        account_info = organization_hierarchy.accounts.get(account_id)
-        if not account_info:
-            continue
-        parent_ou_id = account_info.parent_ou_id
-        if parent_ou_id not in ou_account_map:
-            ou_account_map[parent_ou_id] = []
-        ou_account_map[parent_ou_id].append(account_id)
+    ou_recommendations = _check_ou_level_placements(
+        account_third_party_map,
+        organization_hierarchy,
+        accounts_with_wildcards
+    )
 
-    # Check each OU
-    for ou_id, ou_account_ids in ou_account_map.items():
-        # Check if any accounts in this OU have wildcards
-        # OU-level RCPs apply to ALL accounts in the OU, so we cannot deploy if any have wildcards
-        ou_accounts_in_org = [
-            acc_id for acc_id, acc_info in organization_hierarchy.accounts.items()
-            if acc_info.parent_ou_id == ou_id
-        ]
-        
-        if any(acc_id in accounts_with_wildcards for acc_id in ou_accounts_in_org):
-            ou_info = organization_hierarchy.organizational_units.get(ou_id)
-            ou_name = ou_info.name if ou_info else ou_id
-            logger.info(f"Skipping OU-level RCP for '{ou_name}' - one or more accounts have wildcard principals")
-            continue
-        
-        # Skip OUs with less than 2 accounts - not worth creating an OU-level RCP
-        # for a single account (use account-level instead)
-        if len(ou_account_ids) < 2:
-            continue
+    account_recommendations = _check_account_level_placements(
+        account_third_party_map,
+        ou_recommendations
+    )
 
-        # Get third-party accounts for each account in this OU
-        ou_third_party_sets = [
-            account_third_party_map[acc_id]
-            for acc_id in ou_account_ids
-            if acc_id in account_third_party_map
-        ]
+    return ou_recommendations + account_recommendations
 
-        # Check if all accounts in OU have same third-party accounts
-        if ou_third_party_sets and all(tp_set == ou_third_party_sets[0] for tp_set in ou_third_party_sets):
-            ou_info = organization_hierarchy.organizational_units.get(ou_id)
-            ou_name = ou_info.name if ou_info else ou_id
 
-            common_third_party = sorted(list(ou_third_party_sets[0]))
-            recommendations.append(RCPPlacementRecommendations(
-                check_name="third_party_role_access",
-                recommended_level="ou",
-                target_ou_id=ou_id,
-                affected_accounts=ou_account_ids,
-                third_party_account_ids=common_third_party,
-                reasoning=f"All {len(ou_account_ids)} accounts in OU '{ou_name}' have identical third-party account access ({len(common_third_party)} accounts) - safe to deploy at OU level"
-            ))
+def _build_rcp_terraform_module(
+    module_name: str,
+    target_id_reference: str,
+    third_party_account_ids: List[str],
+    comment: str
+) -> str:
+    """
+    Build Terraform module call for RCP deployment.
 
-    # Account level - each account gets its own RCP
-    # Only recommend for accounts not already covered by OU-level RCPs
-    ou_covered_accounts = set()
-    for rec in recommendations:
-        if rec.recommended_level == "ou":
-            ou_covered_accounts.update(rec.affected_accounts)
+    Args:
+        module_name: Name of the Terraform module instance (e.g., "rcps_root")
+        target_id_reference: Reference to the target ID (e.g., "local.root_ou_id")
+        third_party_account_ids: List of third-party AWS account IDs to whitelist
+        comment: Comment line describing the configuration (e.g., "Organization Root")
 
-    for account_id, third_party_accounts in account_third_party_map.items():
-        if account_id not in ou_covered_accounts:
-            recommendations.append(RCPPlacementRecommendations(
-                check_name="third_party_role_access",
-                recommended_level="account",
-                target_ou_id=None,
-                affected_accounts=[account_id],
-                third_party_account_ids=sorted(list(third_party_accounts)),
-                reasoning=f"Account has unique third-party account requirements ({len(third_party_accounts)} accounts) - deploy at account level"
-            ))
+    Returns:
+        Complete Terraform module block as a string
+    """
+    terraform_content = f'''# Auto-generated RCP Terraform configuration for {comment}
+# Generated by Headroom based on third-party account analysis
 
-    return recommendations
+module "{module_name}" {{
+  source = "../modules/rcps"
+  target_id = {target_id_reference}
+
+  third_party_account_ids = [
+'''
+    for account_id in third_party_account_ids:
+        terraform_content += f'    "{account_id}",\n'
+
+    terraform_content += '''  ]
+}
+'''
+    return terraform_content
+
+
+def _write_terraform_file(filepath: Path, content: str) -> None:
+    """
+    Write Terraform content to a file.
+
+    Args:
+        filepath: Path object for the file to write
+        content: Terraform content to write
+    """
+    with open(filepath, 'w') as f:
+        f.write(content)
+    logger.info(f"Generated RCP Terraform file: {filepath}")
 
 
 def generate_rcp_terraform(
@@ -196,93 +338,69 @@ def generate_rcp_terraform(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Process each recommendation
+    # Group recommendations by level and target
+    account_recommendations: Dict[str, RCPPlacementRecommendations] = {}
+    ou_recommendations: Dict[str, RCPPlacementRecommendations] = {}
+    root_recommendation: Optional[RCPPlacementRecommendations] = None
+
     for rec in recommendations:
-        if rec.recommended_level == "root":
-            filename = "root_rcps.tf"
-            filepath = output_path / filename
-
-            terraform_content = '''# Auto-generated RCP Terraform configuration for Organization Root
-# Generated by Headroom based on third-party account analysis
-
-module "rcps_root" {
-  source = "../modules/rcps"
-  target_id = local.root_ou_id
-
-  third_party_account_ids = [
-'''
-            for account_id in rec.third_party_account_ids:
-                terraform_content += f'    "{account_id}",\n'
-
-            terraform_content += '''  ]
-}
-'''
-
-            with open(filepath, 'w') as f:
-                f.write(terraform_content)
-
-            logger.info(f"Generated RCP Terraform file: {filepath}")
-
-        elif rec.recommended_level == "ou" and rec.target_ou_id:
-            ou_info = organization_hierarchy.organizational_units.get(rec.target_ou_id)
-            if not ou_info:
-                logger.warning(f"OU {rec.target_ou_id} not found in organization hierarchy")
-                continue
-
-            ou_name = make_safe_variable_name(ou_info.name)
-            filename = f"{ou_name}_ou_rcps.tf"
-            filepath = output_path / filename
-
-            terraform_content = f'''# Auto-generated RCP Terraform configuration for OU {ou_info.name}
-# Generated by Headroom based on third-party account analysis
-
-module "rcps_{ou_name}_ou" {{
-  source = "../modules/rcps"
-  target_id = local.top_level_{ou_name}_ou_id
-
-  third_party_account_ids = [
-'''
-            for account_id in rec.third_party_account_ids:
-                terraform_content += f'    "{account_id}",\n'
-
-            terraform_content += '''  ]
-}
-'''
-
-            with open(filepath, 'w') as f:
-                f.write(terraform_content)
-
-            logger.info(f"Generated RCP Terraform file: {filepath}")
-
-        elif rec.recommended_level == "account":
+        if rec.recommended_level == "account":
             for account_id in rec.affected_accounts:
-                account_info = organization_hierarchy.accounts.get(account_id)
-                if not account_info:
-                    logger.warning(f"Account {account_id} not found in organization hierarchy")
-                    continue
+                account_recommendations[account_id] = rec
+        elif rec.recommended_level == "ou" and rec.target_ou_id:
+            ou_recommendations[rec.target_ou_id] = rec
+        elif rec.recommended_level == "root":
+            root_recommendation = rec
 
-                account_name = make_safe_variable_name(account_info.account_name)
-                filename = f"{account_name}_rcps.tf"
-                filepath = output_path / filename
+    # Generate Terraform files for each account
+    for account_id, rec in account_recommendations.items():
+        account_info = organization_hierarchy.accounts.get(account_id)
+        if not account_info:
+            logger.warning(f"Account {account_id} not found in organization hierarchy")
+            continue
 
-                terraform_content = f'''# Auto-generated RCP Terraform configuration for {account_info.account_name}
-# Generated by Headroom based on third-party account analysis
+        account_name = make_safe_variable_name(account_info.account_name)
+        filename = f"{account_name}_rcps.tf"
+        filepath = output_path / filename
 
-module "rcps_{account_name}" {{
-  source = "../modules/rcps"
-  target_id = local.{account_name}_account_id
+        terraform_content = _build_rcp_terraform_module(
+            module_name=f"rcps_{account_name}",
+            target_id_reference=f"local.{account_name}_account_id",
+            third_party_account_ids=rec.third_party_account_ids,
+            comment=account_info.account_name
+        )
+        _write_terraform_file(filepath, terraform_content)
 
-  third_party_account_ids = [
-'''
-                for tp_account_id in rec.third_party_account_ids:
-                    terraform_content += f'    "{tp_account_id}",\n'
+    # Generate Terraform files for each OU
+    for ou_id, rec in ou_recommendations.items():
+        ou_info = organization_hierarchy.organizational_units.get(ou_id)
+        if not ou_info:
+            logger.warning(f"OU {ou_id} not found in organization hierarchy")
+            continue
 
-                terraform_content += '''  ]
-}
-'''
+        ou_name = make_safe_variable_name(ou_info.name)
+        filename = f"{ou_name}_ou_rcps.tf"
+        filepath = output_path / filename
 
-                with open(filepath, 'w') as f:
-                    f.write(terraform_content)
+        terraform_content = _build_rcp_terraform_module(
+            module_name=f"rcps_{ou_name}_ou",
+            target_id_reference=f"local.top_level_{ou_name}_ou_id",
+            third_party_account_ids=rec.third_party_account_ids,
+            comment=f"OU {ou_info.name}"
+        )
+        _write_terraform_file(filepath, terraform_content)
 
-                logger.info(f"Generated RCP Terraform file: {filepath}")
+    # Generate Terraform file for root level
+    if not root_recommendation:
+        return
 
+    filename = "root_rcps.tf"
+    filepath = output_path / filename
+
+    terraform_content = _build_rcp_terraform_module(
+        module_name="rcps_root",
+        target_id_reference="local.root_ou_id",
+        third_party_account_ids=root_recommendation.third_party_account_ids,
+        comment="Organization Root"
+    )
+    _write_terraform_file(filepath, terraform_content)

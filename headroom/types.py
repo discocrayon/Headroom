@@ -7,7 +7,7 @@ for data structures.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 
 @dataclass
@@ -68,6 +68,18 @@ class RCPCheckResult:
     account_name: str
     third_party_account_ids: List[str]
     has_wildcard: bool
+
+
+@dataclass
+class RCPParseResult:
+    """
+    Result from parsing RCP check result files.
+
+    Contains mapping of accounts to their third-party accounts,
+    and tracks which accounts have wildcard principals.
+    """
+    account_third_party_map: Dict[str, Set[str]]
+    accounts_with_wildcards: Set[str]
 
 
 @dataclass

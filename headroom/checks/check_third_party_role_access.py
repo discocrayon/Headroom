@@ -101,4 +101,3 @@ def check_third_party_role_access(
           f"{len(all_third_party_accounts)} unique third-party accounts")
 
     return all_third_party_accounts
-

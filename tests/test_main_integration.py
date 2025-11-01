@@ -9,6 +9,12 @@ import pytest
 from unittest.mock import MagicMock, patch, call
 from typing import Dict, Any, Generator
 from headroom.main import main
+from headroom.types import (
+    RCPParseResult,
+    RCPPlacementRecommendations,
+    OrganizationHierarchy,
+    OrganizationalUnit
+)
 from botocore.exceptions import ClientError  # type: ignore
 
 
@@ -602,7 +608,10 @@ class TestMainIntegration:
         with (
             patch('headroom.main.parse_results', return_value=[]),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
-            patch('headroom.main.parse_rcp_result_files', return_value=({}, set())),
+            patch('headroom.main.parse_rcp_result_files', return_value=RCPParseResult(
+                account_third_party_map={},
+                accounts_with_wildcards=set()
+            )),
             patch('headroom.main.analyze_organization_structure')
         ):
             main()
@@ -669,8 +678,6 @@ class TestMainIntegration:
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """Test that RCP recommendations are displayed when present."""
-        from headroom.types import RCPPlacementRecommendations, OrganizationHierarchy, OrganizationalUnit
-
         mocks = mock_dependencies
         mocks['parse'].return_value = mock_cli_args
         mocks['load'].return_value = valid_yaml_config
@@ -684,7 +691,7 @@ class TestMainIntegration:
             recommended_level="ou",
             target_ou_id="ou-test-123",
             affected_accounts=["111111111111", "222222222222"],
-            third_party_account_ids={"333333333333"},
+            third_party_account_ids=["333333333333"],
             reasoning="Test reasoning"
         )
 
@@ -703,7 +710,10 @@ class TestMainIntegration:
         with (
             patch('headroom.main.parse_results', return_value=[MagicMock()]),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
-            patch('headroom.main.parse_rcp_result_files', return_value=({"111111111111": {"333333333333"}}, set())),
+            patch('headroom.main.parse_rcp_result_files', return_value=RCPParseResult(
+                account_third_party_map={"111111111111": {"333333333333"}},
+                accounts_with_wildcards=set()
+            )),
             patch('headroom.main.analyze_organization_structure', return_value=mock_org_hierarchy),
             patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
             patch('headroom.main.generate_rcp_terraform') as mock_gen_rcp,

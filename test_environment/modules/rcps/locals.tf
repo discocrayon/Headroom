@@ -43,4 +43,3 @@ locals {
 data "aws_iam_policy_document" "rcp_1" {
   source_policy_documents = [jsonencode(local.rcp_1_policy)]
 }
-

@@ -9,6 +9,7 @@ import json
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -162,8 +163,6 @@ class TestWriteCheckResults:
 
     def test_write_check_results_raises_on_io_error(self) -> None:
         """Test that IOError is raised and logged when file writing fails."""
-        from unittest.mock import patch, MagicMock
-
         check_name = "test_check"
         account_name = "test-account"
         account_id = "111111111111"

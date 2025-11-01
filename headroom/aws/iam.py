@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Set
+from typing import Any, List, Set
 from urllib.parse import unquote
 
 import boto3  # type: ignore
@@ -20,12 +20,10 @@ logger = logging.getLogger(__name__)
 
 class UnknownPrincipalTypeError(Exception):
     """Raised when an unknown principal type is encountered in a trust policy."""
-    pass
 
 
 class InvalidFederatedPrincipalError(Exception):
     """Raised when a Federated principal has sts:AssumeRole in its actions."""
-    pass
 
 
 ALLOWED_PRINCIPAL_TYPES = {"AWS", "Service", "Federated"}
@@ -84,7 +82,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
                 f"Unknown principal type(s) found: {unknown_types}. "
                 f"Expected one of: {ALLOWED_PRINCIPAL_TYPES}"
             )
-        
+
         # Process AWS principals to extract account IDs
         if "AWS" in principal:
             value = principal["AWS"]
@@ -217,4 +215,3 @@ def analyze_iam_roles_trust_policies(
         raise
 
     return results
-

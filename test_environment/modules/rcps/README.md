@@ -38,4 +38,3 @@ module "account_rcp" {
 
 - RCPs have a maximum size of 5,120 bytes
 - There is a maximum limit of 5 direct RCP attachments per target
-

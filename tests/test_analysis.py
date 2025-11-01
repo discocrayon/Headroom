@@ -90,7 +90,7 @@ class TestPerformAnalysis:
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
             patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
             patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
-            patch("headroom.analysis.run_checks") as mock_run_checks,
+            patch("headroom.analysis.run_checks"),
             patch("headroom.analysis.logger") as mock_logger,
         ):
             perform_analysis(config)
@@ -116,7 +116,7 @@ class TestPerformAnalysis:
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
             patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
             patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
-            patch("headroom.analysis.run_checks") as mock_run_checks,
+            patch("headroom.analysis.run_checks"),
             patch("headroom.analysis.logger") as mock_logger,
         ):
             perform_analysis(config)

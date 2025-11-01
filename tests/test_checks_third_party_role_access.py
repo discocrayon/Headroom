@@ -4,9 +4,8 @@ Tests for headroom.checks.check_third_party_role_access module.
 Tests for check_third_party_role_access function and its integration with IAM analysis.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
-from typing import Set
+from typing import List, Set
 from headroom.checks.check_third_party_role_access import check_third_party_role_access
 from headroom.aws.iam import TrustPolicyAnalysis
 from headroom.config import DEFAULT_RESULTS_DIR
@@ -167,7 +166,7 @@ class TestCheckThirdPartyRoleAccess:
         account_id = "444444444444"
         org_account_ids: Set[str] = {"111111111111", "222222222222", "444444444444"}
 
-        trust_policy_results = []
+        trust_policy_results: List[TrustPolicyAnalysis] = []
 
         with (
             patch("headroom.checks.check_third_party_role_access.analyze_iam_roles_trust_policies") as mock_analyze,
@@ -281,4 +280,3 @@ class TestCheckThirdPartyRoleAccess:
             for role in results_data["roles_with_wildcards"]:
                 expected_keys = {"role_name", "role_arn", "third_party_account_ids", "has_wildcard_principal"}
                 assert set(role.keys()) == expected_keys
-

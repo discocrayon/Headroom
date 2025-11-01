@@ -739,23 +739,23 @@ def analyze_iam_roles_trust_policies(
 ) -> List[TrustPolicyAnalysis]:
     """
     Analyze all IAM roles in an account to identify third-party account principals.
-    
+
     Examines AssumeRole trust policies and extracts account IDs that are not part
     of the organization.
-    
+
     Returns list of roles with third-party access or wildcard principals.
     """
 
 def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     """
     Extract AWS account IDs from IAM policy principal field.
-    
+
     Handles:
     - String principals (ARNs, account IDs, wildcards)
     - List principals (recursive processing)
     - Dict principals (AWS, Service, Federated keys)
     - Mixed principals (e.g., {"AWS": [...], "Service": "..."})
-    
+
     Validates all principal types are known (AWS, Service, Federated).
     Only processes AWS principals for account ID extraction.
     Service and Federated principals are validated but skipped.
@@ -811,7 +811,7 @@ def check_third_party_role_access(
 ) -> Set[str]:
     """
     Check IAM roles for third-party account access in trust policies.
-    
+
     Returns set of all third-party account IDs found.
     Writes detailed JSON results including role names, ARNs, and findings.
     """
@@ -855,7 +855,7 @@ def get_all_organization_account_ids(
 ) -> Set[str]:
     """
     Retrieve all account IDs in the organization including management account.
-    
+
     Assumes OrgAndAccountInfoReader role in management account.
     Returns set of all account IDs for third-party filtering.
     """
@@ -958,12 +958,12 @@ module "rcps_root" {
 def parse_rcp_result_files(results_dir: str) -> Tuple[Dict[str, Set[str]], Set[str]]:
     """
     Parse RCP check results and extract third-party account mappings.
-    
+
     Returns:
         Tuple of (account_third_party_map, accounts_with_wildcards)
         - account_third_party_map: Dict mapping account IDs to sets of third-party account IDs
         - accounts_with_wildcards: Set of account IDs that have roles with wildcard principals
-    
+
     Accounts with wildcards are excluded from the account_third_party_map.
     """
 ```
@@ -977,13 +977,13 @@ def determine_rcp_placement(
 ) -> List[RCPPlacementRecommendations]:
     """
     Determine optimal RCP placement levels based on third-party account patterns.
-    
+
     Logic:
     - Root level: If ALL accounts have identical third-party account sets
     - OU level: If ALL accounts in an OU have identical third-party account sets
               AND no accounts in that OU have wildcards
     - Account level: For accounts with unique third-party requirements
-    
+
     OU-level RCPs are skipped if ANY account in the OU has wildcards to prevent
     applying RCP to accounts where we don't know which principals are needed.
     """
@@ -998,7 +998,7 @@ def generate_rcp_terraform(
 ) -> None:
     """
     Generate RCP Terraform files based on placement recommendations.
-    
+
     Creates separate .tf files for root, OU, and account level RCPs.
     """
 ```

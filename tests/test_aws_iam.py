@@ -6,13 +6,13 @@ Tests for IAM role trust policy analysis functions.
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from unittest.mock import MagicMock
 from urllib.parse import quote
 from headroom.aws.iam import (
     _extract_account_ids_from_principal,
     _has_wildcard_principal,
     analyze_iam_roles_trust_policies,
-    TrustPolicyAnalysis,
     UnknownPrincipalTypeError,
     InvalidFederatedPrincipalError
 )
@@ -373,10 +373,10 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        
+
         with pytest.raises(UnknownPrincipalTypeError) as exc_info:
             analyze_iam_roles_trust_policies(mock_session, org_account_ids)
-        
+
         assert "UnknownType" in str(exc_info.value)
 
     def test_federated_with_assume_role_raises_error(self) -> None:
@@ -409,10 +409,10 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        
+
         with pytest.raises(InvalidFederatedPrincipalError) as exc_info:
             analyze_iam_roles_trust_policies(mock_session, org_account_ids)
-        
+
         assert "BadFederatedRole" in str(exc_info.value)
         assert "AssumeRoleWithSAML" in str(exc_info.value) or "AssumeRoleWithWebIdentity" in str(exc_info.value)
 
@@ -446,10 +446,10 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        
+
         # Should not raise any exception
         results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
-        
+
         # No third-party accounts, no wildcards, so results should be empty
         assert len(results) == 0
 
@@ -527,8 +527,6 @@ class TestAnalyzeIamRolesTrustPolicies:
 
     def test_role_listing_client_error_raises(self) -> None:
         """Test that AWS API errors during role listing are raised."""
-        from botocore.exceptions import ClientError
-
         mock_session = MagicMock()
         mock_iam_client = MagicMock()
         mock_session.client.return_value = mock_iam_client
@@ -541,4 +539,3 @@ class TestAnalyzeIamRolesTrustPolicies:
         org_account_ids = {"111111111111"}
         with pytest.raises(ClientError):
             analyze_iam_roles_trust_policies(mock_session, org_account_ids)
-

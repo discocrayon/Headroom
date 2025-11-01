@@ -60,12 +60,12 @@ def main() -> None:
             )
 
         # Parse RCP results and generate RCP Terraform
-        account_third_party_map, accounts_with_wildcards = parse_rcp_result_files(final_config.results_dir)
-        if account_third_party_map:
+        rcp_parse_result = parse_rcp_result_files(final_config.results_dir)
+        if rcp_parse_result.account_third_party_map:
             rcp_recommendations = determine_rcp_placement(
-                account_third_party_map,
+                rcp_parse_result.account_third_party_map,
                 organization_hierarchy,
-                accounts_with_wildcards
+                rcp_parse_result.accounts_with_wildcards
             )
 
             if rcp_recommendations:

@@ -13,4 +13,3 @@ resource "aws_organizations_policy_attachment" "attach_rcp_1_to_account" {
   policy_id = aws_organizations_policy.rcp_1.id
   target_id = var.target_id
 }
-
