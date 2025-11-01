@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Set
 from urllib.parse import unquote
 
 import boto3  # type: ignore
+from botocore.exceptions import ClientError  # type: ignore
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -92,10 +93,6 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
             elif isinstance(value, list):
                 for item in value:
                     account_ids.update(_extract_account_ids_from_principal(item))
-        
-        # Service principals (like ec2.amazonaws.com) don't contain account IDs
-        # Federated principals (like SAML providers) don't contain account IDs
-        # These are intentionally skipped
 
     return account_ids
 
@@ -144,87 +141,79 @@ def analyze_iam_roles_trust_policies(
     iam_client = session.client("iam")
     results: List[TrustPolicyAnalysis] = []
 
+    # List all IAM roles
+    paginator = iam_client.get_paginator("list_roles")
     try:
-        # List all IAM roles
-        paginator = iam_client.get_paginator("list_roles")
         for page in paginator.paginate():
             for role in page.get("Roles", []):
                 role_name = role["RoleName"]
                 role_arn = role["Arn"]
 
+                # Get the trust policy (AssumeRolePolicyDocument)
+                # The policy is URL-encoded JSON
+                trust_policy_str = unquote(role["AssumeRolePolicyDocument"])
                 try:
-                    # Get the trust policy (AssumeRolePolicyDocument)
-                    # The policy is URL-encoded JSON
-                    trust_policy_str = unquote(role["AssumeRolePolicyDocument"])
                     trust_policy = json.loads(trust_policy_str)
-
-                    third_party_accounts: Set[str] = set()
-                    has_wildcard = False
-
-                    # Analyze each statement in the trust policy
-                    for statement in trust_policy.get("Statement", []):
-                        # Only look at statements that allow AssumeRole
-                        if statement.get("Effect") != "Allow":
-                            continue
-
-                        action = statement.get("Action", [])
-                        # Normalize action to list
-                        if isinstance(action, str):
-                            action = [action]
-
-                        # Check if this statement allows AssumeRole
-                        has_assume_role = "sts:AssumeRole" in action or "*" in action
-                        if not has_assume_role:
-                            continue
-
-                        # Extract principal
-                        principal = statement.get("Principal")
-                        if not principal:
-                            continue
-
-                        # Validate that Federated principals don't have sts:AssumeRole
-                        # Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity
-                        if isinstance(principal, dict) and "Federated" in principal:
-                            if "sts:AssumeRole" in action:
-                                raise InvalidFederatedPrincipalError(
-                                    f"Role '{role_name}' has Federated principal with sts:AssumeRole action. "
-                                    f"Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity."
-                                )
-
-                        # Check for wildcard
-                        if _has_wildcard_principal(principal):
-                            has_wildcard = True
-                            # TODO: Check CloudTrail logs to find which accounts actually assume this role
-
-                        # Extract account IDs
-                        account_ids = _extract_account_ids_from_principal(principal)
-
-                        # Filter to only third-party accounts (not in org)
-                        for account_id in account_ids:
-                            if account_id not in org_account_ids:
-                                third_party_accounts.add(account_id)
-
-                    # Only include roles with findings
-                    if third_party_accounts or has_wildcard:
-                        results.append(TrustPolicyAnalysis(
-                            role_name=role_name,
-                            role_arn=role_arn,
-                            third_party_account_ids=third_party_accounts,
-                            has_wildcard_principal=has_wildcard
-                        ))
-
-                except UnknownPrincipalTypeError as e:
-                    logger.error(f"Unknown principal type in role '{role_name}': {e}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse trust policy JSON for role '{role_name}': {e}")
                     raise
-                except InvalidFederatedPrincipalError as e:
-                    logger.error(f"Invalid federated principal configuration in role '{role_name}': {e}")
-                    raise
-                except Exception as e:
-                    logger.warning(f"Failed to analyze role '{role_name}': {e}")
-                    continue
 
-    except Exception as e:
-        logger.error(f"Failed to analyze IAM roles: {e}")
+                third_party_accounts: Set[str] = set()
+                has_wildcard = False
+
+                # Analyze each statement in the trust policy
+                for statement in trust_policy.get("Statement", []):
+                    # Only look at statements that allow AssumeRole
+                    if statement.get("Effect") != "Allow":
+                        continue
+
+                    action = statement.get("Action", [])
+                    # Normalize action to list
+                    if isinstance(action, str):
+                        action = [action]
+
+                    # Check if this statement allows AssumeRole
+                    has_assume_role = "sts:AssumeRole" in action or "*" in action
+                    if not has_assume_role:
+                        continue
+
+                    # Extract principal
+                    principal = statement.get("Principal")
+                    if not principal:
+                        continue
+
+                    # Validate that Federated principals don't have sts:AssumeRole
+                    # Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity
+                    if isinstance(principal, dict) and "Federated" in principal:
+                        if "sts:AssumeRole" in action:
+                            raise InvalidFederatedPrincipalError(
+                                f"Role '{role_name}' has Federated principal with sts:AssumeRole action. "
+                                f"Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity."
+                            )
+
+                    # Check for wildcard
+                    if _has_wildcard_principal(principal):
+                        has_wildcard = True
+                        # TODO: Check CloudTrail logs to find which accounts actually assume this role
+
+                    # Extract account IDs
+                    account_ids = _extract_account_ids_from_principal(principal)
+
+                    # Filter to only third-party accounts (not in org)
+                    for account_id in account_ids:
+                        if account_id not in org_account_ids:
+                            third_party_accounts.add(account_id)
+
+                # Only include roles with findings
+                if third_party_accounts or has_wildcard:
+                    results.append(TrustPolicyAnalysis(
+                        role_name=role_name,
+                        role_arn=role_arn,
+                        third_party_account_ids=third_party_accounts,
+                        has_wildcard_principal=has_wildcard
+                    ))
+    except ClientError as e:
+        logger.error(f"Failed to list IAM roles from AWS API: {e}")
         raise
 
     return results

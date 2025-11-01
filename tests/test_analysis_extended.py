@@ -14,6 +14,7 @@ from headroom.analysis import (
     get_relevant_subaccounts,
     get_headroom_session,
     run_checks,
+    get_all_organization_account_ids,
     AccountInfo
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
@@ -106,9 +107,9 @@ class TestGetHeadroomSession:
 
         # Mock STS response
         creds = {
-            "AccessKeyId": "AKIA123456789",
-            "SecretAccessKey": "secret123",
-            "SessionToken": "token123"
+            "AccessKeyId": "FAKE_ACCESS_KEY_ID",
+            "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
+            "SessionToken": "FAKE_SESSION_TOKEN"
         }
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
@@ -127,9 +128,9 @@ class TestGetHeadroomSession:
 
             # Verify session creation
             mock_session_class.assert_called_once_with(
-                aws_access_key_id="AKIA123456789",
-                aws_secret_access_key="secret123",
-                aws_session_token="token123"
+                aws_access_key_id="FAKE_ACCESS_KEY_ID",
+                aws_secret_access_key="FAKE_SECRET_ACCESS_KEY",
+                aws_session_token="FAKE_SESSION_TOKEN"
             )
 
             assert result == mock_session
@@ -159,9 +160,9 @@ class TestGetHeadroomSession:
         mock_security_session.client.return_value = mock_sts
 
         creds = {
-            "AccessKeyId": "AKIA123456789",
-            "SecretAccessKey": "secret123",
-            "SessionToken": "token123"
+            "AccessKeyId": "FAKE_ACCESS_KEY_ID",
+            "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
+            "SessionToken": "FAKE_SESSION_TOKEN"
         }
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
@@ -394,3 +395,92 @@ class TestRunChecks:
             mock_get_session.assert_not_called()
             mock_check.assert_not_called()
             mock_rcp_check.assert_not_called()
+
+
+class TestGetAllOrganizationAccountIds:
+    """Test get_all_organization_account_ids function."""
+
+    def test_get_all_organization_account_ids_success(self) -> None:
+        """Test successful retrieval of all organization account IDs."""
+        mock_config = MagicMock()
+        mock_config.management_account_id = "999999999999"
+
+        mock_session = MagicMock()
+        mock_sts = MagicMock()
+
+        def mock_client_factory(service_name: str) -> MagicMock:
+            if service_name == "sts":
+                return mock_sts
+            raise ValueError(f"Unexpected service: {service_name}")
+
+        mock_session.client.side_effect = mock_client_factory
+
+        mock_sts.assume_role.return_value = {
+            "Credentials": {
+                "AccessKeyId": "FAKE_ACCESS_KEY_ID",
+                "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
+                "SessionToken": "FAKE_SESSION_TOKEN"
+            }
+        }
+
+        mock_mgmt_session = MagicMock()
+        mock_org_client = MagicMock()
+        mock_mgmt_session.client.return_value = mock_org_client
+
+        mock_paginator = MagicMock()
+        mock_org_client.get_paginator.return_value = mock_paginator
+
+        mock_paginator.paginate.return_value = [
+            {
+                "Accounts": [
+                    {"Id": "111111111111", "Name": "Account1"},
+                    {"Id": "222222222222", "Name": "Account2"}
+                ]
+            },
+            {
+                "Accounts": [
+                    {"Id": "333333333333", "Name": "Account3"}
+                ]
+            }
+        ]
+
+        with patch("headroom.analysis.boto3.Session", return_value=mock_mgmt_session):
+            result = get_all_organization_account_ids(mock_config, mock_session)
+
+        assert result == {"111111111111", "222222222222", "333333333333"}
+        mock_sts.assume_role.assert_called_once_with(
+            RoleArn="arn:aws:iam::999999999999:role/OrgAndAccountInfoReader",
+            RoleSessionName="HeadroomOrgAccountListSession"
+        )
+
+    def test_get_all_organization_account_ids_missing_management_account_id(self) -> None:
+        """Test that missing management_account_id raises ValueError."""
+        mock_session = MagicMock()
+        mock_config = MagicMock()
+        mock_config.management_account_id = None
+
+        with pytest.raises(ValueError, match="management_account_id must be set in config"):
+            get_all_organization_account_ids(mock_config, mock_session)
+
+    def test_get_all_organization_account_ids_assume_role_failure(self) -> None:
+        """Test that assume role failure raises RuntimeError."""
+        mock_config = MagicMock()
+        mock_config.management_account_id = "999999999999"
+
+        mock_session = MagicMock()
+        mock_sts = MagicMock()
+
+        def mock_client_factory(service_name: str) -> MagicMock:
+            if service_name == "sts":
+                return mock_sts
+            raise ValueError(f"Unexpected service: {service_name}")
+
+        mock_session.client.side_effect = mock_client_factory
+
+        mock_sts.assume_role.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
+            "AssumeRole"
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to assume OrgAndAccountInfoReader role"):
+            get_all_organization_account_ids(mock_config, mock_session)

@@ -1,10 +1,10 @@
 # Headroom - AWS Multi-Account Security Analysis Tool
 ## Product Design Requirements (PDR)
 
-**Version:** 3.0
+**Version:** 4.0
 **Created:** 2025-10-26
-**Last Updated:** 2025-10-26
-**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation)
+**Last Updated:** 2025-10-31
+**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation + RCP Analysis + RCP Auto-Generation)
 
 ---
 
@@ -109,18 +109,22 @@ class AccountInfo:
 - **`main.py`**: Entry point orchestrating configuration, analysis, results processing, and Terraform generation flow
 - **`config.py`**: Pydantic models for configuration validation (`HeadroomConfig`, `AccountTagLayout`) and default directory constants
 - **`usage.py`**: CLI parsing, YAML loading, and configuration merging logic
-- **`analysis.py`**: AWS integration, security analysis implementation, and check execution optimization
+- **`analysis.py`**: AWS integration, security analysis implementation, check execution optimization, and organization account ID retrieval
 - **`parse_results.py`**: SCP/RCP compliance results analysis and organization structure processing
 - **`write_results.py`**: JSON result file writing, path resolution, and results existence checking
-- **`types.py`**: Shared data models and type definitions for organization hierarchy and SCP recommendations
+- **`types.py`**: Shared data models and type definitions for organization hierarchy, SCP recommendations, and RCP placement recommendations
 - **`aws/`**: AWS service integration modules
   - **`ec2.py`**: EC2 service integration and analysis functions
+  - **`iam.py`**: IAM trust policy analysis and third-party account detection
   - **`organization.py`**: AWS Organizations API integration and hierarchy analysis
-- **`checks/`**: SCP compliance check implementations
-  - **`deny_imds_v1_ec2.py`**: EC2 IMDS v1 compliance check implementation
+- **`checks/`**: SCP/RCP compliance check implementations
+  - **`deny_imds_v1_ec2.py`**: EC2 IMDS v1 compliance check implementation (SCP)
+  - **`check_third_party_role_access.py`**: IAM trust policy third-party account access check (RCP)
 - **`terraform/`**: Terraform configuration generation modules
   - **`generate_org_info.py`**: AWS Organizations structure data source generation
   - **`generate_scps.py`**: SCP deployment configuration generation
+  - **`generate_rcps.py`**: RCP deployment configuration generation
+  - **`utils.py`**: Shared Terraform utilities (safe variable name generation)
 - **`__main__.py`**: Python module entry point for `python -m headroom` execution
 
 **Error Handling Strategy:**
@@ -709,6 +713,338 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
 - **File Content Validation:** Verify correct Terraform content generation
 - **Integration Tests:** End-to-end testing with real recommendation data
 
+### PR-011: RCP Compliance Analysis Engine
+
+**Requirement:** The system MUST provide comprehensive Resource Control Policy (RCP) compliance analysis by examining IAM role trust policies to identify third-party account access patterns and automatically generate RCP Terraform configurations to enforce organization identity controls.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**RCP Analysis Architecture:**
+- **IAM Trust Policy Analysis:** `aws/iam.py` module analyzes all IAM role trust policies across organization accounts
+- **Third-Party Detection:** Identifies account IDs in trust policies that are external to the organization
+- **Wildcard Detection:** Detects and reports roles with wildcard principals (requiring CloudTrail analysis)
+- **Organization Account Baseline:** Compares trust policy principals against full organization account list
+- **Check Orchestration:** `checks/check_third_party_role_access.py` coordinates RCP analysis execution
+- **Fail-Loud Exception Handling:** All exceptions are specific (no generic `Exception` catching), logged with context, and immediately re-raised
+
+**IAM Trust Policy Analysis:**
+
+**Core Functions (in `aws/iam.py`):**
+```python
+def analyze_iam_roles_trust_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str]
+) -> List[TrustPolicyAnalysis]:
+    """
+    Analyze all IAM roles in an account to identify third-party account principals.
+    
+    Examines AssumeRole trust policies and extracts account IDs that are not part
+    of the organization.
+    
+    Returns list of roles with third-party access or wildcard principals.
+    """
+
+def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
+    """
+    Extract AWS account IDs from IAM policy principal field.
+    
+    Handles:
+    - String principals (ARNs, account IDs, wildcards)
+    - List principals (recursive processing)
+    - Dict principals (AWS, Service, Federated keys)
+    - Mixed principals (e.g., {"AWS": [...], "Service": "..."})
+    
+    Validates all principal types are known (AWS, Service, Federated).
+    Only processes AWS principals for account ID extraction.
+    Service and Federated principals are validated but skipped.
+    """
+
+def _has_wildcard_principal(principal: Any) -> bool:
+    """
+    Check if principal contains wildcard (*) allowing any principal to assume role.
+    """
+```
+
+**Data Model:**
+```python
+@dataclass
+class TrustPolicyAnalysis:
+    role_name: str
+    role_arn: str
+    third_party_account_ids: Set[str]
+    has_wildcard_principal: bool
+```
+
+**Principal Type Handling:**
+- **AWS Principals:** Processed for account ID extraction from ARNs and plain account IDs
+- **Service Principals:** Validated but skipped (e.g., `lambda.amazonaws.com`, `ec2.amazonaws.com`)
+- **Federated Principals:** Validated but skipped (SAML/OIDC providers)
+- **Mixed Principals:** Correctly handles dicts with multiple principal types
+- **Unknown Types:** Raises `UnknownPrincipalTypeError` to catch typos or new AWS types
+
+**Principal Validation:**
+- **Allowed Types:** `{"AWS", "Service", "Federated"}` enforced via validation
+- **Federated Action Validation:** Ensures Federated principals use `sts:AssumeRoleWithSAML` or `sts:AssumeRoleWithWebIdentity`, not `sts:AssumeRole`
+- **Custom Exceptions:** `UnknownPrincipalTypeError` and `InvalidFederatedPrincipalError` for clear error messaging
+
+**Exception Handling:**
+- **Specific Exceptions Only:** No generic `except Exception:` - all handlers catch specific types
+- **JSON Parsing:** `json.JSONDecodeError` for trust policy parsing failures
+- **AWS API Errors:** `ClientError` for boto3/botocore API failures
+- **Custom Validation:** `UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError` for policy validation
+- **Fail Loudly:** All exceptions logged with context and immediately re-raised
+- **No Silent Failures:** System prevents partial results from suppressed errors
+
+**RCP Check Implementation:**
+
+**Check Function (in `checks/check_third_party_role_access.py`):**
+```python
+def check_third_party_role_access(
+    headroom_session: boto3.Session,
+    account_name: str,
+    account_id: str,
+    results_base_dir: str,
+    exclude_account_ids: bool,
+    org_account_ids: Set[str]
+) -> Set[str]:
+    """
+    Check IAM roles for third-party account access in trust policies.
+    
+    Returns set of all third-party account IDs found.
+    Writes detailed JSON results including role names, ARNs, and findings.
+    """
+```
+
+**Result Structure:**
+```json
+{
+  "summary": {
+    "account_name": "account-name",
+    "account_id": "111111111111",
+    "check": "check_third_party_role_access",
+    "total_roles_analyzed": 50,
+    "roles_with_third_party_access": 3,
+    "roles_with_wildcards": 1,
+    "unique_third_party_accounts": 2
+  },
+  "roles_with_third_party_access": [
+    {
+      "role_name": "CrossAccountRole",
+      "role_arn": "arn:aws:iam::111111111111:role/CrossAccountRole",
+      "third_party_account_ids": ["999999999999"]
+    }
+  ],
+  "roles_with_wildcards": [
+    {
+      "role_name": "WildcardRole",
+      "role_arn": "arn:aws:iam::111111111111:role/WildcardRole"
+    }
+  ]
+}
+```
+
+**Organization Account ID Retrieval:**
+
+**Function (in `analysis.py`):**
+```python
+def get_all_organization_account_ids(
+    config: HeadroomConfig,
+    session: boto3.Session
+) -> Set[str]:
+    """
+    Retrieve all account IDs in the organization including management account.
+    
+    Assumes OrgAndAccountInfoReader role in management account.
+    Returns set of all account IDs for third-party filtering.
+    """
+```
+
+**Wildcard Safety:**
+- **Detection:** Identifies roles with `"Principal": "*"` or `"AWS": "*"` allowing any principal
+- **Skip Logic:** Accounts with wildcard principals excluded from RCP generation
+- **OU-Level Safety:** OU-level RCPs skipped if ANY account in OU has wildcards
+- **CloudTrail TODO:** Comments indicate need for CloudTrail analysis to determine actual assuming accounts
+
+### PR-012: RCP Terraform Auto-Generation
+
+**Requirement:** The system MUST auto-generate Terraform configuration files for RCP deployment based on IAM trust policy analysis, creating RCP configurations that enforce organization identity controls while allowing approved third-party accounts.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**RCP Generation Architecture:**
+- **Target Module:** `terraform/generate_rcps.py` handles all RCP Terraform configuration generation
+- **Target Directory:** Generate RCP files under configured `scps_dir` (default: `test_environment/scps/`)
+- **Safety-First Logic:** Excludes accounts with wildcard principals from RCP generation
+- **Multi-Level Support:** Account-level, OU-level, and root-level RCP deployment
+- **Third-Party Whitelist:** Includes approved third-party account IDs in RCP policy
+
+**Generated RCP Terraform Structure:**
+
+**Account-Level RCPs:**
+```hcl
+# Auto-generated RCP Terraform configuration for account-name
+# Generated by Headroom based on IAM trust policy analysis
+
+module "rcps_account_name" {
+  source = "./modules/rcps"
+  target_id = locals.account_name_account_id
+
+  # Third-party accounts approved for role assumption
+  third_party_account_ids = [
+    "999999999999",
+    "888888888888"
+  ]
+}
+```
+
+**OU-Level RCPs:**
+```hcl
+# Auto-generated RCP Terraform configuration for production OU
+# Generated by Headroom based on IAM trust policy analysis
+
+module "rcps_production_ou" {
+  source = "./modules/rcps"
+  target_id = locals.top_level_production_ou_id
+
+  # Third-party accounts approved for role assumption
+  third_party_account_ids = [
+    "999999999999"
+  ]
+}
+```
+
+**Root-Level RCPs:**
+```hcl
+# Auto-generated RCP Terraform configuration for root
+# Generated by Headroom based on IAM trust policy analysis
+
+module "rcps_root" {
+  source = "./modules/rcps"
+  target_id = locals.root_ou_id
+
+  # Third-party accounts approved for role assumption
+  third_party_account_ids = [
+    "999999999999"
+  ]
+}
+```
+
+**RCP Terraform Module (in `test_environment/modules/rcps/`):**
+
+**Module Structure:**
+- **`variables.tf`:** Defines `target_id` and `third_party_account_ids` variables
+- **`locals.tf`:** Defines RCP policy with EnforceOrgIdentities statement
+- **`rcps.tf`:** Creates `aws_organizations_policy` and `aws_organizations_policy_attachment` resources
+- **`data.tf`:** Contains `aws_organizations_organization.current` data source for org ID
+- **`README.md`:** Documents module usage and RCP policy logic
+
+**RCP Policy Logic:**
+```hcl
+# Deny sts:AssumeRole EXCEPT:
+# 1. Principals from the organization (aws:PrincipalOrgID)
+# 2. Principals from approved third-party accounts (aws:PrincipalAccount)
+# 3. Resources tagged with dp:exclude:identity: true
+# 4. AWS service principals
+```
+
+**Implementation Functions:**
+
+**1. Results Parsing (in `terraform/generate_rcps.py`):**
+```python
+def parse_rcp_result_files(results_dir: str) -> Tuple[Dict[str, Set[str]], Set[str]]:
+    """
+    Parse RCP check results and extract third-party account mappings.
+    
+    Returns:
+        Tuple of (account_third_party_map, accounts_with_wildcards)
+        - account_third_party_map: Dict mapping account IDs to sets of third-party account IDs
+        - accounts_with_wildcards: Set of account IDs that have roles with wildcard principals
+    
+    Accounts with wildcards are excluded from the account_third_party_map.
+    """
+```
+
+**2. Placement Determination (in `terraform/generate_rcps.py`):**
+```python
+def determine_rcp_placement(
+    account_third_party_map: Dict[str, Set[str]],
+    organization_hierarchy: OrganizationHierarchy,
+    accounts_with_wildcards: Set[str]
+) -> List[RCPPlacementRecommendations]:
+    """
+    Determine optimal RCP placement levels based on third-party account patterns.
+    
+    Logic:
+    - Root level: If ALL accounts have identical third-party account sets
+    - OU level: If ALL accounts in an OU have identical third-party account sets
+              AND no accounts in that OU have wildcards
+    - Account level: For accounts with unique third-party requirements
+    
+    OU-level RCPs are skipped if ANY account in the OU has wildcards to prevent
+    applying RCP to accounts where we don't know which principals are needed.
+    """
+```
+
+**3. Terraform Generation (in `terraform/generate_rcps.py`):**
+```python
+def generate_rcp_terraform(
+    recommendations: List[RCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy,
+    scps_dir: str
+) -> None:
+    """
+    Generate RCP Terraform files based on placement recommendations.
+    
+    Creates separate .tf files for root, OU, and account level RCPs.
+    """
+```
+
+**Data Model:**
+```python
+@dataclass
+class RCPPlacementRecommendations:
+    check_name: str
+    recommended_level: str  # "root", "ou", or "account"
+    target_ou_id: Optional[str]
+    affected_accounts: List[str]
+    third_party_account_ids: Set[str]
+    reasoning: str
+```
+
+**Placement Logic:**
+- **Root Level:** Recommended when all accounts in organization have identical third-party account sets
+- **OU Level:** Recommended when all accounts in OU have identical third-party account sets AND no wildcards in OU
+- **Account Level:** Recommended for accounts with unique third-party requirements or accounts in OUs with wildcards
+- **Wildcard Exclusion:** Accounts with wildcard principals never included in any RCP recommendation
+- **OU Wildcard Safety:** OU-level RCP skipped if ANY account in OU has wildcards (even if other accounts match)
+
+**Integration Flow:**
+1. **Analysis Phase:** IAM trust policy analysis identifies third-party accounts and wildcards
+2. **Results Parsing:** Parse check results from `headroom_results/check_third_party_role_access/` directory
+3. **Wildcard Filtering:** Separate accounts with wildcards from those eligible for RCP deployment
+4. **Placement Calculation:** Determine optimal RCP levels based on common third-party account patterns
+5. **OU Safety Check:** Verify no wildcards exist in OU before creating OU-level RCP
+6. **Terraform Generation:** Create RCP Terraform files with appropriate third-party account whitelists
+7. **Console Output:** Display RCP recommendations including level, target, accounts, and reasoning
+
+**Testing Strategy:**
+- **IAM Analysis Tests:** 27 tests covering principal extraction, wildcard detection, exception handling
+- **Check Tests:** 6 tests covering aggregation, wildcards, empty results
+- **RCP Generation Tests:** 19 tests covering parsing, placement, wildcard safety, Terraform generation
+- **Integration Tests:** End-to-end RCP display and generation flow
+- **100% Coverage:** All RCP-related code fully covered (221 total tests passing)
+
+**Code Quality:**
+- **Specific Exceptions:** All exception handlers catch specific types (`json.JSONDecodeError`, `ClientError`, custom exceptions)
+- **No Silent Failures:** All exceptions logged and re-raised
+- **Type Safety:** Full type annotations satisfying mypy strict mode
+- **Clean Architecture:** Clear separation between IAM analysis, check execution, and Terraform generation
+- **DRY Compliance:** Shared utilities in `terraform/utils.py` for variable name generation
+
 ---
 
 ## Technical Architecture
@@ -727,10 +1063,12 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
    - Extract account information with tag-based metadata
 
 3. **Analysis Phase**
+   - Retrieve all organization account IDs from management account via `get_all_organization_account_ids()`
    - Filter accounts using `get_relevant_subaccounts()` (currently returns all accounts)
    - For each account, check if results already exist via `check_results_exist()` (skip if found)
    - For accounts without results, assume `Headroom` role via `get_headroom_session()`
    - Execute SCP checks (e.g., `check_deny_imds_v1_ec2()`) using AWS library functions
+   - Execute RCP checks (e.g., `check_third_party_role_access()`) with IAM trust policy analysis
    - Generate structured JSON results in `test_environment/headroom_results/`
    - Console output with compliance summaries per account
 
@@ -744,8 +1082,10 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
 5. **Terraform Generation Phase**
    - Generate `grab_org_info.tf` with AWS Organizations data sources and local variables
    - Auto-generate SCP Terraform configurations based on compliance analysis results
+   - Auto-generate RCP Terraform configurations based on IAM trust policy analysis
    - Create account-specific, OU-specific, and root-level SCP deployment files
-   - Ensure safety-first deployment (only 100% compliant targets)
+   - Create account-specific, OU-specific, and root-level RCP deployment files with third-party account whitelists
+   - Ensure safety-first deployment (only 100% compliant SCPs, wildcard-free RCPs)
    - Output ready-to-use Terraform configurations in `test_environment/scps/` directory
 
 ### Error Handling Matrix
@@ -818,10 +1158,25 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
 - ✅ Early return refactoring for improved code readability
 - ✅ Dynamic import elimination and top-level import organization
 
-### Phase 7: SCP Expansion (PLANNED)
+### Phase 7: RCP Analysis & Auto-Generation (COMPLETED)
+- ✅ IAM trust policy analysis with account ID extraction (`aws/iam.py`)
+- ✅ Third-party account detection and organization baseline comparison
+- ✅ Wildcard principal detection with CloudTrail TODO comments
+- ✅ RCP compliance check implementation (`check_third_party_role_access`)
+- ✅ RCP Terraform auto-generation with third-party account whitelists
+- ✅ Multi-level RCP deployment (account, OU, root)
+- ✅ Wildcard safety logic (OU-level RCPs excluded if any account has wildcards)
+- ✅ Fail-loud exception handling (specific exceptions only, no silent failures)
+- ✅ Principal type validation (AWS, Service, Federated)
+- ✅ Mixed principal support (e.g., `{"AWS": [...], "Service": "..."}`)
+- ✅ Custom exceptions (`UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError`)
+- ✅ Comprehensive test coverage (221 tests, 100% coverage for all modules)
+- ✅ RCP Terraform module with EnforceOrgIdentities policy
+
+### Phase 8: SCP Expansion (PLANNED)
 - 🔄 Additional SCP checks for other AWS services
 - 🔄 Metrics-based decision making for SCP deployment
-- 🔄 CloudTrail historical analysis integration
+- 🔄 CloudTrail historical analysis integration for actions items such as wildcard resolution
 - 🔄 OU-based account filtering implementation
 - 🔄 Advanced SCP deployment strategies
 
@@ -916,6 +1271,10 @@ mypy headroom/ tests/
 10. **Terraform Generation:** Auto-generation of AWS Organizations data sources and SCP configurations ✅
 11. **SCP Auto-Deployment:** Safety-first SCP Terraform generation for compliant targets ✅
 12. **Architecture:** Clean module separation with terraform/ and aws/ folder organization ✅
+13. **RCP Analysis:** IAM trust policy analysis with third-party account detection and wildcard identification ✅
+14. **RCP Auto-Generation:** Terraform RCP configurations with third-party account whitelists and wildcard safety ✅
+15. **Exception Handling:** Fail-loud with specific exception types, no silent failures or generic catches ✅
+16. **Principal Validation:** Comprehensive handling of AWS, Service, Federated, and mixed principals ✅
 
 ---
 

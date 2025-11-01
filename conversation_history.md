@@ -488,3 +488,186 @@ Added robust principal type validation with custom exceptions that fail fast whe
 - Invalid Federated principal configurations
 
 All validation is code-based (no comments) with clear, actionable error messages. Error handling allows analysis to continue when individual roles have issues, but stops for critical validation errors. The system is now production-ready with comprehensive test coverage.
+
+## 2025-10-31, 4:00 PM - Improved exception handling and principal type processing in IAM analysis
+
+### Changes Made
+
+Refactored exception handling to be explicit and fail loudly, while also fixing the logic for processing mixed principal types in IAM trust policies.
+
+#### Files Updated
+
+1. **headroom/aws/iam.py**
+   - Added `from botocore.exceptions import ClientError` import for specific AWS SDK exception handling
+   - Removed early return statements for Service and Federated principals in `_extract_account_ids_from_principal()`
+   - Now correctly processes AWS principals even when Service or Federated keys are present in the same dict
+   - Service and Federated principals are validated but not processed (only AWS principals contain account IDs)
+   - Restructured exception handling in `analyze_iam_roles_trust_policies()`:
+     - Moved paginator call outside try block
+     - Only wrap `json.loads()` in try/except with specific `json.JSONDecodeError`
+     - Changed outer exception handler from generic `Exception` to specific `ClientError`
+     - All exceptions now fail loudly with explicit error logging and re-raising
+     - Removed graceful degradation that was silently continuing after errors
+
+2. **tests/test_aws_iam.py**
+   - Renamed `test_role_with_invalid_json_skipped()` to `test_role_with_invalid_json_raises()`
+   - Updated test to expect `json.JSONDecodeError` to be raised instead of continuing
+   - Test now verifies that invalid JSON causes immediate failure rather than being skipped
+   - Added `test_role_listing_client_error_raises()` to test AWS API errors during role listing
+   - Test verifies that `ClientError` from paginator is properly raised and not suppressed
+
+#### Rationale
+
+**Explicit Principal Type Handling:**
+- Previous logic had early returns that prevented processing AWS principals when Service or Federated keys were present
+- Mixed principals like `{"AWS": [...], "Service": "..."}` are valid in IAM trust policies
+- Now validates all keys are known types, then processes only AWS principals for account ID extraction
+- Service principals (e.g., `lambda.amazonaws.com`) and Federated principals (e.g., SAML providers) don't contain account IDs and are intentionally ignored
+
+**Specific Exception Handling:**
+- No more catching generic `Exception` - all exception handlers now catch specific exception types
+- `json.JSONDecodeError` for JSON parsing failures
+- `ClientError` for AWS API failures (from boto3/botocore)
+- Custom exceptions (`UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError`) for validation failures
+- All exceptions are logged and re-raised to fail loudly
+
+**Fail Loudly Philosophy:**
+- System no longer suppresses or continues after encountering errors
+- Errors are logged with context (role name, error details) and immediately raised
+- This prevents silent failures and ensures issues are caught early
+- Production systems will see clear error messages instead of partial results
+
+#### Test Coverage
+
+- **217 tests passing** (all tests)
+- Test updated to verify fail-loud behavior for invalid JSON
+- New test added for AWS API ClientError during role listing
+- Mixed principals test now passes with corrected logic
+- All exception paths validated
+- `headroom/aws/iam.py` now has 100% code coverage
+- Overall coverage improved from 96% to 97%
+
+## 2025-10-31, 4:30 PM - Added tests to achieve 100% code coverage
+
+### Changes Made
+
+Added comprehensive tests to cover previously uncovered code paths in `headroom/analysis.py` and `headroom/main.py`.
+
+#### Files Updated
+
+1. **tests/test_analysis_extended.py**
+   - Added `TestGetAllOrganizationAccountIds` class with 3 tests:
+     - `test_get_all_organization_account_ids_success()` - tests successful retrieval of all org account IDs
+     - `test_get_all_organization_account_ids_missing_management_account_id()` - tests ValueError when management_account_id is None
+     - `test_get_all_organization_account_ids_assume_role_failure()` - tests RuntimeError when AssumeRole fails
+   - Properly mocked boto3.Session and AWS SDK clients with side_effect to return different clients for different services
+   - Tests verify correct parameter passing, error handling, and account ID aggregation across paginated responses
+
+2. **tests/test_main_integration.py**
+   - Added `test_main_with_rcp_recommendations_display()` to test RCP display code
+   - Mocked RCP recommendations with OU-level placement
+   - Verified that RCP placement recommendations are correctly displayed including:
+     - Recommendation level
+     - Target OU name and ID
+     - Number of affected accounts
+     - Number of third-party accounts
+     - Reasoning
+   - Verified that `generate_rcp_terraform()` is called when recommendations exist
+
+#### Coverage Results
+
+- **221 tests passing** (up from 217, added 4 new tests)
+- **100% code coverage achieved for headroom/* (958/958 statements)**
+- `headroom/analysis.py`: 100% (was 86%)
+- `headroom/main.py`: 100% (was 71%)
+- All modules now have 100% coverage
+
+#### Rationale
+
+The missing coverage was in:
+1. `get_all_organization_account_ids()` function (lines 114-142 in analysis.py) - never called directly by existing tests, only mocked
+2. RCP display and generation code (lines 65-86 in main.py) - existing integration tests returned empty RCP results
+
+Added targeted tests to exercise these specific code paths while maintaining proper mocking of AWS SDK calls and ensuring fail-loud error handling is tested.
+
+## 2025-10-31, 4:45 PM - Made fake credentials obviously fake
+
+### Changes Made
+
+Updated all test credentials to be obviously fake with no random character sequences.
+
+#### Files Updated
+
+1. **tests/test_analysis_extended.py**
+   - `"AccessKeyId": "FAKE_ACCESS_KEY_ID"`
+   - `"SecretAccessKey": "FAKE_SECRET_ACCESS_KEY"`
+   - `"SessionToken": "FAKE_SESSION_TOKEN"`
+   - Updated 3 instances across different test methods
+
+2. **tests/test_analysis.py**
+   - `"AccessKeyId": "FAKE_ACCESS_KEY_ID"`
+   - `"SecretAccessKey": "FAKE_SECRET_ACCESS_KEY"`
+   - `"SessionToken": "FAKE_SESSION_TOKEN"`
+   - Updated 2 instances
+
+#### Rationale
+
+Using clearly labeled fake values makes it immediately obvious these are test credentials and not real AWS keys.
+
+## 2025-10-31, 4:50 PM - Updated Headroom specification with RCP functionality
+
+### Changes Made
+
+Updated `Headroom-Specification.md` to document all RCP-related features added today.
+
+#### Specification Updates
+
+1. **Version and Status**
+   - Updated version from 3.0 to 4.0
+   - Updated last modified date to 2025-10-31
+   - Added "RCP Analysis + RCP Auto-Generation" to status
+
+2. **Module Organization (PR-004)**
+   - Added `aws/iam.py` module for IAM trust policy analysis
+   - Added `checks/check_third_party_role_access.py` for RCP check
+   - Added `terraform/generate_rcps.py` for RCP Terraform generation
+   - Added `terraform/utils.py` for shared Terraform utilities
+   - Updated `types.py` to include RCP placement recommendations
+
+3. **New PR-011: RCP Compliance Analysis Engine**
+   - IAM trust policy analysis functions and implementation
+   - Third-party account detection with organization baseline
+   - Wildcard principal detection and safety logic
+   - Principal type handling (AWS, Service, Federated, mixed)
+   - Exception handling with specific types (no generic Exception catching)
+   - Custom exceptions (UnknownPrincipalTypeError, InvalidFederatedPrincipalError)
+   - RCP check implementation with detailed result structure
+   - Organization account ID retrieval functionality
+
+4. **New PR-012: RCP Terraform Auto-Generation**
+   - RCP Terraform module structure documentation
+   - RCP generation functions (parsing, placement, generation)
+   - Multi-level RCP deployment (account, OU, root)
+   - Wildcard safety logic for OU-level RCPs
+   - Third-party account whitelist functionality
+   - Testing strategy (52 tests across IAM analysis, check, and generation)
+
+5. **Core Data Flow Updates**
+   - Added organization account ID retrieval to Analysis Phase
+   - Added RCP check execution to Analysis Phase
+   - Updated Terraform Generation Phase to include RCP configurations
+
+6. **Implementation Status**
+   - Added Phase 7: RCP Analysis & Auto-Generation (COMPLETED)
+   - Updated Phase 8 from "Phase 7" (SCP Expansion remains PLANNED)
+   - Added CloudTrail integration note for wildcard resolution
+
+7. **Success Criteria**
+   - Added criterion 13: RCP Analysis
+   - Added criterion 14: RCP Auto-Generation
+   - Added criterion 15: Exception Handling
+   - Added criterion 16: Principal Validation
+
+#### Rationale
+
+The specification now provides complete documentation of the RCP functionality, making it easier for future development and maintenance. All major components are documented including the IAM analysis engine, check implementation, Terraform generation, and safety logic.

@@ -661,3 +661,63 @@ class TestMainIntegration:
 
         printed = [c.args[0] for c in mocks['print'].call_args_list]
         assert any("Failed to generate Terraform files:" in msg for msg in printed)
+
+    def test_main_with_rcp_recommendations_display(
+        self,
+        mock_cli_args: MagicMock,
+        valid_yaml_config: Dict[str, Any],
+        mock_dependencies: Dict[str, MagicMock]
+    ) -> None:
+        """Test that RCP recommendations are displayed when present."""
+        from headroom.types import RCPPlacementRecommendations, OrganizationHierarchy, OrganizationalUnit
+
+        mocks = mock_dependencies
+        mocks['parse'].return_value = mock_cli_args
+        mocks['load'].return_value = valid_yaml_config
+        mock_final_config = MagicMock()
+        mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.management_account_id = "999999999999"
+        mocks['merge'].return_value = mock_final_config
+
+        mock_rcp_rec = RCPPlacementRecommendations(
+            check_name="check_third_party_role_access",
+            recommended_level="ou",
+            target_ou_id="ou-test-123",
+            affected_accounts=["111111111111", "222222222222"],
+            third_party_account_ids={"333333333333"},
+            reasoning="Test reasoning"
+        )
+
+        mock_org_hierarchy = OrganizationHierarchy(
+            root_id="r-root",
+            organizational_units={"ou-test-123": OrganizationalUnit(
+                ou_id="ou-test-123",
+                name="TestOU",
+                parent_ou_id="r-root",
+                child_ous=[],
+                accounts=["111111111111", "222222222222"]
+            )},
+            accounts={}
+        )
+
+        with (
+            patch('headroom.main.parse_results', return_value=[MagicMock()]),
+            patch('headroom.main.get_security_analysis_session') as mock_get_sess,
+            patch('headroom.main.parse_rcp_result_files', return_value=({"111111111111": {"333333333333"}}, set())),
+            patch('headroom.main.analyze_organization_structure', return_value=mock_org_hierarchy),
+            patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
+            patch('headroom.main.generate_rcp_terraform') as mock_gen_rcp,
+            patch('headroom.main.generate_scp_terraform')
+        ):
+            mock_session = MagicMock()
+            mock_get_sess.return_value = mock_session
+            main()
+
+        printed = [c.args[0] for c in mocks['print'].call_args_list]
+        assert any("RCP PLACEMENT RECOMMENDATIONS" in msg for msg in printed)
+        assert any("Recommended Level: OU" in msg for msg in printed)
+        assert any("Target OU: TestOU (ou-test-123)" in msg for msg in printed)
+        assert any("Affected Accounts: 2" in msg for msg in printed)
+        assert any("Third-Party Accounts: 1" in msg for msg in printed)
+        assert any("Reasoning: Test reasoning" in msg for msg in printed)
+        mock_gen_rcp.assert_called_once()

@@ -487,8 +487,8 @@ class TestAnalyzeIamRolesTrustPolicies:
         # Statement without principal should be skipped
         assert len(results) == 0
 
-    def test_role_with_invalid_json_skipped(self) -> None:
-        """Test that roles with invalid trust policies are skipped with warning."""
+    def test_role_with_invalid_json_raises(self) -> None:
+        """Test that roles with invalid trust policies raise JSONDecodeError."""
         mock_session = MagicMock()
         mock_iam_client = MagicMock()
         mock_session.client.return_value = mock_iam_client
@@ -522,10 +522,23 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        with pytest.raises(json.JSONDecodeError):
+            analyze_iam_roles_trust_policies(mock_session, org_account_ids)
 
-        # Should skip bad role but continue with good role
-        assert len(results) == 1
-        assert results[0].role_name == "GoodRole"
-        assert results[0].third_party_account_ids == {"999999999999"}
+    def test_role_listing_client_error_raises(self) -> None:
+        """Test that AWS API errors during role listing are raised."""
+        from botocore.exceptions import ClientError
+
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        mock_iam_client.get_paginator.return_value.paginate.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
+            "ListRoles"
+        )
+
+        org_account_ids = {"111111111111"}
+        with pytest.raises(ClientError):
+            analyze_iam_roles_trust_policies(mock_session, org_account_ids)
 

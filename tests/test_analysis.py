@@ -16,9 +16,9 @@ class TestSecurityAnalysisSession:
         mock_sts = MagicMock()
         mock_session = MagicMock()
         creds = {
-            "AccessKeyId": "AKIA...",
-            "SecretAccessKey": "secret",
-            "SessionToken": "token"
+            "AccessKeyId": "FAKE_ACCESS_KEY_ID",
+            "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
+            "SessionToken": "FAKE_SESSION_TOKEN"
         }
         mock_sts.assume_role.return_value = {"Credentials": creds}
         with (
@@ -32,9 +32,9 @@ class TestSecurityAnalysisSession:
                 RoleSessionName="HeadroomSecurityAnalysisSession"
             )
             session_patch.assert_called_once_with(
-                aws_access_key_id="AKIA...",
-                aws_secret_access_key="secret",
-                aws_session_token="token"
+                aws_access_key_id="FAKE_ACCESS_KEY_ID",
+                aws_secret_access_key="FAKE_SECRET_ACCESS_KEY",
+                aws_session_token="FAKE_SESSION_TOKEN"
             )
             assert session is mock_session
 
