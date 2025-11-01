@@ -65,7 +65,8 @@ def main() -> None:
             rcp_recommendations = determine_rcp_placement(
                 rcp_parse_result.account_third_party_map,
                 organization_hierarchy,
-                rcp_parse_result.accounts_with_wildcards
+                rcp_parse_result.accounts_with_wildcards,
+                final_config.rcp_always_root
             )
 
             if rcp_recommendations:

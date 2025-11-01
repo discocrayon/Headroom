@@ -229,13 +229,15 @@ def _check_account_level_placements(
 def determine_rcp_placement(
     account_third_party_map: Dict[str, Set[str]],
     organization_hierarchy: OrganizationHierarchy,
-    accounts_with_wildcards: Set[str]
+    accounts_with_wildcards: Set[str],
+    rcp_always_root: bool = True
 ) -> List[RCPPlacementRecommendations]:
     """
     Analyze third-party account results to determine optimal RCP placement level.
 
     Groups accounts with identical third-party account sets and recommends:
     - Root level if all accounts have the same third-party accounts
+    - Root level with aggregated third-party accounts if rcp_always_root is True
     - OU level if all accounts in an OU have the same third-party accounts (and no accounts have wildcards)
     - Account level otherwise
 
@@ -243,12 +245,38 @@ def determine_rcp_placement(
         account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
         organization_hierarchy: Organization structure information
         accounts_with_wildcards: Set of account IDs that have wildcard principals
+        rcp_always_root: If True, always deploy at root level with aggregated third-party accounts
 
     Returns:
         List of RCP placement recommendations
     """
     if not account_third_party_map:
         logger.info("No third-party accounts found in any account (excluding accounts with wildcards)")
+        return []
+
+    if rcp_always_root:
+        if accounts_with_wildcards:
+            logger.warning(
+                f"Cannot deploy RCP at root level: {len(accounts_with_wildcards)} account(s) have wildcard principals. "
+                f"Root-level RCPs would apply to all accounts including those with wildcards. "
+                f"Accounts with wildcards: {sorted(list(accounts_with_wildcards))}"
+            )
+            return []
+
+        all_third_party_accounts: Set[str] = set()
+        for third_party_set in account_third_party_map.values():
+            all_third_party_accounts.update(third_party_set)
+
+        if all_third_party_accounts:
+            aggregated_third_party = sorted(list(all_third_party_accounts))
+            return [RCPPlacementRecommendations(
+                check_name="third_party_role_access",
+                recommended_level="root",
+                target_ou_id=None,
+                affected_accounts=list(account_third_party_map.keys()),
+                third_party_account_ids=aggregated_third_party,
+                reasoning=f"Aggregated all third-party accounts from {len(account_third_party_map)} accounts ({len(aggregated_third_party)} unique third-party accounts) - deploying at root level"
+            )]
         return []
 
     root_recommendation = _check_root_level_placement(account_third_party_map)

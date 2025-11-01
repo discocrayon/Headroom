@@ -1475,3 +1475,77 @@ Searched for all dynamic imports in the codebase and found two instances:
 - Searched entire codebase for remaining dynamic imports (indented `import` or `from` statements)
 - No additional dynamic imports found in `headroom/` or `tests/` directories
 - All imports now follow the repository rule: "Never do dynamic imports, always try to import at the top of the file"
+
+---
+
+## 2025-11-01 - Add --rcp-always-root Option
+
+### Request
+Add a new boolean option `--rcp-always-root` that:
+- Is true by default
+- Deploys RCP policies at the root of the AWS organization
+- For third-party accounts doing AssumeRole RCP analysis, aggregates all third-party account IDs and passes the combined list to the RCP terraform generated for the root org id
+
+### Implementation
+
+#### 1. Configuration Changes
+Added `rcp_always_root` field to `HeadroomConfig` in `config.py`:
+- Type: `bool`
+- Default value: `True`
+- Purpose: Always deploy RCPs at root level with aggregated third-party account IDs
+
+#### 2. CLI Argument
+Added CLI argument in `usage.py`:
+- Argument name: `--no-rcp-always-root`
+- Action: `store_false`
+- Destination: `rcp_always_root`
+- Effect: Disables the default behavior of always deploying at root level
+- Default behavior (when flag not provided): `rcp_always_root=True`
+
+#### 3. RCP Placement Logic
+Modified `determine_rcp_placement()` function in `terraform/generate_rcps.py`:
+- Added `rcp_always_root: bool = True` parameter
+- When `rcp_always_root=True`:
+  - Aggregates all third-party account IDs from all accounts
+  - Creates a single root-level RCP recommendation
+  - Includes all accounts in the `affected_accounts` list
+  - Generates reasoning text explaining the aggregation
+- When `rcp_always_root=False`:
+  - Falls back to existing intelligent placement logic (root, OU, or account level based on matching patterns)
+
+#### 4. Main Integration
+Updated `main.py` to pass the configuration parameter:
+- Added `final_config.rcp_always_root` parameter to the `determine_rcp_placement()` call
+- Ensures the user's configuration choice is respected in RCP generation
+
+### Changes Made
+- `headroom/config.py`: Added `rcp_always_root: bool = True` field to `HeadroomConfig`
+- `headroom/usage.py`: Added `--no-rcp-always-root` CLI argument with `store_false` action
+- `headroom/terraform/generate_rcps.py`: Modified `determine_rcp_placement()` to support aggregated root-level deployment
+- `headroom/main.py`: Updated function call to pass `rcp_always_root` configuration
+
+### Verification
+- All files pass linting with no errors
+- Type annotations maintained for mypy compliance
+- Default value defined once in `config.py` (no duplication)
+- Function parameter has default value matching config default
+- All 227 tests pass successfully
+- 100% code coverage maintained (996 statements in headroom/, 2361 in tests/)
+- mypy type checking passes with no issues
+- pre-commit hooks pass (autoflake, flake8, autopep8)
+
+### Test Coverage
+Added comprehensive tests for the new functionality:
+- `test_rcp_always_root_aggregates_all_third_party_accounts`: Tests aggregation with mixed third-party accounts
+- `test_rcp_always_root_with_default_parameter`: Verifies default behavior (True)
+- `test_rcp_always_root_false_with_identical_accounts_uses_natural_root`: Tests fallback to intelligent placement
+- `test_rcp_always_root_with_empty_third_party_sets`: Edge case with empty sets
+- `test_rcp_always_root_fails_fast_when_wildcards_present`: Verifies fail-fast behavior when wildcards detected
+- Updated 4 existing tests to pass `rcp_always_root=False` for testing non-aggregated behavior
+
+### Critical Fix: Wildcard Detection
+Added fail-fast check when `rcp_always_root=True`:
+- If ANY account has wildcard principals, root-level RCP deployment is skipped
+- Logs a warning message listing the accounts with wildcards
+- Returns empty recommendation list to prevent applying RCPs at root
+- **Rationale**: Root-level RCPs apply to ALL accounts; accounts with wildcards cannot have RCPs deployed as they would conflict with wildcard trust policies

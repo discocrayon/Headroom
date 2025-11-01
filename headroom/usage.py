@@ -78,6 +78,15 @@ def parse_cli_args() -> argparse.Namespace:
         help='Exclude account IDs from result files and filenames'
     )
 
+    # RCP options
+    parser.add_argument(
+        '--no-rcp-always-root',
+        dest='rcp_always_root',
+        action='store_false',
+        default=argparse.SUPPRESS,
+        help='Disable always deploying RCPs at root level (default: enabled)'
+    )
+
     return parser.parse_args()
 
 

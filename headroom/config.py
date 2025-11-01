@@ -24,3 +24,5 @@ class HeadroomConfig(BaseModel):
     results_dir: str = DEFAULT_RESULTS_DIR
     # Base directory where Terraform SCP files are generated
     scps_dir: str = DEFAULT_SCPS_DIR
+    # Always deploy RCPs at root level with aggregated third-party account IDs
+    rcp_always_root: bool = True

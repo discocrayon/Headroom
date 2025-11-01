@@ -298,7 +298,7 @@ class TestDetermineRcpPlacement:
         }
         accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
 
         assert len(recommendations) == 2
 
@@ -326,7 +326,7 @@ class TestDetermineRcpPlacement:
         }
         accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
 
         assert len(recommendations) == 3
         assert all(r.recommended_level == "account" for r in recommendations)
@@ -358,7 +358,7 @@ class TestDetermineRcpPlacement:
         }
         accounts_with_wildcards: Set[str] = {"222222222222"}
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
 
         # Should only get account-level recommendations, no OU-level for ou-1111
         assert len(recommendations) == 2
@@ -379,7 +379,7 @@ class TestDetermineRcpPlacement:
         }
         accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
 
         # Account 111111111111 and 222222222222 should get OU-level RCP
         # Account 999999999999 should get account-level (not in hierarchy, can't be part of OU)
@@ -391,6 +391,98 @@ class TestDetermineRcpPlacement:
 
         assert len(account_recs) == 1
         assert account_recs[0].affected_accounts == ["999999999999"]
+
+    def test_rcp_always_root_aggregates_all_third_party_accounts(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test rcp_always_root=True aggregates all third-party accounts at root level."""
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": {"999999999999", "888888888888"},
+            "222222222222": {"999999999999", "777777777777"},
+            "333333333333": {"666666666666"}
+        }
+        accounts_with_wildcards: Set[str] = set()
+
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=True)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "root"
+        assert recommendations[0].target_ou_id is None
+        assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
+        assert set(recommendations[0].third_party_account_ids) == {"666666666666", "777777777777", "888888888888", "999999999999"}
+        assert "Aggregated all third-party accounts" in recommendations[0].reasoning
+
+    def test_rcp_always_root_with_default_parameter(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that rcp_always_root defaults to True when not specified."""
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"888888888888"}
+        }
+        accounts_with_wildcards: Set[str] = set()
+
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "root"
+        assert set(recommendations[0].third_party_account_ids) == {"888888888888", "999999999999"}
+
+    def test_rcp_always_root_false_with_identical_accounts_uses_natural_root(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test rcp_always_root=False with identical accounts naturally recommends root."""
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"999999999999"},
+            "333333333333": {"999999999999"}
+        }
+        accounts_with_wildcards: Set[str] = set()
+
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "root"
+        assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert "All 3 accounts have identical" in recommendations[0].reasoning
+
+    def test_rcp_always_root_with_empty_third_party_sets(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test rcp_always_root=True with accounts that have empty third-party sets."""
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": set(),
+            "222222222222": set()
+        }
+        accounts_with_wildcards: Set[str] = set()
+
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=True)
+
+        assert len(recommendations) == 0
+
+    def test_rcp_always_root_fails_fast_when_wildcards_present(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy,
+        caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Test rcp_always_root=True returns empty list when any account has wildcards."""
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"888888888888"}
+        }
+        accounts_with_wildcards: Set[str] = {"333333333333", "444444444444"}
+
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=True)
+
+        assert len(recommendations) == 0
+        assert "Cannot deploy RCP at root level" in caplog.text
+        assert "2 account(s) have wildcard principals" in caplog.text
+        assert "333333333333" in caplog.text
+        assert "444444444444" in caplog.text
 
 
 class TestGenerateRcpTerraform:
