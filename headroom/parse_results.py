@@ -128,7 +128,7 @@ def determine_scp_placement(
         for result in check_results:
             account_info = organization_hierarchy.accounts.get(result.account_id)
             if not account_info:
-                logger.warning(f"Account {result.account_id} not found in organization hierarchy")
+                logger.warning(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
                 continue
 
             parent_ou_id = account_info.parent_ou_id

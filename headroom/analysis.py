@@ -72,6 +72,7 @@ def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -
     for page in paginator.paginate():
         for acct in page.get("Accounts", []):
             account_id = acct["Id"]
+            account_name = acct.get("Name", account_id)
             # Note: It is useful to have results for the management account, too
             # However, that is not what I want to focus on now
             if account_id == config.management_account_id:
@@ -81,7 +82,7 @@ def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -
                 tags_resp = org_client.list_tags_for_resource(ResourceId=account_id)
                 tags = {tag["Key"]: tag["Value"] for tag in tags_resp.get("Tags", [])}
             except ClientError as e:
-                logger.warning(f"Could not fetch tags for account {account_id}: {e}")
+                logger.warning(f"Could not fetch tags for account {account_name} ({account_id}): {e}")
                 tags = {}
             layout: AccountTagLayout = config.account_tag_layout
             environment = tags.get(layout.environment) or "unknown"

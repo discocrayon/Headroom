@@ -519,7 +519,7 @@ class TestSCPPlacementDetermination:
             result = determine_scp_placement(results_data, mock_hierarchy)
 
             # Verify warning was logged
-            mock_logger.warning.assert_called_with("Account 999999999999 not found in organization hierarchy")
+            mock_logger.warning.assert_called_with("Account unknown-account (999999999999) not found in organization hierarchy")
 
         assert len(result) == 1
         assert result[0].recommended_level == "account"  # Should recommend account level

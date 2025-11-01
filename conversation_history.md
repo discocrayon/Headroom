@@ -2612,3 +2612,44 @@ Rename the `third_party_account_ids` terraform module parameter to `third_party_
 - All mypy type checks pass
 - All pre-commit hooks pass (flake8, autopep8, autoflake)
 - Follows repo rules: no dynamic imports, top-level imports only, proper type annotations
+
+## 2025-11-01 - Enhanced Logging to Include Account Names
+
+**Request:**
+Change the logging throughout the codebase to include both account name and account ID for better clarity. Previous logging only showed account IDs which made it harder to identify which accounts were being referenced.
+
+**Changes:**
+1. **headroom/terraform/generate_rcps.py**:
+   - Line 50: Added extraction of account_name from summary
+   - Line 57: Updated log message to include account name: `Account {account_name} ({account_id})`
+   - Line 392: Updated warning for account not found in hierarchy
+
+2. **headroom/analysis.py**:
+   - Line 75: Added extraction of account_name from AWS account data
+   - Line 85: Updated warning to include account name: `Could not fetch tags for account {account_name} ({account_id})`
+
+3. **headroom/terraform/generate_scps.py**:
+   - Line 59: Updated warning for account not found in hierarchy to show account ID clearly
+
+4. **headroom/parse_results.py**:
+   - Line 131: Updated warning to include account name: `Account {result.account_name} ({result.account_id})`
+
+**Note:**
+Some logging statements in analysis.py already used `account_identifier` which was formatted as `{account_info.name}_{account_info.account_id}`, so those did not need updates (lines 219, 222, 248, 251).
+
+**Test Updates:**
+Updated test expectations to match new log format:
+1. **tests/test_generate_scps.py**:
+   - Line 46: Updated expected message to `Account (999999999999) not found in organization hierarchy`
+
+2. **tests/test_parse_results.py**:
+   - Line 522: Updated expected message to `Account unknown-account (999999999999) not found in organization hierarchy`
+
+**Results:**
+- All 240 tests pass
+- 100% code coverage maintained (headroom: 1017 statements, tests: 2455 statements)
+- All mypy type checks pass
+- All pre-commit hooks pass (flake8, autopep8, autoflake)
+- All changes follow consistent format: `Account {name} ({id})` for better readability
+- No linter errors introduced
+- Account names now included in all relevant log messages throughout the codebase

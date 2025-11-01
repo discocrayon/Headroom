@@ -56,7 +56,7 @@ def generate_scp_terraform(
     for account_id, account_recs in account_recommendations.items():
         account_info = organization_hierarchy.accounts.get(account_id)
         if not account_info:
-            logger.warning(f"Account {account_id} not found in organization hierarchy")
+            logger.warning(f"Account ({account_id}) not found in organization hierarchy")
             continue
 
         # Convert account name to terraform-friendly format using same logic as generate_org_info.py

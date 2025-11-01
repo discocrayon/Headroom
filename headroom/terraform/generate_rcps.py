@@ -47,13 +47,14 @@ def parse_rcp_result_files(results_dir: str) -> RCPParseResult:
 
             summary = data.get("summary", {})
             account_id = summary.get("account_id", "")
+            account_name = summary.get("account_name", "")
             third_party_accounts = summary.get("unique_third_party_accounts", [])
             roles_with_wildcards = summary.get("roles_with_wildcards", 0)
 
             # Track accounts with wildcard principals separately
             if roles_with_wildcards > 0:
                 accounts_with_wildcards.add(account_id)
-                logger.info(f"Account {account_id} has {roles_with_wildcards} roles with wildcard principals - cannot deploy RCP")
+                logger.info(f"Account {account_name} ({account_id}) has {roles_with_wildcards} roles with wildcard principals - cannot deploy RCP")
                 continue
 
             if account_id and third_party_accounts:
@@ -388,7 +389,7 @@ def generate_rcp_terraform(
     for account_id, rec in account_recommendations.items():
         account_info = organization_hierarchy.accounts.get(account_id)
         if not account_info:
-            logger.warning(f"Account {account_id} not found in organization hierarchy")
+            logger.warning(f"Account ({account_id}) not found in organization hierarchy")
             continue
 
         account_name = make_safe_variable_name(account_info.account_name)

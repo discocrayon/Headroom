@@ -43,7 +43,7 @@ def test_generate_scp_terraform_warn_missing_account(tmp_path: Path, caplog: pyt
     with caplog.at_level("WARNING"):
         generate_scp_terraform([rec], org, str(tmp_path))
 
-    assert any("Account 999999999999 not found in organization hierarchy" in m for m in caplog.messages)
+    assert any("Account (999999999999) not found in organization hierarchy" in m for m in caplog.messages)
     assert not any(tmp_path.iterdir())
 
 
