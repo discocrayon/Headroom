@@ -66,12 +66,12 @@ class TestCheckThirdPartyRoleAccess:
             assert summary["account_id"] == "111111111111"
             assert summary["check"] == "third_party_role_access"
             assert summary["total_roles_analyzed"] == 2
-            assert summary["roles_with_third_party_access"] == 2
+            assert summary["roles_third_parties_can_access"] == 2
             assert summary["roles_with_wildcards"] == 0
             assert summary["third_party_account_count"] == 3
             assert set(summary["unique_third_party_accounts"]) == {"777777777777", "888888888888", "999999999999"}
 
-            assert len(results_data["roles_with_third_party_access"]) == 2
+            assert len(results_data["roles_third_parties_can_access"]) == 2
             assert len(results_data["roles_with_wildcards"]) == 0
 
             assert result == {"777777777777", "888888888888", "999999999999"}
@@ -112,7 +112,7 @@ class TestCheckThirdPartyRoleAccess:
             summary = results_data["summary"]
 
             assert summary["roles_with_wildcards"] == 1
-            assert summary["roles_with_third_party_access"] == 0
+            assert summary["roles_third_parties_can_access"] == 0
             assert summary["third_party_account_count"] == 0
 
             assert len(results_data["roles_with_wildcards"]) == 1
@@ -155,7 +155,7 @@ class TestCheckThirdPartyRoleAccess:
             results_data = write_call_args[1]["results_data"]
 
             assert len(results_data["roles_with_wildcards"]) == 1
-            assert len(results_data["roles_with_third_party_access"]) == 1
+            assert len(results_data["roles_third_parties_can_access"]) == 1
 
             assert result == {"999999999999"}
 
@@ -188,7 +188,7 @@ class TestCheckThirdPartyRoleAccess:
             summary = results_data["summary"]
 
             assert summary["total_roles_analyzed"] == 0
-            assert summary["roles_with_third_party_access"] == 0
+            assert summary["roles_third_parties_can_access"] == 0
             assert summary["roles_with_wildcards"] == 0
             assert summary["third_party_account_count"] == 0
 
@@ -263,17 +263,17 @@ class TestCheckThirdPartyRoleAccess:
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]
 
-            assert set(results_data.keys()) == {"summary", "roles_with_third_party_access", "roles_with_wildcards"}
+            assert set(results_data.keys()) == {"summary", "roles_third_parties_can_access", "roles_with_wildcards"}
 
             summary = results_data["summary"]
             expected_summary_keys = {
                 "account_name", "account_id", "check", "total_roles_analyzed",
-                "roles_with_third_party_access", "roles_with_wildcards",
+                "roles_third_parties_can_access", "roles_with_wildcards",
                 "unique_third_party_accounts", "third_party_account_count"
             }
             assert set(summary.keys()) == expected_summary_keys
 
-            for role in results_data["roles_with_third_party_access"]:
+            for role in results_data["roles_third_parties_can_access"]:
                 expected_keys = {"role_name", "role_arn", "third_party_account_ids", "has_wildcard_principal"}
                 assert set(role.keys()) == expected_keys
 

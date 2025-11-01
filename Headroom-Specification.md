@@ -826,11 +826,11 @@ def check_third_party_role_access(
     "account_id": "111111111111",
     "check": "check_third_party_role_access",
     "total_roles_analyzed": 50,
-    "roles_with_third_party_access": 3,
+    "roles_third_parties_can_access": 3,
     "roles_with_wildcards": 1,
     "unique_third_party_accounts": 2
   },
-  "roles_with_third_party_access": [
+  "roles_third_parties_can_access": [
     {
       "role_name": "CrossAccountRole",
       "role_arn": "arn:aws:iam::111111111111:role/CrossAccountRole",

@@ -519,7 +519,7 @@ class TestRedactAccountIdsFromArns:
                     "account_id": account_id,
                     "check": check_name,
                 },
-                "roles_with_third_party_access": [
+                "roles_third_parties_can_access": [
                     {
                         "role_name": "ThirdPartyRole",
                         "role_arn": "arn:aws:iam::111111111111:role/ThirdPartyRole",
@@ -543,7 +543,7 @@ class TestRedactAccountIdsFromArns:
             with open(expected_path, 'r') as f:
                 loaded_data = json.load(f)
                 assert "account_id" not in loaded_data["summary"]
-                assert loaded_data["roles_with_third_party_access"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/ThirdPartyRole"
+                assert loaded_data["roles_third_parties_can_access"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/ThirdPartyRole"
 
     def test_write_check_results_preserves_arns_when_exclude_account_ids_false(self) -> None:
         """Test that ARNs are NOT redacted when exclude_account_ids=False."""
@@ -557,7 +557,7 @@ class TestRedactAccountIdsFromArns:
                     "account_id": account_id,
                     "check": check_name,
                 },
-                "roles_with_third_party_access": [
+                "roles_third_parties_can_access": [
                     {
                         "role_name": "ThirdPartyRole",
                         "role_arn": "arn:aws:iam::111111111111:role/ThirdPartyRole",
@@ -581,4 +581,4 @@ class TestRedactAccountIdsFromArns:
             with open(expected_path, 'r') as f:
                 loaded_data = json.load(f)
                 assert loaded_data["summary"]["account_id"] == account_id
-                assert loaded_data["roles_with_third_party_access"][0]["role_arn"] == "arn:aws:iam::111111111111:role/ThirdPartyRole"
+                assert loaded_data["roles_third_parties_can_access"][0]["role_arn"] == "arn:aws:iam::111111111111:role/ThirdPartyRole"

@@ -2731,3 +2731,28 @@ Updated 24 tests to expect RuntimeError exceptions instead of graceful error han
 - No linter errors
 - All code now follows fail-fast principle
 - Only the "Get tags for the account" code continues on error as requested
+
+---
+
+## Saturday, November 1, 2025
+
+**User Request:**
+Rephrase "roles_with_third_party_access" to be "roles_third_parties_can_access"
+
+**Actions Taken:**
+Renamed the variable/key `roles_with_third_party_access` to `roles_third_parties_can_access` throughout the entire codebase for better clarity and readability.
+
+**Files Modified:**
+1. **headroom/checks/check_third_party_role_access.py**: Updated variable name and all references (4 occurrences)
+2. **tests/test_checks_third_party_role_access.py**: Updated all test assertions and references (10 occurrences)
+3. **tests/test_write_results.py**: Updated test data and assertions (4 occurrences)
+4. **Headroom-Specification.md**: Updated documentation to reflect new naming (2 occurrences)
+5. **test_environment/headroom_results/third_party_role_access/shared-foo-bar.json**: Updated JSON keys (2 occurrences)
+6. **test_environment/headroom_results/third_party_role_access/acme-co.json**: Updated JSON keys (2 occurrences)
+7. **test_environment/headroom_results/third_party_role_access/security-tooling.json**: Updated JSON keys (2 occurrences)
+8. **test_environment/headroom_results/third_party_role_access/fort-knox.json**: Updated JSON keys (2 occurrences)
+
+**Results:**
+- Total of 27 occurrences replaced across 8 files
+- All replacements verified with no remaining instances of old naming
+- The new naming is more intuitive and better conveys the meaning: "roles that third parties can access"

@@ -45,7 +45,7 @@ def check_third_party_role_access(
     )
 
     # Process results
-    roles_with_third_party_access = []
+    roles_third_parties_can_access = []
     roles_with_wildcards = []
     all_third_party_accounts: Set[str] = set()
 
@@ -63,7 +63,7 @@ def check_third_party_role_access(
         if result.has_wildcard_principal:
             roles_with_wildcards.append(result_dict)
         if result.third_party_account_ids:
-            roles_with_third_party_access.append(result_dict)
+            roles_third_parties_can_access.append(result_dict)
 
     # Create summary
     summary = {
@@ -71,7 +71,7 @@ def check_third_party_role_access(
         "account_id": account_id,
         "check": "third_party_role_access",
         "total_roles_analyzed": len(trust_policy_results),
-        "roles_with_third_party_access": len(roles_with_third_party_access),
+        "roles_third_parties_can_access": len(roles_third_parties_can_access),
         "roles_with_wildcards": len(roles_with_wildcards),
         "unique_third_party_accounts": sorted(list(all_third_party_accounts)),
         "third_party_account_count": len(all_third_party_accounts)
@@ -80,7 +80,7 @@ def check_third_party_role_access(
     # Prepare full results
     results = {
         "summary": summary,
-        "roles_with_third_party_access": roles_with_third_party_access,
+        "roles_third_parties_can_access": roles_third_parties_can_access,
         "roles_with_wildcards": roles_with_wildcards
     }
 
@@ -96,7 +96,7 @@ def check_third_party_role_access(
 
     account_identifier = f"{account_name}_{account_id}"
     print(f"Third-party role access check completed for {account_identifier}: "
-          f"{len(roles_with_third_party_access)} roles with third-party access, "
+          f"{len(roles_third_parties_can_access)} roles with third-party access, "
           f"{len(roles_with_wildcards)} roles with wildcards, "
           f"{len(all_third_party_accounts)} unique third-party accounts")
 
