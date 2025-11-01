@@ -1,0 +1,116 @@
+{
+  "summary": {
+    "account_name": "shared-foo-bar",
+    "check": "third_party_role_access",
+    "total_roles_analyzed": 11,
+    "roles_with_third_party_access": 10,
+    "roles_with_wildcards": 1,
+    "unique_third_party_accounts": [
+      "062897671886",
+      "081802104111",
+      "151784055945",
+      "242987662583",
+      "292230061137",
+      "365761988620",
+      "517716713836",
+      "672188301118",
+      "749430749651",
+      "758245563457",
+      "978576646331"
+    ],
+    "third_party_account_count": 11
+  },
+  "roles_with_third_party_access": [
+    {
+      "role_name": "ComplexMultiStatementRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/ComplexMultiStatementRole",
+      "third_party_account_ids": [
+        "062897671886"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "ConditionalThirdPartyRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/ConditionalThirdPartyRole",
+      "third_party_account_ids": [
+        "151784055945"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "MixedFormatsRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/MixedFormatsRole",
+      "third_party_account_ids": [
+        "242987662583",
+        "672188301118"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "MixedPrincipalsRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/MixedPrincipalsRole",
+      "third_party_account_ids": [
+        "365761988620"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "OrgAccountCrossAccess",
+      "role_arn": "arn:aws:iam::REDACTED:role/OrgAccountCrossAccess",
+      "third_party_account_ids": [
+        "151784055945"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "PlainAccountIdRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/PlainAccountIdRole",
+      "third_party_account_ids": [
+        "081802104111"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "ThirdPartyUserRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/ThirdPartyUserRole",
+      "third_party_account_ids": [
+        "978576646331"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "ThirdPartyVendorA",
+      "role_arn": "arn:aws:iam::REDACTED:role/ThirdPartyVendorA",
+      "third_party_account_ids": [
+        "749430749651"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "ThirdPartyVendorB",
+      "role_arn": "arn:aws:iam::REDACTED:role/ThirdPartyVendorB",
+      "third_party_account_ids": [
+        "517716713836",
+        "758245563457"
+      ],
+      "has_wildcard_principal": false
+    },
+    {
+      "role_name": "UltraComplexRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/UltraComplexRole",
+      "third_party_account_ids": [
+        "292230061137",
+        "749430749651"
+      ],
+      "has_wildcard_principal": false
+    }
+  ],
+  "roles_with_wildcards": [
+    {
+      "role_name": "WildcardRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/WildcardRole",
+      "third_party_account_ids": [],
+      "has_wildcard_principal": true
+    }
+  ]
+}

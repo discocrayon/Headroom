@@ -1,0 +1,13 @@
+{
+  "summary": {
+    "account_name": "acme-co",
+    "check": "third_party_role_access",
+    "total_roles_analyzed": 0,
+    "roles_with_third_party_access": 0,
+    "roles_with_wildcards": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0
+  },
+  "roles_with_third_party_access": [],
+  "roles_with_wildcards": []
+}

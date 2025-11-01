@@ -5,6 +5,8 @@ module "scps_root" {
   source = "../modules/scps"
   target_id = local.root_ou_id
 
+  # third_party_role_access
+  third_party_role_access = true
   # deny_imds_v1_ec2
   deny_imds_v1_ec2 = true
 }

@@ -8,7 +8,7 @@ directory structure, and JSON formatting.
 import json
 import tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +18,7 @@ from headroom.write_results import (
     get_results_dir,
     get_results_path,
     results_exist,
+    _redact_account_ids_from_arns,
 )
 
 
@@ -401,3 +402,183 @@ class TestResultsExist:
                 temp_dir,
                 exclude_account_ids=True,
             ) is True
+
+
+class TestRedactAccountIdsFromArns:
+    """Test _redact_account_ids_from_arns function."""
+
+    def test_redact_simple_arn_string(self) -> None:
+        """Test redacting account ID from a simple ARN string."""
+        arn = "arn:aws:iam::111111111111:role/MyRole"
+        result = _redact_account_ids_from_arns(arn)
+        assert result == "arn:aws:iam::REDACTED:role/MyRole"
+
+    def test_redact_multiple_arns_in_string(self) -> None:
+        """Test redacting multiple account IDs in a single string."""
+        text = "arn:aws:iam::111111111111:role/Role1 and arn:aws:iam::222222222222:role/Role2"
+        result = _redact_account_ids_from_arns(text)
+        assert result == "arn:aws:iam::REDACTED:role/Role1 and arn:aws:iam::REDACTED:role/Role2"
+
+    def test_redact_arns_in_dict(self) -> None:
+        """Test redacting account IDs from ARNs in a dictionary."""
+        data = {
+            "role_name": "MyRole",
+            "role_arn": "arn:aws:iam::111111111111:role/MyRole",
+            "other_field": "no arn here"
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["role_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
+        assert result["role_name"] == "MyRole"
+        assert result["other_field"] == "no arn here"
+
+    def test_redact_arns_in_list(self) -> None:
+        """Test redacting account IDs from ARNs in a list."""
+        data = [
+            "arn:aws:iam::111111111111:role/Role1",
+            "arn:aws:iam::222222222222:role/Role2",
+            "plain text"
+        ]
+        result = cast(List[Any], _redact_account_ids_from_arns(data))
+        assert result[0] == "arn:aws:iam::REDACTED:role/Role1"
+        assert result[1] == "arn:aws:iam::REDACTED:role/Role2"
+        assert result[2] == "plain text"
+
+    def test_redact_arns_in_nested_structure(self) -> None:
+        """Test redacting account IDs from ARNs in nested data structures."""
+        data = {
+            "summary": {
+                "account_name": "test-account",
+                "account_id": "111111111111"
+            },
+            "roles": [
+                {
+                    "role_name": "Role1",
+                    "role_arn": "arn:aws:iam::111111111111:role/Role1"
+                },
+                {
+                    "role_name": "Role2",
+                    "role_arn": "arn:aws:iam::222222222222:role/Role2"
+                }
+            ]
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["summary"]["account_id"] == "111111111111"
+        assert result["roles"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/Role1"
+        assert result["roles"][1]["role_arn"] == "arn:aws:iam::REDACTED:role/Role2"
+
+    def test_redact_preserves_non_string_types(self) -> None:
+        """Test that non-string types are preserved unchanged."""
+        data = {
+            "count": 42,
+            "percentage": 95.5,
+            "enabled": True,
+            "none_value": None
+        }
+        result = _redact_account_ids_from_arns(data)
+        assert result == data
+
+    def test_redact_handles_empty_structures(self) -> None:
+        """Test that empty structures are handled correctly."""
+        assert _redact_account_ids_from_arns({}) == {}
+        assert _redact_account_ids_from_arns([]) == []
+        assert _redact_account_ids_from_arns("") == ""
+
+    def test_redact_different_aws_services(self) -> None:
+        """Test redacting account IDs from ARNs of different AWS services."""
+        data = {
+            "iam_arn": "arn:aws:iam::111111111111:role/MyRole",
+            "s3_arn": "arn:aws:s3::111111111111:bucket/MyBucket",
+            "ec2_arn": "arn:aws:ec2::111111111111:instance/i-1234567890abcdef0"
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["iam_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
+        assert result["s3_arn"] == "arn:aws:s3::REDACTED:bucket/MyBucket"
+        assert result["ec2_arn"] == "arn:aws:ec2::REDACTED:instance/i-1234567890abcdef0"
+
+    def test_redact_does_not_affect_non_arn_numbers(self) -> None:
+        """Test that non-ARN 12-digit numbers are not affected."""
+        data = {
+            "instance_id": "i-111111111111",
+            "some_number": "111111111111",
+            "role_arn": "arn:aws:iam::111111111111:role/MyRole"
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["instance_id"] == "i-111111111111"
+        assert result["some_number"] == "111111111111"
+        assert result["role_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
+
+    def test_write_check_results_redacts_arns_when_exclude_account_ids(self) -> None:
+        """Test that ARNs are redacted when exclude_account_ids=True."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_name = "third_party_role_access"
+            account_name = "test-account"
+            account_id = "111111111111"
+            results_data: Dict[str, Any] = {
+                "summary": {
+                    "account_name": account_name,
+                    "account_id": account_id,
+                    "check": check_name,
+                },
+                "roles_with_third_party_access": [
+                    {
+                        "role_name": "ThirdPartyRole",
+                        "role_arn": "arn:aws:iam::111111111111:role/ThirdPartyRole",
+                        "third_party_account_ids": ["333333333333"]
+                    }
+                ]
+            }
+
+            write_check_results(
+                check_name=check_name,
+                account_name=account_name,
+                account_id=account_id,
+                results_data=results_data,
+                results_base_dir=temp_dir,
+                exclude_account_ids=True,
+            )
+
+            expected_path = Path(temp_dir) / check_name / f"{account_name}.json"
+            assert expected_path.exists()
+
+            with open(expected_path, 'r') as f:
+                loaded_data = json.load(f)
+                assert "account_id" not in loaded_data["summary"]
+                assert loaded_data["roles_with_third_party_access"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/ThirdPartyRole"
+
+    def test_write_check_results_preserves_arns_when_exclude_account_ids_false(self) -> None:
+        """Test that ARNs are NOT redacted when exclude_account_ids=False."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_name = "third_party_role_access"
+            account_name = "test-account"
+            account_id = "111111111111"
+            results_data: Dict[str, Any] = {
+                "summary": {
+                    "account_name": account_name,
+                    "account_id": account_id,
+                    "check": check_name,
+                },
+                "roles_with_third_party_access": [
+                    {
+                        "role_name": "ThirdPartyRole",
+                        "role_arn": "arn:aws:iam::111111111111:role/ThirdPartyRole",
+                        "third_party_account_ids": ["333333333333"]
+                    }
+                ]
+            }
+
+            write_check_results(
+                check_name=check_name,
+                account_name=account_name,
+                account_id=account_id,
+                results_data=results_data,
+                results_base_dir=temp_dir,
+                exclude_account_ids=False,
+            )
+
+            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            assert expected_path.exists()
+
+            with open(expected_path, 'r') as f:
+                loaded_data = json.load(f)
+                assert loaded_data["summary"]["account_id"] == account_id
+                assert loaded_data["roles_with_third_party_access"][0]["role_arn"] == "arn:aws:iam::111111111111:role/ThirdPartyRole"

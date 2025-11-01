@@ -9,11 +9,36 @@ mirroring the parse_results.py module for reading results.
 import json
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Union, cast
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+
+def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, Any]) -> Union[Dict[str, Any], List[Any], str, Any]:
+    """
+    Recursively redact account IDs from ARNs in data structures.
+
+    Replaces 12-digit account IDs in ARNs with "REDACTED".
+    ARN format: arn:aws:service::123456789012:resource
+    Becomes: arn:aws:service::REDACTED:resource
+
+    Args:
+        data: Data structure to process (dict, list, str, or primitive)
+
+    Returns:
+        Data structure with account IDs redacted from ARNs
+    """
+    if isinstance(data, dict):
+        return {key: _redact_account_ids_from_arns(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [_redact_account_ids_from_arns(item) for item in data]
+    elif isinstance(data, str):
+        return re.sub(r'(arn:aws:[^:]+::)(\d{12})(:)', r'\1REDACTED\3', data)
+    else:
+        return data
 
 
 def write_check_results(
@@ -54,11 +79,13 @@ def write_check_results(
     )
 
     # If excluding account IDs, remove account_id from the results data
+    # and redact account IDs from ARNs
     data_to_write = results_data
-    if exclude_account_ids and "summary" in results_data:
-        data_to_write = results_data.copy()
-        data_to_write["summary"] = results_data["summary"].copy()
-        data_to_write["summary"].pop("account_id", None)
+    if exclude_account_ids:
+        data_to_write = cast(Dict[str, Any], _redact_account_ids_from_arns(results_data))
+        if "summary" in data_to_write:
+            data_to_write["summary"] = data_to_write["summary"].copy()
+            data_to_write["summary"].pop("account_id", None)
 
     try:
         with open(output_file, 'w') as f:
