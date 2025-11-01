@@ -1549,3 +1549,15 @@ Added fail-fast check when `rcp_always_root=True`:
 - Logs a warning message listing the accounts with wildcards
 - Returns empty recommendation list to prevent applying RCPs at root
 - **Rationale**: Root-level RCPs apply to ALL accounts; accounts with wildcards cannot have RCPs deployed as they would conflict with wildcard trust policies
+
+### Specification Update
+Updated `Headroom-Specification.md` to document the new features:
+- Version updated to 4.1 with last updated date of 2025-11-01
+- Added `rcp_always_root` configuration field with default value of `true`
+- Added `--no-rcp-always-root` CLI argument documentation
+- Updated `determine_rcp_placement()` function signature and logic documentation
+- Added detailed placement logic documentation for both modes (always-root and intelligent placement)
+- Updated test counts to 227 tests with 996 statements in headroom/ and 2361 in tests/
+- Added two new success criteria:
+  - **Criterion 17**: RCP Placement Optimization with configurable always-root mode
+  - **Criterion 18**: Wildcard Safety with fail-fast validation

@@ -1,10 +1,10 @@
 # Headroom - AWS Multi-Account Security Analysis Tool
 ## Product Design Requirements (PDR)
 
-**Version:** 4.0
+**Version:** 4.1
 **Created:** 2025-10-26
-**Last Updated:** 2025-10-31
-**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation + RCP Analysis + RCP Auto-Generation)
+**Last Updated:** 2025-11-01
+**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation + RCP Analysis + RCP Auto-Generation + RCP Placement Optimization)
 
 ---
 
@@ -42,6 +42,7 @@ exclude_account_ids: boolean                      # Exclude account IDs from res
 use_account_name_from_tags: boolean              # If true, use account tag for name; if false, use AWS account name
 results_dir: string (optional)                   # Base directory for results (default: test_environment/headroom_results)
 scps_dir: string (optional)                      # Base directory for SCP Terraform files (default: test_environment/scps)
+rcp_always_root: boolean (default: true)         # Always deploy RCPs at root level with aggregated third-party accounts
 account_tag_layout:
   environment: string   # Tag key for environment identification (optional tag, falls back to "unknown")
   name: string         # Tag key for account name (optional tag, used when use_account_name_from_tags is true)
@@ -973,12 +974,19 @@ def parse_rcp_result_files(results_dir: str) -> Tuple[Dict[str, Set[str]], Set[s
 def determine_rcp_placement(
     account_third_party_map: Dict[str, Set[str]],
     organization_hierarchy: OrganizationHierarchy,
-    accounts_with_wildcards: Set[str]
+    accounts_with_wildcards: Set[str],
+    rcp_always_root: bool = True
 ) -> List[RCPPlacementRecommendations]:
     """
     Determine optimal RCP placement levels based on third-party account patterns.
 
-    Logic:
+    Logic when rcp_always_root=True (default):
+    - Aggregates ALL third-party account IDs from all accounts
+    - Deploys single RCP at root level with combined whitelist
+    - Fails fast if ANY account has wildcard principals (returns empty list with warning)
+    - Rationale: Root-level RCPs apply to ALL accounts; wildcards make this unsafe
+
+    Logic when rcp_always_root=False (intelligent placement):
     - Root level: If ALL accounts have identical third-party account sets
     - OU level: If ALL accounts in an OU have identical third-party account sets
               AND no accounts in that OU have wildcards
@@ -1016,6 +1024,15 @@ class RCPPlacementRecommendations:
 ```
 
 **Placement Logic:**
+
+**When `rcp_always_root=True` (Default):**
+- **Aggregation Mode:** All third-party account IDs from all accounts are combined
+- **Root Deployment:** Single RCP deployed at organization root with aggregated whitelist
+- **Wildcard Fail-Fast:** If ANY account has wildcard principals, NO RCP is deployed (returns empty list)
+- **Safety Rationale:** Root-level RCPs apply to ALL accounts in organization; wildcards make this unsafe
+- **Warning Logging:** Clear warning logged when wildcards prevent root deployment, listing affected accounts
+
+**When `rcp_always_root=False` (Intelligent Placement):**
 - **Root Level:** Recommended when all accounts in organization have identical third-party account sets
 - **OU Level:** Recommended when all accounts in OU have identical third-party account sets AND no wildcards in OU
 - **Account Level:** Recommended for accounts with unique third-party requirements or accounts in OUs with wildcards
@@ -1034,9 +1051,9 @@ class RCPPlacementRecommendations:
 **Testing Strategy:**
 - **IAM Analysis Tests:** 27 tests covering principal extraction, wildcard detection, exception handling
 - **Check Tests:** 6 tests covering aggregation, wildcards, empty results
-- **RCP Generation Tests:** 19 tests covering parsing, placement, wildcard safety, Terraform generation
+- **RCP Generation Tests:** 25 tests covering parsing, placement, wildcard safety, Terraform generation, always-root mode
 - **Integration Tests:** End-to-end RCP display and generation flow
-- **100% Coverage:** All RCP-related code fully covered (221 total tests passing)
+- **100% Coverage:** All RCP-related code fully covered (227 total tests passing, 996 statements in headroom/, 2361 in tests/)
 
 **Code Quality:**
 - **Specific Exceptions:** All exception handlers catch specific types (`json.JSONDecodeError`, `ClientError`, custom exceptions)
@@ -1170,8 +1187,10 @@ class RCPPlacementRecommendations:
 - ✅ Principal type validation (AWS, Service, Federated)
 - ✅ Mixed principal support (e.g., `{"AWS": [...], "Service": "..."}`)
 - ✅ Custom exceptions (`UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError`)
-- ✅ Comprehensive test coverage (221 tests, 100% coverage for all modules)
+- ✅ Comprehensive test coverage (227 tests, 100% coverage for all modules)
 - ✅ RCP Terraform module with EnforceOrgIdentities policy
+- ✅ RCP always-root deployment mode with aggregated third-party accounts (configurable via `--no-rcp-always-root`)
+- ✅ Wildcard fail-fast validation for safe root-level RCP deployment
 
 ### Phase 8: SCP Expansion (PLANNED)
 - 🔄 Additional SCP checks for other AWS services
@@ -1214,6 +1233,7 @@ account_tag_layout:
 - `--security-analysis-account-id ID` (optional): Override security analysis account ID from YAML
 - `--management-account-id ID` (optional): Override management account ID from YAML
 - `--exclude-account-ids` (optional): Exclude account IDs from result files and filenames
+- `--no-rcp-always-root` (optional): Disable always deploying RCPs at root level (default: enabled)
 
 **CLI arguments take precedence over YAML configuration values.**
 
@@ -1275,6 +1295,8 @@ mypy headroom/ tests/
 14. **RCP Auto-Generation:** Terraform RCP configurations with third-party account whitelists and wildcard safety ✅
 15. **Exception Handling:** Fail-loud with specific exception types, no silent failures or generic catches ✅
 16. **Principal Validation:** Comprehensive handling of AWS, Service, Federated, and mixed principals ✅
+17. **RCP Placement Optimization:** Configurable always-root mode for simplified deployment with aggregated third-party accounts ✅
+18. **Wildcard Safety:** Fail-fast validation preventing unsafe root-level RCP deployment when wildcards detected ✅
 
 ---
 
