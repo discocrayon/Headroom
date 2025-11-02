@@ -87,7 +87,7 @@ def main() -> None:
                 generate_rcp_terraform(
                     rcp_recommendations,
                     organization_hierarchy,
-                    final_config.scps_dir,
+                    final_config.rcps_dir,
                 )
 
     except ClientError as e:

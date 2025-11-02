@@ -512,6 +512,55 @@ class TestSCPPlacementDetermination:
         with pytest.raises(RuntimeError, match="Account unknown-account \\(999999999999\\) not found in organization hierarchy"):
             determine_scp_placement(results_data, mock_hierarchy)
 
+    def test_determine_scp_placement_missing_account_id_lookup_by_name(self) -> None:
+        """Test handling when account_id is missing but account_name can be found in hierarchy."""
+        results_data = [
+            CheckResult("", "known-account", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
+            CheckResult("222222222222", "another-account", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
+            CheckResult("333333333333", "third-account", "deny_imds_v1_ec2", 2, 0, 1, 3, 33.3),
+        ]
+
+        mock_hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["111111111111", "222222222222"]),
+                "ou-5678": OrganizationalUnit("ou-5678", "Development", None, [], ["333333333333"])
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement("111111111111", "known-account", "ou-1234", ["Production"]),
+                "222222222222": AccountOrgPlacement("222222222222", "another-account", "ou-1234", ["Production"]),
+                "333333333333": AccountOrgPlacement("333333333333", "third-account", "ou-5678", ["Development"])
+            }
+        )
+
+        result = determine_scp_placement(results_data, mock_hierarchy)
+
+        assert len(result) == 1
+        assert result[0].check_name == "deny_imds_v1_ec2"
+        assert result[0].recommended_level == "ou"
+        assert result[0].target_ou_id == "ou-1234"
+        assert set(result[0].affected_accounts) == {"111111111111", "222222222222"}
+
+    def test_determine_scp_placement_missing_account_id_not_found_by_name(self) -> None:
+        """Test handling when account_id is missing and account_name is not in hierarchy."""
+        results_data = [
+            CheckResult("111111111111", "known-account", "deny_imds_v1_ec2", 2, 0, 3, 5, 60.0),
+            CheckResult("", "unknown-account", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
+        ]
+
+        mock_hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["111111111111"])
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement("111111111111", "known-account", "ou-1234", ["Production"])
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="Account unknown-account \\(\\) not found in organization hierarchy"):
+            determine_scp_placement(results_data, mock_hierarchy)
+
 
 class TestParseResultsIntegration:
     """Test integration of parse_results function."""

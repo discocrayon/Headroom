@@ -66,6 +66,8 @@ def check_third_party_role_access(
             roles_third_parties_can_access.append(result_dict)
 
     # Create summary
+    # Wildcards are counted as violations because they make allowlist policies impossible
+    violations_count = len(roles_with_wildcards)
     summary = {
         "account_name": account_name,
         "account_id": account_id,
@@ -73,6 +75,7 @@ def check_third_party_role_access(
         "total_roles_analyzed": len(trust_policy_results),
         "roles_third_parties_can_access": len(roles_third_parties_can_access),
         "roles_with_wildcards": len(roles_with_wildcards),
+        "violations": violations_count,
         "unique_third_party_accounts": sorted(list(all_third_party_accounts)),
         "third_party_account_count": len(all_third_party_accounts)
     }

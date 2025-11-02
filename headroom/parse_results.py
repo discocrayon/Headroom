@@ -124,9 +124,20 @@ def determine_scp_placement(
         ou_violation_status: Dict[str, Dict[str, int]] = {}
 
         for result in check_results:
-            account_info = organization_hierarchy.accounts.get(result.account_id)
-            if not account_info:
-                raise RuntimeError(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
+            # If account_id is missing, look up by account name
+            if not result.account_id:
+                account_info = None
+                for acc_id, acc_data in organization_hierarchy.accounts.items():
+                    if acc_data.account_name == result.account_name:
+                        account_info = acc_data
+                        result.account_id = acc_id
+                        break
+                if not account_info:
+                    raise RuntimeError(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
+            else:
+                account_info = organization_hierarchy.accounts.get(result.account_id)
+                if not account_info:
+                    raise RuntimeError(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
 
             parent_ou_id = account_info.parent_ou_id
             if parent_ou_id not in ou_violation_status:

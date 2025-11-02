@@ -5,6 +5,7 @@
     "total_roles_analyzed": 11,
     "roles_third_parties_can_access": 10,
     "roles_with_wildcards": 1,
+    "violations": 1,
     "unique_third_party_accounts": [
       "062897671886",
       "081802104111",

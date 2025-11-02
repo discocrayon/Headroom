@@ -349,7 +349,7 @@ def _write_terraform_file(filepath: Path, content: str) -> None:
 def generate_rcp_terraform(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_dir: str = "test_environment/scps"
+    output_dir: str = "test_environment/rcps"
 ) -> None:
     """
     Generate Terraform files for RCP deployment based on recommendations.

@@ -68,6 +68,7 @@ class TestCheckThirdPartyRoleAccess:
             assert summary["total_roles_analyzed"] == 2
             assert summary["roles_third_parties_can_access"] == 2
             assert summary["roles_with_wildcards"] == 0
+            assert summary["violations"] == 0
             assert summary["third_party_account_count"] == 3
             assert set(summary["unique_third_party_accounts"]) == {"777777777777", "888888888888", "999999999999"}
 
@@ -112,6 +113,7 @@ class TestCheckThirdPartyRoleAccess:
             summary = results_data["summary"]
 
             assert summary["roles_with_wildcards"] == 1
+            assert summary["violations"] == 1
             assert summary["roles_third_parties_can_access"] == 0
             assert summary["third_party_account_count"] == 0
 
@@ -190,6 +192,7 @@ class TestCheckThirdPartyRoleAccess:
             assert summary["total_roles_analyzed"] == 0
             assert summary["roles_third_parties_can_access"] == 0
             assert summary["roles_with_wildcards"] == 0
+            assert summary["violations"] == 0
             assert summary["third_party_account_count"] == 0
 
             assert result == set()
@@ -269,7 +272,7 @@ class TestCheckThirdPartyRoleAccess:
             expected_summary_keys = {
                 "account_name", "account_id", "check", "total_roles_analyzed",
                 "roles_third_parties_can_access", "roles_with_wildcards",
-                "unique_third_party_accounts", "third_party_account_count"
+                "violations", "unique_third_party_accounts", "third_party_account_count"
             }
             assert set(summary.keys()) == expected_summary_keys
 

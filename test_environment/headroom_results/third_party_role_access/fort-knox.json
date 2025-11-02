@@ -5,6 +5,7 @@
     "total_roles_analyzed": 1,
     "roles_third_parties_can_access": 0,
     "roles_with_wildcards": 1,
+    "violations": 1,
     "unique_third_party_accounts": [],
     "third_party_account_count": 0
   },

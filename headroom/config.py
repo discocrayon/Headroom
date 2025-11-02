@@ -5,6 +5,7 @@ from pydantic import BaseModel
 # Centralized defaults for directories
 DEFAULT_RESULTS_DIR = "test_environment/headroom_results"
 DEFAULT_SCPS_DIR = "test_environment/scps"
+DEFAULT_RCPS_DIR = "test_environment/rcps"
 
 
 class AccountTagLayout(BaseModel):
@@ -24,5 +25,7 @@ class HeadroomConfig(BaseModel):
     results_dir: str = DEFAULT_RESULTS_DIR
     # Base directory where Terraform SCP files are generated
     scps_dir: str = DEFAULT_SCPS_DIR
+    # Base directory where Terraform RCP files are generated
+    rcps_dir: str = DEFAULT_RCPS_DIR
     # Always deploy RCPs at root level with aggregated third-party account IDs
     rcp_always_root: bool = True
