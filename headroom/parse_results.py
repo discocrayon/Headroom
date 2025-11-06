@@ -10,10 +10,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List
 
-import boto3  # type: ignore
-from botocore.exceptions import ClientError  # type: ignore
-
-from .analysis import get_security_analysis_session
+from .analysis import get_security_analysis_session, get_management_account_session
 from .config import HeadroomConfig
 from .aws.organization import analyze_organization_structure
 from .types import (
@@ -218,56 +215,88 @@ def determine_scp_placement(
     return recommendations
 
 
-def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
+def _get_organization_context(config: HeadroomConfig) -> OrganizationHierarchy:
     """
-    Main function to parse results and determine SCP placement recommendations.
+    Get management account session and analyze organization structure.
 
-    Called from main.py after SCP analysis completion.
+    Args:
+        config: Headroom configuration
 
     Returns:
-        List of SCP placement recommendations for each check.
+        Organization hierarchy with OUs and accounts
+
+    Raises:
+        ValueError: If management_account_id is not set
+        RuntimeError: If session creation or organization analysis fails
+    """
+    security_session = get_security_analysis_session(config)
+    mgmt_session = get_management_account_session(config, security_session)
+
+    logger.info("Analyzing organization structure")
+    organization_hierarchy = analyze_organization_structure(mgmt_session)
+    logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs and {len(organization_hierarchy.accounts)} accounts")
+
+    return organization_hierarchy
+
+
+def _print_scp_recommendations(
+    recommendations: List[SCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy
+) -> None:
+    """
+    Print SCP placement recommendations to console.
+
+    Args:
+        recommendations: List of SCP placement recommendations
+        organization_hierarchy: Organization structure for OU name lookups
+    """
+    print("\n" + "=" * 80)
+    print("SCP/RCP PLACEMENT RECOMMENDATIONS")
+    print("=" * 80)
+
+    for rec in recommendations:
+        print(f"\nCheck: {rec.check_name}")
+        print(f"Recommended Level: {rec.recommended_level.upper()}")
+        if rec.target_ou_id:
+            ou_name = organization_hierarchy.organizational_units.get(
+                rec.target_ou_id,
+                OrganizationalUnit("", "", None, [], [])
+            ).name
+            print(f"Target OU: {ou_name} ({rec.target_ou_id})")
+        print(f"Affected Accounts: {len(rec.affected_accounts)}")
+        print(f"Compliance: {rec.compliance_percentage:.1f}%")
+        print(f"Reasoning: {rec.reasoning}")
+        print("-" * 40)
+
+
+def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
+    """
+    Parse SCP results and determine optimal placement recommendations.
+
+    Main orchestration function that coordinates:
+    1. Organization context setup (sessions and structure analysis)
+    2. Result file parsing
+    3. Placement recommendation determination
+    4. Console output of recommendations
+
+    Args:
+        config: Headroom configuration
+
+    Returns:
+        List of SCP placement recommendations for each check
     """
     logger.info("Starting SCP placement analysis")
 
-    # Get security analysis session
-    security_session = get_security_analysis_session(config)
-
-    # Get management account session for Organizations API
-    if not config.management_account_id:
-        logger.error("management_account_id must be set for SCP placement analysis")
-        return []
-
-    role_arn = f"arn:aws:iam::{config.management_account_id}:role/OrgAndAccountInfoReader"
-    sts = security_session.client("sts")
+    # Get organization context (session + structure)
     try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="HeadroomSCPPlacementAnalysisSession"
-        )
-    except ClientError as e:
-        logger.error(f"Failed to assume OrgAndAccountInfoReader role: {e}")
-        return []
-
-    creds = resp["Credentials"]
-    mgmt_session = boto3.Session(
-        aws_access_key_id=creds["AccessKeyId"],
-        aws_secret_access_key=creds["SecretAccessKey"],
-        aws_session_token=creds["SessionToken"]
-    )
-
-    # Analyze organization structure
-    logger.info("Analyzing organization structure")
-    try:
-        organization_hierarchy = analyze_organization_structure(mgmt_session)
-        logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs and {len(organization_hierarchy.accounts)} accounts")
-    except RuntimeError as e:
-        logger.error(f"Failed to analyze organization structure: {e}")
+        organization_hierarchy = _get_organization_context(config)
+    except (ValueError, RuntimeError) as e:
+        logger.error(f"Failed to get organization context: {e}")
         return []
 
     # Parse result files
-    results_dir = config.results_dir
-    logger.info(f"Parsing result files from {results_dir}")
-    results_data = parse_scp_result_files(results_dir)
+    logger.info(f"Parsing result files from {config.results_dir}")
+    results_data = parse_scp_result_files(config.results_dir)
 
     if not results_data:
         logger.warning("No result files found to analyze")
@@ -279,21 +308,8 @@ def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendation
     logger.info("Determining SCP placement recommendations")
     recommendations = determine_scp_placement(results_data, organization_hierarchy)
 
-    # Output recommendations
-    print("\n" + "=" * 80)
-    print("SCP/RCP PLACEMENT RECOMMENDATIONS")
-    print("=" * 80)
-
-    for rec in recommendations:
-        print(f"\nCheck: {rec.check_name}")
-        print(f"Recommended Level: {rec.recommended_level.upper()}")
-        if rec.target_ou_id:
-            ou_name = organization_hierarchy.organizational_units.get(rec.target_ou_id, OrganizationalUnit("", "", None, [], [])).name
-            print(f"Target OU: {ou_name} ({rec.target_ou_id})")
-        print(f"Affected Accounts: {len(rec.affected_accounts)}")
-        print(f"Compliance: {rec.compliance_percentage:.1f}%")
-        print(f"Reasoning: {rec.reasoning}")
-        print("-" * 40)
+    # Output recommendations to console
+    _print_scp_recommendations(recommendations, organization_hierarchy)
 
     logger.info("SCP placement analysis completed")
     return recommendations

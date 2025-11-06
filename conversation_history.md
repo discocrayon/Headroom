@@ -4641,3 +4641,608 @@ All other SCP-related functions already have clear, specific names:
 - **Consistency**: Follows established naming conventions in the codebase
 - **Maintainability**: Makes it immediately clear that this function is SCP-specific, not generic
 - **Documentation**: Self-documenting code reduces need for additional comments
+
+---
+
+## 2025-11-06 - Code Refactoring Analysis: Functions with Misplaced Code
+
+### Request
+User requested analysis of code that doesn't belong in the functions it's in, looking for refactoring opportunities to improve function clarity and single responsibility.
+
+### Analysis
+
+After comprehensive review of the codebase, here are the key refactoring opportunities where code seems to not belong in the function it's in:
+
+#### 1. **main.py - main() function (lines 36-53)**
+
+**Issue**: The `main()` function has AWS session creation and role assumption logic embedded in it.
+
+**Current State**:
+```python
+# Lines 36-53 in main()
+security_session = get_security_analysis_session(final_config)
+if not final_config.management_account_id:
+    return
+
+role_arn = f"arn:aws:iam::{final_config.management_account_id}:role/OrgAndAccountInfoReader"
+sts = security_session.client("sts")
+try:
+    resp = sts.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName="HeadroomTerraformGenerationSession"
+    )
+    creds = resp["Credentials"]
+    mgmt_session = boto3.Session(
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"]
+    )
+```
+
+**Refactoring Opportunity**: Extract this role assumption logic into a new function `get_management_account_session()` in `analysis.py`. This would:
+- Match the pattern of `get_security_analysis_session()` and `get_headroom_session()`
+- Make `main()` more focused on orchestration
+- Reduce duplication (this pattern appears in multiple places)
+
+#### 2. **analysis.py - get_subaccount_information() function (lines 48-102)**
+
+**Issue**: This function does too many things - it mixes AWS API calls, role assumption, tag processing, and data transformation.
+
+**Current responsibilities**:
+1. Assuming the OrgAndAccountInfoReader role (lines 55-69)
+2. Creating Organizations client
+3. Paginating through accounts
+4. Fetching tags for each account (lines 82-87)
+5. Determining name source based on config (lines 90-94)
+6. Building AccountInfo objects
+
+**Refactoring Opportunity**:
+- Extract role assumption to a separate function (see item #1)
+- Extract tag fetching logic to `_fetch_account_tags(org_client, account_id)`
+- Extract name determination logic to `_determine_account_name(account, tags, config)`
+
+This would make the main function flow clearer:
+```python
+def get_subaccount_information(config, mgmt_session):
+    org_client = mgmt_session.client("organizations")
+    accounts = []
+    for account in _paginate_organization_accounts(org_client):
+        if account_id == config.management_account_id:
+            continue
+        tags = _fetch_account_tags(org_client, account_id)
+        name = _determine_account_name(account, tags, config)
+        accounts.append(AccountInfo(...))
+    return accounts
+```
+
+#### 3. **analysis.py - get_all_organization_account_ids() function (lines 105-144)**
+
+**Issue**: Mixes role assumption with business logic.
+
+**Current State**:
+- Lines 116-134: Role assumption code (duplicated from other functions)
+- Lines 136-143: Actual business logic (getting account IDs)
+
+**Refactoring Opportunity**: Use the extracted `get_management_account_session()` function to remove the duplication.
+
+#### 4. **parse_results.py - parse_scp_results() function (lines 221-299)**
+
+**Issue**: This function violates single responsibility principle by doing:
+1. Session management (lines 232-256)
+2. Organization structure analysis (lines 259-265)
+3. Result file parsing (line 270)
+4. Placement determination (line 280)
+5. Console output formatting (lines 283-296)
+
+**Refactoring Opportunity**:
+- Extract session/organization setup to `_get_organization_context(config)` returning a tuple of (mgmt_session, organization_hierarchy)
+- Extract output formatting to `_print_scp_recommendations(recommendations, organization_hierarchy)`
+- This would make the main function clearer:
+```python
+def parse_scp_results(config):
+    logger.info("Starting SCP placement analysis")
+    mgmt_session, organization_hierarchy = _get_organization_context(config)
+    results_data = parse_scp_result_files(config.results_dir)
+    if not results_data:
+        return []
+    recommendations = determine_scp_placement(results_data, organization_hierarchy)
+    _print_scp_recommendations(recommendations, organization_hierarchy)
+    return recommendations
+```
+
+#### 5. **parse_results.py - parse_scp_result_files() function (lines 30-102)**
+
+**Issue**: Mixes file I/O concerns with parsing logic and error handling.
+
+**Current responsibilities**:
+1. Directory traversal and file finding (lines 43-70)
+2. JSON parsing (lines 72-73)
+3. Account ID extraction with fallback logic (lines 78-86)
+4. CheckResult object creation (lines 88-97)
+
+**Refactoring Opportunity**:
+- Extract `_extract_account_id_from_result(summary, filename)` for lines 78-86
+- Extract `_parse_single_result_file(result_file, check_name)` for lines 71-100
+
+#### 6. **generate_rcps.py - parse_rcp_result_files() function (lines 27-91)**
+
+**Issue**: Same as #5 - mixes file I/O with business logic.
+
+**Refactoring Opportunity**: Extract similar helper functions for cleaner separation.
+
+#### 7. **generate_org_info.py - _generate_terraform_content() function (lines 54-172)**
+
+**Issue**: This 118-line function does too many distinct things:
+1. Building header content (lines 64-76)
+2. Generating OU data sources (lines 79-92)
+3. Generating locals header (lines 95-103)
+4. Generating OU local variables (lines 106-125)
+5. Generating account local variables (lines 128-168)
+
+**Refactoring Opportunity**: Break into focused functions:
+- `_generate_terraform_header()`
+- `_generate_ou_data_sources(top_level_ous)`
+- `_generate_locals_header()`
+- `_generate_ou_locals(top_level_ous)`
+- `_generate_account_locals(accounts, organizational_units)`
+
+Then the main function becomes:
+```python
+def _generate_terraform_content(organization_hierarchy):
+    parts = []
+    parts.extend(_generate_terraform_header())
+    parts.extend(_generate_ou_data_sources(top_level_ous))
+    parts.extend(_generate_locals_header())
+    parts.extend(_generate_ou_locals(top_level_ous))
+    parts.extend(_generate_account_locals(accounts, organizational_units))
+    parts.append("}")
+    return "\n".join(parts) + "\n"
+```
+
+#### 8. **generate_scps.py - generate_scp_terraform() function (lines 18-157)**
+
+**Issue**: Large function (139 lines) that mixes:
+1. Recommendation grouping logic (lines 37-53)
+2. Account-level Terraform generation (lines 56-89)
+3. OU-level Terraform generation (lines 92-125)
+4. Root-level Terraform generation (lines 128-157)
+
+**Refactoring Opportunity**: Extract three functions:
+- `_generate_account_scp_terraform(account_id, account_recs, organization_hierarchy, output_path)`
+- `_generate_ou_scp_terraform(ou_id, ou_recs, organization_hierarchy, output_path)`
+- `_generate_root_scp_terraform(root_recommendations, output_path)`
+
+The content generation part of each (lines 67-83, 103-118, 135-149) could be further extracted to `_build_scp_terraform_module()` similar to what's done in generate_rcps.py.
+
+#### 9. **generate_rcps.py - generate_rcp_terraform() function (lines 399-486)**
+
+**Issue**: Same pattern as #8 - the function body generation (lines 445-451, 467-469, 475-482) is repetitive and could be extracted.
+
+**Already has** `_build_rcp_terraform_module()` but the file writing and filepath construction logic is duplicated.
+
+**Refactoring Opportunity**: Extract `_write_account_rcp_terraform()`, `_write_ou_rcp_terraform()`, `_write_root_rcp_terraform()` to reduce duplication.
+
+### Summary
+
+**Most Critical Refactorings** (highest impact):
+1. **Extract role assumption patterns** - appears in 4+ places (main.py, analysis.py multiple times, parse_results.py)
+2. **Break up parse_scp_results()** - doing too many unrelated things
+3. **Break up get_subaccount_information()** - mixing concerns
+4. **Break up _generate_terraform_content()** - 118 lines doing 5 distinct things
+
+**Pattern Detected**:
+The codebase has a recurring pattern of mixing:
+- AWS session/role assumption with business logic
+- File I/O with data transformation
+- Data processing with output formatting
+- Large generation functions that could be broken into smaller pieces
+
+**Recommended Approach**:
+Start with #1 (role assumption extraction) as it will benefit multiple functions, then tackle the large functions (#4, #7, #8) that violate single responsibility principle.
+
+---
+
+## 2025-11-06 - Refactoring Part 1: Extract Role Assumption Pattern
+
+### Changes Made
+
+Successfully extracted duplicated AWS role assumption code into a reusable function to improve code clarity and reduce duplication.
+
+#### New Function Created
+
+**`get_management_account_session()`** in `headroom/analysis.py`:
+- Encapsulates the pattern of assuming the `OrgAndAccountInfoReader` role in the management account
+- Takes `config` and `security_session` as parameters
+- Returns a boto3 Session with the assumed role
+- Raises `ValueError` if `management_account_id` is not set
+- Raises `RuntimeError` if role assumption fails
+- Uses consistent session name: `HeadroomOrgAndAccountInfoReaderSession`
+
+#### Files Updated
+
+1. **`headroom/analysis.py`**
+   - Added new `get_management_account_session()` function (lines 48-81)
+   - Updated `get_subaccount_information()` to use new function (removed 17 lines of duplication)
+   - Updated `get_all_organization_account_ids()` to use new function (removed 18 lines of duplication)
+   - Improved docstrings with better Args/Returns/Raises documentation
+
+2. **`headroom/main.py`**
+   - Added import for `get_management_account_session`
+   - Replaced inline role assumption (lines 40-52) with call to `get_management_account_session()`
+   - Removed unused `boto3` import
+   - Simplified exception handling (combined ValueError, RuntimeError, ClientError)
+   - **Net reduction: 11 lines** (from 102 to 91 lines)
+
+3. **`headroom/parse_results.py`**
+   - Added import for `get_management_account_session`
+   - Replaced inline role assumption (lines 240-256) with call to `get_management_account_session()`
+   - Removed unused `boto3` and `ClientError` imports
+   - Improved error handling with specific exception types
+   - **Net reduction: 14 lines** (from 300 to 286 lines)
+
+4. **`tests/test_analysis_extended.py`**
+   - Updated test expectation for session name (changed from `HeadroomOrgAccountListSession` to `HeadroomOrgAndAccountInfoReaderSession`)
+
+#### Impact Summary
+
+**Code Removed**: 60 lines of duplicated role assumption code
+**Code Added**: 33 lines (new function with full docstring)
+**Net Reduction**: 27 lines across the codebase
+
+**Duplication Eliminated**:
+- 4 separate instances of role assumption reduced to 1 reusable function
+- Consistent error handling across all call sites
+- Consistent session naming convention
+
+**Code Quality Improvements**:
+- Single Responsibility: Each function now does one thing
+- DRY Principle: Eliminated copy-paste code
+- Better Error Messages: Centralized error handling with clear exception types
+- Improved Testability: Role assumption logic is now in one place
+- Enhanced Maintainability: Future changes to role assumption only need to be made in one place
+
+#### Test Results
+
+- **All 253 tests passing** ✅
+- **100% code coverage** maintained ✅
+- **No mypy errors** ✅
+- **All pre-commit checks pass** (flake8, autoflake, autopep8) ✅
+
+#### Benefits
+
+1. **Clarity**: Functions now have single, clear responsibilities
+2. **Consistency**: All role assumptions use the same pattern and session name
+3. **Maintainability**: Changes to role assumption logic only need to happen in one place
+4. **Readability**: Main function logic is clearer without low-level AWS API details
+5. **Error Handling**: Consistent, predictable error messages across all usage sites
+
+---
+
+## 2025-11-06 - Refactoring Part 2: Break Up parse_scp_results()
+
+### Changes Made
+
+Successfully decomposed the monolithic `parse_scp_results()` function by extracting focused helper functions that handle distinct responsibilities.
+
+#### Problem Identified
+
+The original `parse_scp_results()` function (65 lines) violated the Single Responsibility Principle by doing 5 different things:
+1. Session management (security session creation)
+2. Role assumption (management account access)
+3. Organization structure analysis
+4. Result file parsing
+5. Console output formatting
+
+This made the function hard to understand, test, and maintain.
+
+#### New Functions Created
+
+**1. `_get_organization_context(config: HeadroomConfig) -> OrganizationHierarchy`**
+- **Responsibility**: Get management session and analyze organization structure
+- **Location**: `headroom/parse_results.py` (lines 218-239)
+- **Returns**: Complete organization hierarchy with OUs and accounts
+- **Raises**: ValueError for config issues, RuntimeError for AWS API failures
+- **Encapsulates**: 22 lines of session/structure setup logic
+
+**2. `_print_scp_recommendations(recommendations, organization_hierarchy) -> None`**
+- **Responsibility**: Format and print SCP recommendations to console
+- **Location**: `headroom/parse_results.py` (lines 242-269)
+- **Side Effect**: Console output only
+- **Encapsulates**: 18 lines of output formatting logic
+
+#### Refactored Function
+
+**`parse_scp_results(config: HeadroomConfig)`** - Now much cleaner:
+- **Before**: 65 lines doing 5 different things
+- **After**: 28 lines focused on orchestration
+- **Structure**: Clear 4-step flow:
+  1. Get organization context
+  2. Parse result files
+  3. Determine placement recommendations
+  4. Print recommendations
+
+**New signature/docstring emphasizes orchestration role**:
+```python
+def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
+    """
+    Parse SCP results and determine optimal placement recommendations.
+
+    Main orchestration function that coordinates:
+    1. Organization context setup (sessions and structure analysis)
+    2. Result file parsing
+    3. Placement recommendation determination
+    4. Console output of recommendations
+    """
+```
+
+#### Files Updated
+
+1. **`headroom/parse_results.py`**
+   - Added `_get_organization_context()` helper function (22 lines)
+   - Added `_print_scp_recommendations()` helper function (28 lines)
+   - Refactored `parse_scp_results()` to use helpers (reduced from 65 to 28 lines)
+   - **Net change**: File reduced from 282 to 316 lines (added 34 lines for better organization)
+
+#### Impact Summary
+
+**Function Size Reduction**:
+- `parse_scp_results()`: 65 lines → 28 lines (57% reduction)
+- Logic extracted to 2 focused helper functions
+
+**Code Quality Improvements**:
+- ✅ **Single Responsibility**: Each function now does one thing well
+- ✅ **Clear Separation**: Session management, output formatting, and orchestration are separate
+- ✅ **Easier Testing**: Helper functions can be tested independently
+- ✅ **Better Readability**: Main function reads like a clear sequence of steps
+- ✅ **Improved Maintainability**: Changes to output format don't affect business logic
+
+**Specific Improvements**:
+1. **Session/Organization Setup**: Extracted to `_get_organization_context()`
+   - Can be reused by other functions needing organization context
+   - Single point of failure for organization analysis
+   - Clear error handling with specific exception types
+
+2. **Output Formatting**: Extracted to `_print_scp_recommendations()`
+   - Isolated side effect (console output) from business logic
+   - Easy to modify output format without touching main flow
+   - Could be easily replaced with JSON output or other formats
+
+3. **Main Function Clarity**: `parse_scp_results()` is now a clear orchestrator
+   - Reads like a high-level workflow
+   - Each step is one line with clear purpose
+   - Easy to understand the overall flow at a glance
+
+#### Test Results
+
+- **All 253 tests passing** ✅
+- **100% code coverage** maintained ✅
+- **No mypy errors** ✅
+- **All pre-commit checks pass** (flake8, autoflake, autopep8) ✅
+
+#### Benefits
+
+1. **Readability**: The main function is now a clear, linear flow
+2. **Testability**: Helper functions can be unit tested independently
+3. **Maintainability**: Changes to specific concerns (session mgmt, output) are localized
+4. **Reusability**: `_get_organization_context()` can be used by other functions
+5. **Separation of Concerns**: Business logic separate from I/O operations
+
+---
+
+## 2025-11-06 - Refactoring Part 3: Break Up get_subaccount_information()
+
+### Changes Made
+
+Successfully decomposed the `get_subaccount_information()` function by extracting tag fetching and name determination logic into focused helper functions.
+
+#### Problem Identified
+
+Even after Part 1's role assumption extraction, `get_subaccount_information()` was still doing too many things:
+1. Getting management session (✅ already extracted in Part 1)
+2. Creating Organizations client and paginating
+3. Fetching tags for each account with error handling (lines 115-120)
+4. Determining account name based on config (lines 123-127)
+5. Extracting metadata from tags
+6. Building AccountInfo objects
+
+The function mixed low-level AWS API calls (tag fetching) with business logic (name determination), making it harder to test and maintain.
+
+#### New Functions Created
+
+**1. `_fetch_account_tags(org_client, account_id, account_name) -> Dict[str, str]`**
+- **Responsibility**: Fetch tags from AWS Organizations API with error handling
+- **Location**: `headroom/analysis.py` (lines 84-101)
+- **Returns**: Dictionary of tag key-value pairs (empty dict on failure)
+- **Error Handling**: Logs warning and returns empty dict if API call fails
+- **Encapsulates**: 7 lines of API call + error handling logic
+
+**2. `_determine_account_name(account, tags, config) -> str`**
+- **Responsibility**: Determine which account name to use based on configuration
+- **Location**: `headroom/analysis.py` (lines 104-120)
+- **Returns**: Account name (from tags if configured, otherwise from API, otherwise account ID)
+- **Logic**: Encapsulates the conditional logic for name source selection
+- **Type Safety**: Uses explicit type annotations to satisfy mypy
+
+#### Refactored Function
+
+**`get_subaccount_information(config, session)`** - Now much cleaner:
+- **Before**: 52 lines mixing concerns
+- **After**: 31 lines focused on orchestration
+- **Reduction**: 40% shorter
+- **Structure**: Clear, readable flow:
+  1. Get management session
+  2. Create client and paginator
+  3. For each account:
+     - Skip management account
+     - Fetch tags (delegated)
+     - Extract metadata
+     - Determine name (delegated)
+     - Create AccountInfo object
+
+**Improved readability**:
+```python
+# Before: Mixed concerns
+try:
+    tags_resp = org_client.list_tags_for_resource(ResourceId=account_id)
+    tags = {tag["Key"]: tag["Value"] for tag in tags_resp.get("Tags", [])}
+except ClientError as e:
+    logger.warning(f"Could not fetch tags for account {account_name} ({account_id}): {e}")
+    tags = {}
+
+# After: Clear delegation
+tags = _fetch_account_tags(org_client, account_id, account_name)
+```
+
+#### Files Updated
+
+1. **`headroom/analysis.py`**
+   - Added `_fetch_account_tags()` helper (18 lines with docstring)
+   - Added `_determine_account_name()` helper (17 lines with docstring)
+   - Refactored `get_subaccount_information()` (reduced from 52 to 31 lines)
+   - Added imports: `Any, Dict` to typing imports
+   - **Net change**: File grew from 376 to 410 lines (added 34 lines for better organization)
+
+#### Impact Summary
+
+**Function Size Reduction**:
+- `get_subaccount_information()`: 52 lines → 31 lines (40% reduction)
+- Logic extracted to 2 focused helper functions
+
+**Code Quality Improvements**:
+- ✅ **Single Responsibility**: Each function has one clear purpose
+- ✅ **Clear Separation**: API calls, business logic, and orchestration are separate
+- ✅ **Easier Testing**: Helper functions can be unit tested independently
+- ✅ **Better Error Handling**: Tag fetching errors are isolated and don't impact flow
+- ✅ **Type Safety**: Explicit type annotations satisfy mypy's strict checking
+
+**Specific Improvements**:
+
+1. **Tag Fetching**: Extracted to `_fetch_account_tags()`
+   - Isolates AWS API call from main logic
+   - Centralizes error handling for tag fetching
+   - Returns sensible default (empty dict) on failure
+   - Easy to mock in tests
+
+2. **Name Determination**: Extracted to `_determine_account_name()`
+   - Encapsulates business logic for name selection
+   - Makes the conditional logic explicit and testable
+   - Type-safe with explicit annotations
+   - Easy to modify name selection rules
+
+3. **Main Function Clarity**: `get_subaccount_information()` is now cleaner
+   - Reads like a high-level workflow
+   - Each step is clear and focused
+   - Helper function names are self-documenting
+   - Easy to understand the overall process
+
+#### Test Results
+
+- **All 253 tests passing** ✅
+- **100% code coverage** maintained ✅
+- **No mypy errors** ✅
+- **All pre-commit checks pass** (flake8, autoflake, autopep8) ✅
+
+#### Benefits
+
+1. **Readability**: The main function is now a clear, step-by-step process
+2. **Testability**: Tag fetching and name logic can be tested independently
+3. **Maintainability**: Changes to tag handling or name logic are localized
+4. **Reusability**: Helper functions could be used by other functions needing similar logic
+5. **Error Resilience**: Tag fetching failures don't break the entire process
+6. **Type Safety**: Explicit type annotations prevent type-related bugs
+
+---
+
+## 2025-11-06 - Type Safety Improvement: Add boto3 Type Stubs
+
+### Changes Made
+
+Replaced generic `Any` type with proper boto3 type hints using the `boto3-stubs` package.
+
+#### Problem
+
+The code was using `Any` for the `org_client` parameter, which:
+- Provides no type safety
+- Gives no IDE autocomplete
+- Allows any method calls without validation
+- Makes refactoring harder
+
+#### Solution
+
+Added `boto3-stubs[organizations]` package to get proper type hints for boto3 Organizations client.
+
+#### Changes
+
+1. **`requirements.txt`**
+   - Added `boto3-stubs[organizations]==1.35.84`
+   - This provides type stubs for boto3 and specifically the Organizations service
+
+2. **`headroom/analysis.py`**
+   - Added clean imports of boto3 type stubs
+   - Changed `_fetch_account_tags()` parameter from `Any` to `OrganizationsClient`
+   - Changed `_determine_account_name()` account parameter from `Dict[str, Any]` to `AccountTypeDef`
+   - Removed unused `Any` from imports
+   - Removed `# type: ignore` comments (no longer needed with boto3-stubs)
+
+```python
+from mypy_boto3_organizations.client import OrganizationsClient
+from mypy_boto3_organizations.type_defs import AccountTypeDef
+
+def _fetch_account_tags(org_client: OrganizationsClient, account_id: str, account_name: str) -> Dict[str, str]:
+    # Now has proper type hints and IDE autocomplete!
+
+def _determine_account_name(account: AccountTypeDef, tags: Dict[str, str], config: HeadroomConfig) -> str:
+    # Uses proper AWS type definition instead of Dict[str, Any]
+```
+
+3. **`tox.ini`**
+   - Added `boto3-stubs[organizations]>=1.35.0` to test dependencies
+   - Ensures type stubs are available in tox test environment
+
+#### Benefits
+
+1. **Type Safety**: mypy can now catch invalid method calls on org_client
+2. **IDE Support**: Full autocomplete for Organizations client methods
+3. **Better Documentation**: Function signatures are self-documenting
+4. **Safer Refactoring**: Type checker catches breaking changes
+5. **Clean Code**: No try/except fallbacks needed when using proper dependency management
+
+#### Test Results
+
+- **All 253 tests passing** ✅
+- **100% code coverage** maintained ✅
+- **No mypy errors** ✅
+- **All pre-commit checks pass** ✅
+
+---
+
+## 2025-11-06 - Created REFACTORING_IDEAS.md
+
+### Summary
+
+Created comprehensive documentation of remaining refactoring opportunities in `REFACTORING_IDEAS.md`.
+
+#### Contents
+
+The document includes:
+1. **Completed Refactorings** - Full summary of Parts 1-3 plus boto3-stubs work
+2. **Priority 1 (High-Impact)** - 3 major refactorings:
+   - Break up `_generate_terraform_content()` (118 lines → focused functions)
+   - Refactor `generate_scp_terraform()` (eliminate duplication)
+   - Add boto3-stubs for remaining AWS services (EC2, IAM, STS)
+3. **Priority 2 (Medium-Impact)** - 3 refactorings:
+   - Extract helpers from `parse_scp_result_files()`
+   - Extract helpers from `parse_rcp_result_files()`
+   - Refactor `generate_rcp_terraform()` file writing
+4. **Priority 3 (Nice-to-Have)** - 2 improvements:
+   - Extract common Terraform generation patterns
+   - Consider type aliases for complex types
+
+#### Purpose
+
+- **Tracking**: Central place to track refactoring opportunities
+- **Prioritization**: Clear priority levels for impact
+- **Documentation**: Detailed proposals with code examples
+- **Reference**: Easy to link in code reviews and planning
+
+The document will be updated as refactorings are completed and new opportunities are discovered.

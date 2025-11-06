@@ -1,9 +1,12 @@
 import logging
-import boto3  # type: ignore
-from botocore.exceptions import ClientError  # type: ignore
-from typing import List, Set
+import boto3
+from botocore.exceptions import ClientError
+from typing import Dict, List, Set
 from dataclasses import dataclass
-from .config import HeadroomConfig, AccountTagLayout
+from mypy_boto3_organizations.client import OrganizationsClient
+from mypy_boto3_organizations.type_defs import AccountTypeDef
+
+from .config import HeadroomConfig
 from .checks.scps.deny_imds_v1_ec2 import check_deny_imds_v1_ec2
 from .checks.rcps.check_third_party_assumerole import check_third_party_assumerole
 from .write_results import results_exist
@@ -45,15 +48,26 @@ def get_security_analysis_session(config: HeadroomConfig) -> boto3.Session:
     )
 
 
-def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -> List[AccountInfo]:
+def get_management_account_session(config: HeadroomConfig, security_session: boto3.Session) -> boto3.Session:
     """
-    Assume OrgAndAccountInfoReader role in the management account using the provided session.
-    Return subaccount info with tags, skipping the management account itself.
+    Assume OrgAndAccountInfoReader role in the management account and return a boto3 session.
+
+    Args:
+        config: Headroom configuration
+        security_session: boto3 Session with access to security analysis account
+
+    Returns:
+        boto3 Session with OrgAndAccountInfoReader role assumed in management account
+
+    Raises:
+        ValueError: If management_account_id is not set in config
+        RuntimeError: If role assumption fails
     """
     if not config.management_account_id:
         raise ValueError("management_account_id must be set in config")
+
     role_arn = f"arn:aws:iam::{config.management_account_id}:role/OrgAndAccountInfoReader"
-    sts = session.client("sts")
+    sts = security_session.client("sts")
     try:
         resp = sts.assume_role(
             RoleArn=role_arn,
@@ -61,44 +75,102 @@ def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -
         )
     except ClientError as e:
         raise RuntimeError(f"Failed to assume OrgAndAccountInfoReader role: {e}")
+
     creds = resp["Credentials"]
-    mgmt_session = boto3.Session(
+    return boto3.Session(
         aws_access_key_id=creds["AccessKeyId"],
         aws_secret_access_key=creds["SecretAccessKey"],
         aws_session_token=creds["SessionToken"]
     )
+
+
+def _fetch_account_tags(org_client: OrganizationsClient, account_id: str, account_name: str) -> Dict[str, str]:
+    """
+    Fetch tags for an AWS account from Organizations API.
+
+    Args:
+        org_client: AWS Organizations client
+        account_id: Account ID to fetch tags for
+        account_name: Account name (for logging only)
+
+    Returns:
+        Dictionary of tag key-value pairs (empty dict if fetching fails)
+    """
+    try:
+        tags_resp = org_client.list_tags_for_resource(ResourceId=account_id)
+        return {tag["Key"]: tag["Value"] for tag in tags_resp.get("Tags", [])}
+    except ClientError as e:
+        logger.warning(f"Could not fetch tags for account {account_name} ({account_id}): {e}")
+        return {}
+
+
+def _determine_account_name(account: AccountTypeDef, tags: Dict[str, str], config: HeadroomConfig) -> str:
+    """
+    Determine the account name to use based on configuration.
+
+    Args:
+        account: Account dictionary from Organizations API
+        tags: Account tags dictionary
+        config: Headroom configuration
+
+    Returns:
+        Account name (from tags if configured, otherwise from API, otherwise account ID)
+    """
+    account_id: str = account["Id"]
+    if config.use_account_name_from_tags:
+        return tags.get(config.account_tag_layout.name) or account_id
+    account_name: str = account.get("Name") or account_id
+    return account_name
+
+
+def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -> List[AccountInfo]:
+    """
+    Get subaccount information from the management account.
+
+    Uses the provided session to assume the OrgAndAccountInfoReader role in the
+    management account, then retrieves account information with tags.
+
+    Args:
+        config: Headroom configuration
+        session: boto3 Session with access to security analysis account
+
+    Returns:
+        List of AccountInfo objects for all accounts except the management account
+
+    Raises:
+        ValueError: If management_account_id is not set in config
+        RuntimeError: If role assumption or API calls fail
+    """
+    mgmt_session = get_management_account_session(config, session)
     org_client = mgmt_session.client("organizations")
     paginator = org_client.get_paginator("list_accounts")
     accounts = []
+
     for page in paginator.paginate():
         for acct in page.get("Accounts", []):
             account_id = acct["Id"]
-            account_name = acct.get("Name", account_id)
-            # Note: It is useful to have results for the management account, too
-            # However, that is not what I want to focus on now
+
+            # Skip the management account itself
             if account_id == config.management_account_id:
-                continue  # Skip the management account itself
-            # Get tags for the account
-            try:
-                tags_resp = org_client.list_tags_for_resource(ResourceId=account_id)
-                tags = {tag["Key"]: tag["Value"] for tag in tags_resp.get("Tags", [])}
-            except ClientError as e:
-                logger.warning(f"Could not fetch tags for account {account_name} ({account_id}): {e}")
-                tags = {}
-            layout: AccountTagLayout = config.account_tag_layout
+                continue
+
+            # Fetch account tags
+            account_name = acct.get("Name", account_id)
+            tags = _fetch_account_tags(org_client, account_id, account_name)
+
+            # Extract account metadata from tags
+            layout = config.account_tag_layout
             environment = tags.get(layout.environment) or "unknown"
-            # Determine name source
-            if config.use_account_name_from_tags:
-                name = tags.get(layout.name) or account_id
-            else:
-                name = acct.get("Name") or account_id
             owner = tags.get(layout.owner) or "unknown"
+            name = _determine_account_name(acct, tags, config)
+
             accounts.append(AccountInfo(
                 account_id=account_id,
                 environment=environment,
                 name=name,
                 owner=owner
             ))
+
     return accounts
 
 
@@ -112,27 +184,12 @@ def get_all_organization_account_ids(config: HeadroomConfig, session: boto3.Sess
 
     Returns:
         Set of all account IDs in the organization
+
+    Raises:
+        ValueError: If management_account_id is not set in config
+        RuntimeError: If role assumption or API calls fail
     """
-    if not config.management_account_id:
-        raise ValueError("management_account_id must be set in config")
-
-    role_arn = f"arn:aws:iam::{config.management_account_id}:role/OrgAndAccountInfoReader"
-    sts = session.client("sts")
-    try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="HeadroomOrgAccountListSession"
-        )
-    except ClientError as e:
-        raise RuntimeError(f"Failed to assume OrgAndAccountInfoReader role: {e}")
-
-    creds = resp["Credentials"]
-    mgmt_session = boto3.Session(
-        aws_access_key_id=creds["AccessKeyId"],
-        aws_secret_access_key=creds["SecretAccessKey"],
-        aws_session_token=creds["SessionToken"]
-    )
-
+    mgmt_session = get_management_account_session(config, session)
     org_client = mgmt_session.client("organizations")
     paginator = org_client.get_paginator("list_accounts")
 

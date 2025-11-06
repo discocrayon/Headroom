@@ -1,8 +1,7 @@
-import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
 
 from .usage import load_yaml_config, parse_cli_args, merge_configs
-from .analysis import perform_analysis, get_security_analysis_session
+from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session
 from .parse_results import parse_scp_results
 from .terraform.generate_scps import generate_scp_terraform
 from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform
@@ -34,22 +33,8 @@ def main() -> None:
 
     # Get organization hierarchy for Terraform generation
     security_session = get_security_analysis_session(final_config)
-    if not final_config.management_account_id:
-        return
-
-    role_arn = f"arn:aws:iam::{final_config.management_account_id}:role/OrgAndAccountInfoReader"
-    sts = security_session.client("sts")
     try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="HeadroomTerraformGenerationSession"
-        )
-        creds = resp["Credentials"]
-        mgmt_session = boto3.Session(
-            aws_access_key_id=creds["AccessKeyId"],
-            aws_secret_access_key=creds["SecretAccessKey"],
-            aws_session_token=creds["SessionToken"]
-        )
+        mgmt_session = get_management_account_session(final_config, security_session)
         organization_hierarchy = analyze_organization_structure(mgmt_session)
 
         # Generate shared Terraform organization info file (used by both SCPs and RCPs)
@@ -96,6 +81,5 @@ def main() -> None:
                     final_config.rcps_dir,
                     final_config.scps_dir,
                 )
-
-    except ClientError as e:
+    except (ValueError, RuntimeError, ClientError) as e:
         print(f"Failed to generate Terraform files: {e}")

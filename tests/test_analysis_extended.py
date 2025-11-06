@@ -455,7 +455,7 @@ class TestGetAllOrganizationAccountIds:
         assert result == {"111111111111", "222222222222", "333333333333"}
         mock_sts.assume_role.assert_called_once_with(
             RoleArn="arn:aws:iam::999999999999:role/OrgAndAccountInfoReader",
-            RoleSessionName="HeadroomOrgAccountListSession"
+            RoleSessionName="HeadroomOrgAndAccountInfoReaderSession"
         )
 
     def test_get_all_organization_account_ids_missing_management_account_id(self) -> None:
