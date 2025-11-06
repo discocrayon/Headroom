@@ -3415,3 +3415,96 @@ The Headroom Specification now comprehensively documents:
 
 The specification can now be used to fully reproduce the RCP implementation and understand all design decisions made in this branch.
 
+---
+
+## November 6, 2025 - Documented Parsing Logic Commonalities and Differences
+
+**Context:**
+Documented the detailed parsing logic patterns between SCP and RCP result file processing to enable implementation reproducibility from the specification.
+
+**Questions Addressed:**
+
+1. **What differences in logic are there between how we parse SCP results files vs RCP files?**
+
+Key differences identified:
+- **Check Selection:** SCP iterates through all check directories (excluding RCPs), RCP targets specific directory
+- **Data Extracted:** SCP extracts compliance metrics (violations, exemptions), RCP extracts third-party accounts and wildcards
+- **Return Type:** SCP returns flat list, RCP returns structured object with segregated data
+- **Wildcard Handling:** SCP has no wildcard logic, RCP has special exclusion logic for wildcard principals
+- **Organization Hierarchy Timing:** SCP defers to placement phase, RCP requires during parsing
+- **Placement Philosophy:** SCP uses zero violations principle, RCP uses common patterns principle
+
+2. **What logic is there in common?**
+
+Common patterns shared:
+- Directory structure: `{results_dir}/{check_name}/*.json`
+- File iteration using `glob("*.json")`
+- JSON parsing with identical error handling `(json.JSONDecodeError, KeyError)`
+- Summary data extraction from `data.get("summary", {})`
+- Account ID fallback logic (lookup by name in organization hierarchy)
+- Organization hierarchy integration for account metadata
+- Logging patterns with `logger.info()`
+- RuntimeError usage for critical failures (no silent failures)
+
+**Implementation:**
+
+Added comprehensive "Results Parsing Implementation" subsection to PR-007 in Headroom-Specification.md documenting:
+
+1. **Common Parsing Patterns (8 patterns):**
+   - Directory structure expectation
+   - File iteration
+   - JSON parsing with error handling
+   - Summary data extraction
+   - Account ID fallback logic
+   - Organization hierarchy dependency
+   - Logging pattern
+   - RuntimeError usage
+
+2. **Key Differences (7 differences):**
+   - Check selection strategy
+   - Data extracted from JSON
+   - Return type
+   - Wildcard handling
+   - Organization hierarchy timing
+   - Data processing
+   - Placement philosophy
+
+3. **Architectural Design Principles (6 principles):**
+   - Separation of concerns
+   - Common error handling
+   - Type safety
+   - Fail-loud behavior
+   - Logging
+   - Organization integration
+
+Each pattern and difference includes:
+- Code examples showing the actual implementation
+- Rationale explaining why the pattern exists or why implementations differ
+- Context about when each approach is used
+
+**Principal Software Engineer Thinking Applied:**
+
+1. **Reproducibility:** Documentation includes enough detail that someone could implement the parsing logic from scratch using only the specification
+2. **Pattern Recognition:** Identified the shared architectural patterns that should be maintained across future check types
+3. **Design Rationale:** Explained WHY implementations differ, not just HOW they differ (e.g., "SCPs care about violation counts; RCPs care about trust relationships")
+4. **Maintainability:** Documented the common error handling and logging patterns that ensure consistency
+5. **Type Safety:** Highlighted the strongly-typed dataclass returns that enable safe downstream processing
+6. **Fail-Loud Philosophy:** Emphasized that both parsers raise exceptions on critical errors rather than returning partial results
+
+**File Modified:**
+- `Headroom-Specification.md`: Added 156 lines of detailed parsing logic documentation to PR-007
+
+**Impact:**
+The specification now serves as a complete reference for:
+- Understanding the parsing architecture at implementation level
+- Reproducing the parsing logic for new check types
+- Maintaining consistency across SCP and RCP flows
+- Understanding when to use shared patterns vs specialized logic
+- Debugging parsing issues with clear architectural context
+
+Engineers can now use this specification to:
+- Implement new check types following established patterns
+- Understand the architectural decisions behind the parsing design
+- Maintain consistency across the codebase
+- Make informed decisions about when to deviate from patterns
+

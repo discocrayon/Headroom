@@ -262,6 +262,163 @@ class DenyImdsV1Ec2:
 - **Terraform Generation:** `generate_terraform.py` module generates Terraform configuration files for organization structure data
 - **Missing Account ID Lookup:** When `exclude_account_ids=True`, accounts are looked up by name in the organization hierarchy
 
+**Results Parsing Implementation:**
+
+The system implements two separate but structurally similar parsing flows for SCP and RCP checks. Understanding these patterns is critical for reproducing the implementation.
+
+**Common Parsing Patterns (SCP and RCP):**
+
+Both parsers share the following implementation patterns:
+
+1. **Directory Structure Expectation:**
+   - Both expect results in: `{results_dir}/{check_name}/*.json`
+   - Both use `Path(results_dir)` for path operations
+   - Both iterate through check subdirectories
+
+2. **File Iteration:**
+   - Both use `check_dir.glob("*.json")` to find result files
+   - Both process one JSON file per account per check
+
+3. **JSON Parsing with Error Handling:**
+   ```python
+   try:
+       with open(result_file, 'r') as f:
+           data = json.load(f)
+       # ... processing ...
+   except (json.JSONDecodeError, KeyError) as e:
+       raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+   ```
+   - Identical exception handling: `(json.JSONDecodeError, KeyError)`
+   - Both convert to `RuntimeError` with context
+   - No generic `except Exception` handlers
+
+4. **Summary Data Extraction:**
+   ```python
+   summary = data.get("summary", {})
+   account_id = summary.get("account_id", "")
+   account_name = summary.get("account_name", "")
+   ```
+   - Both extract from `summary` dictionary
+   - Both use `.get()` with default empty strings
+
+5. **Account ID Fallback Logic:**
+   - Both handle missing `account_id` by looking up `account_name` in `organization_hierarchy.accounts`
+   - Both iterate through all accounts to find matching name
+   - Both raise `RuntimeError` if account not found in organization
+   - Pattern:
+   ```python
+   if not account_id:
+       found_account_id = None
+       for acc_id, acc_info in organization_hierarchy.accounts.items():
+           if acc_info.account_name == account_name:
+               found_account_id = acc_id
+               break
+       if not found_account_id:
+           raise RuntimeError(f"Account '{account_name}' not found...")
+       account_id = found_account_id
+   ```
+
+6. **Organization Hierarchy Dependency:**
+   - Both ultimately use `organization_hierarchy.accounts` for account lookups
+   - SCP: Provided during placement determination phase (`determine_scp_placement`)
+   - RCP: Provided during parsing phase (`parse_rcp_result_files`)
+
+7. **Logging Pattern:**
+   - Both use `logger.info()` for status messages
+   - Both log when processing checks or looking up accounts
+
+8. **RuntimeError Usage:**
+   - Both use `RuntimeError` for critical failures (missing directories, accounts)
+   - No silent failures or exception suppression
+
+**Key Differences (SCP vs RCP):**
+
+1. **Check Selection Strategy:**
+   - **SCP (`parse_result_files`):** Iterates through ALL check directories, explicitly excludes RCP checks
+     ```python
+     RCP_CHECK_NAMES = {"third_party_role_access"}
+     for check_dir in results_path.iterdir():
+         if not check_dir.is_dir():
+             continue
+         if exclude_rcp_checks and check_name in RCP_CHECK_NAMES:
+             continue  # Skip RCP checks
+     ```
+   - **RCP (`parse_rcp_result_files`):** Directly targets specific check directory
+     ```python
+     check_dir = results_path / "third_party_role_access"
+     if not check_dir.exists():
+         raise RuntimeError(f"Third-party role access check directory does not exist: {check_dir}")
+     ```
+   - **Rationale:** SCP parser is extensible for multiple checks; RCP parser is specialized for one check
+
+2. **Data Extracted from JSON:**
+   - **SCP:** Extracts compliance metrics for policy placement decisions
+     ```python
+     CheckResult(
+         account_id=account_id,
+         account_name=summary.get("account_name", ""),
+         check_name=summary.get("check", check_name),
+         violations=summary.get("violations", 0),
+         exemptions=summary.get("exemptions", 0),
+         compliant=summary.get("compliant", 0),
+         total_instances=summary.get("total_instances", 0),
+         compliance_percentage=summary.get("compliance_percentage", 0.0)
+     )
+     ```
+   - **RCP:** Extracts third-party account patterns and wildcard status
+     ```python
+     third_party_accounts = summary.get("unique_third_party_accounts", [])
+     roles_with_wildcards = summary.get("roles_with_wildcards", 0)
+     # Results in: account_third_party_map[account_id] = set(third_party_accounts)
+     ```
+   - **Rationale:** SCPs care about violation counts; RCPs care about trust relationships
+
+3. **Return Type:**
+   - **SCP:** Returns `List[CheckResult]` - flat list of check results across all accounts and checks
+   - **RCP:** Returns `RCPParseResult` - structured object with two components:
+     ```python
+     @dataclass
+     class RCPParseResult:
+         account_third_party_map: Dict[str, Set[str]]  # Eligible accounts
+         accounts_with_wildcards: Set[str]              # Excluded accounts
+     ```
+   - **Rationale:** RCPs need to segregate wildcard accounts (unsafe) from normal accounts (safe)
+
+4. **Wildcard Handling:**
+   - **SCP:** No wildcard logic - treats all accounts uniformly based on violation counts
+   - **RCP:** Special wildcard exclusion logic
+     ```python
+     if roles_with_wildcards > 0:
+         accounts_with_wildcards.add(account_id)
+         logger.info(f"Account {account_name} has {roles_with_wildcards} roles with wildcard principals - cannot deploy RCP")
+         continue  # Skip this account from account_third_party_map
+     ```
+   - **Rationale:** Wildcard trust policies (`"Principal": "*"`) prevent safe RCP deployment
+
+5. **Organization Hierarchy Timing:**
+   - **SCP:** `organization_hierarchy` parameter NOT required in `parse_result_files()`, provided later in `determine_scp_placement()`
+   - **RCP:** `organization_hierarchy` parameter REQUIRED in `parse_rcp_result_files()` for account name lookups
+   - **Rationale:** RCP parsing needs immediate account ID resolution; SCP can defer until placement phase
+
+6. **Data Processing:**
+   - **SCP:** Appends each result to flat list; no filtering beyond check exclusion
+   - **RCP:** Conditionally adds to map OR wildcard set based on `roles_with_wildcards`; uses `set()` for third-party IDs
+   - **Rationale:** RCPs need set operations for union strategy; SCPs need comprehensive result lists
+
+7. **Placement Philosophy:**
+   - **SCP:** Based on ZERO VIOLATIONS principle - where can policy be deployed without breaking existing compliant resources
+   - **RCP:** Based on COMMON PATTERNS principle - where do accounts share third-party trust relationships (union strategy)
+   - **Rationale:** Different security control types require different deployment strategies
+
+**Architectural Design Principles:**
+
+1. **Separation of Concerns:** SCP and RCP parsing are separate functions in separate modules to avoid coupling
+2. **Common Error Handling:** Both use identical exception patterns for consistency and maintainability
+3. **Type Safety:** Both return strongly-typed dataclasses for downstream processing
+4. **Fail-Loud:** Both raise exceptions on critical errors rather than returning partial results
+5. **Logging:** Both provide informative logging for debugging and audit trails
+6. **Organization Integration:** Both integrate with organization hierarchy for account metadata
+
 **Module Organization:**
 - **`parse_results.py`**: Module containing results analysis and organization structure processing
 - **`generate_terraform.py`**: Module containing Terraform configuration generation functionality
