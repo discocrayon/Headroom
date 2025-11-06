@@ -7,6 +7,7 @@ from .config import HeadroomConfig, AccountTagLayout
 from .checks.scps.deny_imds_v1_ec2 import check_deny_imds_v1_ec2
 from .checks.rcps.check_third_party_assumerole import check_third_party_assumerole
 from .write_results import results_exist
+from .constants import DENY_IMDS_V1_EC2, THIRD_PARTY_ASSUMEROLE
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -187,7 +188,7 @@ def all_scp_results_exist(account_info: AccountInfo, config: HeadroomConfig) -> 
         True if all SCP results exist, False otherwise
     """
     return results_exist(
-        check_name="deny_imds_v1_ec2",
+        check_name=DENY_IMDS_V1_EC2,
         account_name=account_info.name,
         account_id=account_info.account_id,
         results_base_dir=config.results_dir,
@@ -207,7 +208,7 @@ def all_rcp_results_exist(account_info: AccountInfo, config: HeadroomConfig) -> 
         True if all RCP results exist, False otherwise
     """
     return results_exist(
-        check_name="third_party_assumerole",
+        check_name=THIRD_PARTY_ASSUMEROLE,
         account_name=account_info.name,
         account_id=account_info.account_id,
         results_base_dir=config.results_dir,
@@ -230,7 +231,7 @@ def run_scp_checks(
     """
     # Check deny_imds_v1_ec2
     if not results_exist(
-        check_name="deny_imds_v1_ec2",
+        check_name=DENY_IMDS_V1_EC2,
         account_name=account_info.name,
         account_id=account_info.account_id,
         results_base_dir=config.results_dir,
@@ -262,7 +263,7 @@ def run_rcp_checks(
     """
     # Check third_party_assumerole
     if not results_exist(
-        check_name="third_party_assumerole",
+        check_name=THIRD_PARTY_ASSUMEROLE,
         account_name=account_info.name,
         account_id=account_info.account_id,
         results_base_dir=config.results_dir,

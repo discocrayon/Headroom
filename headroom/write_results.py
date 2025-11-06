@@ -13,14 +13,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Union, cast
 
+from .constants import CHECK_TYPE_MAP
+
 # Set up logging
 logger = logging.getLogger(__name__)
-
-# Map check names to their types (scp or rcp)
-CHECK_TYPE_MAP = {
-    "deny_imds_v1_ec2": "scps",
-    "third_party_assumerole": "rcps",
-}
 
 
 def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, Any]) -> Union[Dict[str, Any], List[Any], str, Any]:

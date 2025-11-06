@@ -155,3 +155,31 @@ def create_account_ou_mapping(session: boto3.Session) -> Dict[str, str]:
         mapping[account_id] = account_info.parent_ou_id
 
     return mapping
+
+
+def lookup_account_id_by_name(
+    account_name: str,
+    organization_hierarchy: OrganizationHierarchy,
+    context: str = "result file"
+) -> str:
+    """
+    Look up account ID by name in organization hierarchy.
+
+    Args:
+        account_name: Account name to look up
+        organization_hierarchy: Organization structure containing accounts
+        context: Context string for error message (e.g., "result file", "check processing")
+
+    Returns:
+        Account ID matching the account name
+
+    Raises:
+        RuntimeError: If account name is not found in organization hierarchy
+    """
+    for acc_id, acc_info in organization_hierarchy.accounts.items():
+        if acc_info.account_name == account_name:
+            logger.info(f"Looked up account_id {acc_id} for account name '{account_name}'")
+            return acc_id
+    raise RuntimeError(
+        f"Account name '{account_name}' from {context} not found in organization hierarchy"
+    )

@@ -109,15 +109,16 @@ class AccountInfo:
 **Module Organization:**
 - **`main.py`**: Entry point orchestrating configuration, analysis, results processing, and Terraform generation flow
 - **`config.py`**: Pydantic models for configuration validation (`HeadroomConfig`, `AccountTagLayout`) and default directory constants
+- **`constants.py`**: Single source of truth for check names, type mappings, and derived check sets (`CHECK_TYPE_MAP`, `SCP_CHECK_NAMES`, `RCP_CHECK_NAMES`)
 - **`usage.py`**: CLI parsing, YAML loading, and configuration merging logic
 - **`analysis.py`**: AWS integration, security analysis implementation, check execution optimization, and organization account ID retrieval
 - **`parse_results.py`**: SCP/RCP compliance results analysis and organization structure processing
-- **`write_results.py`**: JSON result file writing, path resolution, and results existence checking with `CHECK_TYPE_MAP` for organizing results by policy type
+- **`write_results.py`**: JSON result file writing, path resolution, and results existence checking
 - **`types.py`**: Shared data models and type definitions for organization hierarchy, SCP recommendations, and RCP placement recommendations
 - **`aws/`**: AWS service integration modules
   - **`ec2.py`**: EC2 service integration and analysis functions
   - **`iam.py`**: IAM trust policy analysis and third-party account detection
-  - **`organization.py`**: AWS Organizations API integration and hierarchy analysis
+  - **`organization.py`**: AWS Organizations API integration, hierarchy analysis, and shared account lookup utilities (`lookup_account_id_by_name`)
 - **`checks/`**: SCP/RCP compliance check implementations organized by policy type
   - **`scps/`**: Service Control Policy check implementations
     - **`deny_imds_v1_ec2.py`**: EC2 IMDS v1 compliance check implementation
@@ -256,13 +257,15 @@ class DenyImdsV1Ec2:
 
 **Analysis Architecture:**
 - **Results Parsing:** `parse_results.py` module processes JSON result files from `test_environment/headroom_results/`
-- **SCP/RCP Separation:** `parse_result_files()` excludes RCP checks by default to prevent RCP checks from generating SCP Terraform
-- **RCP Check Filtering:** `RCP_CHECK_NAMES = {"third_party_role_access"}` identifies checks to exclude from SCP analysis
+- **SCP/RCP Separation:** `parse_scp_result_files()` excludes RCP checks by default to prevent RCP checks from generating SCP Terraform
+- **Check Configuration:** `constants.py` module defines `CHECK_TYPE_MAP`, `SCP_CHECK_NAMES`, and `RCP_CHECK_NAMES` as single source of truth
+- **RCP Check Filtering:** `RCP_CHECK_NAMES` imported from `constants.py` identifies checks to exclude from SCP analysis
 - **Organization Structure Analysis:** Function to analyze AWS Organizations OU hierarchy and account relationships
 - **Account-to-OU Mapping:** Function to create comprehensive mapping of accounts to their direct parent OUs
+- **Account ID Lookup:** Shared `lookup_account_id_by_name()` function in `aws/organization.py` for consistent account resolution
 - **Greatest Common Denominator Logic:** Function to determine optimal SCP/RCP placement level (root, OU, or account-specific)
 - **Terraform Generation:** `generate_terraform.py` module generates Terraform configuration files for organization structure data
-- **Missing Account ID Lookup:** When `exclude_account_ids=True`, accounts are looked up by name in the organization hierarchy
+- **Directory Path Construction:** Centralized `get_results_dir()` function in `write_results.py` for consistent path resolution
 
 **Results Parsing Implementation:**
 
@@ -273,7 +276,7 @@ The system implements two separate but structurally similar parsing flows for SC
 Both parsers share the following implementation patterns:
 
 1. **Directory Structure Expectation:**
-   - Both expect results in: `{results_dir}/{check_name}/*.json`
+   - Both expect results in: `{results_dir}/{check_type}/{check_name}/*.json` where check_type is "scps" or "rcps"
    - Both use `Path(results_dir)` for path operations
    - Both iterate through check subdirectories
 
@@ -304,21 +307,19 @@ Both parsers share the following implementation patterns:
    - Both use `.get()` with default empty strings
 
 5. **Account ID Fallback Logic:**
-   - Both handle missing `account_id` by looking up `account_name` in `organization_hierarchy.accounts`
-   - Both iterate through all accounts to find matching name
-   - Both raise `RuntimeError` if account not found in organization
+   - Both handle missing `account_id` by using shared `lookup_account_id_by_name()` function
+   - Function defined in `aws/organization.py` for DRY compliance
+   - Raises `RuntimeError` if account not found in organization
    - Pattern:
    ```python
    if not account_id:
-       found_account_id = None
-       for acc_id, acc_info in organization_hierarchy.accounts.items():
-           if acc_info.account_name == account_name:
-               found_account_id = acc_id
-               break
-       if not found_account_id:
-           raise RuntimeError(f"Account '{account_name}' not found...")
-       account_id = found_account_id
+       account_id = lookup_account_id_by_name(
+           account_name,
+           organization_hierarchy,
+           context="result file"  # or "SCP check result", "RCP result", etc.
+       )
    ```
+   - **Benefits:** Single source of truth, consistent error messages, reduced code duplication
 
 6. **Organization Hierarchy Dependency:**
    - Both ultimately use `organization_hierarchy.accounts` for account lookups
@@ -336,22 +337,26 @@ Both parsers share the following implementation patterns:
 **Key Differences (SCP vs RCP):**
 
 1. **Check Selection Strategy:**
-   - **SCP (`parse_result_files`):** Iterates through ALL check directories, explicitly excludes RCP checks
+   - **SCP (`parse_scp_result_files`):** Iterates through ALL check directories in scps/ subdirectory, explicitly excludes RCP checks
      ```python
-     RCP_CHECK_NAMES = {"third_party_role_access"}
-     for check_dir in results_path.iterdir():
+     from .constants import RCP_CHECK_NAMES  # Imported from constants.py
+     scps_path = results_path / "scps"
+     for check_dir in scps_path.iterdir():
          if not check_dir.is_dir():
              continue
          if exclude_rcp_checks and check_name in RCP_CHECK_NAMES:
              continue  # Skip RCP checks
      ```
-   - **RCP (`parse_rcp_result_files`):** Directly targets specific check directory
+   - **RCP (`parse_rcp_result_files`):** Directly targets specific check directory using centralized path function
      ```python
-     check_dir = results_path / "third_party_role_access"
+     from ..constants import THIRD_PARTY_ASSUMEROLE
+     from ..write_results import get_results_dir
+     check_dir_str = get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
+     check_dir = Path(check_dir_str)
      if not check_dir.exists():
-         raise RuntimeError(f"Third-party role access check directory does not exist: {check_dir}")
+         raise RuntimeError(f"Third-party AssumeRole check directory does not exist: {check_dir}")
      ```
-   - **Rationale:** SCP parser is extensible for multiple checks; RCP parser is specialized for one check
+   - **Rationale:** SCP parser is extensible for multiple checks; RCP parser is specialized for one check. Constants and path functions centralized for DRY compliance.
 
 2. **Data Extracted from JSON:**
    - **SCP:** Extracts compliance metrics for policy placement decisions
@@ -889,7 +894,7 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
 - **Third-Party Detection:** Identifies account IDs in trust policies that are external to the organization
 - **Wildcard Detection:** Detects and reports roles with wildcard principals (requiring CloudTrail analysis)
 - **Organization Account Baseline:** Compares trust policy principals against full organization account list
-- **Check Orchestration:** `checks/check_third_party_role_access.py` coordinates RCP analysis execution
+- **Check Orchestration:** `checks/rcps/check_third_party_assumerole.py` coordinates RCP analysis execution
 - **Fail-Loud Exception Handling:** All exceptions are specific (no generic `Exception` catching), logged with context, and immediately re-raised
 
 **IAM Trust Policy Analysis:**
@@ -962,9 +967,9 @@ class TrustPolicyAnalysis:
 
 **RCP Check Implementation:**
 
-**Check Function (in `checks/check_third_party_role_access.py`):**
+**Check Function (in `checks/rcps/check_third_party_assumerole.py`):**
 ```python
-def check_third_party_role_access(
+def check_third_party_assumerole(
     headroom_session: boto3.Session,
     account_name: str,
     account_id: str,
@@ -986,7 +991,7 @@ def check_third_party_role_access(
   "summary": {
     "account_name": "account-name",
     "account_id": "111111111111",
-    "check": "check_third_party_role_access",
+    "check": "third_party_assumerole",
     "total_roles_analyzed": 50,
     "roles_third_parties_can_access": 3,
     "roles_with_wildcards": 1,
@@ -1239,7 +1244,7 @@ class RCPPlacementRecommendations:
 
 **Integration Flow:**
 1. **Analysis Phase:** IAM trust policy analysis identifies third-party accounts and wildcards
-2. **Results Parsing:** Parse check results from `headroom_results/check_third_party_role_access/` directory
+2. **Results Parsing:** Parse check results from `headroom_results/rcps/third_party_assumerole/` directory
 3. **Wildcard Filtering:** Separate accounts with wildcards from those eligible for RCP deployment
 4. **Placement Calculation:** Determine optimal RCP levels based on common third-party account patterns
 5. **OU Safety Check:** Verify no wildcards exist in OU before creating OU-level RCP
@@ -1508,6 +1513,157 @@ class RCPPlacementRecommendations:
 - No behavioral regressions in existing functionality
 - Clean tox run with no warnings or errors
 
+### PR-015: DRY Refactoring & Constants Module
+
+**Requirement:** The system MUST eliminate code duplication and establish single sources of truth for configuration constants and shared utility functions.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**DRY Violations Identified and Fixed:**
+
+1. **Constants Module Creation**
+   - Created `headroom/constants.py` as dedicated module for check configuration
+   - Moved check name constants from `write_results.py`
+   - Moved `CHECK_TYPE_MAP` from `write_results.py`
+   - Added pre-computed `SCP_CHECK_NAMES` and `RCP_CHECK_NAMES` sets
+
+2. **CHECK_TYPE_MAP as Single Source of Truth**
+   - **Before:** `RCP_CHECK_NAMES = {"third_party_assumerole"}` hardcoded in `parse_results.py`
+   - **After:** Derived from `CHECK_TYPE_MAP` in `constants.py`:
+     ```python
+     RCP_CHECK_NAMES = {name for name, check_type in CHECK_TYPE_MAP.items() if check_type == "rcps"}
+     SCP_CHECK_NAMES = {name for name, check_type in CHECK_TYPE_MAP.items() if check_type == "scps"}
+     ```
+   - **Impact:** Adding new checks only requires updating `CHECK_TYPE_MAP` in one place
+
+3. **Shared Account ID Lookup Function**
+   - **Before:** Duplicate lookup logic in `parse_results.py` (9 lines) and `generate_rcps.py` (12 lines)
+   - **After:** Extracted to `aws/organization.py`:
+     ```python
+     def lookup_account_id_by_name(
+         account_name: str,
+         organization_hierarchy: OrganizationHierarchy,
+         context: str = "result file"
+     ) -> str:
+         """Look up account ID by name in organization hierarchy."""
+         for acc_id, acc_info in organization_hierarchy.accounts.items():
+             if acc_info.account_name == account_name:
+                 logger.info(f"Looked up account_id {acc_id} for account name '{account_name}'")
+                 return acc_id
+         raise RuntimeError(
+             f"Account name '{account_name}' from {context} not found in organization hierarchy"
+         )
+     ```
+   - **Impact:** 21 lines of duplicate code reduced to single 13-line function
+
+4. **Check Name Constants**
+   - **Before:** Magic strings scattered across 14 locations in 4 files
+   - **After:** Constants in `constants.py`:
+     ```python
+     DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
+     THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+     ```
+   - **Locations Updated:**
+     - `analysis.py`: 6 occurrences replaced with constants
+     - `generate_rcps.py`: 4 occurrences replaced with constants
+     - `check_deny_imds_v1_ec2.py`: 2 occurrences replaced with constants
+     - `check_third_party_assumerole.py`: 2 occurrences replaced with constants
+   - **Impact:** Type-safe, refactoring-friendly constant references
+
+5. **Centralized Directory Path Construction**
+   - **Before:** Manual path construction in `generate_rcps.py`:
+     ```python
+     check_dir = results_path / "rcps" / "third_party_assumerole"
+     ```
+   - **After:** Using centralized function:
+     ```python
+     check_dir_str = get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
+     check_dir = Path(check_dir_str)
+     ```
+   - **Impact:** Single source of truth for results directory path logic
+
+**Benefits Achieved:**
+
+1. **Single Source of Truth:** Check classification, constants, and path construction all centralized
+2. **Reduced Duplication:** ~30 lines of duplicate code eliminated
+3. **Improved Maintainability:** Adding new checks requires fewer code changes
+4. **Type Safety:** Using constants catches typos at import time
+5. **Better Testability:** Shared functions can be tested independently
+6. **Consistent Behavior:** Account lookup and path construction now uniform across modules
+7. **Clearer Intent:** Dedicated constants module explicitly indicates purpose
+
+**Files Modified:**
+
+1. **Created:** `headroom/constants.py` (21 lines)
+   - Check name constants: `DENY_IMDS_V1_EC2`, `THIRD_PARTY_ASSUMEROLE`
+   - Type mapping: `CHECK_TYPE_MAP`
+   - Derived sets: `SCP_CHECK_NAMES`, `RCP_CHECK_NAMES`
+
+2. **Updated:** `headroom/write_results.py`
+   - Removed local constant definitions
+   - Added import: `from .constants import CHECK_TYPE_MAP`
+
+3. **Updated:** `headroom/parse_results.py`
+   - Changed to import `RCP_CHECK_NAMES` from `constants.py`
+   - Removed local derivation of `RCP_CHECK_NAMES`
+   - Import and use `lookup_account_id_by_name()`
+
+4. **Updated:** `headroom/analysis.py`
+   - Import constants from `constants.py`
+   - Use constants instead of magic strings (6 replacements)
+
+5. **Updated:** `headroom/terraform/generate_rcps.py`
+   - Import constants from `constants.py`
+   - Import and use `get_results_dir()`
+   - Import and use `lookup_account_id_by_name()`
+   - Use constants instead of magic strings (4 replacements)
+
+6. **Updated:** `headroom/aws/organization.py`
+   - Added `lookup_account_id_by_name()` shared function (13 lines)
+
+7. **Updated:** `headroom/checks/scps/deny_imds_v1_ec2.py`
+   - Import and use `DENY_IMDS_V1_EC2` constant (2 replacements)
+
+8. **Updated:** `headroom/checks/rcps/check_third_party_assumerole.py`
+   - Import and use `THIRD_PARTY_ASSUMEROLE` constant (2 replacements)
+
+9. **Updated:** `tests/test_parse_results.py`
+   - Updated error message assertion to match new shared function format
+
+**Architecture Improvements:**
+
+**Before:**
+- Constants defined in `write_results.py`
+- RCP check names derived locally in `parse_results.py`
+- Account lookup logic duplicated in 2 modules
+- Check names as magic strings in 4 files
+- Directory paths manually constructed
+
+**After:**
+- All constants in dedicated `constants.py`
+- Both SCP and RCP check name sets pre-computed
+- Single shared account lookup function
+- Check names as importable constants
+- Directory paths via centralized function
+- Clean separation of concerns
+
+**Testing:**
+- All 248 tests passing
+- No behavioral changes
+- No linter errors
+- Full type safety maintained (mypy strict mode)
+- 100% code coverage maintained
+
+**Code Quality Metrics:**
+- Lines of duplicate code removed: ~30
+- Single sources of truth created: 3
+- Magic strings eliminated: 14
+- Shared functions created: 1
+- Constants created: 2
+- Pre-computed sets: 2
+
 ---
 
 ## Technical Architecture
@@ -1528,11 +1684,11 @@ class RCPPlacementRecommendations:
 3. **Analysis Phase**
    - Retrieve all organization account IDs from management account via `get_all_organization_account_ids()`
    - Filter accounts using `get_relevant_subaccounts()` (currently returns all accounts)
-   - For each account, check if results already exist via `check_results_exist()` (skip if found)
+   - For each account, check if results already exist via `all_scp_results_exist()` and `all_rcp_results_exist()` (skip if found)
    - For accounts without results, assume `Headroom` role via `get_headroom_session()`
    - Execute SCP checks (e.g., `check_deny_imds_v1_ec2()`) using AWS library functions
-   - Execute RCP checks (e.g., `check_third_party_role_access()`) with IAM trust policy analysis
-   - Generate structured JSON results in `test_environment/headroom_results/`
+   - Execute RCP checks (e.g., `check_third_party_assumerole()`) with IAM trust policy analysis
+   - Generate structured JSON results in `test_environment/headroom_results/scps/` and `test_environment/headroom_results/rcps/`
    - Console output with compliance summaries per account
 
 4. **Results Analysis Phase**
@@ -1655,6 +1811,15 @@ class RCPPlacementRecommendations:
 - ✅ Edge case testing for 100% code coverage (1044 statements in headroom/, 2515 in tests/)
 - ✅ Breaking change: clean directory structure with no backward compatibility for flat results
 
+### Phase 8.5: DRY Refactoring & Constants Module (COMPLETED)
+- ✅ Created dedicated `constants.py` module for check configuration
+- ✅ Established `CHECK_TYPE_MAP` as single source of truth for check type classification
+- ✅ Pre-computed `SCP_CHECK_NAMES` and `RCP_CHECK_NAMES` sets for convenience
+- ✅ Extracted shared `lookup_account_id_by_name()` function to eliminate 21 lines of duplicate code
+- ✅ Centralized directory path construction with `get_results_dir()` function
+- ✅ Replaced 14 hardcoded check name strings with constants
+- ✅ All 248 tests passing with 100% coverage maintained
+
 ### Phase 9: SCP Expansion (PLANNED)
 - 🔄 Additional SCP checks for other AWS services
 - 🔄 Metrics-based decision making for SCP deployment
@@ -1766,7 +1931,12 @@ mypy headroom/ tests/
 22. **Architectural Organization:** Clear separation of SCP and RCP code in checks/ and results directories ✅
 23. **Function Extraction:** Single Responsibility Principle applied with dedicated check execution functions ✅
 24. **Scalable Structure:** Directory organization supports easy addition of new SCP and RCP checks ✅
-25. **Test Coverage Excellence:** 246 tests with 100% coverage maintained through comprehensive test refactoring ✅
+25. **Test Coverage Excellence:** 248 tests with 100% coverage maintained through comprehensive test refactoring ✅
+26. **DRY Compliance:** Code duplication eliminated through shared functions and centralized constants ✅
+27. **Constants Module:** Dedicated `constants.py` for single source of truth on check configuration ✅
+28. **Shared Utilities:** Account lookup and path construction functions reusable across modules ✅
+29. **Type-Safe Constants:** Check names as importable constants instead of magic strings ✅
+30. **Maintainable Architecture:** Adding new checks requires minimal code changes in single location ✅
 
 ---
 

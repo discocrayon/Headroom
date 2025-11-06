@@ -9,6 +9,7 @@ import boto3  # type: ignore
 from typing import Set
 from ...aws.iam import analyze_iam_roles_trust_policies
 from ...write_results import write_check_results
+from ...constants import THIRD_PARTY_ASSUMEROLE
 
 
 def check_third_party_assumerole(
@@ -71,7 +72,7 @@ def check_third_party_assumerole(
     summary = {
         "account_name": account_name,
         "account_id": account_id,
-        "check": "third_party_assumerole",
+        "check": THIRD_PARTY_ASSUMEROLE,
         "total_roles_analyzed": len(trust_policy_results),
         "roles_third_parties_can_access": len(roles_third_parties_can_access),
         "roles_with_wildcards": len(roles_with_wildcards),
@@ -89,7 +90,7 @@ def check_third_party_assumerole(
 
     # Write results to JSON file
     write_check_results(
-        check_name="third_party_assumerole",
+        check_name=THIRD_PARTY_ASSUMEROLE,
         account_name=account_name,
         account_id=account_id,
         results_data=results,

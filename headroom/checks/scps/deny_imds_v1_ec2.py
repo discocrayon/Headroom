@@ -3,6 +3,7 @@
 import boto3  # type: ignore
 from ...aws.ec2 import get_imds_v1_ec2_analysis
 from ...write_results import write_check_results
+from ...constants import DENY_IMDS_V1_EC2
 
 
 def check_deny_imds_v1_ec2(
@@ -55,7 +56,7 @@ def check_deny_imds_v1_ec2(
     summary = {
         "account_name": account_name,
         "account_id": account_id,
-        "check": "deny_imds_v1_ec2",
+        "check": DENY_IMDS_V1_EC2,
         "total_instances": len(imds_results),
         "violations": len(violations),
         "exemptions": len(exemptions),
@@ -73,7 +74,7 @@ def check_deny_imds_v1_ec2(
 
     # Write results to JSON file
     write_check_results(
-        check_name="deny_imds_v1_ec2",
+        check_name=DENY_IMDS_V1_EC2,
         account_name=account_name,
         account_id=account_id,
         results_data=results,

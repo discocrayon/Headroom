@@ -635,7 +635,7 @@ class TestSCPPlacementDetermination:
             }
         )
 
-        with pytest.raises(RuntimeError, match="Account unknown-account \\(\\) not found in organization hierarchy"):
+        with pytest.raises(RuntimeError, match="Account name 'unknown-account' from SCP check result not found in organization hierarchy"):
             determine_scp_placement(results_data, mock_hierarchy)
 
 

@@ -11,6 +11,9 @@ from typing import Dict, List, Optional, Set
 
 from .utils import make_safe_variable_name
 from ..types import OrganizationHierarchy, RCPParseResult, RCPPlacementRecommendations
+from ..constants import THIRD_PARTY_ASSUMEROLE
+from ..write_results import get_results_dir
+from ..aws.organization import lookup_account_id_by_name
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -40,8 +43,9 @@ def parse_rcp_result_files(
         - accounts_with_wildcards: Set of account IDs that have wildcard principals
           (cannot have RCPs deployed)
     """
-    results_path = Path(results_dir)
-    check_dir = results_path / "rcps" / "third_party_assumerole"
+    # Use centralized function to get check directory path
+    check_dir_str = get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
+    check_dir = Path(check_dir_str)
 
     account_third_party_map: Dict[str, Set[str]] = {}
     accounts_with_wildcards: Set[str] = set()
@@ -63,15 +67,11 @@ def parse_rcp_result_files(
             if not account_id:
                 if not account_name:
                     raise RuntimeError(f"Result file {result_file} missing both account_id and account_name in summary")
-                found_account_id = None
-                for acc_id, acc_info in organization_hierarchy.accounts.items():
-                    if acc_info.account_name == account_name:
-                        found_account_id = acc_id
-                        break
-                if not found_account_id:
-                    raise RuntimeError(f"Account name '{account_name}' from {result_file} not found in organization hierarchy")
-                account_id = found_account_id
-                logger.info(f"Looked up account_id {account_id} for account name '{account_name}'")
+                account_id = lookup_account_id_by_name(
+                    account_name,
+                    organization_hierarchy,
+                    str(result_file)
+                )
 
             # Track accounts with wildcard principals separately
             if roles_with_wildcards > 0:
@@ -133,7 +133,7 @@ def _check_root_level_placement(
     all_account_ids = list(organization_hierarchy.accounts.keys())
 
     return RCPPlacementRecommendations(
-        check_name="third_party_assumerole",
+        check_name=THIRD_PARTY_ASSUMEROLE,
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=all_account_ids,
@@ -221,7 +221,7 @@ def _check_ou_level_placements(
 
         unioned_third_party = sorted(list(ou_third_party_accounts))
         recommendations.append(RCPPlacementRecommendations(
-            check_name="third_party_assumerole",
+            check_name=THIRD_PARTY_ASSUMEROLE,
             recommended_level="ou",
             target_ou_id=ou_id,
             affected_accounts=ou_account_ids,
@@ -256,7 +256,7 @@ def _check_account_level_placements(
     for account_id, third_party_accounts in account_third_party_map.items():
         if account_id not in ou_covered_accounts:
             recommendations.append(RCPPlacementRecommendations(
-                check_name="third_party_assumerole",
+                check_name=THIRD_PARTY_ASSUMEROLE,
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=[account_id],

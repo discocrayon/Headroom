@@ -21,6 +21,8 @@ from .types import (
     OrganizationalUnit, AccountOrgPlacement, OrganizationHierarchy,
     CheckResult, SCPPlacementRecommendations
 )
+from .constants import RCP_CHECK_NAMES
+from .aws.organization import lookup_account_id_by_name
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -45,16 +47,13 @@ def parse_scp_result_files(results_dir: str, exclude_rcp_checks: bool = True) ->
 
     check_results: List[CheckResult] = []
 
-    # RCP checks that should be handled by the RCP-specific analysis
-    RCP_CHECK_NAMES = {"third_party_assumerole"}
-
     # Look in scps/ subdirectory
     scps_path = results_path / "scps"
     if not scps_path.exists():
         logger.warning(f"SCP results directory {scps_path} does not exist")
         return []
 
-    # Iterate through check directories
+    # Iterate through check directories in scps/ subdirectory
     for check_dir in scps_path.iterdir():
         if not check_dir.is_dir():
             continue
@@ -148,18 +147,15 @@ def determine_scp_placement(
         for result in check_results:
             # If account_id is missing, look up by account name
             if not result.account_id:
-                account_info = None
-                for acc_id, acc_data in organization_hierarchy.accounts.items():
-                    if acc_data.account_name == result.account_name:
-                        account_info = acc_data
-                        result.account_id = acc_id
-                        break
-                if not account_info:
-                    raise RuntimeError(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
-            else:
-                account_info = organization_hierarchy.accounts.get(result.account_id)
-                if not account_info:
-                    raise RuntimeError(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
+                result.account_id = lookup_account_id_by_name(
+                    result.account_name,
+                    organization_hierarchy,
+                    "SCP check result"
+                )
+
+            account_info = organization_hierarchy.accounts.get(result.account_id)
+            if not account_info:
+                raise RuntimeError(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
 
             parent_ou_id = account_info.parent_ou_id
             if parent_ou_id not in ou_violation_status:
