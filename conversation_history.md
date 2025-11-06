@@ -3249,3 +3249,52 @@ Renamed `third_party_assumerole_account_ids` to `third_party_assumerole_account_
 - Account C trusts [111111111111]
 - Result: 1 root-level RCP with allowlist [111111111111, 222222222222]
 
+
+---
+
+## November 6, 2025 - Fixed: Single-Account OUs Now Get OU-Level RCPs
+
+**Bug Reported:**
+User identified that `acme_co` has its own OU (`acme_acquisition`), but the tool was generating account-level RCPs (`target_id = local.acme_co_account_id`) instead of OU-level RCPs.
+
+**Root Cause:**
+Line 200 of `generate_rcps.py` had:
+```python
+MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 2
+```
+
+This arbitrary constraint required at least 2 accounts in an OU before generating OU-level RCPs. Single-account OUs would fall back to account-level RCP generation.
+
+**Why This Was Wrong:**
+1. **Organizational structure**: OU-level RCPs better reflect the organizational hierarchy
+2. **Future-proofing**: If more accounts are added to that OU later, they automatically inherit the RCP
+3. **Consistency**: All OUs should be treated uniformly, regardless of account count
+4. **Cleaner management**: One OU-level RCP is simpler than account-level RCPs
+
+**Solution:**
+Changed `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP` from `2` to `1`.
+
+**Impact:**
+
+**Before:**
+- `acme_acquisition` OU with 1 account → account-level RCP generated
+- Terraform: `target_id = local.acme_co_account_id`
+
+**After:**
+- `acme_acquisition` OU with 1 account → OU-level RCP generated
+- Terraform: `target_id = local.acme_acquisition_ou_id`
+
+**Files Modified:**
+1. `headroom/terraform/generate_rcps.py`: Changed MIN_ACCOUNTS_FOR_OU_LEVEL_RCP from 2 to 1
+2. `tests/test_generate_rcps.py`: Updated test to expect OU-level RCPs for single-account OUs
+
+**Test Results:**
+- All 245 tests pass
+- No linter errors
+
+**Benefits:**
+- Better reflects organizational structure
+- Automatically covers new accounts added to the OU
+- More consistent behavior across all OUs
+- Cleaner Terraform management
+

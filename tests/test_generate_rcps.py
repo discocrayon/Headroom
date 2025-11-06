@@ -594,16 +594,17 @@ class TestDetermineRcpPlacement:
         root_recs = [r for r in recommendations if r.recommended_level == "root"]
         assert len(root_recs) == 0
 
-        # Should NOT get OU-level for ou-1111 (wildcard in that OU blocks it)
+        # Should get OU-level recommendations
         ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
-        assert len(ou_recs) == 0
+        # ou-1111 has wildcard so skipped, but ou-2222 (Development) has 1 account without wildcards so gets OU-level
+        assert len(ou_recs) == 1
+        assert ou_recs[0].target_ou_id == "ou-2222"  # Development OU with single account
+        assert ou_recs[0].affected_accounts == ["333333333333"]
 
-        # Should get account-level recommendations for the two accounts without wildcards
+        # Should get account-level recommendation for the account in ou-1111 (which has wildcard blocking OU-level)
         account_recs = [r for r in recommendations if r.recommended_level == "account"]
-        assert len(account_recs) == 2
-        
-        account_ids = [r.affected_accounts[0] for r in account_recs]
-        assert set(account_ids) == {"111111111111", "333333333333"}
+        assert len(account_recs) == 1
+        assert account_recs[0].affected_accounts == ["111111111111"]
 
     def test_skips_accounts_not_in_hierarchy_when_building_ou_mappings(
         self,

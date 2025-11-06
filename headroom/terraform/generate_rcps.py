@@ -197,7 +197,8 @@ def _check_ou_level_placements(
             ou_account_map[parent_ou_id] = []
         ou_account_map[parent_ou_id].append(account_id)
 
-    MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 2
+    # Attach at OU level even for single account OUs
+    MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1
 
     for ou_id, ou_account_ids in ou_account_map.items():
         if _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards):
