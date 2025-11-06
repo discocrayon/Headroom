@@ -26,11 +26,16 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
-def parse_result_files(results_dir: str) -> List[CheckResult]:
+def parse_result_files(results_dir: str, exclude_rcp_checks: bool = True) -> List[CheckResult]:
     """
     Parse all JSON result files from headroom_results directory.
 
-    Returns list of CheckResult objects.
+    Args:
+        results_dir: Path to the headroom_results directory
+        exclude_rcp_checks: If True, exclude RCP checks (like third_party_role_access)
+
+    Returns:
+        List of CheckResult objects for SCP checks only (if exclude_rcp_checks is True).
     """
     results_path = Path(results_dir)
     if not results_path.exists():
@@ -38,12 +43,21 @@ def parse_result_files(results_dir: str) -> List[CheckResult]:
 
     check_results: List[CheckResult] = []
 
+    # RCP checks that should be handled by the RCP-specific analysis
+    RCP_CHECK_NAMES = {"third_party_role_access"}
+
     # Iterate through check directories
     for check_dir in results_path.iterdir():
         if not check_dir.is_dir():
             continue
 
         check_name = check_dir.name
+
+        # Skip RCP checks if requested - they have their own analysis flow
+        if exclude_rcp_checks and check_name in RCP_CHECK_NAMES:
+            logger.info(f"Skipping RCP check: {check_name} (will be processed separately)")
+            continue
+
         logger.info(f"Processing check: {check_name}")
 
         # Process each account result file

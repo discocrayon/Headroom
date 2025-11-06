@@ -376,6 +376,73 @@ class TestResultFileParsing:
             assert result[0].account_name == "test-account"
             assert result[0].violations == 0
 
+    def test_parse_result_files_excludes_rcp_checks(self) -> None:
+        """
+        Test that RCP checks are excluded from SCP analysis.
+
+        RCP checks have their own analysis flow and should not be processed
+        by the SCP placement determination logic.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results_path = Path(temp_dir)
+
+            # Create SCP check directory
+            scp_check_dir = results_path / "deny_imds_v1_ec2"
+            scp_check_dir.mkdir()
+
+            scp_test_data = {
+                "summary": {
+                    "account_name": "test-account",
+                    "account_id": "111111111111",
+                    "check": "deny_imds_v1_ec2",
+                    "total_instances": 5,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 5,
+                    "compliance_percentage": 100.0
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+
+            with open(scp_check_dir / "test-account.json", 'w') as f:
+                json.dump(scp_test_data, f)
+
+            # Create RCP check directory (should be excluded)
+            rcp_check_dir = results_path / "third_party_role_access"
+            rcp_check_dir.mkdir()
+
+            rcp_test_data = {
+                "summary": {
+                    "account_name": "test-account",
+                    "account_id": "111111111111",
+                    "check": "third_party_role_access",
+                    "unique_third_party_accounts": ["999999999999"],
+                    "roles_with_wildcards": 0
+                },
+                "third_party_roles": []
+            }
+
+            with open(rcp_check_dir / "test-account.json", 'w') as f:
+                json.dump(rcp_test_data, f)
+
+            # Parse with RCP exclusion (default)
+            result = parse_result_files(temp_dir)
+
+            # Only SCP check should be included
+            assert len(result) == 1
+            assert result[0].check_name == "deny_imds_v1_ec2"
+
+            # Parse without RCP exclusion
+            result_with_rcp = parse_result_files(temp_dir, exclude_rcp_checks=False)
+
+            # Both checks should be included
+            assert len(result_with_rcp) == 2
+            check_names = {r.check_name for r in result_with_rcp}
+            assert "deny_imds_v1_ec2" in check_names
+            assert "third_party_role_access" in check_names
+
 
 class TestSCPPlacementDetermination:
     """Test SCP placement determination logic."""

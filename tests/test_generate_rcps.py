@@ -34,7 +34,41 @@ class TestParseRcpResultFiles:
         yield temp_dir
         shutil.rmtree(temp_dir)
 
-    def test_parse_single_account(self, temp_results_dir: str) -> None:
+    @pytest.fixture
+    def sample_org_hierarchy(self) -> OrganizationHierarchy:
+        """Create sample organization hierarchy for testing."""
+        return OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1111": OrganizationalUnit(
+                    ou_id="ou-1111",
+                    name="Production",
+                    parent_ou_id="r-1234",
+                    child_ous=[],
+                    accounts=["111111111111", "222222222222"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="test-account",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    account_id="222222222222",
+                    account_name="account2",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                )
+            }
+        )
+
+    def test_parse_single_account(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
         """Test parsing results from a single account."""
         check_dir = Path(temp_results_dir) / "third_party_role_access"
         check_dir.mkdir(parents=True)
@@ -52,14 +86,18 @@ class TestParseRcpResultFiles:
         with open(result_file, 'w') as f:
             json.dump(result_data, f)
 
-        result = parse_rcp_result_files(temp_results_dir)
+        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
         assert len(result.account_third_party_map) == 1
         assert "111111111111" in result.account_third_party_map
         assert result.account_third_party_map["111111111111"] == {"999999999999", "888888888888"}
         assert len(result.accounts_with_wildcards) == 0
 
-    def test_parse_multiple_accounts(self, temp_results_dir: str) -> None:
+    def test_parse_multiple_accounts(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
         """Test parsing results from multiple accounts."""
         check_dir = Path(temp_results_dir) / "third_party_role_access"
         check_dir.mkdir(parents=True)
@@ -86,28 +124,36 @@ class TestParseRcpResultFiles:
         with open(check_dir / "account2.json", 'w') as f:
             json.dump(result_data_2, f)
 
-        result = parse_rcp_result_files(temp_results_dir)
+        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
         assert len(result.account_third_party_map) == 2
         assert result.account_third_party_map["111111111111"] == {"999999999999"}
         assert result.account_third_party_map["222222222222"] == {"888888888888", "777777777777"}
         assert len(result.accounts_with_wildcards) == 0
 
-    def test_parse_nonexistent_directory(self) -> None:
+    def test_parse_nonexistent_directory(self, sample_org_hierarchy: OrganizationHierarchy) -> None:
         """Test parsing when directory doesn't exist."""
         with pytest.raises(RuntimeError, match="Third-party role access check directory does not exist"):
-            parse_rcp_result_files("/nonexistent/path")
+            parse_rcp_result_files("/nonexistent/path", sample_org_hierarchy)
 
-    def test_parse_empty_directory(self, temp_results_dir: str) -> None:
+    def test_parse_empty_directory(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
         """Test parsing empty directory."""
         check_dir = Path(temp_results_dir) / "third_party_role_access"
         check_dir.mkdir(parents=True)
 
-        result = parse_rcp_result_files(temp_results_dir)
+        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
         assert result.account_third_party_map == {}
         assert result.accounts_with_wildcards == set()
 
-    def test_parse_invalid_json(self, temp_results_dir: str) -> None:
+    def test_parse_invalid_json(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
         """Test parsing with invalid JSON file."""
         check_dir = Path(temp_results_dir) / "third_party_role_access"
         check_dir.mkdir(parents=True)
@@ -119,14 +165,18 @@ class TestParseRcpResultFiles:
 
         # Should raise exception on invalid JSON file
         with pytest.raises(RuntimeError, match="Failed to parse RCP result file .*/invalid.json"):
-            parse_rcp_result_files(temp_results_dir)
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
-    def test_parse_missing_summary_key(self, temp_results_dir: str) -> None:
+    def test_parse_missing_summary_key(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
         """Test parsing with file missing required summary key."""
         check_dir = Path(temp_results_dir) / "third_party_role_access"
         check_dir.mkdir(parents=True)
 
-        # Create file with missing summary key
+        # Create file with missing summary key - should fail with RuntimeError
         result_data = {
             "some_other_key": "value"
         }
@@ -134,26 +184,15 @@ class TestParseRcpResultFiles:
         with open(result_file, 'w') as f:
             json.dump(result_data, f)
 
-        # Create valid file
-        valid_data = {
-            "summary": {
-                "account_id": "111111111111",
-                "account_name": "test-account",
-                "unique_third_party_accounts": ["999999999999"],
-                "roles_with_wildcards": 0
-            }
-        }
-        valid_file = check_dir / "valid.json"
-        with open(valid_file, 'w') as f:
-            json.dump(valid_data, f)
+        # Should raise exception when account_name and account_id are both missing
+        with pytest.raises(RuntimeError, match="missing both account_id and account_name"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
-        # Should skip bad file but parse valid one
-        result = parse_rcp_result_files(temp_results_dir)
-        assert len(result.account_third_party_map) == 1
-        assert result.account_third_party_map["111111111111"] == {"999999999999"}
-        assert len(result.accounts_with_wildcards) == 0
-
-    def test_parse_skips_accounts_with_wildcards(self, temp_results_dir: str) -> None:
+    def test_parse_skips_accounts_with_wildcards(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
         """Test that accounts with wildcard principals are skipped."""
         check_dir = Path(temp_results_dir) / "third_party_role_access"
         check_dir.mkdir(parents=True)
@@ -182,7 +221,7 @@ class TestParseRcpResultFiles:
         with open(check_dir / "account2.json", 'w') as f:
             json.dump(result_data_without_wildcard, f)
 
-        result = parse_rcp_result_files(temp_results_dir)
+        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
         # Only account without wildcard should be included in map
         assert len(result.account_third_party_map) == 1
@@ -194,14 +233,158 @@ class TestParseRcpResultFiles:
         assert len(result.accounts_with_wildcards) == 1
         assert "111111111111" in result.accounts_with_wildcards
 
+    def test_parse_looks_up_missing_account_id(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that missing account_id is looked up from account_name."""
+        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir.mkdir(parents=True)
+
+        # Result without account_id (e.g., from exclude_account_ids=True)
+        result_data = {
+            "summary": {
+                "account_name": "test-account",
+                "unique_third_party_accounts": ["999999999999"],
+                "roles_with_wildcards": 0
+            }
+        }
+
+        result_file = check_dir / "test-account.json"
+        with open(result_file, 'w') as f:
+            json.dump(result_data, f)
+
+        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        # Should have looked up account_id from account_name
+        assert len(result.account_third_party_map) == 1
+        assert "111111111111" in result.account_third_party_map
+        assert result.account_third_party_map["111111111111"] == {"999999999999"}
+
+    def test_parse_fails_when_account_name_not_found(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that an error is raised when account_name is not in org hierarchy."""
+        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir.mkdir(parents=True)
+
+        # Result with unknown account name
+        result_data = {
+            "summary": {
+                "account_name": "unknown-account",
+                "unique_third_party_accounts": ["999999999999"],
+                "roles_with_wildcards": 0
+            }
+        }
+
+        result_file = check_dir / "unknown.json"
+        with open(result_file, 'w') as f:
+            json.dump(result_data, f)
+
+        with pytest.raises(RuntimeError, match="Account name 'unknown-account'.* not found in organization hierarchy"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
 
 class TestCheckRootLevelPlacement:
     """Test _check_root_level_placement helper function."""
 
-    def test_returns_none_when_account_map_is_empty(self) -> None:
+    @pytest.fixture
+    def sample_org_hierarchy(self) -> OrganizationHierarchy:
+        """Create sample organization hierarchy."""
+        return OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={},
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="test-account",
+                    parent_ou_id="r-1234",
+                    ou_path=[]
+                )
+            }
+        )
+
+    def test_returns_none_when_account_map_is_empty(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
         """Test that None is returned when no accounts are provided."""
-        result = _check_root_level_placement({})
+        result = _check_root_level_placement({}, sample_org_hierarchy, set())
         assert result is None
+
+    def test_returns_none_when_accounts_have_wildcards(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that None is returned when any accounts have wildcards."""
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": {"999999999999"}
+        }
+        accounts_with_wildcards: Set[str] = {"222222222222"}
+
+        result = _check_root_level_placement(
+            account_third_party_map,
+            sample_org_hierarchy,
+            accounts_with_wildcards
+        )
+        assert result is None
+
+    def test_affected_accounts_includes_all_org_accounts(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        Test that affected_accounts includes ALL accounts in the organization.
+
+        This is critical because root-level RCPs affect ALL accounts,
+        not just those analyzed in account_third_party_map.
+        """
+        # Expand sample_org_hierarchy to have multiple accounts
+        expanded_hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={},
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="account-1",
+                    parent_ou_id="r-1234",
+                    ou_path=[]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    account_id="222222222222",
+                    account_name="account-2",
+                    parent_ou_id="r-1234",
+                    ou_path=[]
+                ),
+                "333333333333": AccountOrgPlacement(
+                    account_id="333333333333",
+                    account_name="account-3",
+                    parent_ou_id="r-1234",
+                    ou_path=[]
+                )
+            }
+        )
+
+        # Only 2 accounts in map with matching third-party sets
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": set(),
+            "222222222222": set()
+        }
+        accounts_with_wildcards: Set[str] = set()
+
+        result = _check_root_level_placement(
+            account_third_party_map,
+            expanded_hierarchy,
+            accounts_with_wildcards
+        )
+
+        assert result is not None
+        # Affected accounts should include ALL 3 accounts, not just the 2 in the map
+        assert set(result.affected_accounts) == {"111111111111", "222222222222", "333333333333"}
+        assert "All 3 accounts" in result.reasoning
 
 
 class TestDetermineRcpPlacement:
@@ -267,42 +450,74 @@ class TestDetermineRcpPlacement:
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
         assert recommendations[0].target_ou_id is None
+        # Verify affected_accounts includes ALL accounts in the org
         assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
         assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert "All 3 accounts can be protected with root-level RCP" in recommendations[0].reasoning
+
+    def test_recommends_root_level_with_different_third_party_accounts_unioned(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test root level placement unions different third-party accounts from different accounts."""
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"888888888888"},
+            "333333333333": {"999999999999", "777777777777"}
+        }
+        accounts_with_wildcards: Set[str] = set()
+
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "root"
+        assert recommendations[0].target_ou_id is None
+        # Verify affected_accounts includes ALL accounts in the org
+        assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
+        # Should union all third-party account IDs
+        assert set(recommendations[0].third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
+        assert "All 3 accounts can be protected with root-level RCP" in recommendations[0].reasoning
+        assert "allowlist contains 3 third-party accounts" in recommendations[0].reasoning
 
     def test_recommends_ou_level_when_ou_accounts_have_identical_third_party_accounts(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test OU level placement when accounts in OU have same third-party accounts."""
+        """Test OU level placement unions third-party accounts from accounts in OU."""
         account_third_party_map: Dict[str, Set[str]] = {
             "111111111111": {"999999999999", "888888888888"},
-            "222222222222": {"999999999999", "888888888888"},
+            "222222222222": {"999999999999", "666666666666"},
             "333333333333": {"777777777777"}
         }
         accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
 
-        assert len(recommendations) == 2
-
+        # Should NOT get root-level since wildcards would prevent it
+        # Should get OU-level for ou-1111 with unioned third-party IDs
+        # Should get account-level for account in ou-2222
+        
+        root_recs = [r for r in recommendations if r.recommended_level == "root"]
         ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
         account_recs = [r for r in recommendations if r.recommended_level == "account"]
 
-        assert len(ou_recs) == 1
-        assert ou_recs[0].target_ou_id == "ou-1111"
-        assert set(ou_recs[0].affected_accounts) == {"111111111111", "222222222222"}
-        assert set(ou_recs[0].third_party_account_ids) == {"888888888888", "999999999999"}
-
-        assert len(account_recs) == 1
-        assert account_recs[0].affected_accounts == ["333333333333"]
-        assert account_recs[0].third_party_account_ids == ["777777777777"]
+        # With union logic, all accounts can be covered at root since no wildcards
+        assert len(root_recs) == 1
+        assert len(ou_recs) == 0
+        assert len(account_recs) == 0
+        
+        # Root should have union of all third-party IDs
+        assert set(root_recs[0].third_party_account_ids) == {"666666666666", "777777777777", "888888888888", "999999999999"}
 
     def test_recommends_account_level_when_each_account_has_unique_third_party_accounts(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test account level placement when each account has unique third-party accounts."""
+        """
+        Test that root-level is recommended even when accounts have different third-party accounts.
+
+        With union logic, different third-party requirements can be combined at root level.
+        """
         account_third_party_map: Dict[str, Set[str]] = {
             "111111111111": {"999999999999"},
             "222222222222": {"888888888888"},
@@ -310,13 +525,12 @@ class TestDetermineRcpPlacement:
         }
         accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
 
-        assert len(recommendations) == 3
-        assert all(r.recommended_level == "account" for r in recommendations)
-
-        account_ids = [r.affected_accounts[0] for r in recommendations]
-        assert set(account_ids) == {"111111111111", "222222222222", "333333333333"}
+        # With union logic, this should recommend root-level with all IDs unioned
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "root"
+        assert set(recommendations[0].third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
 
     def test_returns_empty_list_when_no_third_party_accounts_found(
         self,
@@ -330,11 +544,43 @@ class TestDetermineRcpPlacement:
 
         assert len(recommendations) == 0
 
+    def test_skips_root_level_when_any_account_has_wildcards(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        Test that root-level RCP is NOT recommended when ANY account has wildcards.
+
+        Critical fix: Even if all non-wildcard accounts have identical third-party
+        requirements, we cannot deploy at root if any account has wildcards because
+        the root RCP would affect those accounts too.
+        """
+        # Two accounts with identical (empty) third-party sets
+        account_third_party_map: Dict[str, Set[str]] = {
+            "111111111111": set(),
+            "222222222222": set()
+        }
+        # One account has wildcards (like shared-foo-bar in test_environment)
+        accounts_with_wildcards: Set[str] = {"333333333333"}
+
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+
+        # Should NOT get root-level recommendation
+        root_recs = [r for r in recommendations if r.recommended_level == "root"]
+        assert len(root_recs) == 0, "Should not recommend root-level RCP when any account has wildcards"
+
+        # Should get OU-level recommendation for ou-1111 (which has 2 accounts without wildcards)
+        ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
+        assert len(ou_recs) == 1
+        assert ou_recs[0].target_ou_id == "ou-1111"
+        # OU-level should union the third-party IDs from both accounts (even if they're both empty)
+        assert ou_recs[0].third_party_account_ids == []
+
     def test_skips_ou_level_recommendation_when_any_account_in_ou_has_wildcards(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test that OU-level RCP is skipped when any account in OU has wildcards."""
+        """Test that OU-level RCP is skipped when any account in OU has wildcards, falls back to account-level."""
         account_third_party_map: Dict[str, Set[str]] = {
             "111111111111": {"999999999999"},
             # 222222222222 has wildcards, not in map
@@ -342,60 +588,53 @@ class TestDetermineRcpPlacement:
         }
         accounts_with_wildcards: Set[str] = {"222222222222"}
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
+        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
 
-        # Should only get account-level recommendations, no OU-level for ou-1111
-        assert len(recommendations) == 2
-        assert all(r.recommended_level == "account" for r in recommendations)
+        # Should NOT get root-level (wildcard blocks it)
+        root_recs = [r for r in recommendations if r.recommended_level == "root"]
+        assert len(root_recs) == 0
 
-        account_ids = [r.affected_accounts[0] for r in recommendations]
+        # Should NOT get OU-level for ou-1111 (wildcard in that OU blocks it)
+        ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
+        assert len(ou_recs) == 0
+
+        # Should get account-level recommendations for the two accounts without wildcards
+        account_recs = [r for r in recommendations if r.recommended_level == "account"]
+        assert len(account_recs) == 2
+        
+        account_ids = [r.affected_accounts[0] for r in account_recs]
         assert set(account_ids) == {"111111111111", "333333333333"}
 
     def test_skips_accounts_not_in_hierarchy_when_building_ou_mappings(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test that accounts not in the hierarchy cause a failure."""
+        """
+        Test that accounts not in the hierarchy cause a failure during OU-level processing.
+
+        We need to block root-level with wildcards to force OU-level processing.
+        """
         account_third_party_map: Dict[str, Set[str]] = {
             "111111111111": {"999999999999"},
             "222222222222": {"999999999999"},
-            "999999999999": {"888888888888"}
+            "999999999999": {"888888888888"}  # This account doesn't exist in hierarchy
         }
-        accounts_with_wildcards: Set[str] = set()
+        # Add wildcard to prevent root-level and force OU-level processing
+        accounts_with_wildcards: Set[str] = {"some_wildcard_account"}
 
-        # Should raise exception for account not in hierarchy
+        # Should raise exception for account not in hierarchy during OU-level processing
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
-            determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
+            determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
 
-    def test_rcp_always_root_aggregates_all_third_party_accounts(
+    def test_with_empty_third_party_sets(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test rcp_always_root=True aggregates all third-party accounts at root level."""
+        """Test with accounts that have empty third-party sets."""
         account_third_party_map: Dict[str, Set[str]] = {
-            "111111111111": {"999999999999", "888888888888"},
-            "222222222222": {"999999999999", "777777777777"},
-            "333333333333": {"666666666666"}
-        }
-        accounts_with_wildcards: Set[str] = set()
-
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=True)
-
-        assert len(recommendations) == 1
-        assert recommendations[0].recommended_level == "root"
-        assert recommendations[0].target_ou_id is None
-        assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
-        assert set(recommendations[0].third_party_account_ids) == {"666666666666", "777777777777", "888888888888", "999999999999"}
-        assert "Aggregated all third-party accounts" in recommendations[0].reasoning
-
-    def test_rcp_always_root_with_default_parameter(
-        self,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """Test that rcp_always_root defaults to True when not specified."""
-        account_third_party_map: Dict[str, Set[str]] = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"888888888888"}
+            "111111111111": set(),
+            "222222222222": set(),
+            "333333333333": set()
         }
         accounts_with_wildcards: Set[str] = set()
 
@@ -403,61 +642,11 @@ class TestDetermineRcpPlacement:
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
-        assert set(recommendations[0].third_party_account_ids) == {"888888888888", "999999999999"}
-
-    def test_rcp_always_root_false_with_identical_accounts_uses_natural_root(
-        self,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """Test rcp_always_root=False with identical accounts naturally recommends root."""
-        account_third_party_map: Dict[str, Set[str]] = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"999999999999"},
-            "333333333333": {"999999999999"}
-        }
-        accounts_with_wildcards: Set[str] = set()
-
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=False)
-
-        assert len(recommendations) == 1
-        assert recommendations[0].recommended_level == "root"
-        assert recommendations[0].third_party_account_ids == ["999999999999"]
-        assert "All 3 accounts have identical" in recommendations[0].reasoning
-
-    def test_rcp_always_root_with_empty_third_party_sets(
-        self,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """Test rcp_always_root=True with accounts that have empty third-party sets."""
-        account_third_party_map: Dict[str, Set[str]] = {
-            "111111111111": set(),
-            "222222222222": set()
-        }
-        accounts_with_wildcards: Set[str] = set()
-
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=True)
-
-        assert len(recommendations) == 0
-
-    def test_rcp_always_root_fails_fast_when_wildcards_present(
-        self,
-        sample_org_hierarchy: OrganizationHierarchy,
-        caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Test rcp_always_root=True returns empty list when any account has wildcards."""
-        account_third_party_map: Dict[str, Set[str]] = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"888888888888"}
-        }
-        accounts_with_wildcards: Set[str] = {"333333333333", "444444444444"}
-
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards, rcp_always_root=True)
-
-        assert len(recommendations) == 0
-        assert "Cannot deploy RCP at root level" in caplog.text
-        assert "2 account(s) have wildcard principals" in caplog.text
-        assert "333333333333" in caplog.text
-        assert "444444444444" in caplog.text
+        assert recommendations[0].third_party_account_ids == []
+        assert "All 3 accounts can be protected with root-level RCP" in recommendations[0].reasoning
+        assert "allowlist contains 0 third-party accounts" in recommendations[0].reasoning
+        # Verify affected_accounts includes ALL accounts in the org
+        assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
 
 
 class TestGenerateRcpTerraform:
@@ -644,7 +833,7 @@ class TestGenerateRcpTerraform:
 
         When a wildcard is present, it means trusting all account IDs which could cause
         outages if the RCP is deployed, so enforcement should be disabled.
-        The third_party_assumerole_account_ids parameter should not be passed when enforcement is false.
+        The third_party_assumerole_account_ids_allowlist parameter should not be passed when enforcement is false.
         """
         recommendations = [
             RCPPlacementRecommendations(
@@ -664,4 +853,4 @@ class TestGenerateRcpTerraform:
 
         content = root_file.read_text()
         assert "enforce_assume_role_org_identities = false" in content
-        assert "third_party_assumerole_account_ids" not in content
+        assert "third_party_assumerole_account_ids_allowlist" not in content

@@ -2890,3 +2890,362 @@ The user noticed that RCP (Resource Control Policy) generation code was writing 
 - SCPs module only accepts boolean flags like `deny_imds_v1_ec2`
 - RCPs module uses `third_party_account_ids` (a list) instead of boolean flags
 - The conversation history now correctly reflects that RCPs and SCPs are separate modules with different parameter requirements
+
+---
+
+## November 2, 2025 - 11:30 AM
+
+**User Request:** Fix bug where `third_party_role_access` RCP check was generating SCP Terraform files instead of RCP Terraform files
+
+**Problem:**
+The user reported that the check `third_party_role_access` (an RCP check) was outputting SCP Terraform configuration in `test_environment/scps/acme_acquisition_ou_scps.tf` with module "scps_acme_acquisition_ou" instead of RCP configuration in the rcps directory. The generated file was incorrectly using the SCPs module with `third_party_role_access = true` parameter.
+
+**Root Cause:**
+The `parse_result_files()` function in `headroom/parse_results.py` was reading ALL JSON result files from the `headroom_results` directory, including both SCP checks (like `deny_imds_v1_ec2`) and RCP checks (like `third_party_role_access`). All checks were being processed together by:
+1. `parse_result_files()` - which read ALL check directories
+2. `determine_scp_placement()` - which generated placement recommendations for ALL checks
+3. `generate_scp_terraform()` - which generated SCP Terraform files for ALL recommendations
+
+This caused RCP checks to incorrectly generate SCP Terraform files, when they should only be processed by the separate RCP-specific flow: `parse_rcp_result_files()`, `determine_rcp_placement()`, and `generate_rcp_terraform()`.
+
+**Actions Taken:**
+
+1. **Modified `headroom/parse_results.py`**:
+   - Updated `parse_result_files()` signature to include optional parameter `exclude_rcp_checks: bool = True`
+   - Added `RCP_CHECK_NAMES = {"third_party_role_access"}` set to identify RCP checks
+   - Added conditional logic to skip RCP check directories when `exclude_rcp_checks=True`
+   - Added logging to indicate when RCP checks are being skipped
+   - Updated docstring to document the new parameter and behavior
+
+2. **Added test in `tests/test_parse_results.py`**:
+   - Added `test_parse_result_files_excludes_rcp_checks()` method to TestResultFileParsing class
+   - Test creates both SCP check results (deny_imds_v1_ec2) and RCP check results (third_party_role_access)
+   - Verifies that only SCP checks are parsed with default `exclude_rcp_checks=True`
+   - Verifies that both checks are parsed when `exclude_rcp_checks=False`
+   - Ensures RCP checks are properly excluded from SCP analysis flow
+
+3. **Deleted incorrectly generated file**:
+   - Removed `test_environment/scps/acme_acquisition_ou_scps.tf` which contained incorrect SCP configuration for RCP check
+
+**Files Modified:**
+1. **headroom/parse_results.py**: Lines 29-61 - Added exclude_rcp_checks parameter and RCP check filtering logic
+2. **tests/test_parse_results.py**: Lines 379-444 - Added test for RCP check exclusion
+3. **Deleted**: `test_environment/scps/acme_acquisition_ou_scps.tf` - Incorrectly generated SCP file
+
+**Results:**
+- All 243 tests pass with 100% code coverage maintained (headroom: 1022 lines, tests: 2466 lines)
+- MyPy type checking passes with no issues
+- Pre-commit hooks (flake8, autopep8, autoflake) all pass
+- RCP checks are now properly excluded from SCP analysis and Terraform generation
+- RCP checks continue to be processed only by their dedicated analysis flow
+- SCP checks are unaffected and continue to work correctly
+
+---
+
+## November 2, 2025 - Removed `--no-rcp-always-root` CLI Option
+
+**Request:**
+The user requested to remove the `--no-rcp-always-root` command-line option and change the default behavior to always deploy RCPs at the most specific level possible (OU or account level) instead of always at root level with aggregated third-party accounts. The goal is to deploy RCPs wherever they will not break anything - for example, if an RCP can be deployed at the OU level (like the Acme OU), deploy it there.
+
+**Previous Behavior:**
+- The tool had a `--no-rcp-always-root` CLI flag that disabled the default "always root" behavior
+- By default (`rcp_always_root=True`), all RCPs were deployed at root level with aggregated third-party account IDs from all accounts
+- With `--no-rcp-always-root`, the tool would deploy RCPs at the most specific safe level (root if all accounts identical, OU level if OU accounts identical, or account level)
+- The root-level aggregation mode could fail if any account had wildcard principals, blocking all RCP deployment
+
+**New Behavior:**
+- RCPs are now always deployed at the most specific safe level without requiring a CLI flag
+- If all accounts have identical third-party accounts, deploy at root level
+- If all accounts in an OU have identical third-party accounts (and no wildcards), deploy at OU level
+- Otherwise, deploy at account level for each account
+- The system automatically determines the safest and most specific placement
+
+**Actions Taken:**
+
+1. **Removed CLI argument from `headroom/usage.py`**:
+   - Deleted the `--no-rcp-always-root` argument definition (lines 88-94)
+   - Removed RCP options section from argument parser
+
+2. **Removed config field from `headroom/config.py`**:
+   - Deleted `rcp_always_root: bool = True` field from HeadroomConfig class (line 31)
+   - Field is no longer configurable since behavior is now always the same
+
+3. **Updated RCP placement function in `headroom/terraform/generate_rcps.py`**:
+   - Removed `rcp_always_root` parameter from `determine_rcp_placement()` function signature
+   - Removed conditional logic for aggregated root-level deployment
+   - Removed "always root" mode that aggregated all third-party accounts
+   - Function now directly checks for natural root placement, OU placement, then account placement
+   - Simplified docstring to reflect new behavior
+
+4. **Updated function call in `headroom/main.py`**:
+   - Removed `final_config.rcp_always_root` parameter from `determine_rcp_placement()` call
+
+5. **Updated tests in `tests/test_generate_rcps.py`**:
+   - Removed `rcp_always_root=False` parameter from all test calls
+   - Deleted obsolete tests: `test_rcp_always_root_aggregates_all_third_party_accounts`, `test_rcp_always_root_with_default_parameter`, `test_rcp_always_root_fails_fast_when_wildcards_present`
+   - Renamed and updated `test_rcp_always_root_false_with_identical_accounts_uses_natural_root` to validate the new default behavior
+   - Updated `test_recommends_root_level_when_all_accounts_have_identical_third_party_accounts` to verify reasoning message
+   - Updated `test_with_empty_third_party_sets` to expect root-level recommendation (not empty list) when all accounts have identical empty sets
+
+**Files Modified:**
+1. `headroom/config.py`: Removed `rcp_always_root` field from HeadroomConfig class
+2. `headroom/usage.py`: Removed `--no-rcp-always-root` CLI argument
+3. `headroom/terraform/generate_rcps.py`: Removed `rcp_always_root` parameter and aggregation logic
+4. `headroom/main.py`: Updated function call to remove parameter
+5. `tests/test_generate_rcps.py`: Updated all tests to match new behavior
+
+**Results:**
+- All 239 tests pass successfully
+- RCPs are now deployed at the most specific safe level automatically
+- No CLI flag needed to enable intelligent placement
+- System is simpler and easier to understand
+- OU-level and account-level RCPs are now the default approach
+- Root-level RCPs are still used when all accounts naturally have identical requirements
+
+---
+
+## November 2, 2025 - Fixed RCP Generation Bug for Accounts with No Third-Party Access
+
+**Problem Identified:**
+User reported that `headroom.terraform.generate_rcps` was logging messages about accounts with wildcard principals but wasn't generating any Terraform files for OUs or accounts without violations. Investigation revealed two related issues:
+
+1. **Accounts with no third-party accounts were excluded from processing**: In `parse_rcp_result_files()`, the condition `if account_id and third_party_accounts:` on line 56 evaluated to False when `third_party_accounts` was an empty list (empty list is falsy in Python). This meant accounts like "acme-co" and "security-tooling" (which had no wildcard violations and no third-party accounts) were never added to `account_third_party_map`.
+
+2. **Empty map caused entire RCP generation to be skipped**: In `main.py`, the check `if rcp_parse_result.account_third_party_map:` would evaluate to False when no accounts were in the map, causing the entire RCP placement determination and Terraform generation to be skipped.
+
+**Root Cause:**
+The code was silently ignoring accounts that had:
+- No wildcards (eligible for RCPs)
+- No third-party accounts (should get organization-identities-only RCPs)
+
+This resulted in no Terraform being generated at all because no accounts ended up in the `account_third_party_map`.
+
+**Solution:**
+Changed line 56 in `parse_rcp_result_files()` to include accounts even if they have empty third-party account lists. Changed from:
+```python
+if account_id and third_party_accounts:
+    account_third_party_map[account_id] = set(third_party_accounts)
+```
+
+To:
+```python
+if account_id:
+    account_third_party_map[account_id] = set(third_party_accounts)
+```
+
+This ensures that accounts with no third-party accounts still get RCPs with `enforce_assume_role_org_identities = true` and an empty `third_party_assumerole_account_ids = []` list.
+
+**Files Modified:**
+1. `headroom/terraform/generate_rcps.py`: Changed condition to include accounts with empty third-party lists
+
+---
+
+## November 2, 2025 - Enhanced RCP Parsing to Look Up Missing Account IDs
+
+**Follow-up Issue:**
+User pointed out that the condition `if account_id:` in `parse_rcp_result_files()` would be False when account_id is an empty string, and questioned when this would happen. Investigation revealed:
+
+1. **Root cause**: When `exclude_account_ids=True` (a config option for privacy/redaction), the `write_check_results()` function in `write_results.py` intentionally removes the `account_id` from the JSON summary section (lines 84-88).
+
+2. **Problem**: The `parse_rcp_result_files()` function had no way to recover the account_id, so it would silently skip accounts or fail.
+
+3. **User's suggestion**: Instead of silently skipping or failing, look up the `account_id` from `account_name` using the organization hierarchy.
+
+**Solution Implemented:**
+Modified `parse_rcp_result_files()` to take `organization_hierarchy` as a parameter and look up missing account IDs:
+
+1. **Function signature change**: Added `organization_hierarchy: OrganizationHierarchy` parameter
+2. **Lookup logic**: When `account_id` is missing or empty:
+   - Check if `account_name` is present; if not, raise clear error
+   - Search organization hierarchy for matching account name
+   - Use the found account_id
+   - Log the lookup for transparency
+   - Raise clear error if account_name not found in hierarchy
+3. **Fail-fast behavior**: Raise `RuntimeError` with descriptive messages when:
+   - Both `account_id` and `account_name` are missing
+   - `account_name` is not found in organization hierarchy
+
+**Files Modified:**
+1. `headroom/terraform/generate_rcps.py`: Added organization_hierarchy parameter and account lookup logic
+2. `headroom/main.py`: Updated call to pass organization_hierarchy
+3. `tests/test_generate_rcps.py`: Added organization hierarchy fixture to TestParseRcpResultFiles class, updated all test calls, added two new tests:
+   - `test_parse_looks_up_missing_account_id`: Verifies lookup works correctly
+   - `test_parse_fails_when_account_name_not_found`: Verifies error handling
+
+**Results:**
+- All 241 tests pass with 100% coverage
+- No linter errors
+- System now handles `exclude_account_ids=True` gracefully
+- Clear error messages when data is missing or invalid
+- No silent failures
+
+---
+
+## November 6, 2025 - Fixed Critical RCP Analysis Logic Errors
+
+**Problem Reported:**
+User identified three critical issues with RCP analysis and terraform generation when running against test_environment:
+
+1. **Incorrect "Affected Accounts" count**: Tool reported "Affected Accounts: 2" but there are 4 accounts in test_environment. Root-level RCPs affect ALL accounts, not just those without wildcards.
+
+2. **Incorrect "Third-Party Accounts" count**: Tool reported "Third-Party Accounts: 0" when actually shared-foo-bar has 11 third-party account IDs that need access.
+
+3. **Generated terraform breaks existing roles**: The generated root RCP has `third_party_assumerole_account_ids = []` (empty list), which would block all third-party access at root level and break the 11 roles in shared-foo-bar that require third-party access.
+
+**Root Cause Analysis:**
+The `_check_root_level_placement()` function in `generate_rcps.py` had flawed logic:
+
+1. **Excluded accounts with wildcards**: `account_third_party_map` only contains accounts without any wildcard roles. shared-foo-bar has a wildcard role so it's excluded entirely.
+
+2. **Wrong affected accounts list**: Line 109 set `affected_accounts=list(account_third_party_map.keys())` which only includes accounts without wildcards. But a root-level RCP affects ALL accounts in the organization.
+
+3. **Ignored third-party accounts from wildcard accounts**: When checking if all accounts have identical third-party access, it only looked at accounts in `account_third_party_map`, completely missing shared-foo-bar's 11 third-party accounts.
+
+4. **Fundamentally flawed assumption**: The logic assumed that if an account has wildcards, we can ignore it entirely. But root/OU-level RCPs still affect those accounts and will break their third-party roles.
+
+**Key Insight:**
+- Accounts with wildcards cannot have RCPs deployed AT THE ACCOUNT LEVEL (because we can't determine what external principals they need from static analysis)
+- BUT root-level and OU-level RCPs still apply to them
+- Therefore, we MUST NOT recommend root-level RCPs if any account has wildcards OR different third-party requirements
+
+**Solution Implemented:**
+
+1. **Modified `_check_root_level_placement()` function signature and logic**:
+   - Added `organization_hierarchy` parameter to get ALL accounts in the org
+   - Added `accounts_with_wildcards` parameter to check for wildcard accounts
+   - Added early return if ANY accounts have wildcards (cannot safely deploy at root)
+   - Changed `affected_accounts` to include ALL accounts from organization_hierarchy, not just those in account_third_party_map
+   - Updated reasoning message to reflect total org account count
+
+2. **Updated `determine_rcp_placement()` to pass new parameters**:
+   - Pass `organization_hierarchy` and `accounts_with_wildcards` to `_check_root_level_placement()`
+   - Updated docstring to clarify that root-level requires no wildcards
+
+3. **Added comprehensive tests** to `test_generate_rcps.py`:
+   - `test_returns_none_when_accounts_have_wildcards`: Verifies root-level RCP is not recommended when wildcards exist
+   - `test_affected_accounts_includes_all_org_accounts`: Verifies affected_accounts includes ALL org accounts
+   - `test_skips_root_level_when_any_account_has_wildcards`: Tests the exact scenario from the bug report
+   - Updated existing tests to pass new parameters to `_check_root_level_placement()`
+   - Updated test assertions to verify correct account counts
+
+**Files Modified:**
+1. `headroom/terraform/generate_rcps.py`: Fixed root-level placement logic
+2. `tests/test_generate_rcps.py`: Added 3 new tests, updated 2 existing tests
+
+**Test Results:**
+- All 244 tests pass
+- No linter errors
+- New tests specifically cover the reported bug scenario
+
+**Expected Behavior After Fix:**
+
+When running against test_environment with 4 accounts (2 with wildcards: fort-knox, shared-foo-bar):
+- **Before**: "Affected Accounts: 2, Third-Party Accounts: 0" with broken root RCP
+- **After**: Will NOT recommend root-level RCP due to wildcard accounts, will generate account-level RCPs for accounts without wildcards instead
+
+The tool now correctly:
+1. Counts ALL accounts in the organization for "Affected Accounts"
+2. Does NOT ignore third-party accounts from accounts with wildcards
+3. Refuses to deploy root-level RCPs if ANY account has wildcards (preventing breakage)
+4. Generates appropriate account-level or OU-level RCPs instead
+
+
+---
+
+## November 6, 2025 - Enhanced RCP Logic: Union Strategy and Renamed Parameter
+
+**User Feedback:**
+User pointed out that the RCP logic was too conservative - it required ALL accounts to have IDENTICAL third-party account requirements before recommending root-level RCPs. The user correctly noted that third-party account IDs can be unioned together instead. For example:
+- Account A trusts 111111111111
+- Account B trusts 222222222222
+- These can be combined into `third_party_assumerole_account_ids = ["111111111111", "222222222222"]`
+
+Additionally, user requested renaming `third_party_assumerole_account_ids` to `third_party_assumerole_account_ids_allowlist` to be more explicit about its purpose.
+
+**Changes Implemented:**
+
+### 1. Updated RCP Placement Logic to Use Union Strategy
+
+**Modified `_check_root_level_placement()` in `generate_rcps.py`:**
+- **Before**: Required ALL accounts to have identical third-party account sets
+- **After**: Unions all third-party account IDs from all accounts together
+- Only constraint: NO accounts can have wildcards (static analysis limitation)
+- Much more permissive - enables root-level deployment in many more scenarios
+
+**Modified `_check_ou_level_placements()` in `generate_rcps.py`:**
+- **Before**: Required all accounts in OU to have identical third-party account sets
+- **After**: Unions all third-party account IDs from accounts within each OU
+- More flexible OU-level deployments
+
+**Updated reasoning messages:**
+- "All X accounts can be protected with root-level RCP (allowlist contains Y third-party accounts from union of all account requirements)"
+- Explicitly mentions "union" and "allowlist" for clarity
+
+### 2. Renamed Parameter Throughout Codebase
+
+Renamed `third_party_assumerole_account_ids` to `third_party_assumerole_account_ids_allowlist` in:
+
+1. **Source code:**
+   - `headroom/terraform/generate_rcps.py`: Terraform generation
+
+2. **Terraform module (`test_environment/modules/rcps/`):**
+   - `variables.tf`: Variable definition and validation
+   - `locals.tf`: RCP policy condition logic
+   - `README.md`: Documentation and usage examples
+
+3. **Generated Terraform:**
+   - `test_environment/rcps/root_rcps.tf`: Updated to use new parameter name
+
+4. **Tests:**
+   - `tests/test_generate_rcps.py`: Updated test assertions and comments
+
+### 3. Updated Tests to Reflect New Logic
+
+**Added new test:**
+- `test_recommends_root_level_with_different_third_party_accounts_unioned`: Verifies that accounts with DIFFERENT third-party requirements can all be protected with root-level RCP using union strategy
+
+**Updated existing tests:**
+- `test_recommends_root_level_when_all_accounts_have_identical_third_party_accounts`: Updated reasoning assertion
+- `test_recommends_ou_level_when_ou_accounts_have_identical_third_party_accounts`: Now expects root-level with union logic
+- `test_recommends_account_level_when_each_account_has_unique_third_party_accounts`: Now expects root-level with union logic
+- `test_with_empty_third_party_sets`: Updated reasoning assertion
+- `test_skips_root_level_when_any_account_has_wildcards`: Updated OU-level assertion
+- `test_skips_ou_level_recommendation_when_any_account_in_ou_has_wildcards`: Enhanced assertions
+- `test_skips_accounts_not_in_hierarchy_when_building_ou_mappings`: Fixed to force OU-level processing
+
+**Files Modified:**
+1. `headroom/terraform/generate_rcps.py`: Union logic for root and OU levels, renamed parameter
+2. `test_environment/modules/rcps/variables.tf`: Renamed variable
+3. `test_environment/modules/rcps/locals.tf`: Updated variable reference
+4. `test_environment/modules/rcps/README.md`: Updated documentation
+5. `test_environment/rcps/root_rcps.tf`: Updated generated terraform
+6. `tests/test_generate_rcps.py`: 1 new test, 7 updated tests
+
+**Test Results:**
+- All 245 tests pass
+- No linter errors
+
+**Benefits of Changes:**
+
+1. **More Permissive Deployment:** Root-level and OU-level RCPs can now be deployed in many more scenarios where accounts have different (but complementary) third-party requirements
+
+2. **Clearer Intent:** Parameter name `third_party_assumerole_account_ids_allowlist` explicitly communicates that this is an allowlist of permitted account IDs
+
+3. **Maintains Safety:** Still refuses to deploy root/OU-level RCPs when wildcards exist (can't determine requirements from static analysis)
+
+4. **Simpler Management:** One root-level RCP with a unioned allowlist is easier to manage than many account-level RCPs
+
+**Example Impact:**
+
+**Before (conservative):**
+- Account A trusts [111111111111]
+- Account B trusts [222222222222]  
+- Account C trusts [111111111111]
+- Result: 3 account-level RCPs (because not all identical)
+
+**After (union strategy):**
+- Account A trusts [111111111111]
+- Account B trusts [222222222222]
+- Account C trusts [111111111111]
+- Result: 1 root-level RCP with allowlist [111111111111, 222222222222]
+

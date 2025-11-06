@@ -13,17 +13,17 @@ variable "target_id" {
   }
 }
 
-variable "third_party_assumerole_account_ids" {
+variable "third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
   nullable    = false
   default     = []
-  description = "List of third-party AWS account IDs allowed to assume roles in this organization."
+  description = "Allowlist of third-party AWS account IDs that are permitted to assume roles in this target ID."
 
   validation {
     condition = alltrue([
-      for account_id in var.third_party_assumerole_account_ids : length(account_id) == 12 && can(regex("^[0-9]{12}$", account_id))
+      for account_id in var.third_party_assumerole_account_ids_allowlist : length(account_id) == 12 && can(regex("^[0-9]{12}$", account_id))
     ])
-    error_message = "All third_party_assumerole_account_ids must be valid 12-digit AWS account IDs."
+    error_message = "All third_party_assumerole_account_ids_allowlist must be valid 12-digit AWS account IDs."
   }
 }
 

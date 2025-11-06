@@ -1189,8 +1189,8 @@ class RCPPlacementRecommendations:
 - ✅ Custom exceptions (`UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError`)
 - ✅ Comprehensive test coverage (227 tests, 100% coverage for all modules)
 - ✅ RCP Terraform module with EnforceOrgIdentities policy
-- ✅ RCP always-root deployment mode with aggregated third-party accounts (configurable via `--no-rcp-always-root`)
-- ✅ Wildcard fail-fast validation for safe root-level RCP deployment
+- ✅ Intelligent RCP placement at most specific safe level (root, OU, or account)
+- ✅ Automatic OU-level and account-level RCP deployment
 
 ### Phase 8: SCP Expansion (PLANNED)
 - 🔄 Additional SCP checks for other AWS services
@@ -1230,10 +1230,10 @@ account_tag_layout:
 - `--config CONFIG` (required): Path to configuration YAML file
 - `--results-dir RESULTS_DIR` (optional): Override directory for results output (default: `test_environment/headroom_results`)
 - `--scps-dir SCPS_DIR` (optional): Override directory for SCP Terraform output (default: `test_environment/scps`)
+- `--rcps-dir RCPS_DIR` (optional): Override directory for RCP Terraform output (default: `test_environment/rcps`)
 - `--security-analysis-account-id ID` (optional): Override security analysis account ID from YAML
 - `--management-account-id ID` (optional): Override management account ID from YAML
 - `--exclude-account-ids` (optional): Exclude account IDs from result files and filenames
-- `--no-rcp-always-root` (optional): Disable always deploying RCPs at root level (default: enabled)
 
 **CLI arguments take precedence over YAML configuration values.**
 
