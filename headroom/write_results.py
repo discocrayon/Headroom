@@ -16,6 +16,12 @@ from typing import Any, Dict, List, Union, cast
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# Map check names to their types (scp or rcp)
+CHECK_TYPE_MAP = {
+    "deny_imds_v1_ec2": "scps",
+    "third_party_assumerole": "rcps",
+}
+
 
 def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, Any]) -> Union[Dict[str, Any], List[Any], str, Any]:
     """
@@ -64,8 +70,8 @@ def write_check_results(
         exclude_account_ids: If True, exclude account ID from filename and JSON
 
     Creates file at:
-        {results_base_dir}/{check_name}/{account_name}_{account_id}.json
-        or {results_base_dir}/{check_name}/{account_name}.json if exclude_account_ids=True
+        {results_base_dir}/{check_type}/{check_name}/{account_name}_{account_id}.json
+        or {results_base_dir}/{check_type}/{check_name}/{account_name}.json if exclude_account_ids=True
     """
     results_dir = get_results_dir(check_name, results_base_dir)
     os.makedirs(results_dir, exist_ok=True)
@@ -101,14 +107,19 @@ def get_results_dir(check_name: str, results_base_dir: str) -> str:
     """
     Get the directory path where results for a check should be stored.
 
+    Results are organized by check type (scps/rcps) and then by check name.
+
     Args:
         check_name: Name of the check (e.g., 'deny_imds_v1_ec2')
         results_base_dir: Base directory for results
 
     Returns:
-        Path to the check's results directory
+        Path to the check's results directory (e.g., '{results_base_dir}/scps/deny_imds_v1_ec2')
     """
-    return f"{results_base_dir}/{check_name}"
+    check_type = CHECK_TYPE_MAP.get(check_name)
+    if not check_type:
+        raise ValueError(f"Unknown check name: {check_name}. Must be one of {list(CHECK_TYPE_MAP.keys())}")
+    return f"{results_base_dir}/{check_type}/{check_name}"
 
 
 def get_results_path(
@@ -121,6 +132,8 @@ def get_results_path(
     """
     Get the file path where results for a specific account should be written.
 
+    Results are organized by check type, then check name, then account.
+
     Args:
         check_name: Name of the check (e.g., 'deny_imds_v1_ec2')
         account_name: Account name
@@ -129,7 +142,7 @@ def get_results_path(
         exclude_account_ids: If True, use only account name in filename
 
     Returns:
-        Path object for the results file
+        Path object for the results file (e.g., '{results_base_dir}/scps/deny_imds_v1_ec2/account.json')
     """
     results_dir = get_results_dir(check_name, results_base_dir)
     if exclude_account_ids:

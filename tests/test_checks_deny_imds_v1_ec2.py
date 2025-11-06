@@ -1,5 +1,5 @@
 """
-Tests for headroom.checks.deny_imds_v1_ec2 module.
+Tests for headroom.checks.scps.deny_imds_v1_ec2 module.
 
 Tests for check_deny_imds_v1_ec2 function and its integration with AWS EC2 analysis.
 """
@@ -9,7 +9,7 @@ import tempfile
 import shutil
 from unittest.mock import MagicMock, patch
 from typing import List, Generator
-from headroom.checks.deny_imds_v1_ec2 import check_deny_imds_v1_ec2
+from headroom.checks.scps.deny_imds_v1_ec2 import check_deny_imds_v1_ec2
 from headroom.config import DEFAULT_RESULTS_DIR
 from headroom.aws.ec2 import DenyImdsV1Ec2
 
@@ -83,8 +83,8 @@ class TestCheckDenyImdsV1Ec2:
         account_id = "111111111111"
 
         with (
-            patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
-            patch("headroom.checks.deny_imds_v1_ec2.write_check_results") as mock_write,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analysis.return_value = sample_imds_results_mixed
@@ -149,8 +149,8 @@ class TestCheckDenyImdsV1Ec2:
         account_id = "987654321098"
 
         with (
-            patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
-            patch("headroom.checks.deny_imds_v1_ec2.write_check_results") as mock_write,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analysis.return_value = sample_imds_results_compliant
@@ -182,8 +182,8 @@ class TestCheckDenyImdsV1Ec2:
         account_id = "111111111111"
 
         with (
-            patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
-            patch("headroom.checks.deny_imds_v1_ec2.write_check_results") as mock_write,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analysis.return_value = []
@@ -229,8 +229,8 @@ class TestCheckDenyImdsV1Ec2:
         account_id = "222222222222"
 
         with (
-            patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
-            patch("headroom.checks.deny_imds_v1_ec2.write_check_results") as mock_write,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analysis.return_value = violation_results
@@ -271,8 +271,8 @@ class TestCheckDenyImdsV1Ec2:
         account_id = "333333333333"
 
         with (
-            patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
-            patch("headroom.checks.deny_imds_v1_ec2.write_check_results") as mock_write,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analysis.return_value = exemption_results
@@ -302,8 +302,8 @@ class TestCheckDenyImdsV1Ec2:
         account_id = "444444444444"
 
         with (
-            patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
-            patch("headroom.checks.deny_imds_v1_ec2.write_check_results") as mock_write,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analysis.return_value = sample_imds_results_mixed
@@ -325,8 +325,8 @@ class TestCheckDenyImdsV1Ec2:
         account_id = "555555555555"
 
         with (
-            patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
-            patch("headroom.checks.deny_imds_v1_ec2.write_check_results") as mock_write,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analysis.return_value = sample_imds_results_mixed
@@ -347,8 +347,8 @@ class TestCheckDenyImdsV1Ec2:
         account_id = "666666666666"
 
         with (
-            patch("headroom.checks.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
-            patch("headroom.checks.deny_imds_v1_ec2.write_check_results") as mock_write,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis") as mock_analysis,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analysis.return_value = sample_imds_results_mixed

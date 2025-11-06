@@ -26,13 +26,15 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
-def parse_result_files(results_dir: str, exclude_rcp_checks: bool = True) -> List[CheckResult]:
+def parse_scp_result_files(results_dir: str, exclude_rcp_checks: bool = True) -> List[CheckResult]:
     """
     Parse all JSON result files from headroom_results directory.
 
+    Results are organized as: {results_dir}/scps/{check_name}/*.json
+
     Args:
         results_dir: Path to the headroom_results directory
-        exclude_rcp_checks: If True, exclude RCP checks (like third_party_role_access)
+        exclude_rcp_checks: If True, exclude RCP checks (like third_party_assumerole)
 
     Returns:
         List of CheckResult objects for SCP checks only (if exclude_rcp_checks is True).
@@ -44,10 +46,16 @@ def parse_result_files(results_dir: str, exclude_rcp_checks: bool = True) -> Lis
     check_results: List[CheckResult] = []
 
     # RCP checks that should be handled by the RCP-specific analysis
-    RCP_CHECK_NAMES = {"third_party_role_access"}
+    RCP_CHECK_NAMES = {"third_party_assumerole"}
+
+    # Look in scps/ subdirectory
+    scps_path = results_path / "scps"
+    if not scps_path.exists():
+        logger.warning(f"SCP results directory {scps_path} does not exist")
+        return []
 
     # Iterate through check directories
-    for check_dir in results_path.iterdir():
+    for check_dir in scps_path.iterdir():
         if not check_dir.is_dir():
             continue
 
@@ -268,7 +276,7 @@ def parse_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
     # Parse result files
     results_dir = config.results_dir
     logger.info(f"Parsing result files from {results_dir}")
-    results_data = parse_result_files(results_dir)
+    results_data = parse_scp_result_files(results_dir)
 
     if not results_data:
         logger.warning("No result files found to analyze")

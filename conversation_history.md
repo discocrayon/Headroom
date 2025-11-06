@@ -1,3 +1,113 @@
+## 2025-11-06, 01:47 PM - Architectural Refactoring: Organized SCP and RCP checks into separate directories
+
+### Changes Made
+
+Completed major architectural refactoring to better organize SCP (Service Control Policy) and RCP (Resource Control Policy) checks and their corresponding results.
+
+#### Renaming
+
+1. **Check Function and File Names**
+   - Renamed `check_third_party_role_access` to `check_third_party_assumerole` (more accurate naming)
+   - Renamed `parse_result_files` to `parse_scp_result_files` (explicit about SCP scope)
+   - Renamed variable `rcp_results_exist` to `third_party_assumerole_results_exist`
+
+#### Directory Structure Reorganization
+
+2. **Checks Directory** (`headroom/checks/`)
+   - Created `checks/scps/` subdirectory for SCP check implementations
+   - Created `checks/rcps/` subdirectory for RCP check implementations
+   - Moved `deny_imds_v1_ec2.py` to `checks/scps/deny_imds_v1_ec2.py`
+   - Moved `check_third_party_assumerole.py` to `checks/rcps/check_third_party_assumerole.py`
+   - Added `__init__.py` files to new subdirectories
+
+3. **Results Directory** (`results_dir/`)
+   - Implemented new structure: `results_dir/scps/{check_name}/*.json` and `results_dir/rcps/{check_name}/*.json`
+   - Updated `write_results.py` with `CHECK_TYPE_MAP` to map check names to types (scps/rcps)
+   - Updated `get_results_dir()` and `get_results_path()` to include check type subdirectory
+   - **Breaking Change**: No backward compatibility for old flat structure
+
+#### Code Refactoring
+
+4. **Analysis Module** (`headroom/analysis.py`)
+   - Extracted `run_scp_checks()` function to encapsulate SCP check execution
+   - Extracted `run_rcp_checks()` function to encapsulate RCP check execution
+   - Added `all_scp_results_exist()` helper to check if all SCP results exist
+   - Added `all_rcp_results_exist()` helper to check if all RCP results exist
+   - Simplified `run_checks()` to orchestrate the extracted functions
+   - Updated log message from "Results already exist" to "All results already exist"
+
+5. **Parsing Logic** (`headroom/parse_results.py`)
+   - Updated `parse_scp_result_files()` to look in `results_dir/scps/` subdirectory
+   - Added warning when `scps/` subdirectory doesn't exist
+   - Updated `RCP_CHECK_NAMES` to `{"third_party_assumerole"}`
+
+6. **RCP Generation** (`headroom/terraform/generate_rcps.py`)
+   - Updated `parse_rcp_result_files()` to look in `results_dir/rcps/third_party_assumerole/`
+   - Moved `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP` constant to module level for testability
+   - Updated error messages to reference "Third-party AssumeRole" instead of "Third-party role access"
+
+#### Test Updates
+
+7. **Comprehensive Test Suite Updates** (all test files)
+   - Updated all import paths to reflect new `checks/scps/` and `checks/rcps/` structure
+   - Updated all path assertions to expect `scps/` and `rcps/` subdirectories in results
+   - Updated all `@patch` decorators to use new module paths
+   - Updated all check name assertions from "third_party_role_access" to "third_party_assumerole"
+   - Added `parents=True` to `mkdir()` calls to ensure parent directories are created
+   - Updated mock `side_effect` values to account for additional `results_exist` calls
+   - Renamed test file from `test_checks_third_party_role_access.py` to `test_checks_third_party_assumerole.py`
+   - Updated test class name from `TestCheckThirdPartyRoleAccess` to `TestCheckThirdPartyAssumeRole`
+
+#### Coverage Improvements
+
+8. **Added Tests for Edge Cases**
+   - Added test for non-directory files in `scps/` directory (parse_results.py:60)
+   - Added test for unknown check names in `get_results_dir()` (write_results.py:121)
+   - Added test for missing `scps/` subdirectory (parse_results.py:54-55)
+   - Added test for OU-level RCP skip when below minimum accounts threshold (generate_rcps.py:210)
+   - Achieved 100% code coverage (1044 statements, 0 missed)
+
+#### Files Modified
+
+**Core Modules:**
+- `headroom/analysis.py` - Extracted SCP/RCP check functions, added result existence helpers
+- `headroom/parse_results.py` - Updated to use `scps/` subdirectory
+- `headroom/write_results.py` - Added `CHECK_TYPE_MAP`, updated path generation
+- `headroom/terraform/generate_rcps.py` - Updated to use `rcps/` subdirectory, moved constant to module level
+- `headroom/checks/scps/deny_imds_v1_ec2.py` - Moved and updated relative imports
+- `headroom/checks/rcps/check_third_party_assumerole.py` - Renamed, moved, updated relative imports
+
+**Test Files:**
+- `tests/test_analysis.py` - Updated imports
+- `tests/test_analysis_extended.py` - Updated imports, mock side effects, log messages
+- `tests/test_checks_deny_imds_v1_ec2.py` - Updated patch paths to `checks.scps.`
+- `tests/test_checks_third_party_assumerole.py` - Renamed, updated patch paths to `checks.rcps.`, updated assertions
+- `tests/test_parse_results.py` - Updated all path expectations, added edge case tests
+- `tests/test_generate_rcps.py` - Updated all path expectations, added MIN threshold test
+- `tests/test_write_results.py` - Updated all path expectations, added unknown check name test
+- `tests/test_main_integration.py` - Updated check name reference
+
+**Test Environment:**
+- `test_environment/headroom_results/` - Reorganized into `scps/` and `rcps/` subdirectories
+
+#### Rationale
+
+This refactoring provides several benefits:
+
+1. **Clear Separation of Concerns**: SCP and RCP checks are now clearly separated in both implementation and results
+2. **Improved Scalability**: Easy to add new SCP or RCP checks in their respective directories
+3. **Better Code Organization**: Single Responsibility Principle applied to check execution functions
+4. **Reduced Cognitive Load**: Developers can focus on SCP or RCP checks independently
+5. **Enhanced Maintainability**: Clear directory structure makes it easier to navigate and understand the codebase
+6. **Future-Proof**: Structure supports easy addition of new policy types if needed
+
+#### Test Results
+
+- All 246 tests passing
+- 100% code coverage achieved (1044 statements, 0 missed, 2515 test statements)
+- All mypy type checks passing
+- All pre-commit hooks passing (flake8, autopep8, autoflake, trailing whitespace, end-of-file)
+
 ## 2025-10-26, 12:10 PM - Fixed terminology: "root account" to "management account"
 
 ### Changes Made
@@ -3239,7 +3349,7 @@ Renamed `third_party_assumerole_account_ids` to `third_party_assumerole_account_
 
 **Before (conservative):**
 - Account A trusts [111111111111]
-- Account B trusts [222222222222]  
+- Account B trusts [222222222222]
 - Account C trusts [111111111111]
 - Result: 3 account-level RCPs (because not all identical)
 
@@ -3507,4 +3617,3 @@ Engineers can now use this specification to:
 - Understand the architectural decisions behind the parsing design
 - Maintain consistency across the codebase
 - Make informed decisions about when to deviate from patterns
-

@@ -1,8 +1,8 @@
 """Check for EC2 instances that violate the deny_imds_v1_ec2 SCP."""
 
 import boto3  # type: ignore
-from ..aws.ec2 import get_imds_v1_ec2_analysis
-from ..write_results import write_check_results
+from ...aws.ec2 import get_imds_v1_ec2_analysis
+from ...write_results import write_check_results
 
 
 def check_deny_imds_v1_ec2(

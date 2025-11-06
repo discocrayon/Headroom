@@ -1,5 +1,5 @@
 """
-Check for IAM roles that allow third-party account access.
+Check for IAM roles that allow third-party account AssumeRole access.
 
 This check identifies IAM roles with trust policies that allow principals
 from accounts outside the organization to assume them.
@@ -11,7 +11,7 @@ from ..aws.iam import analyze_iam_roles_trust_policies
 from ..write_results import write_check_results
 
 
-def check_third_party_role_access(
+def check_third_party_assumerole(
     headroom_session: boto3.Session,
     account_name: str,
     account_id: str,
@@ -20,7 +20,7 @@ def check_third_party_role_access(
     exclude_account_ids: bool = False,
 ) -> Set[str]:
     """
-    Check for IAM roles that allow third-party account access.
+    Check for IAM roles that allow third-party account AssumeRole access.
 
     This check identifies:
     - IAM roles with trust policies allowing accounts outside the organization
@@ -71,7 +71,7 @@ def check_third_party_role_access(
     summary = {
         "account_name": account_name,
         "account_id": account_id,
-        "check": "third_party_role_access",
+        "check": "third_party_assumerole",
         "total_roles_analyzed": len(trust_policy_results),
         "roles_third_parties_can_access": len(roles_third_parties_can_access),
         "roles_with_wildcards": len(roles_with_wildcards),
@@ -89,7 +89,7 @@ def check_third_party_role_access(
 
     # Write results to JSON file
     write_check_results(
-        check_name="third_party_role_access",
+        check_name="third_party_assumerole",
         account_name=account_name,
         account_id=account_id,
         results_data=results,
@@ -98,7 +98,7 @@ def check_third_party_role_access(
     )
 
     account_identifier = f"{account_name}_{account_id}"
-    print(f"Third-party role access check completed for {account_identifier}: "
+    print(f"Third-party AssumeRole check completed for {account_identifier}: "
           f"{len(roles_third_parties_can_access)} roles with third-party access, "
           f"{len(roles_with_wildcards)} roles with wildcards, "
           f"{len(all_third_party_accounts)} unique third-party accounts")

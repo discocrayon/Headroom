@@ -1,10 +1,10 @@
 # Headroom - AWS Multi-Account Security Analysis Tool
 ## Product Design Requirements (PDR)
 
-**Version:** 4.2
+**Version:** 4.3
 **Created:** 2025-10-26
 **Last Updated:** 2025-11-06
-**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation + RCP Analysis + RCP Auto-Generation + RCP Placement Optimization + RCP Union Strategy + Critical Bug Fixes)
+**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation + RCP Analysis + RCP Auto-Generation + RCP Placement Optimization + RCP Union Strategy + Critical Bug Fixes + Architectural Organization)
 
 ---
 
@@ -112,15 +112,17 @@ class AccountInfo:
 - **`usage.py`**: CLI parsing, YAML loading, and configuration merging logic
 - **`analysis.py`**: AWS integration, security analysis implementation, check execution optimization, and organization account ID retrieval
 - **`parse_results.py`**: SCP/RCP compliance results analysis and organization structure processing
-- **`write_results.py`**: JSON result file writing, path resolution, and results existence checking
+- **`write_results.py`**: JSON result file writing, path resolution, and results existence checking with `CHECK_TYPE_MAP` for organizing results by policy type
 - **`types.py`**: Shared data models and type definitions for organization hierarchy, SCP recommendations, and RCP placement recommendations
 - **`aws/`**: AWS service integration modules
   - **`ec2.py`**: EC2 service integration and analysis functions
   - **`iam.py`**: IAM trust policy analysis and third-party account detection
   - **`organization.py`**: AWS Organizations API integration and hierarchy analysis
-- **`checks/`**: SCP/RCP compliance check implementations
-  - **`deny_imds_v1_ec2.py`**: EC2 IMDS v1 compliance check implementation (SCP)
-  - **`check_third_party_role_access.py`**: IAM trust policy third-party account access check (RCP)
+- **`checks/`**: SCP/RCP compliance check implementations organized by policy type
+  - **`scps/`**: Service Control Policy check implementations
+    - **`deny_imds_v1_ec2.py`**: EC2 IMDS v1 compliance check implementation
+  - **`rcps/`**: Resource Control Policy check implementations
+    - **`check_third_party_assumerole.py`**: IAM trust policy third-party AssumeRole access check
 - **`terraform/`**: Terraform configuration generation modules
   - **`generate_org_info.py`**: AWS Organizations structure data source generation
   - **`generate_scps.py`**: SCP deployment configuration generation
@@ -1360,6 +1362,152 @@ class RCPPlacementRecommendations:
 - Full mypy type safety compliance
 - No behavioral regressions
 
+### PR-014: Architectural Organization - SCP/RCP Directory Structure
+
+**Requirement:** The system MUST organize SCP and RCP checks and results into clearly separated directory structures to improve code organization, scalability, and maintainability.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**Organizational Improvements:**
+
+1. **Function and File Renaming for Clarity:**
+   - Renamed `parse_result_files()` to `parse_scp_result_files()` to explicitly indicate SCP-specific parsing
+   - Renamed `check_third_party_role_access` to `check_third_party_assumerole` for more accurate naming
+   - Renamed variable `rcp_results_exist` to `third_party_assumerole_results_exist` for consistency
+   - Updated `RCP_CHECK_NAMES` from `{"third_party_role_access"}` to `{"third_party_assumerole"}`
+
+2. **Checks Directory Reorganization:**
+   - Created `checks/scps/` subdirectory for Service Control Policy check implementations
+   - Created `checks/rcps/` subdirectory for Resource Control Policy check implementations
+   - Moved `deny_imds_v1_ec2.py` to `checks/scps/deny_imds_v1_ec2.py`
+   - Moved and renamed `check_third_party_role_access.py` to `checks/rcps/check_third_party_assumerole.py`
+   - Added `__init__.py` files to both subdirectories for proper Python package structure
+   - Updated all relative imports to account for increased directory depth (using `...` for parent references)
+
+3. **Results Directory Reorganization:**
+   - Implemented hierarchical structure: `results_dir/scps/{check_name}/*.json` and `results_dir/rcps/{check_name}/*.json`
+   - Added `CHECK_TYPE_MAP` in `write_results.py` mapping check names to types: `{"deny_imds_v1_ec2": "scps", "third_party_assumerole": "rcps"}`
+   - Updated `get_results_dir()` to construct paths: `{results_base_dir}/{check_type}/{check_name}`
+   - Updated `get_results_path()` to use new directory structure
+   - **Breaking Change:** No backward compatibility for old flat results structure - clean break for better organization
+   - Updated `parse_scp_result_files()` to look in `results_dir/scps/` subdirectory
+   - Added warning when `scps/` subdirectory doesn't exist
+   - Updated `parse_rcp_result_files()` to look in `results_dir/rcps/third_party_assumerole/` subdirectory
+
+4. **Analysis Module Refactoring (analysis.py):**
+   - Extracted `run_scp_checks()` function to encapsulate SCP check execution logic
+     ```python
+     def run_scp_checks(
+         headroom_session: boto3.Session,
+         account_info: AccountInfo,
+         config: HeadroomConfig
+     ) -> None:
+         """Execute all SCP checks for a single account."""
+     ```
+   - Extracted `run_rcp_checks()` function to encapsulate RCP check execution logic
+     ```python
+     def run_rcp_checks(
+         headroom_session: boto3.Session,
+         account_info: AccountInfo,
+         config: HeadroomConfig,
+         org_account_ids: Set[str]
+     ) -> None:
+         """Execute all RCP checks for a single account."""
+     ```
+   - Added `all_scp_results_exist()` helper to check if all SCP results exist for an account
+     ```python
+     def all_scp_results_exist(
+         account_info: AccountInfo,
+         config: HeadroomConfig
+     ) -> bool:
+         """Check if all SCP check results exist for an account."""
+     ```
+   - Added `all_rcp_results_exist()` helper to check if all RCP results exist for an account
+     ```python
+     def all_rcp_results_exist(
+         account_info: AccountInfo,
+         config: HeadroomConfig
+     ) -> bool:
+         """Check if all RCP check results exist for an account."""
+     ```
+   - Simplified `run_checks()` to orchestrate the extracted functions with clearer skip logic
+   - Updated log message from "Results already exist" to "All results already exist" for clarity
+
+5. **RCP Generation Updates:**
+   - Moved `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP` constant to module level in `generate_rcps.py` for testability
+   - Updated error messages to reference "Third-party AssumeRole" instead of "Third-party role access"
+   - Updated check_name references in data structures to use "third_party_assumerole"
+
+**Test Suite Updates:**
+
+6. **Comprehensive Test Refactoring:**
+   - Updated all import statements to reflect new directory structure:
+     - `from headroom.checks.scps.deny_imds_v1_ec2 import check_deny_imds_v1_ec2`
+     - `from headroom.checks.rcps.check_third_party_assumerole import check_third_party_assumerole`
+   - Updated all path assertions in tests to expect `scps/` and `rcps/` subdirectories
+   - Updated all `@patch` decorators to use new module paths:
+     - `@patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis")`
+     - `@patch("headroom.checks.rcps.check_third_party_assumerole.analyze_iam_roles_trust_policies")`
+   - Updated all check name assertions from "third_party_role_access" to "third_party_assumerole"
+   - Added `parents=True` to `mkdir()` calls to ensure parent directories are created
+   - Updated mock `side_effect` values to account for additional `results_exist` calls from new helper functions
+   - Renamed test file from `test_checks_third_party_role_access.py` to `test_checks_third_party_assumerole.py`
+   - Renamed test class from `TestCheckThirdPartyRoleAccess` to `TestCheckThirdPartyAssumeRole`
+   - Updated test directory structures in `test_environment/headroom_results/` to include `scps/` and `rcps/` subdirectories
+
+**Coverage Improvements:**
+
+7. **Edge Case Testing:**
+   - Added test for non-directory files in `scps/` directory (covers `parse_results.py:60`)
+   - Added test for unknown check names in `get_results_dir()` (covers `write_results.py:121`)
+   - Added test for missing `scps/` subdirectory (covers `parse_results.py:54-55`)
+   - Added test for OU-level RCP skip when below minimum accounts threshold (covers `generate_rcps.py:210`)
+   - Achieved and maintained 100% code coverage (1044 statements in headroom/, 2515 statements in tests/)
+
+**Architectural Benefits:**
+
+- **Clear Separation of Concerns:** SCP and RCP checks are now clearly separated in both implementation and results
+- **Improved Scalability:** Easy to add new SCP or RCP checks in their respective directories
+- **Better Code Organization:** Single Responsibility Principle applied to check execution functions
+- **Reduced Cognitive Load:** Developers can focus on SCP or RCP checks independently
+- **Enhanced Maintainability:** Clear directory structure makes it easier to navigate and understand the codebase
+- **Future-Proof:** Structure supports easy addition of new policy types (e.g., SCCPs, permission boundaries)
+- **Module-Level Constants:** Testable configuration constants enable better test coverage
+- **Explicit Function Names:** Function names clearly indicate their purpose and scope
+
+**Files Modified:**
+
+**Core Modules:**
+- `headroom/analysis.py`: Extracted SCP/RCP check functions, added result existence helpers
+- `headroom/parse_results.py`: Renamed to `parse_scp_result_files`, updated to use `scps/` subdirectory
+- `headroom/write_results.py`: Added `CHECK_TYPE_MAP`, updated path generation functions
+- `headroom/terraform/generate_rcps.py`: Updated to use `rcps/` subdirectory, moved constant to module level
+- `headroom/checks/scps/deny_imds_v1_ec2.py`: Moved and updated relative imports (`.` to `...`)
+- `headroom/checks/rcps/check_third_party_assumerole.py`: Renamed, moved, updated relative imports
+
+**Test Files:**
+- `tests/test_analysis.py`: Updated imports for new directory structure
+- `tests/test_analysis_extended.py`: Updated imports, mock side effects, log message assertions
+- `tests/test_checks_deny_imds_v1_ec2.py`: Updated all patch paths to `checks.scps.*`
+- `tests/test_checks_third_party_assumerole.py`: Renamed file, updated all patch paths to `checks.rcps.*`, updated check name assertions
+- `tests/test_parse_results.py`: Updated all path expectations with `scps/` subdirectory, added edge case tests
+- `tests/test_generate_rcps.py`: Updated all path expectations with `rcps/` subdirectory, added MIN threshold test
+- `tests/test_write_results.py`: Updated all path expectations, added unknown check name test
+- `tests/test_main_integration.py`: Updated check name references
+
+**Test Environment:**
+- `test_environment/headroom_results/`: Reorganized into `scps/` and `rcps/` subdirectories
+
+**Verification:**
+- All 246 tests passing (increased from 245 due to new edge case tests)
+- 100% code coverage maintained (1044 statements in headroom/, 2515 statements in tests/)
+- All mypy type checks passing with strict mode
+- All pre-commit hooks passing (flake8, autopep8, autoflake, trailing whitespace, end-of-file)
+- No behavioral regressions in existing functionality
+- Clean tox run with no warnings or errors
+
 ---
 
 ## Technical Architecture
@@ -1477,7 +1625,7 @@ class RCPPlacementRecommendations:
 - ✅ IAM trust policy analysis with account ID extraction (`aws/iam.py`)
 - ✅ Third-party account detection and organization baseline comparison
 - ✅ Wildcard principal detection with CloudTrail TODO comments
-- ✅ RCP compliance check implementation (`check_third_party_role_access`)
+- ✅ RCP compliance check implementation (`check_third_party_assumerole`)
 - ✅ RCP Terraform auto-generation with third-party account allowlists
 - ✅ Multi-level RCP deployment (account, OU, root)
 - ✅ Wildcard safety logic (OU-level RCPs excluded if any account has wildcards)
@@ -1495,7 +1643,19 @@ class RCPPlacementRecommendations:
 - ✅ Missing account ID lookup by name when exclude_account_ids=True
 - ✅ Critical bug fixes for RCP analysis and generation
 
-### Phase 8: SCP Expansion (PLANNED)
+### Phase 8: Architectural Organization (COMPLETED)
+- ✅ Directory structure reorganization: `checks/scps/` and `checks/rcps/` subdirectories
+- ✅ Results directory reorganization: `results_dir/scps/` and `results_dir/rcps/` subdirectories
+- ✅ Function renaming for clarity: `parse_scp_result_files`, `check_third_party_assumerole`
+- ✅ Analysis module refactoring: extracted `run_scp_checks()` and `run_rcp_checks()` functions
+- ✅ Helper functions for result existence checking: `all_scp_results_exist()`, `all_rcp_results_exist()`
+- ✅ `CHECK_TYPE_MAP` implementation for organizing results by policy type
+- ✅ Module-level constants for testability (`MIN_ACCOUNTS_FOR_OU_LEVEL_RCP`)
+- ✅ Comprehensive test suite updates (246 tests, all passing)
+- ✅ Edge case testing for 100% code coverage (1044 statements in headroom/, 2515 in tests/)
+- ✅ Breaking change: clean directory structure with no backward compatibility for flat results
+
+### Phase 9: SCP Expansion (PLANNED)
 - 🔄 Additional SCP checks for other AWS services
 - 🔄 Metrics-based decision making for SCP deployment
 - 🔄 CloudTrail historical analysis integration for actions items such as wildcard resolution
@@ -1603,6 +1763,10 @@ mypy headroom/ tests/
 19. **Configuration Separation:** Separate rcps_dir configuration for clean RCP/SCP directory separation ✅
 20. **Missing Data Handling:** Account lookup by name when account_id missing (exclude_account_ids=True support) ✅
 21. **Critical Bug Fixes:** All major RCP generation and analysis bugs fixed with comprehensive test coverage ✅
+22. **Architectural Organization:** Clear separation of SCP and RCP code in checks/ and results directories ✅
+23. **Function Extraction:** Single Responsibility Principle applied with dedicated check execution functions ✅
+24. **Scalable Structure:** Directory organization supports easy addition of new SCP and RCP checks ✅
+25. **Test Coverage Excellence:** 246 tests with 100% coverage maintained through comprehensive test refactoring ✅
 
 ---
 

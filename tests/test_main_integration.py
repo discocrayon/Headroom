@@ -697,7 +697,7 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         mock_rcp_rec = RCPPlacementRecommendations(
-            check_name="check_third_party_role_access",
+            check_name="check_third_party_assumerole",
             recommended_level="ou",
             target_ou_id="ou-test-123",
             affected_accounts=["111111111111", "222222222222"],

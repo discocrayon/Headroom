@@ -10,6 +10,7 @@ import shutil
 import pytest
 from pathlib import Path
 from typing import Dict, List, Set, Generator
+from unittest.mock import patch
 from headroom.terraform.generate_rcps import (
     parse_rcp_result_files,
     determine_rcp_placement,
@@ -70,7 +71,7 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing results from a single account."""
-        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir = Path(temp_results_dir) / "rcps" / "third_party_assumerole"
         check_dir.mkdir(parents=True)
 
         result_data = {
@@ -99,7 +100,7 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing results from multiple accounts."""
-        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir = Path(temp_results_dir) / "rcps" / "third_party_assumerole"
         check_dir.mkdir(parents=True)
 
         result_data_1 = {
@@ -133,7 +134,7 @@ class TestParseRcpResultFiles:
 
     def test_parse_nonexistent_directory(self, sample_org_hierarchy: OrganizationHierarchy) -> None:
         """Test parsing when directory doesn't exist."""
-        with pytest.raises(RuntimeError, match="Third-party role access check directory does not exist"):
+        with pytest.raises(RuntimeError, match="Third-party AssumeRole check directory does not exist"):
             parse_rcp_result_files("/nonexistent/path", sample_org_hierarchy)
 
     def test_parse_empty_directory(
@@ -142,7 +143,7 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing empty directory."""
-        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir = Path(temp_results_dir) / "rcps" / "third_party_assumerole"
         check_dir.mkdir(parents=True)
 
         result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
@@ -155,7 +156,7 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing with invalid JSON file."""
-        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir = Path(temp_results_dir) / "rcps" / "third_party_assumerole"
         check_dir.mkdir(parents=True)
 
         # Create invalid JSON file
@@ -173,7 +174,7 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing with file missing required summary key."""
-        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir = Path(temp_results_dir) / "rcps" / "third_party_assumerole"
         check_dir.mkdir(parents=True)
 
         # Create file with missing summary key - should fail with RuntimeError
@@ -194,7 +195,7 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that accounts with wildcard principals are skipped."""
-        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir = Path(temp_results_dir) / "rcps" / "third_party_assumerole"
         check_dir.mkdir(parents=True)
 
         # Account with wildcard - should be skipped
@@ -239,7 +240,7 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that missing account_id is looked up from account_name."""
-        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir = Path(temp_results_dir) / "rcps" / "third_party_assumerole"
         check_dir.mkdir(parents=True)
 
         # Result without account_id (e.g., from exclude_account_ids=True)
@@ -268,7 +269,7 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that an error is raised when account_name is not in org hierarchy."""
-        check_dir = Path(temp_results_dir) / "third_party_role_access"
+        check_dir = Path(temp_results_dir) / "rcps" / "third_party_assumerole"
         check_dir.mkdir(parents=True)
 
         # Result with unknown account name
@@ -496,7 +497,7 @@ class TestDetermineRcpPlacement:
         # Should NOT get root-level since wildcards would prevent it
         # Should get OU-level for ou-1111 with unioned third-party IDs
         # Should get account-level for account in ou-2222
-        
+
         root_recs = [r for r in recommendations if r.recommended_level == "root"]
         ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
         account_recs = [r for r in recommendations if r.recommended_level == "account"]
@@ -505,7 +506,7 @@ class TestDetermineRcpPlacement:
         assert len(root_recs) == 1
         assert len(ou_recs) == 0
         assert len(account_recs) == 0
-        
+
         # Root should have union of all third-party IDs
         assert set(root_recs[0].third_party_account_ids) == {"666666666666", "777777777777", "888888888888", "999999999999"}
 
@@ -649,6 +650,29 @@ class TestDetermineRcpPlacement:
         # Verify affected_accounts includes ALL accounts in the org
         assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
 
+    def test_skips_ou_level_when_below_minimum_accounts_threshold(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that OU-level RCP is skipped when OU has fewer accounts than MIN_ACCOUNTS_FOR_OU_LEVEL_RCP."""
+        account_third_party_map: Dict[str, Set[str]] = {
+            "333333333333": {"999999999999"}  # Single account in Development OU (ou-2222)
+        }
+        accounts_with_wildcards: Set[str] = {"dummy_account"}  # Block root to force OU processing
+
+        # Patch MIN_ACCOUNTS_FOR_OU_LEVEL_RCP to 2 to trigger the skip
+        with patch("headroom.terraform.generate_rcps.MIN_ACCOUNTS_FOR_OU_LEVEL_RCP", 2):
+            recommendations = determine_rcp_placement(
+                account_third_party_map,
+                sample_org_hierarchy,
+                accounts_with_wildcards
+            )
+
+        # Should only get account-level recommendation since OU has 1 account but MIN is 2
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "account"
+        assert recommendations[0].affected_accounts == ["333333333333"]
+
 
 class TestGenerateRcpTerraform:
     """Test generate_rcp_terraform function."""
@@ -692,7 +716,7 @@ class TestGenerateRcpTerraform:
         """Test generating root level RCP Terraform."""
         recommendations = [
             RCPPlacementRecommendations(
-                check_name="third_party_role_access",
+                check_name="third_party_assumerole",
                 recommended_level="root",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
@@ -721,7 +745,7 @@ class TestGenerateRcpTerraform:
         """Test generating OU level RCP Terraform."""
         recommendations = [
             RCPPlacementRecommendations(
-                check_name="third_party_role_access",
+                check_name="third_party_assumerole",
                 recommended_level="ou",
                 target_ou_id="ou-1111",
                 affected_accounts=["111111111111"],
@@ -749,7 +773,7 @@ class TestGenerateRcpTerraform:
         """Test generating account level RCP Terraform."""
         recommendations = [
             RCPPlacementRecommendations(
-                check_name="third_party_role_access",
+                check_name="third_party_assumerole",
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
@@ -777,7 +801,7 @@ class TestGenerateRcpTerraform:
         """Test that missing OU in hierarchy raises exception."""
         recommendations = [
             RCPPlacementRecommendations(
-                check_name="third_party_role_access",
+                check_name="third_party_assumerole",
                 recommended_level="ou",
                 target_ou_id="ou-9999",
                 affected_accounts=["111111111111"],
@@ -798,7 +822,7 @@ class TestGenerateRcpTerraform:
         """Test that missing account in hierarchy raises exception."""
         recommendations = [
             RCPPlacementRecommendations(
-                check_name="third_party_role_access",
+                check_name="third_party_assumerole",
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=["999999999999"],
@@ -838,7 +862,7 @@ class TestGenerateRcpTerraform:
         """
         recommendations = [
             RCPPlacementRecommendations(
-                check_name="third_party_role_access",
+                check_name="third_party_assumerole",
                 recommended_level="root",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],

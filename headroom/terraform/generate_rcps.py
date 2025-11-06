@@ -15,13 +15,19 @@ from ..types import OrganizationHierarchy, RCPParseResult, RCPPlacementRecommend
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# Minimum number of accounts required in an OU to recommend OU-level RCP
+# Set to 1 to allow OU-level RCPs even for single-account OUs
+MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1
+
 
 def parse_rcp_result_files(
     results_dir: str,
     organization_hierarchy: OrganizationHierarchy
 ) -> RCPParseResult:
     """
-    Parse third_party_role_access check result files.
+    Parse third_party_assumerole check result files.
+
+    Results are organized as: {results_dir}/rcps/third_party_assumerole/*.json
 
     Args:
         results_dir: Directory containing check result files
@@ -35,13 +41,13 @@ def parse_rcp_result_files(
           (cannot have RCPs deployed)
     """
     results_path = Path(results_dir)
-    check_dir = results_path / "third_party_role_access"
+    check_dir = results_path / "rcps" / "third_party_assumerole"
 
     account_third_party_map: Dict[str, Set[str]] = {}
     accounts_with_wildcards: Set[str] = set()
 
     if not check_dir.exists():
-        raise RuntimeError(f"Third-party role access check directory does not exist: {check_dir}")
+        raise RuntimeError(f"Third-party AssumeRole check directory does not exist: {check_dir}")
 
     for result_file in check_dir.glob("*.json"):
         try:
@@ -127,7 +133,7 @@ def _check_root_level_placement(
     all_account_ids = list(organization_hierarchy.accounts.keys())
 
     return RCPPlacementRecommendations(
-        check_name="third_party_role_access",
+        check_name="third_party_assumerole",
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=all_account_ids,
@@ -197,9 +203,6 @@ def _check_ou_level_placements(
             ou_account_map[parent_ou_id] = []
         ou_account_map[parent_ou_id].append(account_id)
 
-    # Attach at OU level even for single account OUs
-    MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1
-
     for ou_id, ou_account_ids in ou_account_map.items():
         if _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards):
             continue
@@ -218,7 +221,7 @@ def _check_ou_level_placements(
 
         unioned_third_party = sorted(list(ou_third_party_accounts))
         recommendations.append(RCPPlacementRecommendations(
-            check_name="third_party_role_access",
+            check_name="third_party_assumerole",
             recommended_level="ou",
             target_ou_id=ou_id,
             affected_accounts=ou_account_ids,
@@ -253,7 +256,7 @@ def _check_account_level_placements(
     for account_id, third_party_accounts in account_third_party_map.items():
         if account_id not in ou_covered_accounts:
             recommendations.append(RCPPlacementRecommendations(
-                check_name="third_party_role_access",
+                check_name="third_party_assumerole",
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=[account_id],

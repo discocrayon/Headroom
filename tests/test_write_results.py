@@ -55,7 +55,7 @@ class TestWriteCheckResults:
                 results_base_dir=temp_dir,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             assert expected_path.exists()
 
             with open(expected_path, 'r') as f:
@@ -71,7 +71,7 @@ class TestWriteCheckResults:
             results_data: Dict[str, Any] = {"summary": {}}
 
             # Ensure check directory doesn't exist yet
-            check_dir = Path(temp_dir) / check_name
+            check_dir = Path(temp_dir) / "scps" / check_name
             assert not check_dir.exists()
 
             write_check_results(
@@ -88,7 +88,7 @@ class TestWriteCheckResults:
     def test_write_check_results_json_formatting(self) -> None:
         """Test that JSON is written with proper formatting."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            check_name = "test_check"
+            check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
             account_id = "111111111111"
             results_data: Dict[str, Any] = {
@@ -104,7 +104,7 @@ class TestWriteCheckResults:
                 results_base_dir=temp_dir,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             with open(expected_path, 'r') as f:
                 content = f.read()
                 # Check that JSON is indented (formatted)
@@ -138,7 +138,7 @@ class TestWriteCheckResults:
                 results_base_dir=temp_dir,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             with open(expected_path, 'r') as f:
                 loaded_data = json.load(f)
                 assert loaded_data["summary"]["version"] == 2
@@ -146,7 +146,7 @@ class TestWriteCheckResults:
     def test_write_check_results_handles_special_characters(self) -> None:
         """Test that account names with special characters are handled correctly."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            check_name = "test_check"
+            check_name = "deny_imds_v1_ec2"
             account_name = "test-account-with-dashes"
             account_id = "111111111111"
             results_data: Dict[str, Any] = {"summary": {}}
@@ -159,12 +159,12 @@ class TestWriteCheckResults:
                 results_base_dir=temp_dir,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             assert expected_path.exists()
 
     def test_write_check_results_raises_on_io_error(self) -> None:
         """Test that IOError is raised and logged when file writing fails."""
-        check_name = "test_check"
+        check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
         account_id = "111111111111"
         results_data: Dict[str, Any] = {"summary": {}}
@@ -216,7 +216,7 @@ class TestWriteCheckResults:
                 exclude_account_ids=True,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}.json"
             assert expected_path.exists()
 
             with open(expected_path, 'r') as f:
@@ -242,11 +242,11 @@ class TestWriteCheckResults:
             )
 
             # Should create filename without account_id
-            expected_path = Path(temp_dir) / check_name / f"{account_name}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}.json"
             assert expected_path.exists()
 
             # Should NOT create filename with account_id
-            unexpected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            unexpected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             assert not unexpected_path.exists()
 
 
@@ -259,16 +259,25 @@ class TestGetResultsDir:
         results_base_dir = "/path/to/results"
 
         result = get_results_dir(check_name, results_base_dir)
-        assert result == "/path/to/results/deny_imds_v1_ec2"
+        assert result == "/path/to/results/scps/deny_imds_v1_ec2"
 
     def test_get_results_dir_with_trailing_slash(self) -> None:
         """Test get_results_dir handles trailing slashes."""
-        check_name = "test_check"
+        check_name = "deny_imds_v1_ec2"
         results_base_dir = "/path/to/results/"
 
         result = get_results_dir(check_name, results_base_dir)
         # Should still work (may have double slash but that's okay)
         assert check_name in result
+        assert "scps" in result
+
+    def test_get_results_dir_unknown_check_name(self) -> None:
+        """Test that get_results_dir raises ValueError for unknown check names."""
+        check_name = "unknown_check"
+        results_base_dir = "/path/to/results"
+
+        with pytest.raises(ValueError, match="Unknown check name: unknown_check"):
+            get_results_dir(check_name, results_base_dir)
 
 
 class TestGetResultsPath:
@@ -282,12 +291,12 @@ class TestGetResultsPath:
         results_base_dir = "/path/to/results"
 
         result = get_results_path(check_name, account_name, account_id, results_base_dir)
-        expected = Path("/path/to/results/deny_imds_v1_ec2/test-account_111111111111.json")
+        expected = Path("/path/to/results/scps/deny_imds_v1_ec2/test-account_111111111111.json")
         assert result == expected
 
     def test_get_results_path_returns_path_object(self) -> None:
         """Test that get_results_path returns a Path object."""
-        result = get_results_path("check", "account", "123", "/base")
+        result = get_results_path("deny_imds_v1_ec2", "account", "123", "/base")
         assert isinstance(result, Path)
 
     def test_get_results_path_excludes_account_id_when_flag_set(self) -> None:
@@ -304,7 +313,7 @@ class TestGetResultsPath:
             results_base_dir,
             exclude_account_ids=True,
         )
-        expected = Path("/path/to/results/deny_imds_v1_ec2/test-account.json")
+        expected = Path("/path/to/results/scps/deny_imds_v1_ec2/test-account.json")
         assert result == expected
 
 
@@ -510,7 +519,7 @@ class TestRedactAccountIdsFromArns:
     def test_write_check_results_redacts_arns_when_exclude_account_ids(self) -> None:
         """Test that ARNs are redacted when exclude_account_ids=True."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            check_name = "third_party_role_access"
+            check_name = "third_party_assumerole"
             account_name = "test-account"
             account_id = "111111111111"
             results_data: Dict[str, Any] = {
@@ -537,7 +546,7 @@ class TestRedactAccountIdsFromArns:
                 exclude_account_ids=True,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}.json"
+            expected_path = Path(temp_dir) / "rcps" / check_name / f"{account_name}.json"
             assert expected_path.exists()
 
             with open(expected_path, 'r') as f:
@@ -548,7 +557,7 @@ class TestRedactAccountIdsFromArns:
     def test_write_check_results_preserves_arns_when_exclude_account_ids_false(self) -> None:
         """Test that ARNs are NOT redacted when exclude_account_ids=False."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            check_name = "third_party_role_access"
+            check_name = "third_party_assumerole"
             account_name = "test-account"
             account_id = "111111111111"
             results_data: Dict[str, Any] = {
@@ -575,7 +584,7 @@ class TestRedactAccountIdsFromArns:
                 exclude_account_ids=False,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "rcps" / check_name / f"{account_name}_{account_id}.json"
             assert expected_path.exists()
 
             with open(expected_path, 'r') as f:

@@ -13,7 +13,7 @@ import pytest
 from botocore.exceptions import ClientError  # type: ignore
 
 from headroom.parse_results import (
-    parse_result_files,
+    parse_scp_result_files,
     determine_scp_placement,
     parse_results,
 )
@@ -219,14 +219,14 @@ class TestOrganizationStructureAnalysis:
 class TestResultFileParsing:
     """Test result file parsing functionality."""
 
-    def test_parse_result_files_success(self) -> None:
+    def test_parse_scp_result_files_success(self) -> None:
         """Test successful parsing of result files."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
 
             # Create test directory structure
-            check_dir = results_path / "deny_imds_v1_ec2"
-            check_dir.mkdir()
+            check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            check_dir.mkdir(parents=True)
 
             # Create test result files
             test_data = [
@@ -268,7 +268,7 @@ class TestResultFileParsing:
             with open(check_dir / "test-account-2_222222222222.json", 'w') as f:
                 json.dump(test_data[1], f)
 
-            result = parse_result_files(temp_dir)
+            result = parse_scp_result_files(temp_dir)
 
             assert len(result) == 2
             # Sort by account_id for consistent ordering
@@ -278,17 +278,24 @@ class TestResultFileParsing:
             assert result[1].account_id == "222222222222"
             assert result[1].violations == 0
 
-    def test_parse_result_files_missing_directory(self) -> None:
+    def test_parse_scp_result_files_missing_directory(self) -> None:
         """Test handling of missing results directory."""
         with pytest.raises(RuntimeError, match="Results directory /nonexistent/directory does not exist"):
-            parse_result_files("/nonexistent/directory")
+            parse_scp_result_files("/nonexistent/directory")
 
-    def test_parse_result_files_invalid_json(self) -> None:
+    def test_parse_scp_result_files_missing_scps_subdirectory(self) -> None:
+        """Test handling when results directory exists but scps/ subdirectory doesn't."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Directory exists but has no scps/ subdirectory
+            result = parse_scp_result_files(temp_dir)
+            assert result == []
+
+    def test_parse_scp_result_files_invalid_json(self) -> None:
         """Test handling of invalid JSON files."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
-            check_dir = results_path / "deny_imds_v1_ec2"
-            check_dir.mkdir()
+            check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            check_dir.mkdir(parents=True)
 
             # Create invalid JSON file
             with open(check_dir / "invalid.json", 'w') as f:
@@ -296,26 +303,28 @@ class TestResultFileParsing:
 
             # Should raise exception on invalid JSON
             with pytest.raises(RuntimeError, match="Failed to parse result file .*/invalid.json"):
-                parse_result_files(temp_dir)
+                parse_scp_result_files(temp_dir)
 
-    def test_parse_result_files_non_directory_files(self) -> None:
-        """Test handling of non-directory files in results directory."""
+    def test_parse_scp_result_files_non_directory_files(self) -> None:
+        """Test handling of non-directory files in scps directory."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
+            scps_path = results_path / "scps"
+            scps_path.mkdir()
 
-            # Create a file instead of directory
-            with open(results_path / "not_a_directory.txt", 'w') as f:
+            # Create a file instead of directory in scps/
+            with open(scps_path / "not_a_directory.txt", 'w') as f:
                 f.write("This is not a directory")
 
-            result = parse_result_files(temp_dir)
+            result = parse_scp_result_files(temp_dir)
             assert result == []
 
-    def test_parse_result_files_without_account_id_in_json(self) -> None:
+    def test_parse_scp_result_files_without_account_id_in_json(self) -> None:
         """Test parsing files where account_id is missing from JSON but in filename."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
-            check_dir = results_path / "deny_imds_v1_ec2"
-            check_dir.mkdir()
+            check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            check_dir.mkdir(parents=True)
 
             test_data = {
                 "summary": {
@@ -336,19 +345,19 @@ class TestResultFileParsing:
             with open(check_dir / "test-account_111111111111.json", 'w') as f:
                 json.dump(test_data, f)
 
-            result = parse_result_files(temp_dir)
+            result = parse_scp_result_files(temp_dir)
 
             assert len(result) == 1
             assert result[0].account_id == "111111111111"
             assert result[0].account_name == "test-account"
             assert result[0].violations == 0
 
-    def test_parse_result_files_filename_without_account_id(self) -> None:
+    def test_parse_scp_result_files_filename_without_account_id(self) -> None:
         """Test parsing files with only account name in filename (no account_id)."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
-            check_dir = results_path / "deny_imds_v1_ec2"
-            check_dir.mkdir()
+            check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            check_dir.mkdir(parents=True)
 
             test_data = {
                 "summary": {
@@ -369,14 +378,14 @@ class TestResultFileParsing:
             with open(check_dir / "test-account.json", 'w') as f:
                 json.dump(test_data, f)
 
-            result = parse_result_files(temp_dir)
+            result = parse_scp_result_files(temp_dir)
 
             assert len(result) == 1
             assert result[0].account_id == ""
             assert result[0].account_name == "test-account"
             assert result[0].violations == 0
 
-    def test_parse_result_files_excludes_rcp_checks(self) -> None:
+    def test_parse_scp_result_files_excludes_rcp_checks(self) -> None:
         """
         Test that RCP checks are excluded from SCP analysis.
 
@@ -387,8 +396,8 @@ class TestResultFileParsing:
             results_path = Path(temp_dir)
 
             # Create SCP check directory
-            scp_check_dir = results_path / "deny_imds_v1_ec2"
-            scp_check_dir.mkdir()
+            scp_check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            scp_check_dir.mkdir(parents=True)
 
             scp_test_data = {
                 "summary": {
@@ -409,15 +418,16 @@ class TestResultFileParsing:
             with open(scp_check_dir / "test-account.json", 'w') as f:
                 json.dump(scp_test_data, f)
 
-            # Create RCP check directory (should be excluded)
-            rcp_check_dir = results_path / "third_party_role_access"
-            rcp_check_dir.mkdir()
+            # Create RCP check directory in scps/ (simulating misplaced RCP results)
+            # This tests that the exclude_rcp_checks parameter can filter them out
+            rcp_check_dir = results_path / "scps" / "third_party_assumerole"
+            rcp_check_dir.mkdir(parents=True)
 
             rcp_test_data = {
                 "summary": {
                     "account_name": "test-account",
                     "account_id": "111111111111",
-                    "check": "third_party_role_access",
+                    "check": "third_party_assumerole",
                     "unique_third_party_accounts": ["999999999999"],
                     "roles_with_wildcards": 0
                 },
@@ -427,21 +437,21 @@ class TestResultFileParsing:
             with open(rcp_check_dir / "test-account.json", 'w') as f:
                 json.dump(rcp_test_data, f)
 
-            # Parse with RCP exclusion (default)
-            result = parse_result_files(temp_dir)
+            # Parse with RCP exclusion (default) - should filter out misplaced RCP results
+            result = parse_scp_result_files(temp_dir)
 
             # Only SCP check should be included
             assert len(result) == 1
             assert result[0].check_name == "deny_imds_v1_ec2"
 
-            # Parse without RCP exclusion
-            result_with_rcp = parse_result_files(temp_dir, exclude_rcp_checks=False)
+            # Parse without RCP exclusion - should include misplaced RCP results
+            result_with_rcp = parse_scp_result_files(temp_dir, exclude_rcp_checks=False)
 
-            # Both checks should be included
+            # Both checks should be included (even though RCP is misplaced in scps/)
             assert len(result_with_rcp) == 2
             check_names = {r.check_name for r in result_with_rcp}
             assert "deny_imds_v1_ec2" in check_names
-            assert "third_party_role_access" in check_names
+            assert "third_party_assumerole" in check_names
 
 
 class TestSCPPlacementDetermination:
@@ -669,7 +679,7 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
              patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_result_files', return_value=[]):
+             patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
 
             # Should not raise any exceptions
             parse_results(config)
@@ -726,7 +736,7 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
              patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_result_files', return_value=[]):
+             patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
 
             # Should return early without error
             parse_results(config)
@@ -830,7 +840,7 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
              patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_result_files', return_value=mock_results), \
+             patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
              patch('builtins.print') as mock_print:
 
             parse_results(config)
@@ -885,7 +895,7 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
              patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_result_files', return_value=mock_results), \
+             patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
              patch('builtins.print'):
 
             recommendations = parse_results(config)

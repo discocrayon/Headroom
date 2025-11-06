@@ -219,7 +219,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_role_access"),
+            patch("headroom.analysis.check_third_party_assumerole"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False)
         ):
@@ -274,7 +274,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_role_access"),
+            patch("headroom.analysis.check_third_party_assumerole"),
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
             patch("os.getcwd") as mock_getcwd
@@ -307,7 +307,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2"),
-            patch("headroom.analysis.check_third_party_role_access"),
+            patch("headroom.analysis.check_third_party_assumerole"),
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
             patch("os.getcwd") as mock_getcwd,
@@ -331,12 +331,26 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_role_access"),
+            patch("headroom.analysis.check_third_party_assumerole"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
-            # Mock that results exist for first account but not second (IMDS and RCP checks)
-            mock_check_results.side_effect = [True, True, False, False]
+            # Mock that results exist for first account but not second
+            # Call pattern now:
+            # Account 1: all_scp_results_exist (1 call) → True, all_rcp_results_exist (1 call) → True, skip
+            # Account 2: all_scp_results_exist (1 call) → False, all_rcp_results_exist (1 call) → False
+            #   Then run_scp_checks calls results_exist (1 call) → False, runs check
+            #   Then run_rcp_checks calls results_exist (1 call) → False, runs check
+            # Total: 6 calls
+            mock_check_results.return_value = True  # Default
+            mock_check_results.side_effect = [
+                True,   # Account 1 - SCP exists
+                True,   # Account 1 - RCP exists
+                False,  # Account 2 - SCP exists check
+                False,  # Account 2 - RCP exists check
+                False,  # Account 2 - run_scp_checks internal check
+                False   # Account 2 - run_rcp_checks internal check
+            ]
 
             mock_headroom_session = MagicMock()
             mock_get_session.return_value = mock_headroom_session
@@ -359,7 +373,7 @@ class TestRunChecks:
             )
 
             # Verify skip logging for first account
-            mock_logger.info.assert_any_call("Results already exist for account prod-account_111111111111, skipping checks")
+            mock_logger.info.assert_any_call("All results already exist for account prod-account_111111111111, skipping checks")
 
             # Verify normal execution logging for second account
             mock_logger.info.assert_any_call("Running checks for account: dev-account_222222222222")
@@ -377,7 +391,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_role_access") as mock_rcp_check
+            patch("headroom.analysis.check_third_party_assumerole") as mock_rcp_check
         ):
             org_account_ids: set[str] = set()
             run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
