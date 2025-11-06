@@ -4595,3 +4595,49 @@ def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
 1. `headroom/terraform/generate_rcps.py` - Added scps_dir parameter, dynamic path computation
 2. `headroom/main.py` - Pass scps_dir configuration to RCP generation
 3. `tests/test_generate_rcps.py` - Updated all tests to use dynamic paths, added fixtures
+
+## 2025-11-06, 03:30 PM - Renamed parse_results() to parse_scp_results() for clarity
+
+### Request: Find Generic Function Names for SCP-Only Code
+
+**User Request:** Can you find all instances of function names that only deal with SCPs but are named generically? My goal is to have clear function names.
+
+### Analysis Results
+
+Found one function with a generic name that only deals with SCPs:
+
+1. **`parse_results()` in `headroom/parse_results.py` (line 221)**
+   - Generic name but only handles SCP logic
+   - Calls `parse_scp_result_files()` and returns `List[SCPPlacementRecommendations]`
+   - Docstring explicitly states it's for "SCP placement recommendations"
+   - Should be renamed to `parse_scp_results()` to match naming patterns in codebase
+
+All other SCP-related functions already have clear, specific names:
+- `parse_scp_result_files()`
+- `determine_scp_placement()`
+- `generate_scp_terraform()`
+- `all_scp_results_exist()`
+- `run_scp_checks()`
+
+### Changes Made
+
+**Action Taken:** Renamed `parse_results()` to `parse_scp_results()` throughout the codebase
+
+**Files Modified:**
+
+1. **`headroom/parse_results.py`** - Function definition renamed from `parse_results` to `parse_scp_results`
+2. **`headroom/main.py`** - Updated import and function call
+3. **`tests/test_parse_results.py`** - Updated import, 8 test function names, and all function calls
+4. **`tests/test_main_integration.py`** - Updated all mock patches (9 occurrences)
+
+**Test Results:**
+- **All 253 tests passing** (including 34 tests in test_parse_results.py and 18 in test_main_integration.py)
+- **No linting errors**
+- **Consistent naming** - All SCP-specific functions now clearly indicate their scope with "scp" in the name
+
+### Benefits
+
+- **Clarity**: Function name now matches the pattern used by other SCP-specific functions
+- **Consistency**: Follows established naming conventions in the codebase
+- **Maintainability**: Makes it immediately clear that this function is SCP-specific, not generic
+- **Documentation**: Self-documenting code reduces need for additional comments

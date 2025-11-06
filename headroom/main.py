@@ -3,7 +3,7 @@ from botocore.exceptions import ClientError  # type: ignore
 
 from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session
-from .parse_results import parse_results
+from .parse_results import parse_scp_results
 from .terraform.generate_scps import generate_scp_terraform
 from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform
 from .terraform.generate_org_info import generate_terraform_org_info
@@ -30,7 +30,7 @@ def main() -> None:
     perform_analysis(final_config)
 
     # Analyze results and determine SCP placement recommendations
-    scp_recommendations = parse_results(final_config)
+    scp_recommendations = parse_scp_results(final_config)
 
     # Get organization hierarchy for Terraform generation
     security_session = get_security_analysis_session(final_config)

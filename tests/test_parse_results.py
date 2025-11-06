@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError  # type: ignore
 from headroom.parse_results import (
     parse_scp_result_files,
     determine_scp_placement,
-    parse_results,
+    parse_scp_results,
 )
 from headroom.terraform.generate_scps import generate_scp_terraform
 from headroom.aws.organization import (
@@ -640,10 +640,10 @@ class TestSCPPlacementDetermination:
 
 
 class TestParseResultsIntegration:
-    """Test integration of parse_results function."""
+    """Test integration of parse_scp_results function."""
 
-    def test_parse_results_success(self) -> None:
-        """Test successful parse_results execution."""
+    def test_parse_scp_results_success(self) -> None:
+        """Test successful parse_scp_results execution."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -682,9 +682,9 @@ class TestParseResultsIntegration:
              patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
 
             # Should not raise any exceptions
-            parse_results(config)
+            parse_scp_results(config)
 
-    def test_parse_results_missing_management_account_id(self) -> None:
+    def test_parse_scp_results_missing_management_account_id(self) -> None:
         """Test error handling when management_account_id is missing."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
@@ -701,9 +701,9 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session):
             # Should return early without error
-            parse_results(config)
+            parse_scp_results(config)
 
-    def test_parse_results_no_result_files(self) -> None:
+    def test_parse_scp_results_no_result_files(self) -> None:
         """Test handling when no result files are found."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
@@ -739,9 +739,9 @@ class TestParseResultsIntegration:
              patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
 
             # Should return early without error
-            parse_results(config)
+            parse_scp_results(config)
 
-    def test_parse_results_assume_role_failure(self) -> None:
+    def test_parse_scp_results_assume_role_failure(self) -> None:
         """Test error handling when assume role fails."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
@@ -766,9 +766,9 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session):
             # Should return early without error
-            parse_results(config)
+            parse_scp_results(config)
 
-    def test_parse_results_organization_analysis_failure(self) -> None:
+    def test_parse_scp_results_organization_analysis_failure(self) -> None:
         """Test error handling when organization analysis fails."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
@@ -797,10 +797,10 @@ class TestParseResultsIntegration:
              patch('headroom.parse_results.analyze_organization_structure', side_effect=RuntimeError("Analysis failed")):
 
             # Should return early without error
-            parse_results(config)
+            parse_scp_results(config)
 
-    def test_parse_results_with_recommendations_output(self) -> None:
-        """Test parse_results with actual recommendations output."""
+    def test_parse_scp_results_with_recommendations_output(self) -> None:
+        """Test parse_scp_results with actual recommendations output."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -843,7 +843,7 @@ class TestParseResultsIntegration:
              patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
              patch('builtins.print') as mock_print:
 
-            parse_results(config)
+            parse_scp_results(config)
 
             # Verify that output was printed
             assert mock_print.called
@@ -851,8 +851,8 @@ class TestParseResultsIntegration:
             print_calls = [call[0][0] for call in mock_print.call_args_list]
             assert any("SCP/RCP PLACEMENT RECOMMENDATIONS" in call for call in print_calls)
 
-    def test_parse_results_with_ou_recommendation_output(self) -> None:
-        """Test parse_results with OU-level recommendation output."""
+    def test_parse_scp_results_with_ou_recommendation_output(self) -> None:
+        """Test parse_scp_results with OU-level recommendation output."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -898,7 +898,7 @@ class TestParseResultsIntegration:
              patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
              patch('builtins.print'):
 
-            recommendations = parse_results(config)
+            recommendations = parse_scp_results(config)
 
             # Verify that recommendations were returned
             assert isinstance(recommendations, list)

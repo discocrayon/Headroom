@@ -218,7 +218,7 @@ def determine_scp_placement(
     return recommendations
 
 
-def parse_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
+def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
     """
     Main function to parse results and determine SCP placement recommendations.
 
