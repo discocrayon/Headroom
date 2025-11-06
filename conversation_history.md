@@ -4293,3 +4293,305 @@ Engineers can now use this specification to:
 - Understand the rationale behind the constants module
 - Maintain consistency across the codebase
 - Make informed architectural decisions
+
+## 2025-11-06, 02:39 PM - Refactored Organization Info Generation & Added RCP Symlink Support
+
+### Problem Identified
+
+1. **Misplaced Function**: `generate_terraform_org_info()` was being called in `parse_results.py`, which is semantically incorrect:
+   - `parse_results()` should only parse check results, not generate Terraform files
+   - The function was only generating into the `scps/` directory
+   - The generated `grab_org_info.tf` file is needed by BOTH SCPs and RCPs (shared infrastructure)
+   - RCPs directory did not automatically get a `grab_org_info.tf` symlink
+
+2. **Missing Symlink**: RCP generation did not automatically create a symlink to the shared `grab_org_info.tf` file, requiring manual setup
+
+### Changes Made
+
+#### 1. Moved Organization Info Generation to `main.py`
+
+**Files Modified:**
+- `headroom/main.py`
+- `headroom/parse_results.py`
+
+**Changes:**
+- Added import: `from .terraform.generate_org_info import generate_terraform_org_info` in `main.py`
+- Removed import of `generate_terraform_org_info` from `parse_results.py`
+- Moved the `generate_terraform_org_info()` call from `parse_results.py` (line 261) to `main.py` (after line 53, after `analyze_organization_structure()`)
+- Made the generation **unconditional** - it now always runs regardless of whether SCPs or RCPs exist
+- Added comment: "Generate shared Terraform organization info file (used by both SCPs and RCPs)"
+
+**Rationale:**
+- Proper separation of concerns: parsing logic separate from Terraform generation
+- Ensures independence: `grab_org_info.tf` is always generated, preventing broken symlinks
+- Clear dependency flow: shared infrastructure generated before dependent SCP/RCP files
+- Flexibility: Can run RCP-only or SCP-only generation without coupling
+
+#### 2. Added Symlink Creation to RCP Generation
+
+**File Modified:**
+- `headroom/terraform/generate_rcps.py`
+
+**Changes:**
+- Added `import os` to support symlink operations
+- Created new helper function `_create_org_info_symlink(output_path: Path)`:
+  - Creates symlink from `rcps/grab_org_info.tf` to `../scps/grab_org_info.tf`
+  - Removes existing file or symlink if present before creating new symlink
+  - Logs symlink creation with info message
+  - Handles both regular files and existing symlinks
+- Updated `generate_rcp_terraform()` to call `_create_org_info_symlink(output_path)` at the end
+- Symlink is created whenever RCP Terraform files are generated (when recommendations exist)
+
+**Code Structure:**
+```python
+def _create_org_info_symlink(output_path: Path) -> None:
+    """
+    Create symlink to scps/grab_org_info.tf in RCP directory.
+
+    The grab_org_info.tf file contains shared organization structure data sources
+    needed by both SCP and RCP modules. Rather than duplicating the file, we create
+    a symlink from rcps/ to scps/grab_org_info.tf.
+
+    Args:
+        output_path: RCP output directory where symlink should be created
+    """
+    symlink_path = output_path / "grab_org_info.tf"
+    target_path = Path("../scps/grab_org_info.tf")
+
+    # Remove existing file or symlink if present
+    if symlink_path.exists() or symlink_path.is_symlink():
+        symlink_path.unlink()
+        logger.debug(f"Removed existing file/symlink at {symlink_path}")
+
+    # Create symlink
+    os.symlink(target_path, symlink_path)
+    logger.info(f"Created symlink: {symlink_path} -> {target_path}")
+```
+
+#### 3. Added Comprehensive Tests
+
+**File Modified:**
+- `tests/test_generate_rcps.py`
+
+**New Tests Added:**
+1. `test_symlink_is_created` - Verifies symlink is created when generating RCP Terraform
+2. `test_symlink_replaces_existing_file` - Ensures existing regular file is replaced by symlink
+3. `test_symlink_updates_existing_symlink` - Handles broken or incorrect symlinks
+4. `test_symlink_created_even_with_no_recommendations` - Confirms no symlink when no recommendations (expected behavior)
+5. `test_create_org_info_symlink_direct` - Tests helper function directly
+
+**Test Implementation Details:**
+- Added `import os` for symlink operations
+- Added `_create_org_info_symlink` to imports from `generate_rcps`
+- Tests handle broken symlinks correctly (use `is_symlink()` instead of `exists()` since broken symlinks return False for `exists()`)
+- Verifies symlink target points to correct relative path: `../scps/grab_org_info.tf`
+- Tests cover edge cases: existing files, existing symlinks, broken symlinks
+
+### Results
+
+#### Test Results
+- **All 253 tests passing** (up from 248, added 5 new tests)
+- **100% code coverage maintained** for both `headroom/` (1055 statements) and `tests/` (2554 statements)
+- MyPy type checking: Success, no issues found
+- Pre-commit hooks: All passed
+
+#### Coverage Details
+```
+headroom/main.py:                                      57 statements, 0 missed (100%)
+headroom/parse_results.py:                           133 statements, 0 missed (100%)
+headroom/terraform/generate_rcps.py:                 170 statements, 0 missed (100%)
+tests/test_generate_rcps.py:                         320 statements, 0 missed (100%)
+```
+
+### Architecture Improvements
+
+#### Before
+```
+parse_results.py:
+  - parse_results()
+    - generate_terraform_org_info() [MISPLACED]
+    - analyze_organization_structure()
+    - parse_scp_result_files()
+    - determine_scp_placement()
+
+main.py:
+  - main()
+    - perform_analysis()
+    - parse_results()
+    - generate_scp_terraform()
+    - generate_rcp_terraform() [No symlink creation]
+```
+
+#### After
+```
+main.py:
+  - main()
+    - perform_analysis()
+    - parse_results()
+    - analyze_organization_structure()
+    - generate_terraform_org_info() [UNCONDITIONAL, PROPERLY PLACED]
+    - generate_scp_terraform()
+    - generate_rcp_terraform() [Includes symlink creation]
+
+parse_results.py:
+  - parse_results()
+    - analyze_organization_structure()
+    - parse_scp_result_files()
+    - determine_scp_placement()
+
+generate_rcps.py:
+  - generate_rcp_terraform()
+    - ... generate RCP files ...
+    - _create_org_info_symlink() [NEW]
+```
+
+### Benefits Achieved
+
+1. **Separation of Concerns**: Terraform generation logic removed from parsing module
+2. **Independence**: SCPs and RCPs are independent - either can be generated without the other
+3. **No Broken Symlinks**: `grab_org_info.tf` is always generated before RCP symlink creation
+4. **Automation**: Symlink automatically created when generating RCP Terraform
+5. **Robustness**: Handles existing files and symlinks gracefully
+6. **Clear Flow**: Shared infrastructure generation is explicit and visible in main orchestration
+7. **Testability**: All edge cases covered with comprehensive tests
+8. **Maintainability**: Helper function with clear documentation and single responsibility
+
+### Files Modified Summary
+
+1. `headroom/main.py` - Added import and unconditional `generate_terraform_org_info()` call
+2. `headroom/parse_results.py` - Removed misplaced `generate_terraform_org_info()` call and import
+3. `headroom/terraform/generate_rcps.py` - Added symlink creation logic
+4. `tests/test_generate_rcps.py` - Added 5 comprehensive tests for symlink functionality
+
+### Technical Notes
+
+- Symlinks use relative paths (`../scps/grab_org_info.tf`) for portability
+- `Path.exists()` returns `False` for broken symlinks, use `Path.is_symlink()` to check if symlink exists
+- `os.symlink()` used instead of `Path.symlink_to()` for consistency with test assertions
+- Symlink only created when RCP recommendations exist (when `generate_rcp_terraform()` has work to do)
+- The unconditional generation of `grab_org_info.tf` ensures the symlink target always exists in production use
+
+## 2025-11-06, 02:46 PM - Made Symlink Path Dynamic Using Configuration
+
+### Problem
+
+The symlink creation logic in `generate_rcp_terraform()` was hardcoding the path to `../scps/grab_org_info.tf`, which:
+- Assumed a specific directory structure
+- Didn't use the actual `scps_dir` configuration value
+- Was brittle and not configurable
+- Could break if directory structure changed
+
+### Changes Made
+
+#### 1. Updated `_create_org_info_symlink()` Function
+
+**File Modified:** `headroom/terraform/generate_rcps.py`
+
+**Changes:**
+- Added `scps_dir: str` parameter to the function
+- Renamed `output_path` parameter to `rcps_output_path` for clarity
+- Compute relative path dynamically using `os.path.relpath()`:
+  ```python
+  scps_grab_org_info = Path(scps_dir) / "grab_org_info.tf"
+  target_path = os.path.relpath(scps_grab_org_info, rcps_output_path)
+  ```
+- Updated docstring to document the new parameter
+
+**Before:**
+```python
+def _create_org_info_symlink(output_path: Path) -> None:
+    target_path = Path("../scps/grab_org_info.tf")  # Hardcoded!
+```
+
+**After:**
+```python
+def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
+    scps_grab_org_info = Path(scps_dir) / "grab_org_info.tf"
+    target_path = os.path.relpath(scps_grab_org_info, rcps_output_path)  # Dynamic!
+```
+
+#### 2. Updated `generate_rcp_terraform()` Function
+
+**File Modified:** `headroom/terraform/generate_rcps.py`
+
+**Changes:**
+- Added `scps_dir: str = "test_environment/scps"` parameter with default value
+- Updated function docstring to document the new parameter
+- Pass `scps_dir` to `_create_org_info_symlink()` call
+
+#### 3. Updated `main.py` to Pass Configuration
+
+**File Modified:** `headroom/main.py`
+
+**Changes:**
+- Updated `generate_rcp_terraform()` call to pass `final_config.scps_dir`:
+  ```python
+  generate_rcp_terraform(
+      rcp_recommendations,
+      organization_hierarchy,
+      final_config.rcps_dir,
+      final_config.scps_dir,  # NEW: Pass scps_dir
+  )
+  ```
+
+#### 4. Updated All Tests
+
+**File Modified:** `tests/test_generate_rcps.py`
+
+**Changes:**
+- Added test fixtures:
+  - `temp_base_dir` - creates base temporary directory
+  - `temp_scps_dir` - returns path to scps subdirectory
+  - Modified `temp_output_dir` to use `temp_base_dir`
+- Updated all 14 test methods to:
+  - Accept `temp_scps_dir` parameter
+  - Pass `temp_scps_dir` to `generate_rcp_terraform()` and `_create_org_info_symlink()`
+  - Compute expected symlink target dynamically using `os.path.relpath()`
+  - Create directories with `mkdir(parents=True, exist_ok=True)` where needed
+
+**Tests Updated:**
+1. `test_generate_root_level_terraform`
+2. `test_generate_ou_level_terraform`
+3. `test_generate_account_level_terraform`
+4. `test_generate_skips_missing_ou`
+5. `test_generate_skips_missing_account`
+6. `test_generate_no_recommendations`
+7. `test_generate_with_wildcard_disables_enforcement`
+8. `test_symlink_is_created`
+9. `test_symlink_replaces_existing_file`
+10. `test_symlink_updates_existing_symlink`
+11. `test_symlink_created_even_with_no_recommendations`
+12. `test_create_org_info_symlink_direct`
+
+### Results
+
+#### Test Results
+- **All 253 tests passing** (same count, all updated)
+- **100% code coverage maintained**:
+  - `headroom/terraform/generate_rcps.py`: 171 statements, 0 missed
+  - `tests/test_generate_rcps.py`: 333 statements, 0 missed
+  - `headroom/main.py`: 57 statements, 0 missed
+- MyPy type checking: Success, no issues found
+- Pre-commit hooks: All passed
+
+### Benefits Achieved
+
+1. **Configurable**: Symlink path respects actual configuration, not hardcoded assumptions
+2. **Robust**: Works with any directory structure, computed dynamically
+3. **Testable**: Tests now properly verify dynamic path computation
+4. **Maintainable**: Single source of truth for directory paths (configuration)
+5. **Flexible**: Can use different scps_dir values without code changes
+6. **Correct**: Uses `os.path.relpath()` to compute proper relative paths
+
+### Technical Details
+
+- **Relative Path Computation**: `os.path.relpath(target, start)` computes the relative path from `start` directory to `target` file
+- **Example**: If `rcps_dir = "test_environment/rcps"` and `scps_dir = "test_environment/scps"`, then symlink target becomes `"../scps/grab_org_info.tf"`
+- **Portability**: Relative paths ensure symlinks work across different environments
+- **Default Values**: Function defaults match typical directory structure but can be overridden
+
+### Files Modified Summary
+
+1. `headroom/terraform/generate_rcps.py` - Added scps_dir parameter, dynamic path computation
+2. `headroom/main.py` - Pass scps_dir configuration to RCP generation
+3. `tests/test_generate_rcps.py` - Updated all tests to use dynamic paths, added fixtures

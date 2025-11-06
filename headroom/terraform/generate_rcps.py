@@ -6,6 +6,7 @@ Generates Terraform files for RCP deployment based on third-party account analys
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -367,10 +368,39 @@ def _write_terraform_file(filepath: Path, content: str) -> None:
     logger.info(f"Generated RCP Terraform file: {filepath}")
 
 
+def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
+    """
+    Create symlink to scps/grab_org_info.tf in RCP directory.
+
+    The grab_org_info.tf file contains shared organization structure data sources
+    needed by both SCP and RCP modules. Rather than duplicating the file, we create
+    a symlink from rcps/ to scps/grab_org_info.tf using a relative path.
+
+    Args:
+        rcps_output_path: RCP output directory where symlink should be created
+        scps_dir: SCP directory path (used to compute relative path to grab_org_info.tf)
+    """
+    symlink_path = rcps_output_path / "grab_org_info.tf"
+
+    # Compute relative path from RCP directory to SCP grab_org_info.tf
+    scps_grab_org_info = Path(scps_dir) / "grab_org_info.tf"
+    target_path = os.path.relpath(scps_grab_org_info, rcps_output_path)
+
+    # Remove existing file or symlink if present
+    if symlink_path.exists() or symlink_path.is_symlink():
+        symlink_path.unlink()
+        logger.debug(f"Removed existing file/symlink at {symlink_path}")
+
+    # Create symlink
+    os.symlink(target_path, symlink_path)
+    logger.info(f"Created symlink: {symlink_path} -> {target_path}")
+
+
 def generate_rcp_terraform(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_dir: str = "test_environment/rcps"
+    output_dir: str = "test_environment/rcps",
+    scps_dir: str = "test_environment/scps"
 ) -> None:
     """
     Generate Terraform files for RCP deployment based on recommendations.
@@ -379,6 +409,7 @@ def generate_rcp_terraform(
         recommendations: List of RCP placement recommendations
         organization_hierarchy: Organization structure information
         output_dir: Directory to write Terraform files to
+        scps_dir: SCP directory path (used to create symlink to grab_org_info.tf)
     """
     if not recommendations:
         logger.info("No RCP recommendations to generate Terraform for")
@@ -438,16 +469,17 @@ def generate_rcp_terraform(
         _write_terraform_file(filepath, terraform_content)
 
     # Generate Terraform file for root level
-    if not root_recommendation:
-        return
+    if root_recommendation:
+        filename = "root_rcps.tf"
+        filepath = output_path / filename
 
-    filename = "root_rcps.tf"
-    filepath = output_path / filename
+        terraform_content = _build_rcp_terraform_module(
+            module_name="rcps_root",
+            target_id_reference="local.root_ou_id",
+            third_party_account_ids=root_recommendation.third_party_account_ids,
+            comment="Organization Root"
+        )
+        _write_terraform_file(filepath, terraform_content)
 
-    terraform_content = _build_rcp_terraform_module(
-        module_name="rcps_root",
-        target_id_reference="local.root_ou_id",
-        third_party_account_ids=root_recommendation.third_party_account_ids,
-        comment="Organization Root"
-    )
-    _write_terraform_file(filepath, terraform_content)
+    # Create symlink to shared organization info file
+    _create_org_info_symlink(output_path, scps_dir)

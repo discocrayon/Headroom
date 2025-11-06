@@ -15,7 +15,6 @@ from botocore.exceptions import ClientError  # type: ignore
 
 from .analysis import get_security_analysis_session
 from .config import HeadroomConfig
-from .terraform.generate_org_info import generate_terraform_org_info
 from .aws.organization import analyze_organization_structure
 from .types import (
     OrganizationalUnit, AccountOrgPlacement, OrganizationHierarchy,
@@ -255,10 +254,6 @@ def parse_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
         aws_secret_access_key=creds["SecretAccessKey"],
         aws_session_token=creds["SessionToken"]
     )
-
-    # Generate Terraform organization info file
-    logger.info("Generating Terraform organization info file")
-    generate_terraform_org_info(mgmt_session, f"{config.scps_dir}/grab_org_info.tf")
 
     # Analyze organization structure
     logger.info("Analyzing organization structure")

@@ -6,6 +6,7 @@ from .analysis import perform_analysis, get_security_analysis_session
 from .parse_results import parse_results
 from .terraform.generate_scps import generate_scp_terraform
 from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform
+from .terraform.generate_org_info import generate_terraform_org_info
 from .aws.organization import analyze_organization_structure
 
 
@@ -51,6 +52,9 @@ def main() -> None:
         )
         organization_hierarchy = analyze_organization_structure(mgmt_session)
 
+        # Generate shared Terraform organization info file (used by both SCPs and RCPs)
+        generate_terraform_org_info(mgmt_session, f"{final_config.scps_dir}/grab_org_info.tf")
+
         # Generate Terraform files for SCP deployment
         if scp_recommendations:
             generate_scp_terraform(
@@ -90,6 +94,7 @@ def main() -> None:
                     rcp_recommendations,
                     organization_hierarchy,
                     final_config.rcps_dir,
+                    final_config.scps_dir,
                 )
 
     except ClientError as e:
