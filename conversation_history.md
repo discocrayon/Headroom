@@ -3298,3 +3298,120 @@ Changed `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP` from `2` to `1`.
 - More consistent behavior across all OUs
 - Cleaner Terraform management
 
+
+---
+
+## November 6, 2025 - Git Diff Command
+
+**User Request:**
+Give me the git command to diff the `Headroom-Specification.md` file on this branch, with the one on main.
+
+**Response:**
+The command to diff `Headroom-Specification.md` between the current branch and main:
+
+```bash
+git diff main -- Headroom-Specification.md
+```
+
+Or to see the diff from main to current branch (reverse order):
+
+```bash
+git diff main..HEAD -- Headroom-Specification.md
+```
+
+The first command shows what's different in the current branch compared to main.
+
+---
+
+## November 6, 2025 - 5:00 PM - Updated Headroom Specification
+
+**User Request:**
+Run `git diff main -- conversation_history.md` and update `Headroom-Specification.md` with all relevant details needed to reproduce the code in `headroom/` and `tests/`. Goal is to update the specification with everything that happened in the rcp_support_initial branch compared to main.
+
+**Actions Taken:**
+
+1. **Version Update:**
+   - Updated specification version from 4.1 to 4.2
+   - Updated last updated date to 2025-11-06
+   - Added status: "RCP Union Strategy + Critical Bug Fixes"
+
+2. **Configuration Schema Updates:**
+   - Added `rcps_dir` field to configuration schema (default: test_environment/rcps)
+   - Removed deprecated `rcp_always_root` field from documentation
+
+3. **PR-007 Enhancements (SCP/RCP Results Analysis):**
+   - Documented SCP/RCP separation in parse_result_files()
+   - Added RCP_CHECK_NAMES set for check filtering
+   - Documented missing account ID lookup by name functionality
+
+4. **PR-011 Updates (RCP Compliance Analysis):**
+   - Added violations field to result structure
+   - Documented that violations count roles with wildcard principals
+
+5. **PR-012 Complete Rewrite (RCP Terraform Auto-Generation):**
+   - Updated target directory from scps_dir to rcps_dir
+   - Documented union strategy for combining third-party accounts
+   - Renamed parameter from third_party_account_ids to third_party_assumerole_account_ids_allowlist
+   - Updated all Terraform examples with new parameter name
+   - Added comments about union strategy in OU and root examples
+   - Documented missing account ID handling
+   - Updated parse_rcp_result_files() signature with organization_hierarchy parameter
+   - Completely rewrote determine_rcp_placement() documentation:
+     - Removed rcp_always_root parameter
+     - Documented union strategy as default behavior
+     - Added union strategy rationale
+     - Added critical safety rules
+     - Added union strategy benefits
+   - Updated generate_rcp_terraform() to use output_dir parameter
+   - Rewrote placement logic section completely
+   - Updated testing strategy with BDD-style test names and new test counts
+
+6. **Added PR-013 (RCP Code Quality & Bug Fixes):**
+   - New comprehensive section documenting all refactoring and bug fixes
+   - Documented 3 refactoring improvements:
+     - Function extraction for single responsibility
+     - Pattern alignment between SCP and RCP
+     - BDD-style test names
+   - Documented 9 critical bug fixes:
+     1. RCP generation writing to wrong directory
+     2. RCP check generating SCP Terraform
+     3. Missing account ID handling
+     4. Accounts without third-party access excluded
+     5. Incorrect root-level RCP logic
+     6. Violations count missing
+     7. Conservative identical-sets requirement
+     8. Parameter name ambiguity
+     9. Single-account OU handling
+   - Listed all files modified
+   - Added verification metrics
+
+7. **Phase 7 Implementation Status Updates:**
+   - Updated test count from 227 to 245 tests
+   - Changed "whitelists" to "allowlists" terminology
+   - Added union strategy implementation
+   - Added OU-level RCP for single-account OUs
+   - Added violations counting
+   - Added separate RCP directory configuration
+   - Added missing account ID lookup
+   - Added critical bug fixes line item
+
+8. **Success Criteria Updates:**
+   - Updated criterion 14: Changed "whitelists" to "allowlists"
+   - Updated criterion 17: Removed "always-root mode", replaced with "Union Strategy"
+   - Updated criterion 18: Clarified wildcard safety blocks root/OU deployment
+   - Added criterion 19: Configuration separation for RCP/SCP directories
+   - Added criterion 20: Missing data handling for exclude_account_ids support
+   - Added criterion 21: Critical bug fixes completion
+
+**Impact:**
+The Headroom Specification now comprehensively documents:
+- All RCP functionality improvements from the rcp_support_initial branch
+- Union strategy for third-party account combining
+- Critical bug fixes that enable proper RCP deployment
+- Refactoring improvements for code quality
+- Complete parameter renaming for clarity
+- All configuration changes needed for RCP/SCP separation
+- Test coverage improvements (245 tests, 100% coverage)
+
+The specification can now be used to fully reproduce the RCP implementation and understand all design decisions made in this branch.
+
