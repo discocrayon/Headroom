@@ -5632,3 +5632,151 @@ Based on `REFACTORING_IDEAS.md`, remaining high-priority refactorings:
 2. Extract helpers from `parse_scp_result_files()` - Priority 2, Item 4
 3. Extract helpers from `parse_rcp_result_files()` - Priority 2, Item 5
 4. Refactor `generate_rcp_terraform()` - Priority 2, Item 6
+
+---
+
+## 2025-11-07 - Added boto3-stubs for All AWS Services (EC2, IAM, STS)
+
+### Summary
+
+Successfully added boto3 type stubs for EC2, IAM, and STS services to achieve complete type safety across the entire codebase. Removed all `# type: ignore` comments from boto3 and botocore imports (15 total across 11 files). Mypy now reports "Success: no issues found in 40 source files".
+
+### Problem
+
+The codebase had type stubs only for AWS Organizations (`boto3-stubs[organizations]`), but was still using `# type: ignore` comments for:
+- EC2 client usage in `headroom/aws/ec2.py`
+- IAM client usage in `headroom/aws/iam.py`
+- Organizations client in `headroom/aws/organization.py` (using `Any` type)
+- ClientError imports in 7 test files and main.py
+
+This meant:
+- No IDE autocomplete for EC2/IAM/STS API methods
+- AWS API misuse could only be caught at runtime
+- Type checker couldn't verify correct AWS API usage
+- Less self-documenting code
+
+### Solution
+
+#### 1. Updated Dependencies
+Added EC2, IAM, and STS to boto3-stubs in both `requirements.txt` and `tox.ini`:
+```python
+# Before:
+boto3-stubs[organizations]>=1.35.0
+
+# After:
+boto3-stubs[ec2,iam,organizations,sts]>=1.35.0
+```
+
+#### 2. Updated AWS Module Type Hints
+
+**headroom/aws/ec2.py**:
+- Removed `# type: ignore` from boto3 and botocore imports
+- Added `from mypy_boto3_ec2.client import EC2Client`
+- Added type hints: `ec2_client: EC2Client = session.client('ec2')`
+- Added type hints: `regional_ec2: EC2Client = session.client('ec2', region_name=region)`
+
+**headroom/aws/iam.py**:
+- Removed `# type: ignore` from boto3 and botocore imports
+- Added `from mypy_boto3_iam.client import IAMClient`
+- Added type hints: `iam_client: IAMClient = session.client("iam")`
+
+**headroom/aws/organization.py**:
+- Removed `# type: ignore` from boto3 import
+- Added `from mypy_boto3_organizations.client import OrganizationsClient`
+- Changed `_build_ou_hierarchy()` parameter from `org_client: Any` to `org_client: OrganizationsClient`
+- Added type hints: `org_client: OrganizationsClient = session.client("organizations")`
+- Removed unused `Any` import from typing
+
+#### 3. Updated Check Modules
+
+**headroom/checks/scps/deny_imds_v1_ec2.py**:
+- Removed `# type: ignore` from boto3 import
+- Reorganized imports (moved constants and write_results to separate lines per style guide)
+
+**headroom/checks/rcps/check_third_party_assumerole.py**:
+- Removed `# type: ignore` from boto3 import
+- Reorganized imports for consistency
+
+**headroom/checks/check_third_party_assumerole.py** (legacy file):
+- Removed `# type: ignore` from boto3 import
+- Reorganized imports for consistency
+
+#### 4. Updated Test Files and Main
+
+Removed `# type: ignore` from ClientError imports in:
+- `headroom/main.py`
+- `tests/test_analysis.py`
+- `tests/test_analysis_extended.py`
+- `tests/test_aws_ec2.py`
+- `tests/test_aws_iam.py` (also removed `[import-untyped]` annotation)
+- `tests/test_parse_results.py`
+- `tests/test_main_integration.py`
+
+### Files Modified
+
+**Dependencies** (2 files):
+1. `requirements.txt` - Updated boto3-stubs line
+2. `tox.ini` - Updated boto3-stubs line in deps
+
+**Main Code** (7 files):
+1. `headroom/aws/ec2.py` - Added EC2Client type hints
+2. `headroom/aws/iam.py` - Added IAMClient type hints
+3. `headroom/aws/organization.py` - Added OrganizationsClient type hints, removed Any
+4. `headroom/checks/scps/deny_imds_v1_ec2.py` - Removed type: ignore
+5. `headroom/checks/rcps/check_third_party_assumerole.py` - Removed type: ignore
+6. `headroom/checks/check_third_party_assumerole.py` - Removed type: ignore
+7. `headroom/main.py` - Removed type: ignore from ClientError import
+
+**Tests** (7 files):
+1. `tests/test_analysis.py` - Removed type: ignore from ClientError import
+2. `tests/test_analysis_extended.py` - Removed type: ignore from ClientError import
+3. `tests/test_aws_ec2.py` - Removed type: ignore from ClientError import
+4. `tests/test_aws_iam.py` - Removed type: ignore from ClientError import
+5. `tests/test_parse_results.py` - Removed type: ignore from ClientError import
+6. `tests/test_main_integration.py` - Removed type: ignore from ClientError import
+
+**Total**: 16 files modified (2 dependency files + 7 main code files + 7 test files)
+
+### Test Results
+
+```
+============================= 284 passed in 0.80s ==============================
+```
+
+- **All 284 tests passing** ✅
+- **100% code coverage** for both `headroom/*` and `tests/*` ✅
+- **Mypy**: Success: no issues found in 40 source files ✅
+- **Pre-commit hooks**: All passed ✅
+
+### Benefits Achieved
+
+✅ **Complete type safety** - All AWS client interactions are now fully typed
+✅ **Zero type: ignore comments** - Removed all 15 occurrences for boto3/botocore
+✅ **Full IDE autocomplete** - IntelliSense now works for all AWS API methods
+✅ **Compile-time API validation** - AWS API misuse caught during type checking, not at runtime
+✅ **Self-documenting code** - Type hints make it clear what AWS clients are being used
+✅ **Improved developer experience** - Better tooling support and faster development
+
+### Type Safety Statistics
+
+**Before**:
+- Type stubs: Only `boto3-stubs[organizations]`
+- `# type: ignore` comments: 15 (across boto3 and botocore imports)
+- Mypy errors related to unused ignores: 7
+- Type-checked AWS clients: 1/3 (only Organizations)
+
+**After**:
+- Type stubs: `boto3-stubs[ec2,iam,organizations,sts]`
+- `# type: ignore` comments: 0 for AWS-related imports ✅
+- Mypy errors: 0 ✅
+- Type-checked AWS clients: 3/3 (EC2, IAM, Organizations) ✅
+
+### Next Steps
+
+Based on `REFACTORING_IDEAS.md`, **all Priority 1 refactorings are now complete!** 🎉
+
+Remaining Priority 2 refactorings:
+1. Extract helpers from `parse_scp_result_files()` - cleaner separation of concerns
+2. Extract helpers from `parse_rcp_result_files()` - consistent pattern with SCPs
+3. Refactor `generate_rcp_terraform()` - eliminate file writing duplication
+4. Consider extracting common Terraform generation patterns - DRY across both SCP and RCP generators

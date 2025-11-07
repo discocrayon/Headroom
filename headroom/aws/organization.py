@@ -6,9 +6,10 @@ using the AWS Organizations API.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-import boto3  # type: ignore
+import boto3
+from mypy_boto3_organizations.client import OrganizationsClient
 
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _build_ou_hierarchy(
-    org_client: Any,
+    org_client: OrganizationsClient,
     root_id: str,
     organizational_units: Dict[str, OrganizationalUnit],
     accounts: Dict[str, AccountOrgPlacement],
@@ -101,7 +102,7 @@ def analyze_organization_structure(session: boto3.Session) -> OrganizationHierar
 
     Returns comprehensive hierarchy mapping.
     """
-    org_client = session.client("organizations")
+    org_client: OrganizationsClient = session.client("organizations")
 
     # Get root information
     try:

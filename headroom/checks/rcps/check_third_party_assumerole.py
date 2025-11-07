@@ -5,11 +5,13 @@ This check identifies IAM roles with trust policies that allow principals
 from accounts outside the organization to assume them.
 """
 
-import boto3  # type: ignore
 from typing import Set
+
+import boto3
+
 from ...aws.iam import analyze_iam_roles_trust_policies
-from ...write_results import write_check_results
 from ...constants import THIRD_PARTY_ASSUMEROLE
+from ...write_results import write_check_results
 
 
 def check_third_party_assumerole(

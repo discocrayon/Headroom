@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from typing import Any, List, Set
 from urllib.parse import unquote
 
-import boto3  # type: ignore
-from botocore.exceptions import ClientError  # type: ignore
+import boto3
+from botocore.exceptions import ClientError
+from mypy_boto3_iam.client import IAMClient
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ def analyze_iam_roles_trust_policies(
     Returns:
         List of TrustPolicyAnalysis for roles with third-party accounts or wildcards
     """
-    iam_client = session.client("iam")
+    iam_client: IAMClient = session.client("iam")
     results: List[TrustPolicyAnalysis] = []
 
     # List all IAM roles

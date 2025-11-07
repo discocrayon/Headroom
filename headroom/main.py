@@ -1,4 +1,4 @@
-from botocore.exceptions import ClientError  # type: ignore
+from botocore.exceptions import ClientError
 
 from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session

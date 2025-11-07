@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-from botocore.exceptions import ClientError  # type: ignore
+
+from botocore.exceptions import ClientError
 
 from headroom.parse_results import (
     parse_scp_result_files,

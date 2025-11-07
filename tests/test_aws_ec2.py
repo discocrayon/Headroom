@@ -7,7 +7,8 @@ Tests for DenyImdsV1Ec2 dataclass and get_imds_v1_ec2_analysis function.
 import pytest
 from unittest.mock import MagicMock
 from typing import List, Optional
-from botocore.exceptions import ClientError  # type: ignore
+
+from botocore.exceptions import ClientError
 from headroom.aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
 
 

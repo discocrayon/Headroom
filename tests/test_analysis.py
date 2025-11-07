@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from botocore.exceptions import ClientError  # type: ignore
+
+from botocore.exceptions import ClientError
 
 from headroom.analysis import get_security_analysis_session, perform_analysis, get_subaccount_information, AccountInfo
 from headroom.config import HeadroomConfig, AccountTagLayout

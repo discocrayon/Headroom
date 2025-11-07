@@ -1,9 +1,11 @@
 """EC2-related security analysis functions for Headroom."""
 
-import boto3  # type: ignore
+import boto3
 from dataclasses import dataclass
 from typing import List
-from botocore.exceptions import ClientError  # type: ignore
+
+from botocore.exceptions import ClientError
+from mypy_boto3_ec2.client import EC2Client
 
 
 @dataclass
@@ -29,7 +31,7 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
         List of DenyImdsV1Ec2 objects containing analysis results
     """
     results = []
-    ec2_client = session.client('ec2')
+    ec2_client: EC2Client = session.client('ec2')
 
     try:
         # Get all available regions
@@ -41,7 +43,7 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
 
     for region in regions:
         try:
-            regional_ec2 = session.client('ec2', region_name=region)
+            regional_ec2: EC2Client = session.client('ec2', region_name=region)
             paginator = regional_ec2.get_paginator('describe_instances')
 
             for page in paginator.paginate():

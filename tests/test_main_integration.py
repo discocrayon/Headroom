@@ -15,7 +15,8 @@ from headroom.types import (
     OrganizationHierarchy,
     OrganizationalUnit
 )
-from botocore.exceptions import ClientError  # type: ignore
+
+from botocore.exceptions import ClientError
 
 
 class TestMainIntegration:

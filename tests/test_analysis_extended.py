@@ -9,7 +9,8 @@ import tempfile
 import shutil
 from unittest.mock import MagicMock, patch
 from typing import List, Generator
-from botocore.exceptions import ClientError  # type: ignore
+
+from botocore.exceptions import ClientError
 from headroom.analysis import (
     get_relevant_subaccounts,
     get_headroom_session,

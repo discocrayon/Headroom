@@ -6,7 +6,8 @@ Tests for IAM role trust policy analysis functions.
 
 import json
 import pytest
-from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+
+from botocore.exceptions import ClientError
 from unittest.mock import MagicMock
 from urllib.parse import quote
 from headroom.aws.iam import (
