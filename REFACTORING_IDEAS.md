@@ -49,63 +49,24 @@ This document tracks refactoring opportunities identified in the codebase. Items
 - **Benefits**: Single responsibility, better testability, easier maintenance
 - **Details**: See `conversation_history.md` for full documentation
 
+### ✅ Part 5: Refactor generate_scp_terraform()
+- **Status**: Completed 2025-11-07
+- **Files**: `headroom/terraform/generate_scps.py`, `tests/test_generate_scps.py`
+- **Impact**: Reduced main function from 139 lines to 47 lines (66% reduction in main function)
+- **Created Functions**:
+  - `_build_scp_terraform_module()` - Reusable Terraform module builder
+  - `_generate_account_scp_terraform()` - Account-level file generation
+  - `_generate_ou_scp_terraform()` - OU-level file generation
+  - `_generate_root_scp_terraform()` - Root-level file generation
+- **Tests Added**: 16 new BDD-style unit tests
+- **Benefits**: Eliminated code duplication, consistent pattern with generate_rcps.py, better testability
+- **Details**: See `conversation_history.md` for full documentation
+
 ---
 
 ## Pending Refactorings
 
 ### Priority 1: High-Impact Refactorings
-
-#### 1. Refactor generate_scp_terraform() [generate_scps.py]
-**Location**: `headroom/terraform/generate_scps.py` (lines 18-157)
-
-**Problem**: 139-line function mixing:
-1. Recommendation grouping logic (lines 37-53)
-2. Account-level Terraform generation (lines 56-89)
-3. OU-level Terraform generation (lines 92-125)
-4. Root-level Terraform generation (lines 128-157)
-
-**Current Issue**: Repetitive code for building Terraform modules
-
-**Proposed Solution**: Extract functions similar to generate_rcps.py pattern:
-```python
-def _build_scp_terraform_module(
-    module_name: str,
-    target_id_reference: str,
-    recommendations: List[SCPPlacementRecommendations],
-    comment: str
-) -> str:
-    """Build Terraform module call for SCP deployment."""
-    
-def _generate_account_scp_terraform(
-    account_id: str,
-    account_recs: List[SCPPlacementRecommendations],
-    organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
-) -> None:
-    """Generate Terraform file for account-level SCPs."""
-    
-def _generate_ou_scp_terraform(
-    ou_id: str,
-    ou_recs: List[SCPPlacementRecommendations],
-    organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
-) -> None:
-    """Generate Terraform file for OU-level SCPs."""
-    
-def _generate_root_scp_terraform(
-    root_recommendations: List[SCPPlacementRecommendations],
-    output_path: Path
-) -> None:
-    """Generate Terraform file for root-level SCPs."""
-```
-
-**Expected Impact**:
-- Eliminate code duplication
-- Main function becomes simple orchestrator
-- Easier to modify Terraform output format
-- Consistent pattern with generate_rcps.py
-
----
 
 #### 2. Add boto3-stubs for Remaining AWS Services
 **Location**: Multiple files across codebase
