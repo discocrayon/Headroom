@@ -5246,3 +5246,251 @@ The document includes:
 - **Reference**: Easy to link in code reviews and planning
 
 The document will be updated as refactorings are completed and new opportunities are discovered.
+
+---
+
+## 2025-11-06 - Part 4: Break Up _generate_terraform_content() Function
+
+### Summary
+
+Refactored the monolithic 118-line `_generate_terraform_content()` function in `headroom/terraform/generate_org_info.py` into 5 focused helper functions, reducing the main function to a clear 28-line orchestrator (76% reduction).
+
+### Problem
+
+The `_generate_terraform_content()` function was doing too many things:
+1. Building file header content (lines 64-76)
+2. Generating OU data sources (lines 79-92)
+3. Generating locals block header (lines 95-103)
+4. Generating OU local variables (lines 106-125)
+5. Generating account local variables (lines 128-168)
+
+This made the function:
+- Hard to understand at a glance
+- Difficult to test individual components
+- Challenging to modify specific sections
+- Violation of Single Responsibility Principle
+
+### Solution
+
+Extracted 5 focused helper functions, each with a single responsibility:
+
+#### 1. `_generate_terraform_header() -> List[str]`
+**Responsibility**: Generate file header and root OU data source
+**Lines**: 13 lines
+**Complexity**: Simple - static strings
+**Returns**: Header comments, org data source, root_ou data source
+
+#### 2. `_generate_ou_data_sources(organizational_units: Dict[str, OrganizationalUnit]) -> List[str]`
+**Responsibility**: Generate data sources for each top-level OU's child accounts
+**Lines**: 15 lines
+**Logic**: Filters top-level OUs, generates data source blocks
+**Returns**: List of data source declarations
+
+#### 3. `_generate_locals_header() -> List[str]`
+**Responsibility**: Generate opening of locals block with validation
+**Lines**: 9 lines
+**Complexity**: Simple - static strings with root validation
+**Returns**: Locals block opening with root_ou_id local
+
+#### 4. `_generate_ou_locals(organizational_units: Dict[str, OrganizationalUnit]) -> List[str]`
+**Responsibility**: Generate local variables for OU IDs
+**Lines**: 20 lines
+**Logic**: Filters top-level OUs, generates locals with validations
+**Returns**: OU local variables with validation checks
+
+#### 5. `_generate_account_locals(accounts: Dict[str, AccountOrgPlacement], organizational_units: Dict[str, OrganizationalUnit]) -> List[str]`
+**Responsibility**: Generate local variables for account IDs
+**Lines**: 45 lines
+**Complexity**: Most complex - includes hierarchy traversal logic
+**Logic**: Groups accounts by top-level parent OU, walks hierarchy
+**Returns**: Account local variables with validation checks
+
+### Refactored Main Function
+
+The main `_generate_terraform_content()` function became a clear orchestrator:
+
+```python
+def _generate_terraform_content(organization_hierarchy: OrganizationHierarchy) -> str:
+    """Generate Terraform content with data sources derived from root_ou."""
+    content_parts = []
+
+    content_parts.extend(_generate_terraform_header())
+    content_parts.extend(
+        _generate_ou_data_sources(organization_hierarchy.organizational_units)
+    )
+    content_parts.extend(_generate_locals_header())
+    content_parts.extend(
+        _generate_ou_locals(organization_hierarchy.organizational_units)
+    )
+    content_parts.extend(
+        _generate_account_locals(
+            organization_hierarchy.accounts,
+            organization_hierarchy.organizational_units
+        )
+    )
+
+    content_parts.append("}")
+    return "\n".join(content_parts) + "\n"
+```
+
+**Result**: 28 lines (down from 118 lines) - **76% reduction**
+
+### Files Modified
+
+1. **headroom/terraform/generate_org_info.py**
+   - Added 5 new helper functions
+   - Refactored main function to use helpers
+   - Added `OrganizationalUnit` to imports
+   - Removed unused `# type: ignore` comment on boto3 import
+
+2. **tests/test_generate_terraform.py**
+   - Added imports for all 5 helper functions
+   - Created new test class: `TestTerraformHelperFunctions`
+   - Added 19 new BDD-style tests (see below)
+
+### BDD-Style Tests Added
+
+Created comprehensive BDD-style tests for each helper function:
+
+#### Header Function Tests (3 tests)
+- `test_generate_terraform_header_should_include_file_comments`
+- `test_generate_terraform_header_should_include_root_org_data_source`
+- `test_generate_terraform_header_should_include_root_ou_data_source`
+
+#### OU Data Sources Tests (4 tests)
+- `test_generate_ou_data_sources_should_return_empty_list_when_no_ous`
+- `test_generate_ou_data_sources_should_generate_data_source_for_top_level_ou`
+- `test_generate_ou_data_sources_should_generate_multiple_data_sources`
+- `test_generate_ou_data_sources_should_ignore_nested_ous`
+
+#### Locals Header Tests (3 tests)
+- `test_generate_locals_header_should_open_locals_block`
+- `test_generate_locals_header_should_include_root_validation`
+- `test_generate_locals_header_should_include_root_ou_id_reference`
+
+#### OU Locals Tests (4 tests)
+- `test_generate_ou_locals_should_return_empty_list_when_no_ous`
+- `test_generate_ou_locals_should_generate_local_variable_for_top_level_ou`
+- `test_generate_ou_locals_should_generate_multiple_local_variables`
+- `test_generate_ou_locals_should_ignore_nested_ous`
+
+#### Account Locals Tests (5 tests)
+- `test_generate_account_locals_should_return_empty_list_when_no_accounts`
+- `test_generate_account_locals_should_generate_local_variable_for_account`
+- `test_generate_account_locals_should_generate_multiple_account_locals`
+- `test_generate_account_locals_should_group_accounts_by_top_level_ou`
+- `test_generate_account_locals_should_reference_correct_data_source_for_nested_account`
+
+**Total**: 19 new BDD-style tests added
+
+### Test Results
+
+#### Before Changes
+- 12 tests in `test_generate_terraform.py`
+- All existing tests passing
+
+#### After Changes
+- **31 tests** in `test_generate_terraform.py` (+19 new tests)
+- **272 total tests** across entire codebase
+- **100% code coverage** maintained ✅
+- **All tests passing** ✅
+- **Fixed mypy error** in generate_org_info.py ✅
+
+### Benefits Achieved
+
+1. ✅ **Dramatic Size Reduction**: Main function reduced from 118 to 28 lines (76% reduction)
+2. ✅ **Single Responsibility**: Each function has one clear purpose
+3. ✅ **Better Testability**: Can test each component independently with focused tests
+4. ✅ **Improved Maintainability**: Changes to one section don't affect others
+5. ✅ **Better Code Organization**: Clear separation of concerns
+6. ✅ **Maintained Type Safety**: All functions properly typed
+7. ✅ **No Functional Changes**: All existing tests pass unchanged
+8. ✅ **Comprehensive Test Coverage**: 19 new BDD-style tests for edge cases
+9. ✅ **Self-Documenting**: BDD test names describe expected behavior
+10. ✅ **Easier to Extend**: Adding new sections requires minimal changes
+
+### Implementation Approach
+
+Used an incremental, safe approach:
+1. Created all 5 helper functions first
+2. Refactored main function to use them
+3. Ran existing tests to verify no breakage
+4. Added comprehensive BDD-style tests for each helper
+5. Verified 100% coverage maintained
+6. Fixed mypy issues introduced by refactoring
+7. Ran full test suite with tox
+
+### Code Quality Metrics
+
+**Before**:
+- Main function: 118 lines
+- Cyclomatic complexity: High (5 distinct responsibilities)
+- Testability: Low (only end-to-end tests)
+
+**After**:
+- Main function: 28 lines (-76%)
+- Helper functions: 5 focused functions (~13-45 lines each)
+- Cyclomatic complexity: Low (each function has 1 responsibility)
+- Testability: High (19 unit tests + 12 integration tests)
+
+### Lessons Learned
+
+1. **BDD Test Naming**: Using "should" in test names makes tests read like specifications
+2. **List Return Types**: Helper functions returning `List[str]` enable flexible composition
+3. **Incremental Refactoring**: Adding all helpers first, then refactoring main function prevents partial states
+4. **Edge Case Testing**: BDD-style tests naturally encourage testing edge cases (empty lists, nested hierarchies)
+5. **Type Safety**: Proper imports and type hints catch errors early
+
+### Related Work
+
+This refactoring completes **Priority 1, Item 1** from `REFACTORING_IDEAS.md`. The document proposed this exact refactoring with detailed function signatures, which were implemented as specified.
+
+### Next Steps
+
+Based on `REFACTORING_IDEAS.md`, remaining high-priority refactorings:
+1. Refactor `generate_scp_terraform()` - similar pattern, eliminate duplication
+2. Add boto3-stubs for remaining AWS services (EC2, IAM, STS)
+3. Extract helpers from `parse_scp_result_files()` and `parse_rcp_result_files()`
+
+---
+
+## 2025-11-06 - Renamed _generate_locals_header to _generate_root_locals
+
+### Summary
+
+Renamed function `_generate_locals_header()` to `_generate_root_locals()` for better clarity about its purpose.
+
+### Rationale
+
+The new name `_generate_root_locals()` more accurately describes what the function does:
+- It generates locals related to the **root** OU (root_ou_id, validation_check_root)
+- The name parallels `_generate_ou_locals()` and `_generate_account_locals()`
+- "root_locals" is more descriptive than the generic "locals_header"
+
+### Files Modified
+
+1. **headroom/terraform/generate_org_info.py**
+   - Renamed function definition from `_generate_locals_header()` to `_generate_root_locals()`
+   - Updated docstring to clarify "root validation check" and "root_ou_id"
+   - Updated function call in `_generate_terraform_content()`
+
+2. **tests/test_generate_terraform.py**
+   - Updated import statement
+   - Renamed 3 test functions:
+     - `test_generate_locals_header_should_open_locals_block` → `test_generate_root_locals_should_open_locals_block`
+     - `test_generate_locals_header_should_include_root_validation` → `test_generate_root_locals_should_include_root_validation`
+     - `test_generate_locals_header_should_include_root_ou_id_reference` → `test_generate_root_locals_should_include_root_ou_id_reference`
+
+### Test Results
+
+- **All 31 tests passing** ✅
+- **No functional changes** - pure rename refactoring ✅
+
+### Function Naming Consistency
+
+After this change, the 5 helper functions now have consistent, descriptive names:
+1. `_generate_terraform_header()` - Terraform file header
+2. `_generate_ou_data_sources()` - OU data sources
+3. `_generate_root_locals()` - **Root-level** local variables
+4. `_generate_ou_locals()` - **OU-level** local variables
+5. `_generate_account_locals()` - **Account-level** local variables

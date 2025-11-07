@@ -35,52 +35,27 @@ This document tracks refactoring opportunities identified in the codebase. Items
 - **Benefits**: Type safety, IDE autocomplete, self-documenting code
 - **Details**: See `conversation_history.md` for full documentation
 
+### ✅ Part 4: Break Up _generate_terraform_content()
+- **Status**: Completed 2025-11-06
+- **Files**: `headroom/terraform/generate_org_info.py`, `tests/test_generate_terraform.py`
+- **Impact**: Reduced main function from 118 lines to 28 lines (76% reduction)
+- **Created Functions**:
+  - `_generate_terraform_header()` - file header and root data sources
+  - `_generate_ou_data_sources()` - data sources for top-level OUs
+  - `_generate_locals_header()` - locals block opening with validation
+  - `_generate_ou_locals()` - OU local variables with validations
+  - `_generate_account_locals()` - account local variables with hierarchy traversal
+- **Tests Added**: 19 new BDD-style unit tests
+- **Benefits**: Single responsibility, better testability, easier maintenance
+- **Details**: See `conversation_history.md` for full documentation
+
 ---
 
 ## Pending Refactorings
 
 ### Priority 1: High-Impact Refactorings
 
-#### 1. Break Up _generate_terraform_content() [generate_org_info.py]
-**Location**: `headroom/terraform/generate_org_info.py` (lines 54-172)
-
-**Problem**: 118-line function doing 5 distinct things:
-1. Building header content (lines 64-76)
-2. Generating OU data sources (lines 79-92)
-3. Generating locals header (lines 95-103)
-4. Generating OU local variables (lines 106-125)
-5. Generating account local variables (lines 128-168)
-
-**Proposed Solution**: Extract 5 focused functions:
-```python
-def _generate_terraform_header() -> List[str]:
-    """Generate file header and root OU data source."""
-    
-def _generate_ou_data_sources(top_level_ous: List[OrganizationalUnit]) -> List[str]:
-    """Generate data sources for each top-level OU."""
-    
-def _generate_locals_header() -> List[str]:
-    """Generate opening of locals block with validation."""
-    
-def _generate_ou_locals(top_level_ous: List[OrganizationalUnit]) -> List[str]:
-    """Generate local variables for OU IDs."""
-    
-def _generate_account_locals(
-    accounts: Dict[str, AccountOrgPlacement],
-    organizational_units: Dict[str, OrganizationalUnit]
-) -> List[str]:
-    """Generate local variables for account IDs."""
-```
-
-**Expected Impact**:
-- Main function becomes clear orchestrator
-- Each function has single, testable responsibility
-- Easier to modify individual sections
-- Better code organization
-
----
-
-#### 2. Refactor generate_scp_terraform() [generate_scps.py]
+#### 1. Refactor generate_scp_terraform() [generate_scps.py]
 **Location**: `headroom/terraform/generate_scps.py` (lines 18-157)
 
 **Problem**: 139-line function mixing:
@@ -132,7 +107,7 @@ def _generate_root_scp_terraform(
 
 ---
 
-#### 3. Add boto3-stubs for Remaining AWS Services
+#### 2. Add boto3-stubs for Remaining AWS Services
 **Location**: Multiple files across codebase
 
 **Problem**: Still using `# type: ignore` comments for boto3 imports in:
