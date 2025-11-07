@@ -8,14 +8,14 @@ levels (root, OU, account) based on violation patterns and organization structur
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from .analysis import get_security_analysis_session, get_management_account_session
 from .config import HeadroomConfig
 from .aws.organization import analyze_organization_structure
 from .types import (
     OrganizationalUnit, AccountOrgPlacement, OrganizationHierarchy,
-    CheckResult, SCPPlacementRecommendations
+    SCPCheckResult, SCPPlacementRecommendations
 )
 from .constants import RCP_CHECK_NAMES
 from .aws.organization import lookup_account_id_by_name
@@ -24,7 +24,112 @@ from .aws.organization import lookup_account_id_by_name
 logger = logging.getLogger(__name__)
 
 
-def parse_scp_result_files(results_dir: str, exclude_rcp_checks: bool = True) -> List[CheckResult]:
+def _load_result_file_json(result_file: Path) -> Dict[str, Any]:
+    """
+    Load and parse a result JSON file.
+
+    Args:
+        result_file: Path to the JSON result file
+
+    Returns:
+        Parsed JSON data as dictionary
+
+    Raises:
+        RuntimeError: If JSON parsing fails
+    """
+    try:
+        with open(result_file, 'r') as f:
+            data: Dict[str, Any] = json.load(f)
+            return data
+    except (json.JSONDecodeError, KeyError) as e:
+        raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+
+
+def _extract_account_id_from_result(
+    summary: Dict[str, Any],
+    organization_hierarchy: OrganizationHierarchy,
+    result_file: Path
+) -> str:
+    """
+    Extract account ID from result summary or organization hierarchy.
+
+    Universal strategy for both SCP and RCP results:
+    1. Try to get account_id directly from summary
+    2. If missing, look up account by name in organization hierarchy
+
+    Args:
+        summary: The summary dict from the result JSON
+        organization_hierarchy: Organization structure for account lookups
+        result_file: Path to result file (for error messages)
+
+    Returns:
+        Account ID string
+
+    Raises:
+        RuntimeError: If account ID cannot be determined
+    """
+    account_id: str = summary.get("account_id", "")
+    if not account_id:
+        account_name = summary.get("account_name", "")
+        if not account_name:
+            raise RuntimeError(
+                f"Result file {result_file} missing both account_id and account_name in summary"
+            )
+        # Use org hierarchy lookup - works for both SCP and RCP
+        looked_up_id: str = lookup_account_id_by_name(
+            account_name,
+            organization_hierarchy,
+            str(result_file)
+        )
+        return looked_up_id
+    return account_id
+
+
+def _parse_single_scp_result_file(
+    result_file: Path,
+    check_name: str,
+    organization_hierarchy: OrganizationHierarchy
+) -> SCPCheckResult:
+    """
+    Parse a single SCP result JSON file into SCPCheckResult object.
+
+    Args:
+        result_file: Path to the JSON result file
+        check_name: Name of the check (from parent directory)
+        organization_hierarchy: Organization structure for account lookups
+
+    Returns:
+        SCPCheckResult object with compliance data
+
+    Raises:
+        RuntimeError: If JSON parsing fails or required fields are missing
+    """
+    data = _load_result_file_json(result_file)
+    summary = data.get("summary", {})
+
+    account_id = _extract_account_id_from_result(
+        summary,
+        organization_hierarchy,
+        result_file
+    )
+
+    return SCPCheckResult(
+        account_id=account_id,
+        account_name=summary.get("account_name", ""),
+        check_name=summary.get("check", check_name),
+        violations=summary.get("violations", 0),
+        exemptions=summary.get("exemptions", 0),
+        compliant=summary.get("compliant", 0),
+        total_instances=summary.get("total_instances"),
+        compliance_percentage=summary.get("compliance_percentage", 0.0)
+    )
+
+
+def parse_scp_result_files(
+    results_dir: str,
+    organization_hierarchy: OrganizationHierarchy,
+    exclude_rcp_checks: bool = True
+) -> List[SCPCheckResult]:
     """
     Parse all JSON result files from headroom_results directory.
 
@@ -32,16 +137,17 @@ def parse_scp_result_files(results_dir: str, exclude_rcp_checks: bool = True) ->
 
     Args:
         results_dir: Path to the headroom_results directory
+        organization_hierarchy: Organization structure for account ID lookups
         exclude_rcp_checks: If True, exclude RCP checks (like third_party_assumerole)
 
     Returns:
-        List of CheckResult objects for SCP checks only (if exclude_rcp_checks is True).
+        List of SCPCheckResult objects for SCP checks only (if exclude_rcp_checks is True).
     """
     results_path = Path(results_dir)
     if not results_path.exists():
         raise RuntimeError(f"Results directory {results_dir} does not exist")
 
-    check_results: List[CheckResult] = []
+    check_results: List[SCPCheckResult] = []
 
     # Look in scps/ subdirectory
     scps_path = results_path / "scps"
@@ -65,42 +171,18 @@ def parse_scp_result_files(results_dir: str, exclude_rcp_checks: bool = True) ->
 
         # Process each account result file
         for result_file in check_dir.glob("*.json"):
-            try:
-                with open(result_file, 'r') as f:
-                    data = json.load(f)
-
-                summary = data.get("summary", {})
-
-                # Extract account_id - try from JSON first, then from filename
-                account_id = summary.get("account_id", "")
-                if not account_id:
-                    # Try to extract from filename (format: name_id.json or name.json)
-                    filename_stem = result_file.stem
-                    if "_" in filename_stem:
-                        # Old format: account_name_account_id
-                        parts = filename_stem.rsplit("_", 1)
-                        if len(parts) == 2 and parts[1].isdigit():
-                            account_id = parts[1]
-
-                check_results.append(CheckResult(
-                    account_id=account_id,
-                    account_name=summary.get("account_name", ""),
-                    check_name=summary.get("check", check_name),
-                    violations=summary.get("violations", 0),
-                    exemptions=summary.get("exemptions", 0),
-                    compliant=summary.get("compliant", 0),
-                    total_instances=summary.get("total_instances", 0),
-                    compliance_percentage=summary.get("compliance_percentage", 0.0)
-                ))
-
-            except (json.JSONDecodeError, KeyError) as e:
-                raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+            check_result = _parse_single_scp_result_file(
+                result_file,
+                check_name,
+                organization_hierarchy
+            )
+            check_results.append(check_result)
 
     return check_results
 
 
 def determine_scp_placement(
-    results_data: List[CheckResult],
+    results_data: List[SCPCheckResult],
     organization_hierarchy: OrganizationHierarchy
 ) -> List[SCPPlacementRecommendations]:
     """
@@ -112,7 +194,7 @@ def determine_scp_placement(
     recommendations: List[SCPPlacementRecommendations] = []
 
     # Group results by check name
-    check_groups: Dict[str, List[CheckResult]] = {}
+    check_groups: Dict[str, List[SCPCheckResult]] = {}
     for result in results_data:
         if result.check_name not in check_groups:
             check_groups[result.check_name] = []
@@ -296,7 +378,7 @@ def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendation
 
     # Parse result files
     logger.info(f"Parsing result files from {config.results_dir}")
-    results_data = parse_scp_result_files(config.results_dir)
+    results_data = parse_scp_result_files(config.results_dir, organization_hierarchy)
 
     if not results_data:
         logger.warning("No result files found to analyze")

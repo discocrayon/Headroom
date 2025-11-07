@@ -39,15 +39,35 @@ class OrganizationHierarchy:
 
 @dataclass
 class CheckResult:
-    """Parsed result from a single check file."""
+    """
+    Base class for all check results.
+
+    Contains fields common to all checks (SCP, RCP, future check types).
+    Subclasses should add check-specific fields.
+    """
     account_id: str
     account_name: str
     check_name: str
+
+
+@dataclass
+class SCPCheckResult(CheckResult):
+    """
+    Result from an SCP compliance check.
+
+    SCP checks evaluate whether resources in an account comply with
+    organizational policies. They track violations, exemptions, and
+    compliant resources.
+
+    TODO: As more SCP checks are added, consider moving check-specific
+    fields (like total_instances) to per-check subclasses if the fields
+    diverge significantly across different SCP check types.
+    """
     violations: int
     exemptions: int
     compliant: int
-    total_instances: int
     compliance_percentage: float
+    total_instances: Optional[int] = None
 
 
 @dataclass
@@ -62,12 +82,20 @@ class SCPPlacementRecommendations:
 
 
 @dataclass
-class RCPCheckResult:
-    """Parsed result from third-party role access check."""
-    account_id: str
-    account_name: str
+class RCPCheckResult(CheckResult):
+    """
+    Result from an RCP check (third-party access control).
+
+    RCP checks identify external account access and determine whether
+    Resource Control Policies can be safely deployed.
+
+    TODO: As more RCP checks are added, consider creating per-check
+    subclasses if fields diverge significantly. For now, all RCP checks
+    share the third-party access pattern.
+    """
     third_party_account_ids: List[str]
     has_wildcard: bool
+    total_roles_analyzed: Optional[int] = None
 
 
 @dataclass

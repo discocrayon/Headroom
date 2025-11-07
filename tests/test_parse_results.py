@@ -27,10 +27,32 @@ from headroom.types import (
     OrganizationHierarchy,
     OrganizationalUnit,
     AccountOrgPlacement,
-    CheckResult,
+    SCPCheckResult,
     SCPPlacementRecommendations,
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
+
+
+def make_test_org_hierarchy() -> OrganizationHierarchy:
+    """Create a simple test organization hierarchy."""
+    return OrganizationHierarchy(
+        root_id="r-test",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="test-account",
+                parent_ou_id="r-test",
+                ou_path=["Root"]
+            ),
+            "222222222222": AccountOrgPlacement(
+                account_id="222222222222",
+                account_name="test-account-2",
+                parent_ou_id="r-test",
+                ou_path=["Root"]
+            ),
+        }
+    )
 
 
 class TestOrganizationStructureAnalysis:
@@ -269,7 +291,8 @@ class TestResultFileParsing:
             with open(check_dir / "test-account-2_222222222222.json", 'w') as f:
                 json.dump(test_data[1], f)
 
-            result = parse_scp_result_files(temp_dir)
+            org_hierarchy = make_test_org_hierarchy()
+            result = parse_scp_result_files(temp_dir, org_hierarchy)
 
             assert len(result) == 2
             # Sort by account_id for consistent ordering
@@ -281,14 +304,16 @@ class TestResultFileParsing:
 
     def test_parse_scp_result_files_missing_directory(self) -> None:
         """Test handling of missing results directory."""
+        org_hierarchy = make_test_org_hierarchy()
         with pytest.raises(RuntimeError, match="Results directory /nonexistent/directory does not exist"):
-            parse_scp_result_files("/nonexistent/directory")
+            parse_scp_result_files("/nonexistent/directory", org_hierarchy)
 
     def test_parse_scp_result_files_missing_scps_subdirectory(self) -> None:
         """Test handling when results directory exists but scps/ subdirectory doesn't."""
         with tempfile.TemporaryDirectory() as temp_dir:
+            org_hierarchy = make_test_org_hierarchy()
             # Directory exists but has no scps/ subdirectory
-            result = parse_scp_result_files(temp_dir)
+            result = parse_scp_result_files(temp_dir, org_hierarchy)
             assert result == []
 
     def test_parse_scp_result_files_invalid_json(self) -> None:
@@ -302,9 +327,10 @@ class TestResultFileParsing:
             with open(check_dir / "invalid.json", 'w') as f:
                 f.write("invalid json content")
 
+            org_hierarchy = make_test_org_hierarchy()
             # Should raise exception on invalid JSON
             with pytest.raises(RuntimeError, match="Failed to parse result file .*/invalid.json"):
-                parse_scp_result_files(temp_dir)
+                parse_scp_result_files(temp_dir, org_hierarchy)
 
     def test_parse_scp_result_files_non_directory_files(self) -> None:
         """Test handling of non-directory files in scps directory."""
@@ -317,7 +343,8 @@ class TestResultFileParsing:
             with open(scps_path / "not_a_directory.txt", 'w') as f:
                 f.write("This is not a directory")
 
-            result = parse_scp_result_files(temp_dir)
+            org_hierarchy = make_test_org_hierarchy()
+            result = parse_scp_result_files(temp_dir, org_hierarchy)
             assert result == []
 
     def test_parse_scp_result_files_without_account_id_in_json(self) -> None:
@@ -346,7 +373,8 @@ class TestResultFileParsing:
             with open(check_dir / "test-account_111111111111.json", 'w') as f:
                 json.dump(test_data, f)
 
-            result = parse_scp_result_files(temp_dir)
+            org_hierarchy = make_test_org_hierarchy()
+            result = parse_scp_result_files(temp_dir, org_hierarchy)
 
             assert len(result) == 1
             assert result[0].account_id == "111111111111"
@@ -354,7 +382,7 @@ class TestResultFileParsing:
             assert result[0].violations == 0
 
     def test_parse_scp_result_files_filename_without_account_id(self) -> None:
-        """Test parsing files with only account name in filename (no account_id)."""
+        """Test parsing files raises error when account_id missing and name not in org hierarchy."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
             check_dir = results_path / "scps" / "deny_imds_v1_ec2"
@@ -362,7 +390,7 @@ class TestResultFileParsing:
 
             test_data = {
                 "summary": {
-                    "account_name": "test-account",
+                    "account_name": "unknown-account",
                     "check": "deny_imds_v1_ec2",
                     "total_instances": 5,
                     "violations": 0,
@@ -375,16 +403,14 @@ class TestResultFileParsing:
                 "compliant_instances": []
             }
 
-            # Write file with only account name in filename (exclude_account_ids mode)
-            with open(check_dir / "test-account.json", 'w') as f:
+            # Write file with account name not in org hierarchy
+            with open(check_dir / "unknown-account.json", 'w') as f:
                 json.dump(test_data, f)
 
-            result = parse_scp_result_files(temp_dir)
-
-            assert len(result) == 1
-            assert result[0].account_id == ""
-            assert result[0].account_name == "test-account"
-            assert result[0].violations == 0
+            org_hierarchy = make_test_org_hierarchy()
+            # Should raise error when account name lookup fails
+            with pytest.raises(RuntimeError, match="Account name 'unknown-account' .* not found in organization hierarchy"):
+                parse_scp_result_files(temp_dir, org_hierarchy)
 
     def test_parse_scp_result_files_excludes_rcp_checks(self) -> None:
         """
@@ -438,15 +464,17 @@ class TestResultFileParsing:
             with open(rcp_check_dir / "test-account.json", 'w') as f:
                 json.dump(rcp_test_data, f)
 
+            org_hierarchy = make_test_org_hierarchy()
+
             # Parse with RCP exclusion (default) - should filter out misplaced RCP results
-            result = parse_scp_result_files(temp_dir)
+            result = parse_scp_result_files(temp_dir, org_hierarchy)
 
             # Only SCP check should be included
             assert len(result) == 1
             assert result[0].check_name == "deny_imds_v1_ec2"
 
             # Parse without RCP exclusion - should include misplaced RCP results
-            result_with_rcp = parse_scp_result_files(temp_dir, exclude_rcp_checks=False)
+            result_with_rcp = parse_scp_result_files(temp_dir, org_hierarchy, exclude_rcp_checks=False)
 
             # Both checks should be included (even though RCP is misplaced in scps/)
             assert len(result_with_rcp) == 2
@@ -462,8 +490,8 @@ class TestSCPPlacementDetermination:
         """Test recommendation for root level deployment."""
         # All accounts have zero violations
         results_data = [
-            CheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 0, 0, 5, 5, 100.0),
-            CheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
+            SCPCheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 0, 0, 5, 100.0, 5),
+            SCPCheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -489,8 +517,8 @@ class TestSCPPlacementDetermination:
         """Test recommendation for OU level deployment."""
         # Only accounts in one OU have zero violations
         results_data = [
-            CheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 5, 60.0),
-            CheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
+            SCPCheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),
+            SCPCheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -516,9 +544,9 @@ class TestSCPPlacementDetermination:
         """Test recommendation for account level deployment."""
         # Only some individual accounts have zero violations
         results_data = [
-            CheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 5, 60.0),
-            CheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
-            CheckResult("333333333333", "account-3", "deny_imds_v1_ec2", 1, 0, 2, 3, 66.7),
+            SCPCheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),
+            SCPCheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("333333333333", "account-3", "deny_imds_v1_ec2", 1, 0, 2, 66.7, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -546,8 +574,8 @@ class TestSCPPlacementDetermination:
         """Test recommendation when no safe deployment is possible."""
         # All accounts have violations
         results_data = [
-            CheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 5, 60.0),
-            CheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 1, 0, 2, 3, 66.7),
+            SCPCheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),
+            SCPCheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 1, 0, 2, 66.7, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -572,8 +600,8 @@ class TestSCPPlacementDetermination:
         """Test handling when account is not found in organization hierarchy."""
         # Create scenario that forces OU level check (not all accounts have zero violations)
         results_data = [
-            CheckResult("111111111111", "known-account", "deny_imds_v1_ec2", 2, 0, 3, 5, 60.0),  # Has violations
-            CheckResult("999999999999", "unknown-account", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),  # No violations but not in hierarchy
+            SCPCheckResult("111111111111", "known-account", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),  # Has violations
+            SCPCheckResult("999999999999", "unknown-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),  # No violations but not in hierarchy
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -593,9 +621,9 @@ class TestSCPPlacementDetermination:
     def test_determine_scp_placement_missing_account_id_lookup_by_name(self) -> None:
         """Test handling when account_id is missing but account_name can be found in hierarchy."""
         results_data = [
-            CheckResult("", "known-account", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
-            CheckResult("222222222222", "another-account", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
-            CheckResult("333333333333", "third-account", "deny_imds_v1_ec2", 2, 0, 1, 3, 33.3),
+            SCPCheckResult("", "known-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("222222222222", "another-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("333333333333", "third-account", "deny_imds_v1_ec2", 2, 0, 1, 33.3, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -622,8 +650,8 @@ class TestSCPPlacementDetermination:
     def test_determine_scp_placement_missing_account_id_not_found_by_name(self) -> None:
         """Test handling when account_id is missing and account_name is not in hierarchy."""
         results_data = [
-            CheckResult("111111111111", "known-account", "deny_imds_v1_ec2", 2, 0, 3, 5, 60.0),
-            CheckResult("", "unknown-account", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),
+            SCPCheckResult("111111111111", "known-account", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),
+            SCPCheckResult("", "unknown-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -836,7 +864,7 @@ class TestParseResultsIntegration:
         )
 
         mock_results = [
-            CheckResult("111111111111", "test-account", "deny_imds_v1_ec2", 0, 0, 5, 5, 100.0)
+            SCPCheckResult("111111111111", "test-account", "deny_imds_v1_ec2", 0, 0, 5, 100.0, 5)
         ]
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
@@ -890,8 +918,8 @@ class TestParseResultsIntegration:
 
         # Create results that will trigger OU-level recommendation
         mock_results = [
-            CheckResult("111111111111", "test-account", "deny_imds_v1_ec2", 2, 0, 3, 5, 60.0),  # Has violations
-            CheckResult("222222222222", "prod-account", "deny_imds_v1_ec2", 0, 0, 3, 3, 100.0),  # No violations
+            SCPCheckResult("111111111111", "test-account", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),  # Has violations
+            SCPCheckResult("222222222222", "prod-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),  # No violations
         ]
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \

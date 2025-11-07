@@ -77,6 +77,26 @@ This document tracks refactoring opportunities identified in the codebase. Items
 - **Mypy Result**: Success - no issues found in 40 source files
 - **Details**: See `conversation_history.md` for full documentation
 
+### ✅ Part 7: Extract Shared Helpers from parse_scp_result_files() and parse_rcp_result_files()
+- **Status**: Completed 2025-11-07
+- **Files**: `headroom/parse_results.py`, `headroom/terraform/generate_rcps.py`, `tests/test_parse_results.py`, `tests/test_generate_rcps.py`
+- **Impact**: Unified parsing logic, eliminated technical debt (filename parsing), reduced main functions by 52-54%
+- **Shared Helpers Created**:
+  - `_load_result_file_json()` - Shared JSON loading with error handling
+  - `_extract_account_id_from_result()` - Unified account ID extraction (org hierarchy lookup)
+- **SCP-Specific Helper**:
+  - `_parse_single_scp_result_file()` - Parse single SCP result file
+- **RCP-Specific Helper**:
+  - `_parse_single_rcp_result_file()` - Parse single RCP result file with third-party data
+- **Signature Change**: `parse_scp_result_files()` now requires `organization_hierarchy` parameter (breaking change)
+- **Technical Debt Removed**: Eliminated fragile filename parsing (`name_id.json`) in favor of robust org hierarchy lookup
+- **Main Functions Reduced**:
+  - `parse_scp_result_files()`: 73 lines → 36 lines (51% reduction)
+  - `parse_rcp_result_files()`: 65 lines → 30 lines (54% reduction)
+- **Benefits**: Consistent strategy across both parsers, better testability, removes legacy workarounds
+- **Mypy Result**: Success - no issues found, full type safety maintained
+- **Details**: See `conversation_history.md` for full documentation
+
 ---
 
 ## Pending Refactorings
@@ -89,56 +109,11 @@ This document tracks refactoring opportunities identified in the codebase. Items
 
 ### Priority 2: Medium-Impact Refactorings
 
-#### 4. Extract Helpers from parse_scp_result_files()
-**Location**: `headroom/parse_results.py` (lines 30-102)
-
-**Problem**: Mixes file I/O with parsing logic:
-1. Directory traversal and file finding (lines 43-70)
-2. JSON parsing (lines 72-73)
-3. Account ID extraction with fallback logic (lines 78-86)
-4. CheckResult object creation (lines 88-97)
-
-**Proposed Solution**:
-```python
-def _extract_account_id_from_result(summary: Dict[str, Any], filename: str) -> str:
-    """Extract account ID from result summary or filename."""
-
-def _parse_single_result_file(result_file: Path, check_name: str) -> CheckResult:
-    """Parse a single result JSON file into CheckResult object."""
-```
-
-**Expected Impact**:
-- Clearer separation of concerns
-- Easier to test parsing logic independently
-- Reusable components
+#### NONE - Items 4 and 5 completed! 🎉
 
 ---
 
-#### 5. Extract Helpers from parse_rcp_result_files()
-**Location**: `headroom/terraform/generate_rcps.py` (lines 27-91)
-
-**Problem**: Same as #4 - mixes file I/O with business logic
-
-**Proposed Solution**:
-```python
-def _parse_single_rcp_result_file(
-    result_file: Path,
-    organization_hierarchy: OrganizationHierarchy
-) -> Tuple[str, Set[str], bool]:
-    """
-    Parse single RCP result file.
-
-    Returns:
-        Tuple of (account_id, third_party_accounts, has_wildcards)
-    """
-```
-
-**Expected Impact**:
-- Consistent pattern with parse_scp_result_files()
-- Better testability
-- Clearer error handling
-
----
+### Priority 3: Nice-to-Have Refactorings
 
 #### 6. Refactor generate_rcp_terraform()
 **Location**: `headroom/terraform/generate_rcps.py` (lines 399-486)

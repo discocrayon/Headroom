@@ -5780,3 +5780,569 @@ Remaining Priority 2 refactorings:
 2. Extract helpers from `parse_rcp_result_files()` - consistent pattern with SCPs
 3. Refactor `generate_rcp_terraform()` - eliminate file writing duplication
 4. Consider extracting common Terraform generation patterns - DRY across both SCP and RCP generators
+
+---
+
+## 2025-11-07 - Extract Shared Helpers from parse_scp_result_files() and parse_rcp_result_files()
+
+### Summary
+
+Successfully refactored both SCP and RCP result file parsers by extracting shared helper functions for JSON loading and account ID extraction. Unified the account ID lookup strategy across both parsers, eliminating legacy filename parsing technical debt. Reduced main parsing functions by 51-54% while maintaining 100% test coverage and full type safety.
+
+### Problem
+
+Both `parse_scp_result_files()` and `parse_rcp_result_files()` mixed file I/O with business logic:
+- Inline JSON loading and parsing
+- Complex account ID extraction logic
+- Different strategies for account ID fallback (SCP: filename parsing, RCP: org hierarchy lookup)
+- Difficult to test individual components
+- Technical debt: SCP parser used fragile filename parsing (`name_id.json` format)
+
+### Key Insight
+
+During planning, discovered that SCP parser was using filename parsing as a fallback for account ID extraction, while RCP parser used organization hierarchy lookup. Investigation revealed that the SCP parser's call site (`parse_scp_results()`) already had access to `organization_hierarchy` but wasn't passing it down. This meant:
+- SCP was using a fragile, legacy workaround
+- Both parsers needed account_id for the same reason
+- They should use the same strategy
+
+### Solution
+
+#### 1. Created Shared Helper for JSON Loading
+```python
+def _load_result_file_json(result_file: Path) -> Dict[str, Any]:
+    """Load and parse a result JSON file."""
+```
+- Centralizes file I/O and JSON parsing
+- Consistent error handling
+- Used by both SCP and RCP parsers
+
+#### 2. Created Shared Helper for Account ID Extraction
+```python
+def _extract_account_id_from_result(
+    summary: Dict[str, Any],
+    organization_hierarchy: OrganizationHierarchy,
+    result_file: Path
+) -> str:
+    """Extract account ID from result summary or organization hierarchy."""
+```
+- Tries `account_id` from summary first
+- Falls back to org hierarchy lookup by `account_name`
+- Raises clear error if neither available
+- **Unified strategy** used by both parsers
+
+#### 3. Created SCP-Specific Parser Helper
+```python
+def _parse_single_scp_result_file(
+    result_file: Path,
+    check_name: str,
+    organization_hierarchy: OrganizationHierarchy
+) -> CheckResult:
+    """Parse a single SCP result JSON file into CheckResult object."""
+```
+- Uses shared JSON loader
+- Uses shared account ID extractor
+- Returns `CheckResult` object
+
+#### 4. Created RCP-Specific Parser Helper
+```python
+def _parse_single_rcp_result_file(
+    result_file: Path,
+    organization_hierarchy: OrganizationHierarchy
+) -> Tuple[str, Set[str], bool]:
+    """Parse single RCP result file."""
+```
+- Uses shared JSON loader
+- Uses shared account ID extractor
+- Extracts RCP-specific data (third-party accounts, wildcards)
+- Returns tuple for easy categorization
+
+#### 5. Updated parse_scp_result_files() Signature (Breaking Change)
+```python
+# Before:
+def parse_scp_result_files(results_dir: str, exclude_rcp_checks: bool = True)
+
+# After:
+def parse_scp_result_files(
+    results_dir: str,
+    organization_hierarchy: OrganizationHierarchy,
+    exclude_rcp_checks: bool = True
+)
+```
+- Now accepts `organization_hierarchy` parameter
+- Updated call site in `parse_scp_results()` to pass it
+- Enables unified account ID extraction strategy
+
+### Files Modified
+
+**Main Code** (2 files):
+1. **headroom/parse_results.py**
+   - Added `_load_result_file_json()` - shared JSON loader
+   - Added `_extract_account_id_from_result()` - shared account ID extractor
+   - Added `_parse_single_scp_result_file()` - SCP-specific parser
+   - Refactored `parse_scp_result_files()` - reduced from 73 lines to 36 lines (51% reduction)
+   - Updated call site in `parse_scp_results()` to pass `organization_hierarchy`
+
+2. **headroom/terraform/generate_rcps.py**
+   - Imported shared helpers from `parse_results`
+   - Added `_parse_single_rcp_result_file()` - RCP-specific parser
+   - Refactored `parse_rcp_result_files()` - reduced from 65 lines to 30 lines (54% reduction)
+
+**Tests** (2 files):
+1. **tests/test_parse_results.py**
+   - Added `make_test_org_hierarchy()` helper for test organization setup
+   - Updated all 8 `parse_scp_result_files()` calls to pass `organization_hierarchy`
+   - Updated one test to verify RuntimeError when account not in org hierarchy
+   - Fixed account names in test org hierarchy to match test data
+
+2. **tests/test_generate_rcps.py**
+   - Updated error message regex to match new shared error format
+
+### Technical Debt Removed
+
+**Filename Parsing Hack Eliminated:**
+- Old SCP logic: Parse `name_id.json` format to extract account ID
+- Problems: Fragile, only works if filename has specific format, brittle
+- New logic: Use same org hierarchy lookup as RCP parser
+- Benefits: Robust, consistent, works with any filename format
+
+### Architecture
+
+```
+_load_result_file_json()  <-- SHARED: JSON loading with error handling
+    ↓
+_extract_account_id_from_result()  <-- SHARED: Unified account ID extraction
+    ↓
+    ├─→ _parse_single_scp_result_file()  <-- SCP-specific: Returns CheckResult
+    │       ↓
+    │   parse_scp_result_files()  (51% smaller)
+    │
+    └─→ _parse_single_rcp_result_file()  <-- RCP-specific: Returns tuple
+            ↓
+        parse_rcp_result_files()  (54% smaller)
+```
+
+### Test Results
+
+```
+============================= 284 passed in 0.98s ==============================
+```
+
+- **All 284 tests passing** ✅
+- **100% code coverage** for both `headroom/*` (1062 statements) and `tests/*` (2775 statements) ✅
+- **Mypy**: Success: no issues found in 40 source files ✅
+- **Pre-commit hooks**: All passed ✅
+
+### Line Count Reductions
+
+| Function | Before | After | Reduction |
+|----------|--------|-------|-----------|
+| `parse_scp_result_files()` | 73 lines | 36 lines | 51% |
+| `parse_rcp_result_files()` | 65 lines | 30 lines | 54% |
+| **Total main functions** | 138 lines | 66 lines | 52% |
+| **New shared helpers** | 0 lines | 47 lines | (investment) |
+| **New specific helpers** | 0 lines | 74 lines | (investment) |
+
+**Net result**: Main functions are much simpler orchestrators, all parsing logic is isolated and testable.
+
+### Benefits Achieved
+
+✅ **Unified strategy** - Both parsers use same account ID extraction approach
+✅ **Eliminated technical debt** - Removed fragile filename parsing
+✅ **Better testability** - Can test JSON loading and account ID extraction independently
+✅ **Consistent error handling** - Same error types and messages across both parsers
+✅ **Reduced duplication** - JSON loading code appears once
+✅ **Clearer separation** - File I/O separate from business logic
+✅ **Type safety maintained** - Full mypy compliance with proper type annotations
+✅ **100% test coverage** - All code paths tested
+
+### Breaking Change
+
+**parse_scp_result_files() signature changed:**
+- Added required `organization_hierarchy` parameter
+- Only affects one internal call site (updated)
+- Enables consistent, robust account ID resolution
+
+### Type Safety
+
+Added explicit type annotations to satisfy mypy's no-any-return checks:
+```python
+data: Dict[str, Any] = json.load(f)  # Cast json.load() return value
+account_id: str = summary.get("account_id", "")  # Cast dict.get() return value
+looked_up_id: str = lookup_account_id_by_name(...)  # Cast lookup return value
+```
+
+### Next Steps
+
+Based on `REFACTORING_IDEAS.md`:
+- **All Priority 1 refactorings complete!** 🎉
+- **All Priority 2 refactorings complete!** 🎉
+- Remaining Priority 3 (nice-to-have) items:
+  1. Refactor `generate_rcp_terraform()` - eliminate file writing duplication
+  2. Extract common Terraform generation patterns - DRY across SCP/RCP
+  3. Consider type aliases for complex types
+
+## 2025-11-07 - Plan: Refactor CheckResult to Support Multiple Check Types
+
+### Goal
+
+Refactor the `CheckResult` type system to:
+1. Make `CheckResult` a base type with common fields across all checks
+2. Create specialized subclasses for SCP and RCP checks with check-specific fields
+3. Have `_parse_single_rcp_result_file()` return a `CheckResult`-type object
+4. Unify SCP and RCP parsing logic to be more similar
+5. Make the codebase evolvable for many different SCP and RCP checks
+
+### Current State Analysis
+
+#### Current Type Hierarchy (`types.py`)
+
+1. **`CheckResult`** (line 41-50): Used for SCP checks
+   - Common fields: `account_id`, `account_name`, `check_name`
+   - SCP-specific fields: `violations`, `exemptions`, `compliant`, `total_instances`, `compliance_percentage`
+
+2. **`RCPCheckResult`** (line 65-71): Separate type for RCP checks
+   - Common fields: `account_id`, `account_name`
+   - RCP-specific fields: `third_party_account_ids`, `has_wildcard`
+   - Missing: `check_name` field
+
+3. **Issue**: The types are parallel but inconsistent, making unified processing difficult
+
+#### Parsing Functions
+
+1. **`_parse_single_scp_result_file()`** (parse_results.py:88-125)
+   - Returns: `CheckResult` object
+   - Uses: `_load_result_file_json()` and `_extract_account_id_from_result()`
+
+2. **`_parse_single_rcp_result_file()`** (generate_rcps.py:26-63)
+   - Returns: `Tuple[str, Set[str], bool]` (account_id, third_party_accounts, has_wildcards)
+   - Uses: `_load_result_file_json()` and `_extract_account_id_from_result()`
+   - **Issue**: Returns a tuple instead of a structured object
+
+#### Check-Specific Fields
+
+**DENY_IMDS_V1_EC2 (SCP check)**:
+- Summary fields in JSON: `total_instances`, `violations`, `exemptions`, `compliant`, `compliance_percentage`
+- Unique to this check: `total_instances` (EC2-specific)
+
+**THIRD_PARTY_ASSUMEROLE (RCP check)**:
+- Summary fields in JSON: `total_roles_analyzed`, `roles_third_parties_can_access`, `roles_with_wildcards`, `violations`, `unique_third_party_accounts`, `third_party_account_count`
+- Unique to this check: `unique_third_party_accounts`, `roles_with_wildcards`
+
+### Proposed Design
+
+#### New Type Hierarchy
+
+```python
+@dataclass
+class CheckResult:
+    """
+    Base class for all check results.
+
+    Contains fields common to all checks (SCP, RCP, future check types).
+    Subclasses should add check-specific fields.
+    """
+    account_id: str
+    account_name: str
+    check_name: str
+
+@dataclass
+class SCPCheckResult(CheckResult):
+    """
+    Result from an SCP compliance check.
+
+    SCP checks evaluate whether resources in an account comply with
+    organizational policies. They track violations, exemptions, and
+    compliant resources.
+    """
+    violations: int
+    exemptions: int
+    compliant: int
+    compliance_percentage: float
+    # Check-specific optional fields
+    total_instances: Optional[int] = None  # For EC2/resource-based checks
+
+@dataclass
+class RCPCheckResult(CheckResult):
+    """
+    Result from an RCP check (third-party access control).
+
+    RCP checks identify external account access and determine whether
+    Resource Control Policies can be safely deployed.
+    """
+    third_party_account_ids: List[str]
+    has_wildcard: bool
+    # Check-specific optional fields
+    total_roles_analyzed: Optional[int] = None  # For role-based checks
+```
+
+#### Benefits of This Design
+
+1. **Type Safety**: All checks return a `CheckResult`-based object
+2. **Extensibility**: Easy to add new check types (e.g., `S3CheckResult`, `NetworkCheckResult`)
+3. **Polymorphism**: Can process all checks through base `CheckResult` interface
+4. **Clear Intent**: Explicit about which fields belong to which check type
+5. **Optional Fields**: Check-specific fields (like `total_instances`) can be optional
+
+### Implementation Plan
+
+#### Phase 1: Update Type Definitions
+
+**File: `headroom/types.py`**
+
+1. Refactor `CheckResult` to be a base dataclass with only common fields:
+   - `account_id: str`
+   - `account_name: str`
+   - `check_name: str`
+
+2. Create `SCPCheckResult(CheckResult)`:
+   - Inherits common fields
+   - Adds: `violations`, `exemptions`, `compliant`, `compliance_percentage`
+   - Adds optional: `total_instances` (for resource-based checks like IMDS)
+
+3. Update existing `RCPCheckResult(CheckResult)`:
+   - Make it inherit from `CheckResult`
+   - Add `check_name` field through inheritance
+   - Keep: `third_party_account_ids`, `has_wildcard`
+   - Add optional: `total_roles_analyzed`
+
+#### Phase 2: Update Parsing Functions
+
+**File: `headroom/parse_results.py`**
+
+1. Update `_parse_single_scp_result_file()`:
+   - Change return type from `CheckResult` to `SCPCheckResult`
+   - Update instantiation to use `SCPCheckResult`
+   - Set `total_instances` from summary
+
+2. Update type hints in `parse_scp_result_files()`:
+   - Change return type from `List[CheckResult]` to `List[SCPCheckResult]`
+
+3. Update `determine_scp_placement()`:
+   - Change parameter type from `List[CheckResult]` to `List[SCPCheckResult]`
+
+**File: `headroom/terraform/generate_rcps.py`**
+
+1. Update `_parse_single_rcp_result_file()`:
+   - Change return type from `Tuple[str, Set[str], bool]` to `RCPCheckResult`
+   - Create and return `RCPCheckResult` object instead of tuple
+   - Set `check_name` to `THIRD_PARTY_ASSUMEROLE`
+   - Set `total_roles_analyzed` from summary
+
+2. Update `parse_rcp_result_files()`:
+   - Update to work with `RCPCheckResult` objects instead of tuples
+   - Adjust unpacking logic to access object attributes
+
+#### Phase 3: Update Placement Functions
+
+**File: `headroom/terraform/generate_rcps.py`**
+
+1. Consider creating a `List[RCPCheckResult]` intermediate representation
+2. Update placement determination functions if needed to work with objects instead of dicts
+
+#### Phase 4: Update Tests
+
+**Files: All test files that use these types**
+
+1. Update test assertions to use new type hierarchy
+2. Add tests for new specialized check result types
+3. Verify type checking with mypy
+
+#### Phase 5: Documentation
+
+1. Update docstrings to reflect new type hierarchy
+2. Add examples showing how to add new check types
+3. Update REFACTORING_IDEAS.md if needed
+
+### Future Extensibility Examples
+
+With this design, adding new checks becomes straightforward:
+
+```python
+# Example: Future S3 bucket policy check
+@dataclass
+class S3CheckResult(SCPCheckResult):
+    """Result from S3 bucket policy compliance check."""
+    total_buckets: int
+    public_buckets: int
+    encrypted_buckets: int
+
+# Example: Future network security check
+@dataclass
+class NetworkCheckResult(SCPCheckResult):
+    """Result from network security compliance check."""
+    total_security_groups: int
+    open_to_internet: int
+    vpc_count: int
+```
+
+### Migration Path
+
+1. **Backward Compatibility**: Old code can temporarily use `isinstance()` checks
+2. **Gradual Migration**: Update one check type at a time
+3. **Type Guards**: Use type narrowing for check-specific field access
+
+### Testing Strategy
+
+1. Ensure all existing tests pass with new types
+2. Add type-specific tests for `SCPCheckResult` and `RCPCheckResult`
+3. Verify mypy passes with no errors
+4. Run integration tests to ensure end-to-end functionality
+
+### Summary
+
+This refactoring will:
+- ✅ Make the codebase more maintainable
+- ✅ Enable easy addition of new check types
+- ✅ Improve type safety and IDE support
+- ✅ Unify SCP and RCP code patterns
+- ✅ Make the code more self-documenting
+
+The key insight is using inheritance to share common fields while allowing each check type to add its own specific data, making the system both flexible and type-safe.
+
+
+## 2025-11-07 - Implemented CheckResult Type Hierarchy Refactoring
+
+### Summary
+
+Successfully refactored the CheckResult type system to use inheritance-based hierarchy, enabling unified handling of SCP and RCP check results while maintaining type safety and extensibility.
+
+### Changes Made
+
+#### 1. Updated `headroom/types.py`
+
+**Refactored CheckResult to Base Class**:
+- Made `CheckResult` a base dataclass with only common fields:
+  - `account_id: str`
+  - `account_name: str`
+  - `check_name: str`
+- Removed check-specific fields from base class
+
+**Created SCPCheckResult Subclass**:
+- Inherits from `CheckResult`
+- Adds SCP-specific fields:
+  - `violations: int`
+  - `exemptions: int`
+  - `compliant: int`
+  - `compliance_percentage: float`
+  - `total_instances: Optional[int]` (for resource-based checks like IMDS)
+- Added TODO comment about future per-check subclasses
+
+**Updated RCPCheckResult to Inherit from CheckResult**:
+- Now inherits common fields instead of duplicating them
+- Gains `check_name` field through inheritance
+- Retains RCP-specific fields:
+  - `third_party_account_ids: List[str]`
+  - `has_wildcard: bool`
+  - `total_roles_analyzed: Optional[int]` (newly added)
+- Added TODO comment about future RCP check expansion
+
+#### 2. Updated `headroom/parse_results.py`
+
+**Changed Return Types**:
+- `_parse_single_scp_result_file()`: Now returns `SCPCheckResult` instead of `CheckResult`
+- `parse_scp_result_files()`: Returns `List[SCPCheckResult]`
+- `determine_scp_placement()`: Accepts `List[SCPCheckResult]`
+
+**Updated Imports**:
+- Replaced `CheckResult` with `SCPCheckResult` in imports
+- Updated all type hints throughout the file
+
+**Implementation Details**:
+- `total_instances` now uses `summary.get("total_instances")` (can be `None`)
+- All existing logic preserved with new type names
+
+#### 3. Updated `headroom/terraform/generate_rcps.py`
+
+**Major Refactoring of `_parse_single_rcp_result_file()`**:
+- Changed return type from `Tuple[str, Set[str], bool]` to `RCPCheckResult`
+- Now returns structured object instead of tuple
+- Populates all fields including new `total_roles_analyzed`
+
+**Updated `parse_rcp_result_files()`**:
+- Modified to work with `RCPCheckResult` objects
+- Changed unpacking logic to access object attributes:
+  - `rcp_result.account_id`
+  - `rcp_result.has_wildcard`
+  - `rcp_result.third_party_account_ids`
+- Converts list to set when populating map
+
+**Updated Imports**:
+- Added `RCPCheckResult` to imports
+- Removed `Tuple` from typing imports (no longer needed)
+
+#### 4. Updated Test Files
+
+**Updated `tests/test_parse_results.py`**:
+- Changed all imports from `CheckResult` to `SCPCheckResult`
+- Updated all test instantiations (11 occurrences)
+- Changed positional argument order to match new dataclass:
+  - Old: `CheckResult(account_id, account_name, check_name, violations, exemptions, compliant, total_instances, compliance_percentage)`
+  - New: `SCPCheckResult(account_id, account_name, check_name, violations, exemptions, compliant, compliance_percentage, total_instances)`
+- All 34 tests in this file pass
+
+**Verified `tests/test_generate_rcps.py`**:
+- No changes required (tests work with updated implementation)
+- All 34 tests pass
+
+#### 5. Test Results
+
+**Full Test Suite**: ✅ 284/284 tests passing
+- `test_parse_results.py`: 34 tests ✅
+- `test_generate_rcps.py`: 34 tests ✅
+- All other test files: 216 tests ✅
+
+**Linter**: ✅ No errors (mypy satisfied)
+
+### Benefits Achieved
+
+1. **Unified Interface**: Both SCP and RCP checks now return objects based on `CheckResult`
+2. **Type Safety**: Better IDE support and compile-time type checking
+3. **Extensibility**: Easy to add new check types (e.g., S3, Network, Lambda)
+4. **Code Reusability**: Shared helper functions can work with base `CheckResult` type
+5. **Self-Documenting**: Clear separation of common vs. check-specific fields
+6. **Future-Proof**: TODO comments guide future expansions
+
+### Design Patterns Used
+
+- **Inheritance**: CheckResult → SCPCheckResult, RCPCheckResult
+- **Optional Fields**: Check-specific fields (total_instances, total_roles_analyzed)
+- **Type Narrowing**: Can use isinstance() for check-specific operations
+- **Composition**: RCPParseResult still uses dict/set for efficient operations
+
+### Future Extensibility
+
+With this hierarchy, adding new checks is straightforward:
+
+```python
+# Example future checks
+@dataclass
+class S3CheckResult(SCPCheckResult):
+    total_buckets: Optional[int] = None
+    public_buckets: Optional[int] = None
+
+@dataclass
+class LambdaCheckResult(SCPCheckResult):
+    total_functions: Optional[int] = None
+    functions_without_vpc: Optional[int] = None
+```
+
+### Migration Strategy Used
+
+1. ✅ Updated type definitions in types.py
+2. ✅ Updated SCP parsing functions (backward compatible)
+3. ✅ Updated RCP parsing functions (unified with SCP pattern)
+4. ✅ Updated test files
+5. ✅ Verified all tests pass
+6. ✅ No linter errors
+
+### Breaking Changes
+
+None - all changes are internal refactoring. The JSON file format and external APIs remain unchanged.
+
+### Notes
+
+- The `total_instances` field is now Optional[int] to allow checks that don't track instance counts
+- The `total_roles_analyzed` field was added to RCPCheckResult for future analytics
+- Both specialized types include TODO comments for future per-check subclassing if needed
+- The refactoring makes SCP and RCP code more similar, improving maintainability
+

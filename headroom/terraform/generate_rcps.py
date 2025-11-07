@@ -4,17 +4,16 @@ RCPs Terraform Generation Module
 Generates Terraform files for RCP deployment based on third-party account analysis.
 """
 
-import json
 import logging
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .utils import make_safe_variable_name
-from ..types import OrganizationHierarchy, RCPParseResult, RCPPlacementRecommendations
+from ..types import OrganizationHierarchy, RCPCheckResult, RCPParseResult, RCPPlacementRecommendations
 from ..constants import THIRD_PARTY_ASSUMEROLE
 from ..write_results import get_results_dir
-from ..aws.organization import lookup_account_id_by_name
+from ..parse_results import _load_result_file_json, _extract_account_id_from_result
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -22,6 +21,53 @@ logger = logging.getLogger(__name__)
 # Minimum number of accounts required in an OU to recommend OU-level RCP
 # Set to 1 to allow OU-level RCPs even for single-account OUs
 MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1
+
+
+def _parse_single_rcp_result_file(
+    result_file: Path,
+    organization_hierarchy: OrganizationHierarchy
+) -> RCPCheckResult:
+    """
+    Parse single RCP result file into RCPCheckResult object.
+
+    Args:
+        result_file: Path to the JSON result file
+        organization_hierarchy: Organization structure for account lookups
+
+    Returns:
+        RCPCheckResult object with third-party access data
+
+    Raises:
+        RuntimeError: If JSON parsing fails or required fields are missing
+    """
+    data = _load_result_file_json(result_file)
+    summary = data.get("summary", {})
+
+    account_id = _extract_account_id_from_result(
+        summary,
+        organization_hierarchy,
+        result_file
+    )
+
+    third_party_accounts = summary.get("unique_third_party_accounts", [])
+    roles_with_wildcards = summary.get("roles_with_wildcards", 0)
+    has_wildcards = roles_with_wildcards > 0
+
+    if has_wildcards:
+        account_name = summary.get("account_name", account_id)
+        logger.info(
+            f"Account {account_name} ({account_id}) has {roles_with_wildcards} "
+            f"roles with wildcard principals - cannot deploy RCP"
+        )
+
+    return RCPCheckResult(
+        account_id=account_id,
+        account_name=summary.get("account_name", ""),
+        check_name=summary.get("check", THIRD_PARTY_ASSUMEROLE),
+        third_party_account_ids=third_party_accounts,
+        has_wildcard=has_wildcards,
+        total_roles_analyzed=summary.get("total_roles_analyzed")
+    )
 
 
 def parse_rcp_result_files(
@@ -55,35 +101,15 @@ def parse_rcp_result_files(
         raise RuntimeError(f"Third-party AssumeRole check directory does not exist: {check_dir}")
 
     for result_file in check_dir.glob("*.json"):
-        try:
-            with open(result_file, 'r') as f:
-                data = json.load(f)
+        rcp_result = _parse_single_rcp_result_file(
+            result_file,
+            organization_hierarchy
+        )
 
-            summary = data.get("summary", {})
-            account_id = summary.get("account_id", "")
-            account_name = summary.get("account_name", "")
-            third_party_accounts = summary.get("unique_third_party_accounts", [])
-            roles_with_wildcards = summary.get("roles_with_wildcards", 0)
-
-            if not account_id:
-                if not account_name:
-                    raise RuntimeError(f"Result file {result_file} missing both account_id and account_name in summary")
-                account_id = lookup_account_id_by_name(
-                    account_name,
-                    organization_hierarchy,
-                    str(result_file)
-                )
-
-            # Track accounts with wildcard principals separately
-            if roles_with_wildcards > 0:
-                accounts_with_wildcards.add(account_id)
-                logger.info(f"Account {account_name} ({account_id}) has {roles_with_wildcards} roles with wildcard principals - cannot deploy RCP")
-                continue
-
-            account_third_party_map[account_id] = set(third_party_accounts)
-
-        except (json.JSONDecodeError, KeyError) as e:
-            raise RuntimeError(f"Failed to parse RCP result file {result_file}: {e}")
+        if rcp_result.has_wildcard:
+            accounts_with_wildcards.add(rcp_result.account_id)
+        else:
+            account_third_party_map[rcp_result.account_id] = set(rcp_result.third_party_account_ids)
 
     return RCPParseResult(
         account_third_party_map=account_third_party_map,

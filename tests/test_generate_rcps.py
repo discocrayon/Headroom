@@ -167,7 +167,7 @@ class TestParseRcpResultFiles:
             f.write("{invalid json")
 
         # Should raise exception on invalid JSON file
-        with pytest.raises(RuntimeError, match="Failed to parse RCP result file .*/invalid.json"):
+        with pytest.raises(RuntimeError, match="Failed to parse result file .*/invalid.json"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
     def test_parse_missing_summary_key(
