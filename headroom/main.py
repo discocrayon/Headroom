@@ -2,7 +2,7 @@ from botocore.exceptions import ClientError
 
 from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session
-from .parse_results import parse_scp_results
+from .parse_results import parse_scp_results, print_policy_recommendations
 from .terraform.generate_scps import generate_scp_terraform
 from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform
 from .terraform.generate_org_info import generate_terraform_org_info
@@ -40,8 +40,13 @@ def main() -> None:
         # Generate shared Terraform organization info file (used by both SCPs and RCPs)
         generate_terraform_org_info(mgmt_session, f"{final_config.scps_dir}/grab_org_info.tf")
 
-        # Generate Terraform files for SCP deployment
+        # Print SCP recommendations and generate SCP Terraform files
         if scp_recommendations:
+            print_policy_recommendations(
+                scp_recommendations,
+                organization_hierarchy,
+                "SCP PLACEMENT RECOMMENDATIONS"
+            )
             generate_scp_terraform(
                 scp_recommendations,
                 organization_hierarchy,
@@ -61,19 +66,11 @@ def main() -> None:
             )
 
             if rcp_recommendations:
-                print("\n" + "=" * 80)
-                print("RCP PLACEMENT RECOMMENDATIONS")
-                print("=" * 80)
-                for rec in rcp_recommendations:
-                    print(f"\nRecommended Level: {rec.recommended_level.upper()}")
-                    if rec.target_ou_id:
-                        ou_info = organization_hierarchy.organizational_units.get(rec.target_ou_id)
-                        ou_name = ou_info.name if ou_info else rec.target_ou_id
-                        print(f"Target OU: {ou_name} ({rec.target_ou_id})")
-                    print(f"Affected Accounts: {len(rec.affected_accounts)}")
-                    print(f"Third-Party Accounts: {len(rec.third_party_account_ids)}")
-                    print(f"Reasoning: {rec.reasoning}")
-                    print("-" * 40)
+                print_policy_recommendations(
+                    rcp_recommendations,
+                    organization_hierarchy,
+                    "RCP PLACEMENT RECOMMENDATIONS"
+                )
 
                 generate_rcp_terraform(
                     rcp_recommendations,

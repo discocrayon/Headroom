@@ -8,14 +8,14 @@ levels (root, OU, account) based on violation patterns and organization structur
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 from .analysis import get_security_analysis_session, get_management_account_session
 from .config import HeadroomConfig
 from .aws.organization import analyze_organization_structure
 from .types import (
     OrganizationalUnit, AccountOrgPlacement, OrganizationHierarchy,
-    SCPCheckResult, SCPPlacementRecommendations
+    SCPCheckResult, SCPPlacementRecommendations, RCPPlacementRecommendations
 )
 from .constants import RCP_CHECK_NAMES
 from .aws.organization import lookup_account_id_by_name
@@ -321,34 +321,59 @@ def _get_organization_context(config: HeadroomConfig) -> OrganizationHierarchy:
     return organization_hierarchy
 
 
-def _print_scp_recommendations(
-    recommendations: List[SCPPlacementRecommendations],
-    organization_hierarchy: OrganizationHierarchy
+def print_policy_recommendations(
+    recommendations: List[Union[SCPPlacementRecommendations, RCPPlacementRecommendations]],
+    organization_hierarchy: OrganizationHierarchy,
+    title: str = "SCP/RCP PLACEMENT RECOMMENDATIONS"
 ) -> None:
     """
-    Print SCP placement recommendations to console.
+    Print SCP or RCP placement recommendations to console with check name grouping.
+
+    Groups recommendations by check name and prints each check as a section.
+    This handles cases where the same check is recommended multiple times
+    (e.g., for an OU and individual accounts).
 
     Args:
-        recommendations: List of SCP placement recommendations
+        recommendations: List of SCP or RCP placement recommendations
         organization_hierarchy: Organization structure for OU name lookups
+        title: Title for the recommendations section
     """
+    if not recommendations:
+        return
+
     print("\n" + "=" * 80)
-    print("SCP/RCP PLACEMENT RECOMMENDATIONS")
+    print(title)
     print("=" * 80)
 
+    # Group recommendations by check name
+    check_groups: Dict[str, List[Union[SCPPlacementRecommendations, RCPPlacementRecommendations]]] = {}
     for rec in recommendations:
-        print(f"\nCheck: {rec.check_name}")
-        print(f"Recommended Level: {rec.recommended_level.upper()}")
-        if rec.target_ou_id:
-            ou_name = organization_hierarchy.organizational_units.get(
-                rec.target_ou_id,
-                OrganizationalUnit("", "", None, [], [])
-            ).name
-            print(f"Target OU: {ou_name} ({rec.target_ou_id})")
-        print(f"Affected Accounts: {len(rec.affected_accounts)}")
-        print(f"Compliance: {rec.compliance_percentage:.1f}%")
-        print(f"Reasoning: {rec.reasoning}")
-        print("-" * 40)
+        if rec.check_name not in check_groups:
+            check_groups[rec.check_name] = []
+        check_groups[rec.check_name].append(rec)
+
+    # Print each check group
+    for check_name, check_recs in check_groups.items():
+        print(f"\nCheck: {check_name}")
+
+        for rec in check_recs:
+            print(f"\n  Recommended Level: {rec.recommended_level.upper()}")
+            if rec.target_ou_id:
+                ou_name = organization_hierarchy.organizational_units.get(
+                    rec.target_ou_id,
+                    OrganizationalUnit("", "", None, [], [])
+                ).name
+                print(f"  Target OU: {ou_name} ({rec.target_ou_id})")
+            print(f"  Affected Accounts: {len(rec.affected_accounts)}")
+
+            # Print type-specific fields
+            if isinstance(rec, SCPPlacementRecommendations):
+                print(f"  Compliance: {rec.compliance_percentage:.1f}%")
+            elif isinstance(rec, RCPPlacementRecommendations):
+                print(f"  Third-Party Accounts: {len(rec.third_party_account_ids)}")
+
+            print(f"  Reasoning: {rec.reasoning}")
+            print("  " + "-" * 38)
 
 
 def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
@@ -389,9 +414,6 @@ def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendation
     # Determine SCP placement recommendations
     logger.info("Determining SCP placement recommendations")
     recommendations = determine_scp_placement(results_data, organization_hierarchy)
-
-    # Output recommendations to console
-    _print_scp_recommendations(recommendations, organization_hierarchy)
 
     logger.info("SCP placement analysis completed")
     return recommendations

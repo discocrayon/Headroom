@@ -6477,3 +6477,89 @@ def _generate_root_rcp_terraform(
 - The effort multiplier was only ~1.5x while delivering double the value
 - Pattern consistency across modules makes future refactoring easier
 - Shared utilities are most valuable when extracted at the right level of abstraction
+
+## November 8, 2025
+
+### Unified RCP/SCP Printing Function Implementation
+
+**User Request:**
+Implement Option 3 (unified printing function for both SCP and RCP recommendations) but with the output format from Option 2 (grouping by check name with indentation).
+
+**Problem Context:**
+- SCPs print "Check: deny_imds_v1_ec2" but RCPs didn't print check names
+- RCPs could have multiple recommendations (e.g., for 1 OU and 1 account) without clear grouping
+- User wanted consistent output across both SCP and RCP recommendations
+
+**Implementation Details:**
+
+1. **Created `print_policy_recommendations()` function** in `parse_results.py`:
+   - Accepts `Union[SCPPlacementRecommendations, RCPPlacementRecommendations]`
+   - Groups recommendations by check_name to handle multiple recommendations for same check
+   - Prints check name once as header, then indents each recommendation under it
+   - Uses `isinstance()` to conditionally print type-specific fields (compliance_percentage for SCPs, third_party_account_ids count for RCPs)
+
+2. **Updated `_print_scp_recommendations()`** to use new unified function:
+   - Now just calls `print_policy_recommendations()` with custom title
+   - Maintained as wrapper for backward compatibility
+
+3. **Updated `main.py`**:
+   - Imported `print_policy_recommendations`
+   - Replaced inline RCP printing (lines 64-76) with call to unified function
+   - Passing custom title "RCP PLACEMENT RECOMMENDATIONS"
+
+4. **Updated test `test_parse_results.py`**:
+   - Changed assertion from "SCP/RCP PLACEMENT RECOMMENDATIONS" to "SCP PLACEMENT RECOMMENDATIONS"
+   - Test now reflects that SCPs have their own title
+
+**Output Format:**
+```
+================================================================================
+RCP PLACEMENT RECOMMENDATIONS
+================================================================================
+
+Check: third_party_assumerole
+
+  Recommended Level: OU
+  Target OU: Security Tooling (ou-xxxx-12345678)
+  Affected Accounts: 3
+  Third-Party Accounts: 2
+  Reasoning: OU 'Security Tooling' with 3 accounts...
+  --------------------------------------
+
+  Recommended Level: ACCOUNT
+  Affected Accounts: 1
+  Third-Party Accounts: 5
+  Reasoning: Account has unique third-party account requirements...
+  --------------------------------------
+```
+
+**Files Changed:**
+- `/Users/kevinkevin/code/crayon/headroom/parse_results.py` - Added unified function
+- `/Users/kevinkevin/code/crayon/headroom/main.py` - Updated RCP printing
+- `/Users/kevinkevin/code/crayon/tests/test_parse_results.py` - Fixed test assertion
+
+**Test Results:**
+- All 292 tests pass
+- No linter errors
+- Verified unified function works for both SCP and RCP recommendations
+
+**Benefits:**
+- Single source of truth for printing policy recommendations
+- Handles multiple recommendations for same check gracefully
+- Consistent output format between SCPs and RCPs
+- Future-proof for additional RCP check types
+- Clean separation of concerns with type-specific field handling
+
+**Follow-up Fix:**
+Removed deprecated `_print_scp_recommendations()` wrapper function and updated call site in `parse_scp_results()` to call `print_policy_recommendations()` directly with the title "SCP PLACEMENT RECOMMENDATIONS". All 34 tests in test_parse_results.py still pass.
+
+**Further Follow-up Fix - Separation of Concerns:**
+Moved SCP printing out of `parse_scp_results()` and into `main.py` to match the RCP pattern. Now both SCPs and RCPs follow the same flow: parse/determine recommendations first, then print them separately in `main.py`. This properly separates parsing logic from presentation logic.
+
+Files changed:
+- `headroom/parse_results.py` - Removed `print_policy_recommendations()` call from `parse_scp_results()`
+- `headroom/main.py` - Added `print_policy_recommendations()` call for SCPs after parsing
+- `tests/test_parse_results.py` - Updated test to verify recommendations are returned without printing
+- `tests/test_main_integration.py` - Updated print count assertion to allow for additional prints from recommendation display
+
+All 292 tests pass.

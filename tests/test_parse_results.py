@@ -829,7 +829,7 @@ class TestParseResultsIntegration:
             parse_scp_results(config)
 
     def test_parse_scp_results_with_recommendations_output(self) -> None:
-        """Test parse_scp_results with actual recommendations output."""
+        """Test parse_scp_results returns recommendations without printing."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -869,16 +869,14 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
              patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
-             patch('builtins.print') as mock_print:
+             patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results):
 
-            parse_scp_results(config)
+            recommendations = parse_scp_results(config)
 
-            # Verify that output was printed
-            assert mock_print.called
-            # Check that the header was printed
-            print_calls = [call[0][0] for call in mock_print.call_args_list]
-            assert any("SCP/RCP PLACEMENT RECOMMENDATIONS" in call for call in print_calls)
+            # Verify recommendations were returned
+            assert len(recommendations) == 1
+            assert recommendations[0].check_name == "deny_imds_v1_ec2"
+            assert recommendations[0].recommended_level == "root"
 
     def test_parse_scp_results_with_ou_recommendation_output(self) -> None:
         """Test parse_scp_results with OU-level recommendation output."""
