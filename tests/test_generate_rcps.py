@@ -17,7 +17,11 @@ from headroom.terraform.generate_rcps import (
     determine_rcp_placement,
     generate_rcp_terraform,
     _check_root_level_placement,
-    _create_org_info_symlink
+    _create_org_info_symlink,
+    _generate_account_rcp_terraform,
+    _generate_ou_rcp_terraform,
+    _generate_root_rcp_terraform,
+    _build_rcp_terraform_module
 )
 from headroom.types import (
     OrganizationHierarchy,
@@ -1025,3 +1029,219 @@ class TestGenerateRcpTerraform:
         assert symlink_path.is_symlink()
         expected_target = os.path.relpath(f"{temp_scps_dir}/grab_org_info.tf", temp_output_dir)
         assert os.readlink(symlink_path) == expected_target
+
+
+class TestBuildRcpTerraformModule:
+    """Test _build_rcp_terraform_module helper function."""
+
+    def test_build_module_with_third_party_accounts(self) -> None:
+        """Should generate module with third-party account allowlist."""
+        result = _build_rcp_terraform_module(
+            module_name="rcps_test_account",
+            target_id_reference="local.test_account_account_id",
+            third_party_account_ids=["111111111111", "222222222222"],
+            comment="Test Account"
+        )
+
+        assert 'module "rcps_test_account"' in result
+        assert "target_id = local.test_account_account_id" in result
+        assert "third_party_assumerole_account_ids_allowlist" in result
+        assert '"111111111111"' in result
+        assert '"222222222222"' in result
+        assert "enforce_assume_role_org_identities = true" in result
+
+    def test_build_module_with_wildcard(self) -> None:
+        """Should generate module without allowlist when wildcard present."""
+        result = _build_rcp_terraform_module(
+            module_name="rcps_test",
+            target_id_reference="local.test_id",
+            third_party_account_ids=["*"],
+            comment="Test"
+        )
+
+        assert 'module "rcps_test"' in result
+        assert "third_party_assumerole_account_ids_allowlist" not in result
+        assert "enforce_assume_role_org_identities = false" in result
+
+    def test_build_module_includes_comment(self) -> None:
+        """Should include comment in generated content."""
+        result = _build_rcp_terraform_module(
+            module_name="rcps_root",
+            target_id_reference="local.root_ou_id",
+            third_party_account_ids=["123456789012"],
+            comment="Organization Root"
+        )
+
+        assert "# Auto-generated RCP Terraform configuration for Organization Root" in result
+
+
+class TestGenerateAccountRcpTerraform:
+    """Test _generate_account_rcp_terraform helper function."""
+
+    @pytest.fixture
+    def sample_org(self) -> OrganizationHierarchy:
+        """Create sample organization for testing."""
+        return OrganizationHierarchy(
+            root_id="r-root",
+            organizational_units={},
+            accounts={
+                "123456789012": AccountOrgPlacement(
+                    account_id="123456789012",
+                    account_name="Test Account",
+                    parent_ou_id="ou-test",
+                    ou_path=["r-root", "ou-test"]
+                )
+            }
+        )
+
+    @pytest.fixture
+    def sample_rcp_rec(self) -> RCPPlacementRecommendations:
+        """Create sample RCP recommendation."""
+        return RCPPlacementRecommendations(
+            check_name="third_party_assumerole",
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["999999999999", "888888888888"],
+            reasoning="Test recommendation"
+        )
+
+    def test_creates_file_with_correct_name(
+        self,
+        sample_org: OrganizationHierarchy,
+        sample_rcp_rec: RCPPlacementRecommendations
+    ) -> None:
+        """Should create Terraform file with correct account name."""
+        output_path = Path("/tmp/test_rcps")
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        _generate_account_rcp_terraform("123456789012", sample_rcp_rec, sample_org, output_path)
+
+        expected_file = output_path / "test_account_rcps.tf"
+        assert expected_file.exists()
+        content = expected_file.read_text()
+        assert "rcps_test_account" in content
+        assert "local.test_account_account_id" in content
+        assert '"999999999999"' in content
+        assert '"888888888888"' in content
+        expected_file.unlink()
+        output_path.rmdir()
+
+    def test_raises_error_for_missing_account(
+        self,
+        sample_rcp_rec: RCPPlacementRecommendations
+    ) -> None:
+        """Should raise RuntimeError when account not in organization hierarchy."""
+        empty_org = OrganizationHierarchy(root_id="r-root", organizational_units={}, accounts={})
+        output_path = Path("/tmp/test_rcps")
+
+        with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
+            _generate_account_rcp_terraform("999999999999", sample_rcp_rec, empty_org, output_path)
+
+
+class TestGenerateOuRcpTerraform:
+    """Test _generate_ou_rcp_terraform helper function."""
+
+    @pytest.fixture
+    def sample_org(self) -> OrganizationHierarchy:
+        """Create sample organization for testing."""
+        return OrganizationHierarchy(
+            root_id="r-root",
+            organizational_units={
+                "ou-12345": OrganizationalUnit(
+                    ou_id="ou-12345",
+                    name="Test OU",
+                    parent_ou_id="r-root",
+                    child_ous=[],
+                    accounts=["123456789012"]
+                )
+            },
+            accounts={
+                "123456789012": AccountOrgPlacement(
+                    account_id="123456789012",
+                    account_name="Test Account",
+                    parent_ou_id="ou-12345",
+                    ou_path=["r-root", "ou-12345"]
+                )
+            }
+        )
+
+    @pytest.fixture
+    def sample_ou_rec(self) -> RCPPlacementRecommendations:
+        """Create sample OU-level RCP recommendation."""
+        return RCPPlacementRecommendations(
+            check_name="third_party_assumerole",
+            recommended_level="ou",
+            target_ou_id="ou-12345",
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["999999999999"],
+            reasoning="Test OU recommendation"
+        )
+
+    def test_creates_file_with_correct_name(
+        self,
+        sample_org: OrganizationHierarchy,
+        sample_ou_rec: RCPPlacementRecommendations
+    ) -> None:
+        """Should create Terraform file with correct OU name."""
+        output_path = Path("/tmp/test_rcps")
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        _generate_ou_rcp_terraform("ou-12345", sample_ou_rec, sample_org, output_path)
+
+        expected_file = output_path / "test_ou_ou_rcps.tf"
+        assert expected_file.exists()
+        content = expected_file.read_text()
+        assert "rcps_test_ou_ou" in content
+        assert "local.top_level_test_ou_ou_id" in content
+        assert '"999999999999"' in content
+        expected_file.unlink()
+        output_path.rmdir()
+
+    def test_raises_error_for_missing_ou(
+        self,
+        sample_ou_rec: RCPPlacementRecommendations
+    ) -> None:
+        """Should raise RuntimeError when OU not in organization hierarchy."""
+        empty_org = OrganizationHierarchy(root_id="r-root", organizational_units={}, accounts={})
+        output_path = Path("/tmp/test_rcps")
+
+        with pytest.raises(RuntimeError, match="OU ou-unknown not found in organization hierarchy"):
+            _generate_ou_rcp_terraform("ou-unknown", sample_ou_rec, empty_org, output_path)
+
+
+class TestGenerateRootRcpTerraform:
+    """Test _generate_root_rcp_terraform helper function."""
+
+    @pytest.fixture
+    def sample_root_rec(self) -> RCPPlacementRecommendations:
+        """Create sample root-level RCP recommendation."""
+        return RCPPlacementRecommendations(
+            check_name="third_party_assumerole",
+            recommended_level="root",
+            target_ou_id=None,
+            affected_accounts=["123456789012", "987654321098"],
+            third_party_account_ids=["999999999999", "888888888888"],
+            reasoning="Test root recommendation"
+        )
+
+    def test_creates_file_with_correct_name(
+        self,
+        sample_root_rec: RCPPlacementRecommendations
+    ) -> None:
+        """Should create Terraform file for root level."""
+        output_path = Path("/tmp/test_rcps")
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        _generate_root_rcp_terraform(sample_root_rec, output_path)
+
+        expected_file = output_path / "root_rcps.tf"
+        assert expected_file.exists()
+        content = expected_file.read_text()
+        assert "rcps_root" in content
+        assert "local.root_ou_id" in content
+        assert '"999999999999"' in content
+        assert '"888888888888"' in content
+        assert "Organization Root" in content
+        expected_file.unlink()
+        output_path.rmdir()

@@ -6346,3 +6346,134 @@ None - all changes are internal refactoring. The JSON file format and external A
 - Both specialized types include TODO comments for future per-check subclassing if needed
 - The refactoring makes SCP and RCP code more similar, improving maintainability
 
+
+---
+
+## November 8, 2025
+
+### Combined Refactoring: Items 6 & 7 - Terraform Generation DRY Improvements
+
+**Date:** November 8, 2025
+
+**User Request:**
+Read REFACTORING_IDEAS.md and implement the next undone action item. Identified opportunities to combine items 6 and 7 by extracting shared logic between SCPs and RCPs.
+
+**Scope:**
+Combined implementation of Priority 3 refactoring items:
+- Item 6: Refactor `generate_rcp_terraform()`
+- Item 7: Extract common Terraform generation patterns to shared utilities
+
+**Problem:**
+- RCPs: `generate_rcp_terraform()` duplicated file writing and filepath construction across account/OU/root levels (88 lines)
+- SCPs: Helper functions existed but each inlined file writing logic (3 duplications)
+- Both modules had nearly identical file writing patterns with no shared code
+- Inconsistent patterns between the two modules made future maintenance harder
+
+**Solution Implemented:**
+
+#### Phase 1: Shared Utilities in `terraform/utils.py`
+Created `write_terraform_file()` function:
+- Centralized file writing with consistent logging
+- Takes `filepath`, `content`, and `policy_type` parameters
+- Single source of truth for Terraform file creation
+- **Lines Added:** 11 lines (function + imports)
+
+#### Phase 2: RCP Helper Functions in `generate_rcps.py`
+Extracted three helper functions mirroring the SCP pattern:
+1. `_generate_account_rcp_terraform()` - Account-level RCP file generation
+2. `_generate_ou_rcp_terraform()` - OU-level RCP file generation
+3. `_generate_root_rcp_terraform()` - Root-level RCP file generation
+
+**Main Function Simplification:**
+- Before: 88 lines (461-548) with inline file writing logic
+- After: 47 lines (499-548) using helper functions
+- Reduction: 41 lines eliminated (47% reduction)
+- Each helper encapsulates: name resolution, filepath construction, module building, and file writing
+
+#### Phase 3: Update SCPs in `generate_scps.py`
+Updated existing helper functions to use shared `write_terraform_file()`:
+- `_generate_account_scp_terraform()` - replaced inline file writing
+- `_generate_ou_scp_terraform()` - replaced inline file writing
+- `_generate_root_scp_terraform()` - replaced inline file writing
+- **Lines Eliminated:** 9 lines of duplicated file writing code
+
+#### Phase 4: Comprehensive Test Coverage in `tests/test_generate_rcps.py`
+Added 4 new test classes with 9 tests total:
+1. **TestBuildRcpTerraformModule** (3 tests):
+   - Module generation with third-party account allowlist
+   - Module generation with wildcard (no allowlist)
+   - Comment inclusion verification
+2. **TestGenerateAccountRcpTerraform** (2 tests):
+   - Correct file creation with proper naming
+   - Error handling for missing accounts
+3. **TestGenerateOuRcpTerraform** (2 tests):
+   - Correct file creation for OU level
+   - Error handling for missing OUs
+4. **TestGenerateRootRcpTerraform** (1 test):
+   - Root-level file creation with correct content
+- **Tests Added:** 9 BDD-style tests following existing patterns
+- **Test Lines Added:** 216 lines
+
+**Files Modified:**
+1. `headroom/terraform/utils.py` - Added shared `write_terraform_file()` function
+2. `headroom/terraform/generate_rcps.py` - Extracted helpers, refactored main function
+3. `headroom/terraform/generate_scps.py` - Updated to use shared utilities
+4. `tests/test_generate_rcps.py` - Added comprehensive tests for new helpers
+
+**Impact Summary:**
+- **RCPs main function:** 88 lines → 47 lines (47% reduction)
+- **Shared utilities:** Eliminated ~30 lines of duplicated file writing code
+- **Code reuse:** Both SCP and RCP modules now use consistent shared utilities
+- **Test coverage:** 100% maintained with 9 new BDD-style tests
+- **Consistency:** Perfect symmetry between SCP and RCP generation patterns
+
+**Benefits:**
+1. **DRY Principle Applied:** File writing logic exists in exactly one place
+2. **Pattern Consistency:** Both modules follow identical structure
+3. **Future-Proof:** Easy to add new policy types (VPC SCPs, permission boundaries, etc.)
+4. **Maintainability:** Changes to output format or logging only need one update
+5. **Testability:** Each helper function can be tested independently
+6. **Type Safety:** Full type hints maintained, mypy passes with no issues
+
+**Test Results:**
+```
+292 tests passed
+100% code coverage (headroom/ and tests/)
+mypy: Success - no issues found in 40 source files
+All pre-commit checks passed
+```
+
+**Technical Details:**
+
+Shared utility signature:
+```python
+def write_terraform_file(filepath: Path, content: str, policy_type: str) -> None
+```
+
+RCP helper signatures:
+```python
+def _generate_account_rcp_terraform(
+    account_id: str,
+    rec: RCPPlacementRecommendations,
+    organization_hierarchy: OrganizationHierarchy,
+    output_path: Path
+) -> None
+
+def _generate_ou_rcp_terraform(
+    ou_id: str,
+    rec: RCPPlacementRecommendations,
+    organization_hierarchy: OrganizationHierarchy,
+    output_path: Path
+) -> None
+
+def _generate_root_rcp_terraform(
+    rec: RCPPlacementRecommendations,
+    output_path: Path
+) -> None
+```
+
+**Lessons Learned:**
+- Combining related refactorings (items 6 & 7) was more efficient than doing them separately
+- The effort multiplier was only ~1.5x while delivering double the value
+- Pattern consistency across modules makes future refactoring easier
+- Shared utilities are most valuable when extracted at the right level of abstraction

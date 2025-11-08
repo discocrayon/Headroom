@@ -4,6 +4,11 @@ Terraform Utility Functions
 Shared utility functions used across the Terraform generation modules.
 """
 
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
 
 def make_safe_variable_name(name: str) -> str:
     """
@@ -28,3 +33,17 @@ def make_safe_variable_name(name: str) -> str:
     if safe_name and not safe_name[0].isalpha():
         safe_name = "ou_" + safe_name
     return safe_name
+
+
+def write_terraform_file(filepath: Path, content: str, policy_type: str) -> None:
+    """
+    Write Terraform content to a file with logging.
+
+    Args:
+        filepath: Path object for the file to write
+        content: Terraform content to write
+        policy_type: Type of policy being written (e.g., "SCP", "RCP")
+    """
+    with open(filepath, 'w') as f:
+        f.write(content)
+    logger.info(f"Generated {policy_type} Terraform file: {filepath}")

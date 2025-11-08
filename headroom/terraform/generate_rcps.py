@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from .utils import make_safe_variable_name
+from .utils import make_safe_variable_name, write_terraform_file
 from ..types import OrganizationHierarchy, RCPCheckResult, RCPParseResult, RCPPlacementRecommendations
 from ..constants import THIRD_PARTY_ASSUMEROLE
 from ..write_results import get_results_dir
@@ -381,17 +381,91 @@ module "{module_name}" {{
     return terraform_content
 
 
-def _write_terraform_file(filepath: Path, content: str) -> None:
+def _generate_account_rcp_terraform(
+    account_id: str,
+    rec: RCPPlacementRecommendations,
+    organization_hierarchy: OrganizationHierarchy,
+    output_path: Path
+) -> None:
     """
-    Write Terraform content to a file.
+    Generate and write Terraform file for account-level RCP.
 
     Args:
-        filepath: Path object for the file to write
-        content: Terraform content to write
+        account_id: AWS account ID
+        rec: RCP recommendation for this account
+        organization_hierarchy: Organization structure information
+        output_path: Directory to write Terraform files to
     """
-    with open(filepath, 'w') as f:
-        f.write(content)
-    logger.info(f"Generated RCP Terraform file: {filepath}")
+    account_info = organization_hierarchy.accounts.get(account_id)
+    if not account_info:
+        raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
+
+    account_name = make_safe_variable_name(account_info.account_name)
+    filename = f"{account_name}_rcps.tf"
+    filepath = output_path / filename
+
+    terraform_content = _build_rcp_terraform_module(
+        module_name=f"rcps_{account_name}",
+        target_id_reference=f"local.{account_name}_account_id",
+        third_party_account_ids=rec.third_party_account_ids,
+        comment=account_info.account_name
+    )
+    write_terraform_file(filepath, terraform_content, "RCP")
+
+
+def _generate_ou_rcp_terraform(
+    ou_id: str,
+    rec: RCPPlacementRecommendations,
+    organization_hierarchy: OrganizationHierarchy,
+    output_path: Path
+) -> None:
+    """
+    Generate and write Terraform file for OU-level RCP.
+
+    Args:
+        ou_id: Organizational Unit ID
+        rec: RCP recommendation for this OU
+        organization_hierarchy: Organization structure information
+        output_path: Directory to write Terraform files to
+    """
+    ou_info = organization_hierarchy.organizational_units.get(ou_id)
+    if not ou_info:
+        raise RuntimeError(f"OU {ou_id} not found in organization hierarchy")
+
+    ou_name = make_safe_variable_name(ou_info.name)
+    filename = f"{ou_name}_ou_rcps.tf"
+    filepath = output_path / filename
+
+    terraform_content = _build_rcp_terraform_module(
+        module_name=f"rcps_{ou_name}_ou",
+        target_id_reference=f"local.top_level_{ou_name}_ou_id",
+        third_party_account_ids=rec.third_party_account_ids,
+        comment=f"OU {ou_info.name}"
+    )
+    write_terraform_file(filepath, terraform_content, "RCP")
+
+
+def _generate_root_rcp_terraform(
+    rec: RCPPlacementRecommendations,
+    output_path: Path
+) -> None:
+    """
+    Generate and write Terraform file for root-level RCP.
+
+    Args:
+        rec: RCP recommendation for root level
+        output_path: Directory to write Terraform files to
+    """
+    filename = "root_rcps.tf"
+    filepath = output_path / filename
+
+    terraform_content = _build_rcp_terraform_module(
+        module_name="rcps_root",
+        target_id_reference="local.root_ou_id",
+        third_party_account_ids=rec.third_party_account_ids,
+        comment="Organization Root"
+    )
+    write_terraform_file(filepath, terraform_content, "RCP")
 
 
 def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
@@ -460,52 +534,15 @@ def generate_rcp_terraform(
 
     # Generate Terraform files for each account
     for account_id, rec in account_recommendations.items():
-        account_info = organization_hierarchy.accounts.get(account_id)
-        if not account_info:
-            raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
-
-        account_name = make_safe_variable_name(account_info.account_name)
-        filename = f"{account_name}_rcps.tf"
-        filepath = output_path / filename
-
-        terraform_content = _build_rcp_terraform_module(
-            module_name=f"rcps_{account_name}",
-            target_id_reference=f"local.{account_name}_account_id",
-            third_party_account_ids=rec.third_party_account_ids,
-            comment=account_info.account_name
-        )
-        _write_terraform_file(filepath, terraform_content)
+        _generate_account_rcp_terraform(account_id, rec, organization_hierarchy, output_path)
 
     # Generate Terraform files for each OU
     for ou_id, rec in ou_recommendations.items():
-        ou_info = organization_hierarchy.organizational_units.get(ou_id)
-        if not ou_info:
-            raise RuntimeError(f"OU {ou_id} not found in organization hierarchy")
-
-        ou_name = make_safe_variable_name(ou_info.name)
-        filename = f"{ou_name}_ou_rcps.tf"
-        filepath = output_path / filename
-
-        terraform_content = _build_rcp_terraform_module(
-            module_name=f"rcps_{ou_name}_ou",
-            target_id_reference=f"local.top_level_{ou_name}_ou_id",
-            third_party_account_ids=rec.third_party_account_ids,
-            comment=f"OU {ou_info.name}"
-        )
-        _write_terraform_file(filepath, terraform_content)
+        _generate_ou_rcp_terraform(ou_id, rec, organization_hierarchy, output_path)
 
     # Generate Terraform file for root level
     if root_recommendation:
-        filename = "root_rcps.tf"
-        filepath = output_path / filename
-
-        terraform_content = _build_rcp_terraform_module(
-            module_name="rcps_root",
-            target_id_reference="local.root_ou_id",
-            third_party_account_ids=root_recommendation.third_party_account_ids,
-            comment="Organization Root"
-        )
-        _write_terraform_file(filepath, terraform_content)
+        _generate_root_rcp_terraform(root_recommendation, output_path)
 
     # Create symlink to shared organization info file
     _create_org_info_symlink(output_path, scps_dir)

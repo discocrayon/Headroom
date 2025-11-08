@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List
 
-from .utils import make_safe_variable_name
+from .utils import make_safe_variable_name, write_terraform_file
 from ..types import OrganizationHierarchy, SCPPlacementRecommendations
 
 # Set up logging
@@ -86,10 +86,7 @@ def _generate_account_scp_terraform(
     )
 
     # Write the file
-    with open(filepath, 'w') as f:
-        f.write(terraform_content)
-
-    logger.info(f"Generated SCP Terraform file: {filepath}")
+    write_terraform_file(filepath, terraform_content, "SCP")
 
 
 def _generate_ou_scp_terraform(
@@ -125,10 +122,7 @@ def _generate_ou_scp_terraform(
     )
 
     # Write the file
-    with open(filepath, 'w') as f:
-        f.write(terraform_content)
-
-    logger.info(f"Generated SCP Terraform file: {filepath}")
+    write_terraform_file(filepath, terraform_content, "SCP")
 
 
 def _generate_root_scp_terraform(
@@ -157,10 +151,7 @@ def _generate_root_scp_terraform(
     )
 
     # Write the file
-    with open(filepath, 'w') as f:
-        f.write(terraform_content)
-
-    logger.info(f"Generated SCP Terraform file: {filepath}")
+    write_terraform_file(filepath, terraform_content, "SCP")
 
 
 def generate_scp_terraform(

@@ -97,6 +97,27 @@ This document tracks refactoring opportunities identified in the codebase. Items
 - **Mypy Result**: Success - no issues found, full type safety maintained
 - **Details**: See `conversation_history.md` for full documentation
 
+### ✅ Parts 6 & 7 Combined: Terraform Generation DRY Improvements
+- **Status**: Completed 2025-11-07
+- **Files**: `headroom/terraform/utils.py`, `headroom/terraform/generate_rcps.py`, `headroom/terraform/generate_scps.py`, `tests/test_generate_rcps.py`
+- **Approach**: Combined items 6 and 7 for maximum efficiency and consistency
+- **Impact**: Extracted shared utilities, refactored RCP generation, unified patterns across SCP and RCP modules
+- **Shared Utility Created**:
+  - `write_terraform_file()` in `utils.py` - Centralized file writing with logging
+- **RCP Helpers Created**:
+  - `_generate_account_rcp_terraform()` - Account-level RCP file generation
+  - `_generate_ou_rcp_terraform()` - OU-level RCP file generation
+  - `_generate_root_rcp_terraform()` - Root-level RCP file generation
+- **SCP Updates**: Updated existing helpers to use shared `write_terraform_file()`
+- **Main Function Reduction**:
+  - `generate_rcp_terraform()`: 88 lines → 47 lines (47% reduction)
+- **Code Elimination**: ~30 lines of duplicated file writing code across both modules
+- **Tests Added**: 9 new BDD-style tests (4 test classes, 216 lines)
+- **Test Coverage**: 100% maintained (292 tests passing)
+- **Benefits**: DRY principle applied, pattern consistency, easy to add new policy types, single point of update for file writing
+- **Mypy Result**: Success - no issues found in 40 source files
+- **Details**: See `conversation_history.md` for full documentation
+
 ---
 
 ## Pending Refactorings
@@ -114,6 +135,13 @@ This document tracks refactoring opportunities identified in the codebase. Items
 ---
 
 ### Priority 3: Nice-to-Have Refactorings
+
+#### NONE - Items 6 and 7 completed! 🎉
+
+The following sections remain for historical reference but are no longer needed:
+
+<details>
+<summary>Historical Item 6: Refactor generate_rcp_terraform() (COMPLETED)</summary>
 
 #### 6. Refactor generate_rcp_terraform()
 **Location**: `headroom/terraform/generate_rcps.py` (lines 399-486)
@@ -152,9 +180,10 @@ def _write_root_rcp_terraform(
 - Consistent with generate_scps.py pattern
 - Easier to modify output logic
 
----
+</details>
 
-### Priority 3: Nice-to-Have Refactorings
+<details>
+<summary>Historical Item 7: Extract Common Terraform Generation Patterns (COMPLETED)</summary>
 
 #### 7. Consider Extracting Common Terraform Generation Patterns
 **Location**: Both `generate_scps.py` and `generate_rcps.py`
@@ -180,6 +209,8 @@ def write_terraform_file(filepath: Path, content: str) -> None:
 - DRY principle applied across Terraform generators
 - Centralized file writing with consistent error handling
 - Easier to add new policy types in future
+
+</details>
 
 ---
 
