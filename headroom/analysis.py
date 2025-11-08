@@ -9,6 +9,7 @@ from mypy_boto3_organizations.type_defs import AccountTypeDef
 from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
 from .write_results import results_exist
+from .aws.sessions import assume_role
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -30,20 +31,7 @@ def get_security_analysis_session(config: HeadroomConfig) -> boto3.Session:
         logger.debug("No security_analysis_account_id provided, assuming already in security analysis account")
         return boto3.Session()
     role_arn = f"arn:aws:iam::{account_id}:role/OrganizationAccountAccessRole"
-    sts = boto3.client("sts")
-    try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="HeadroomSecurityAnalysisSession"
-        )
-    except ClientError as e:
-        raise RuntimeError(f"Failed to assume role: {e}")
-    creds = resp["Credentials"]
-    return boto3.Session(
-        aws_access_key_id=creds["AccessKeyId"],
-        aws_secret_access_key=creds["SecretAccessKey"],
-        aws_session_token=creds["SessionToken"]
-    )
+    return assume_role(role_arn, "HeadroomSecurityAnalysisSession")
 
 
 def get_management_account_session(config: HeadroomConfig, security_session: boto3.Session) -> boto3.Session:
@@ -65,21 +53,7 @@ def get_management_account_session(config: HeadroomConfig, security_session: bot
         raise ValueError("management_account_id must be set in config")
 
     role_arn = f"arn:aws:iam::{config.management_account_id}:role/OrgAndAccountInfoReader"
-    sts = security_session.client("sts")
-    try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="HeadroomOrgAndAccountInfoReaderSession"
-        )
-    except ClientError as e:
-        raise RuntimeError(f"Failed to assume OrgAndAccountInfoReader role: {e}")
-
-    creds = resp["Credentials"]
-    return boto3.Session(
-        aws_access_key_id=creds["AccessKeyId"],
-        aws_secret_access_key=creds["SecretAccessKey"],
-        aws_session_token=creds["SessionToken"]
-    )
+    return assume_role(role_arn, "HeadroomOrgAndAccountInfoReaderSession", security_session)
 
 
 def _fetch_account_tags(org_client: OrganizationsClient, account_id: str, account_name: str) -> Dict[str, str]:
@@ -215,20 +189,7 @@ def get_relevant_subaccounts(account_infos: List[AccountInfo]) -> List[AccountIn
 def get_headroom_session(config: HeadroomConfig, security_session: boto3.Session, account_id: str) -> boto3.Session:
     """Assume Headroom role in the target account and return a boto3 session."""
     role_arn = f"arn:aws:iam::{account_id}:role/Headroom"
-    sts = security_session.client("sts")
-    try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="HeadroomAnalysisSession"
-        )
-    except ClientError as e:
-        raise RuntimeError(f"Failed to assume Headroom role in account {account_id}: {e}")
-    creds = resp["Credentials"]
-    return boto3.Session(
-        aws_access_key_id=creds["AccessKeyId"],
-        aws_secret_access_key=creds["SecretAccessKey"],
-        aws_session_token=creds["SessionToken"]
-    )
+    return assume_role(role_arn, "HeadroomAnalysisSession", security_session)
 
 
 def all_check_results_exist(check_type: str, account_info: AccountInfo, config: HeadroomConfig) -> bool:

@@ -14,28 +14,12 @@ class TestSecurityAnalysisSession:
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
-        mock_sts = MagicMock()
         mock_session = MagicMock()
-        creds = {
-            "AccessKeyId": "FAKE_ACCESS_KEY_ID",
-            "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
-            "SessionToken": "FAKE_SESSION_TOKEN"
-        }
-        mock_sts.assume_role.return_value = {"Credentials": creds}
-        with (
-            patch("boto3.client", return_value=mock_sts) as client_patch,
-            patch("boto3.Session", return_value=mock_session) as session_patch,
-        ):
+        with patch("headroom.analysis.assume_role", return_value=mock_session) as assume_role_patch:
             session = get_security_analysis_session(config)
-            client_patch.assert_called_once_with("sts")
-            mock_sts.assume_role.assert_called_once_with(
-                RoleArn="arn:aws:iam::111111111111:role/OrganizationAccountAccessRole",
-                RoleSessionName="HeadroomSecurityAnalysisSession"
-            )
-            session_patch.assert_called_once_with(
-                aws_access_key_id="FAKE_ACCESS_KEY_ID",
-                aws_secret_access_key="FAKE_SECRET_ACCESS_KEY",
-                aws_session_token="FAKE_SESSION_TOKEN"
+            assume_role_patch.assert_called_once_with(
+                "arn:aws:iam::111111111111:role/OrganizationAccountAccessRole",
+                "HeadroomSecurityAnalysisSession"
             )
             assert session is mock_session
 
@@ -71,9 +55,7 @@ class TestSecurityAnalysisSession:
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
-        mock_sts = MagicMock()
-        mock_sts.assume_role.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "AssumeRole")
-        with patch("boto3.client", return_value=mock_sts):
+        with patch("headroom.analysis.assume_role", side_effect=RuntimeError("Failed to assume role")):
             with pytest.raises(RuntimeError, match="Failed to assume role"):
                 get_security_analysis_session(config)
 
@@ -250,5 +232,5 @@ class TestGetSubaccountInformation:
         mock_sts.assume_role.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "AssumeRole")
         session = MagicMock()
         session.client.return_value = mock_sts
-        with pytest.raises(RuntimeError, match="Failed to assume OrgAndAccountInfoReader role"):
+        with pytest.raises(RuntimeError, match="Failed to assume role.*OrgAndAccountInfoReader"):
             get_subaccount_information(config, session)

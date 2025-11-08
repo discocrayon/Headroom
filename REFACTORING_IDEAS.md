@@ -31,8 +31,8 @@ The codebase demonstrates solid engineering practices with strong type safety, g
 |----------|------|--------|--------|------------|--------|
 | 🔴 Critical | Delete duplicate file | High | 1 min | -110 | ✅ DONE |
 | 🟠 High | Abstract check framework | Very High | 4 hours | -200, +150 | ✅ DONE |
-| 🟠 High | Extract session management | Medium | 1 hour | -53, +28 | |
-| 🟠 High | Registry pattern for checks | High | 3 hours | -100, +80 | |
+| 🟠 High | Extract session management | Medium | 1 hour | -53, +28 | ✅ DONE |
+| 🟠 High | Registry pattern for checks | High | 3 hours | -100, +80 | ✅ DONE |
 | 🟡 Medium | Unify placement analysis | Medium | 3 hours | -150, +100 | |
 | 🟡 Medium | Consolidate print statements | Low | 1 hour | -20, +30 | |
 | 🟡 Medium | Simplify config validation | Low | 5 min | -4 | |
@@ -323,7 +323,7 @@ def check_deny_imds_v1_ec2(
 
 ---
 
-### 3. 🟠 Extract Session Management Pattern
+### 3. 🟠 ✅ Extract Session Management Pattern - COMPLETED
 
 **Problem:** Session creation pattern is repeated in `analysis.py` three times with slight variations:
 
@@ -438,9 +438,11 @@ def get_headroom_session(config: HeadroomConfig, security_session: boto3.Session
 - Future session creation is trivial
 - Easier to add advanced features (assume role with MFA, session caching, etc.)
 
+**Status: ✅ COMPLETED**
+
 ---
 
-### 4. 🟠 Registry Pattern for Checks (Remove Hardcoded Lists)
+### 4. 🟠 ✅ Registry Pattern for Checks (Remove Hardcoded Lists) - COMPLETED
 
 **Problem:** Check names are hardcoded in multiple places:
 
@@ -650,6 +652,8 @@ def run_checks(
 - Add new check = Create single file with 50 lines
 - No modifications to any other files
 - Check automatically discovered and executed
+
+**Status: ✅ COMPLETED**
 
 ---
 

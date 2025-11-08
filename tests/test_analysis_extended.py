@@ -150,7 +150,7 @@ class TestGetHeadroomSession:
             "AssumeRole"
         )
 
-        with pytest.raises(RuntimeError, match="Failed to assume Headroom role in account 111111111111"):
+        with pytest.raises(RuntimeError, match="Failed to assume role.*Headroom"):
             get_headroom_session(mock_config, mock_security_session, "111111111111")
 
     def test_get_headroom_session_different_account_ids(self, mock_config: HeadroomConfig) -> None:
@@ -467,5 +467,5 @@ class TestGetAllOrganizationAccountIds:
             "AssumeRole"
         )
 
-        with pytest.raises(RuntimeError, match="Failed to assume OrgAndAccountInfoReader role"):
+        with pytest.raises(RuntimeError, match="Failed to assume role.*OrgAndAccountInfoReader"):
             get_all_organization_account_ids(mock_config, mock_session)
