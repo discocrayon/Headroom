@@ -27,25 +27,25 @@ The codebase demonstrates solid engineering practices with strong type safety, g
 
 ## Priority Summary Table
 
-| Priority | Item | Impact | Effort | LOC Change |
-|----------|------|--------|--------|------------|
-| 🔴 Critical | Delete duplicate file | High | 1 min | -110 |
-| 🟠 High | Abstract check framework | Very High | 4 hours | -200, +150 |
-| 🟠 High | Extract session management | Medium | 1 hour | -53, +28 |
-| 🟠 High | Registry pattern for checks | High | 3 hours | -100, +80 |
-| 🟡 Medium | Unify placement analysis | Medium | 3 hours | -150, +100 |
-| 🟡 Medium | Consolidate print statements | Low | 1 hour | -20, +30 |
-| 🟡 Medium | Simplify config validation | Low | 5 min | -4 |
-| 🟡 Medium | Refactor extract account ID | Low | 5 min | -3 |
-| 🟢 Low | Standardize error messages | Low | 30 min | ~20 |
-| 🟢 Low | Review MIN_ACCOUNTS constant | Low | 5 min | -3 |
-| 🟢 Low | Type alias for Union | Low | 2 min | +1, -2 |
+| Priority | Item | Impact | Effort | LOC Change | Status |
+|----------|------|--------|--------|------------|--------|
+| 🔴 Critical | Delete duplicate file | High | 1 min | -110 | ✅ DONE |
+| 🟠 High | Abstract check framework | Very High | 4 hours | -200, +150 | ✅ DONE |
+| 🟠 High | Extract session management | Medium | 1 hour | -53, +28 | |
+| 🟠 High | Registry pattern for checks | High | 3 hours | -100, +80 | |
+| 🟡 Medium | Unify placement analysis | Medium | 3 hours | -150, +100 | |
+| 🟡 Medium | Consolidate print statements | Low | 1 hour | -20, +30 | |
+| 🟡 Medium | Simplify config validation | Low | 5 min | -4 | |
+| 🟡 Medium | Refactor extract account ID | Low | 5 min | -3 | |
+| 🟢 Low | Standardize error messages | Low | 30 min | ~20 | |
+| 🟢 Low | Review MIN_ACCOUNTS constant | Low | 5 min | -3 | |
+| 🟢 Low | Type alias for Union | Low | 2 min | +1, -2 | |
 
 ---
 
 ## Critical Issues (Fix Immediately)
 
-### 1. 🔴 DUPLICATE FILE: check_third_party_assumerole.py exists in TWO locations
+### 1. 🔴 ✅ DUPLICATE FILE: check_third_party_assumerole.py exists in TWO locations - COMPLETED
 
 **Location:**
 - `/headroom/checks/check_third_party_assumerole.py` (should NOT exist)
@@ -65,11 +65,13 @@ rm headroom/checks/check_third_party_assumerole.py
 - Prevents future synchronization bugs
 - Removes confusion about which file to edit
 
+**Status: ✅ COMPLETED**
+
 ---
 
 ## High-Priority Architectural Improvements
 
-### 2. 🟠 Abstract the Check Framework
+### 2. 🟠 ✅ Abstract the Check Framework - COMPLETED
 
 **Problem:** The check pattern is repeated across `deny_imds_v1_ec2.py` and `check_third_party_assumerole.py` with nearly identical structure:
 1. Call AWS analysis function
@@ -316,6 +318,8 @@ def check_deny_imds_v1_ec2(
 - Makes adding new checks trivial
 - Future checks inherit all improvements to base class
 - Easier to add features like retry logic, progress reporting, etc.
+
+**Status: ✅ COMPLETED**
 
 ---
 
