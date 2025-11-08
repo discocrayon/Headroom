@@ -232,5 +232,7 @@ class TestGetSubaccountInformation:
         mock_sts.assume_role.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "AssumeRole")
         session = MagicMock()
         session.client.return_value = mock_sts
-        with pytest.raises(RuntimeError, match="Failed to assume role.*OrgAndAccountInfoReader"):
+        with pytest.raises(ClientError) as exc_info:
             get_subaccount_information(config, session)
+
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"

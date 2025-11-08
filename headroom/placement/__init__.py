@@ -8,4 +8,3 @@ based on compliance results and organization hierarchy.
 from .hierarchy import PlacementCandidate, HierarchyPlacementAnalyzer
 
 __all__ = ["PlacementCandidate", "HierarchyPlacementAnalyzer"]
-

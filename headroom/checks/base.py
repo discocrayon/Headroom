@@ -42,6 +42,10 @@ class BaseCheck(ABC, Generic[T]):
     - build_summary_fields(): Build check-specific summary fields
     """
 
+    # These are set by the @register_check decorator
+    CHECK_NAME: str
+    CHECK_TYPE: str
+
     def __init__(
         self,
         check_name: str,
@@ -187,4 +191,3 @@ class BaseCheck(ABC, Generic[T]):
             f"{len(violations)} violations, {len(exemptions)} exemptions, "
             f"{len(compliant)} compliant"
         )
-

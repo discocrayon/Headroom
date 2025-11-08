@@ -1,7 +1,6 @@
 """AWS session management utilities."""
 
 import boto3
-from botocore.exceptions import ClientError
 from typing import Optional
 
 
@@ -22,19 +21,16 @@ def assume_role(
         boto3 Session with assumed role credentials
 
     Raises:
-        RuntimeError: If role assumption fails
+        ClientError: If role assumption fails (AccessDenied, InvalidParameterValue, etc.)
     """
     if base_session is None:
         base_session = boto3.Session()
 
     sts = base_session.client("sts")
-    try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName=session_name
-        )
-    except ClientError as e:
-        raise RuntimeError(f"Failed to assume role {role_arn}: {e}")
+    resp = sts.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName=session_name
+    )
 
     creds = resp["Credentials"]
     return boto3.Session(
@@ -42,4 +38,3 @@ def assume_role(
         aws_secret_access_key=creds["SecretAccessKey"],
         aws_session_token=creds["SessionToken"]
     )
-

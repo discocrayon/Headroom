@@ -6,7 +6,7 @@ to self-register. This eliminates the need for hardcoded check lists and
 makes adding new checks require zero changes to other files.
 """
 
-from typing import Dict, List, Optional, Type
+from typing import Callable, Dict, List, Optional, Type
 
 from .base import BaseCheck
 from ..constants import register_check_type as _register_check_type
@@ -14,13 +14,16 @@ from ..constants import register_check_type as _register_check_type
 _CHECK_REGISTRY: Dict[str, Type[BaseCheck]] = {}
 
 
-def register_check(check_type: str, check_name: str):
+def register_check(check_type: str, check_name: str) -> Callable[[Type[BaseCheck]], Type[BaseCheck]]:
     """
     Decorator to register a check class.
 
     Args:
         check_type: Type of check (scps, rcps)
         check_name: Name of the check (deny_imds_v1_ec2, third_party_assumerole)
+
+    Returns:
+        Decorator function that registers a check class
 
     Usage:
         @register_check("scps", "deny_imds_v1_ec2")
@@ -94,4 +97,3 @@ def get_check_type_map() -> Dict[str, str]:
         Dictionary mapping check names to check types (scps, rcps)
     """
     return {cls.CHECK_NAME: cls.CHECK_TYPE for cls in _CHECK_REGISTRY.values()}
-

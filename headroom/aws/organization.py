@@ -9,6 +9,7 @@ import logging
 from typing import Dict, List, Optional
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
@@ -81,7 +82,7 @@ def _build_ou_hierarchy(
                 )
                 child_ous = [child_ou["Id"] for child_ou in child_ous_response.get("OrganizationalUnits", [])]
 
-            except Exception as e:
+            except (ClientError, BotoCoreError) as e:
                 raise RuntimeError(f"Failed to get accounts/child OUs for OU {ou_id}: {e}")
 
             organizational_units[ou_id] = OrganizationalUnit(
@@ -92,7 +93,7 @@ def _build_ou_hierarchy(
                 accounts=account_ids
             )
 
-    except Exception as e:
+    except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to list OUs for parent {parent_ou_id}: {e}")
 
 
@@ -111,7 +112,7 @@ def analyze_organization_structure(session: boto3.Session) -> OrganizationHierar
             raise RuntimeError("No roots found in organization")
         root_id = roots_response["Roots"][0]["Id"]
         logger.info(f"Found organization root: {root_id}")
-    except Exception as e:
+    except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to get organization root: {e}")
 
     # Build OU hierarchy recursively
@@ -133,7 +134,7 @@ def analyze_organization_structure(session: boto3.Session) -> OrganizationHierar
                 parent_ou_id=root_id,
                 ou_path=["Root"]
             )
-    except Exception as e:
+    except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to get accounts under root: {e}")
 
     return OrganizationHierarchy(

@@ -7,6 +7,7 @@ Tests for get_relevant_subaccounts, get_headroom_session, and run_checks functio
 import pytest
 import tempfile
 import shutil
+import boto3
 from unittest.mock import MagicMock, patch
 from typing import List, Generator
 
@@ -15,9 +16,11 @@ from headroom.analysis import (
     get_relevant_subaccounts,
     get_headroom_session,
     run_checks,
+    run_checks_for_type,
     get_all_organization_account_ids,
     AccountInfo
 )
+from headroom.checks.base import BaseCheck
 from headroom.config import HeadroomConfig, AccountTagLayout
 
 
@@ -150,8 +153,10 @@ class TestGetHeadroomSession:
             "AssumeRole"
         )
 
-        with pytest.raises(RuntimeError, match="Failed to assume role.*Headroom"):
+        with pytest.raises(ClientError) as exc_info:
             get_headroom_session(mock_config, mock_security_session, "111111111111")
+
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
     def test_get_headroom_session_different_account_ids(self, mock_config: HeadroomConfig) -> None:
         """Test get_headroom_session with different account IDs."""
@@ -296,7 +301,7 @@ class TestRunChecks:
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
             patch("os.getcwd") as mock_getcwd,
-            pytest.raises(RuntimeError, match="Failed to run checks for account prod-account_111111111111: Failed to assume Headroom role")
+            pytest.raises(RuntimeError, match="Failed to assume Headroom role")
         ):
             mock_getcwd.return_value = temp_results_dir
             mock_get_session.side_effect = RuntimeError("Failed to assume Headroom role")
@@ -380,6 +385,44 @@ class TestRunChecks:
             mock_get_session.assert_not_called()
             mock_check.assert_not_called()
             mock_rcp_check.assert_not_called()
+
+    def test_run_checks_for_type_skips_individual_check(
+        self,
+        mock_config: HeadroomConfig,
+        sample_account_infos: List[AccountInfo]
+    ) -> None:
+        """Test run_checks_for_type skips individual checks when results exist."""
+        mock_session = MagicMock(spec=boto3.Session)
+        account_info = sample_account_infos[0]
+
+        # Create two mock check classes
+        mock_check1 = MagicMock(spec=BaseCheck)
+        mock_check1.CHECK_NAME = "check_1"
+        mock_check1_instance = MagicMock()
+        mock_check1.return_value = mock_check1_instance
+
+        mock_check2 = MagicMock(spec=BaseCheck)
+        mock_check2.CHECK_NAME = "check_2"
+        mock_check2_instance = MagicMock()
+        mock_check2.return_value = mock_check2_instance
+
+        with (
+            patch("headroom.analysis.get_all_check_classes", return_value=[mock_check1, mock_check2]),
+            patch("headroom.analysis.results_exist") as mock_results_exist
+        ):
+            # First check results exist (skip with continue), second doesn't (run it)
+            mock_results_exist.side_effect = [True, False]
+
+            org_account_ids = {"111111111111"}
+            run_checks_for_type("scps", mock_session, account_info, mock_config, org_account_ids)
+
+            # Verify first check was skipped (not instantiated or executed)
+            mock_check1.assert_not_called()
+            mock_check1_instance.execute.assert_not_called()
+
+            # Verify second check was instantiated and executed
+            mock_check2.assert_called_once()
+            mock_check2_instance.execute.assert_called_once_with(mock_session)
 
 
 class TestGetAllOrganizationAccountIds:
@@ -467,5 +510,7 @@ class TestGetAllOrganizationAccountIds:
             "AssumeRole"
         )
 
-        with pytest.raises(RuntimeError, match="Failed to assume role.*OrgAndAccountInfoReader"):
+        with pytest.raises(ClientError) as exc_info:
             get_all_organization_account_ids(mock_config, mock_session)
+
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"

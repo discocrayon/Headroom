@@ -8058,11 +8058,11 @@ from ..registry import register_check
 class NewCheck(BaseCheck[SomeAnalysisType]):
     def analyze(self, session: boto3.Session) -> List[SomeAnalysisType]:
         return analyze_something(session)
-    
+
     def categorize_result(self, result: SomeAnalysisType) -> tuple[str, Dict[str, Any]]:
         # categorization logic
         return ("violation", result_dict)
-    
+
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
         return {"total": len(check_result.violations)}
 ```
@@ -8073,7 +8073,7 @@ That's it! The check auto-registers and runs with all other checks. Zero changes
 
 This completes the three-layer architecture:
 1. **BaseCheck** (Item #2): Template Method pattern for check execution
-2. **Check Classes** (Item #2): Concrete implementations with 3 methods each  
+2. **Check Classes** (Item #2): Concrete implementations with 3 methods each
 3. **Registry** (Item #4): Self-registration and auto-discovery
 
 Combined result: **Truly extensible, zero-maintenance check system**
@@ -8168,10 +8168,10 @@ Adding a new check is now even simpler:
 class MyCheck(BaseCheck[MyAnalysisType]):
     def analyze(self, session):
         return analyze_something(session)
-    
+
     def categorize_result(self, result):
         return ("violation", {...})
-    
+
     def build_summary_fields(self, check_result):
         return {"total": len(check_result.violations)}
 ```
@@ -8876,7 +8876,7 @@ User: "I hate 'defensive' programming" - requested removal of all defensive meas
    - Base error `"Account (123456789012) not found"` is sufficient
 
 3. **Test Updated**:
-   - Updated test expectation from `"Account unknown-account (999999999999) not found"` 
+   - Updated test expectation from `"Account unknown-account (999999999999) not found"`
    - To simpler: `"Account (999999999999) not found"`
 
 ### Results
@@ -8892,3 +8892,975 @@ User: "I hate 'defensive' programming" - requested removal of all defensive meas
 
 Error messages don't need to be overly helpful at the cost of brittle string parsing. Simple, direct errors are better than complex "friendly" ones. Let errors fail naturally instead of catching and re-wrapping them.
 
+---
+
+## 2025-11-08 Saturday - Defensive Programming Analysis
+
+### Request
+
+Analyze the codebase for Defensive Programming patterns. Goal: fail fast and never have code that tries to handle cases that will never happen.
+
+### Findings
+
+#### 🔴 Critical Issues - Generic Exception Handling
+
+**1. `headroom/aws/organization.py` - Multiple `except Exception` blocks**
+
+Lines 84, 95, 114, 136 - All catch generic `Exception` and re-raise as `RuntimeError`:
+
+```python
+except Exception as e:
+    raise RuntimeError(f"Failed to get accounts/child OUs for OU {ou_id}: {e}")
+```
+
+**Problem**: This violates the repo rule "Never do except Exception, always catch the specific exceptions that the code can raise"
+
+**Impact**: Catches unintended exceptions (KeyboardInterrupt via BaseException, programming errors, etc.)
+
+**Fix**: Catch specific boto3/botocore exceptions:
+- `ClientError` for AWS API failures
+- `BotoCoreError` for lower-level boto3 errors
+- Let programming errors (AttributeError, KeyError, etc.) propagate naturally
+
+**Recommended approach**:
+```python
+from botocore.exceptions import ClientError, BotoCoreError
+
+try:
+    accounts_response = org_client.list_accounts_for_parent(ParentId=ou_id)
+    # ... processing ...
+except (ClientError, BotoCoreError) as e:
+    raise RuntimeError(f"Failed to get accounts/child OUs for OU {ou_id}: {e}")
+```
+
+#### 🟡 Moderate Issues - Unnecessary Exception Wrapping
+
+**2. `headroom/parse_results.py:44` - Overly broad catch**
+
+```python
+except (json.JSONDecodeError, KeyError) as e:
+    raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+```
+
+**Problem**: `KeyError` shouldn't happen here unless there's a programming error. The code doesn't access dict keys without `.get()`.
+
+**Fix**: Only catch `json.JSONDecodeError`. Let `KeyError` fail naturally if it happens (indicates a bug).
+
+**3. `headroom/write_results.py:97` - Unnecessary IOError catch**
+
+```python
+try:
+    with open(output_file, 'w') as f:
+        json.dump(data_to_write, f, indent=2, default=str)
+        f.write('\n')
+    logger.info(f"Wrote results to {output_file}")
+except IOError as e:
+    logger.error(f"Failed to write results to {output_file}: {e}")
+    raise
+```
+
+**Problem**: Catches, logs, and re-raises. The exception will propagate anyway. Either handle it or don't catch it.
+
+**Fix**: Remove try/except entirely - let IOError propagate naturally. The caller can handle it if needed.
+
+**4. `headroom/aws/sessions.py:36` - Generic ClientError wrapping**
+
+```python
+except ClientError as e:
+    raise RuntimeError(f"Failed to assume role {role_arn}: {e}")
+```
+
+**Problem**: Loses the original `ClientError` type, which might be useful for callers to distinguish different failure modes (AccessDenied vs InvalidParameterValue).
+
+**Fix**: Either let `ClientError` propagate directly, or create specific exception types for different failures.
+
+**5. `headroom/aws/ec2.py:40` - Silent region listing failure**
+
+```python
+try:
+    regions_response = ec2_client.describe_regions()
+    regions = [region['RegionName'] for region in regions_response['Regions']]
+except ClientError:
+    # If we can't get regions, fall back to current region
+    regions = [session.region_name or 'us-east-1']
+```
+
+**Problem**: Silently falls back to a single region if listing fails. This defensive fallback might hide real problems.
+
+**Question**: Is this fallback actually needed? When would `describe_regions()` fail legitimately?
+
+**Fix**: Either remove the fallback (fail fast) or add explicit logging that fallback is happening.
+
+#### 🟢 Acceptable Patterns
+
+**6. `headroom/analysis.py:74` - Empty dict return on tag fetch failure**
+
+```python
+try:
+    tags_resp = org_client.list_tags_for_resource(ResourceId=account_id)
+    return {tag["Key"]: tag["Value"] for tag in tags_resp.get("Tags", [])}
+except ClientError as e:
+    logger.warning(f"Could not fetch tags for account {account_name} ({account_id}): {e}")
+    return {}
+```
+
+**Status**: Acceptable - Tags are optional metadata. Failing the entire operation because one account's tags can't be fetched is too strict.
+
+**7. `headroom/usage.py:20` - Empty dict on missing config file**
+
+```python
+try:
+    with open(path, 'r') as f:
+        return yaml.safe_load(f) or {}
+except FileNotFoundError:
+    print(f"Config file '{path}' not found. Continuing without it.")
+    return {}
+```
+
+**Status**: Acceptable - Config file is optional in some scenarios.
+
+#### 🔵 Silent Failures - Anti-pattern
+
+**8. `headroom/terraform/generate_org_info.py:35-37` - Silent failure on org analysis**
+
+```python
+try:
+    organization_hierarchy = analyze_organization_structure(session)
+    logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs...")
+except RuntimeError as e:
+    logger.error(f"Failed to analyze organization structure: {e}")
+    return  # <-- Silent failure!
+```
+
+**Problem**: Function returns None on failure, caller doesn't know anything went wrong. Violations "Do not add extra defensive checks or try/catch blocks".
+
+**Fix**: Remove try/except - let the RuntimeError propagate. The caller in `main.py` already has a top-level try/except that will handle it properly.
+
+**9. `headroom/terraform/generate_org_info.py:50-51` - Silent file write failure**
+
+```python
+except IOError as e:
+    logger.error(f"Failed to write Terraform file: {e}")
+    # No raise! Silently continues
+```
+
+**Problem**: Same as above - silent failure is worse than explicit failure.
+
+**Fix**: Either raise the exception or return a status code that callers can check.
+
+#### 🟣 Unnecessary Defensive Patterns
+
+**10. `headroom/iam.py:158-162` - Catch and re-raise pattern**
+
+```python
+try:
+    trust_policy = json.loads(trust_policy_str)
+except json.JSONDecodeError as e:
+    logger.error(f"Failed to parse trust policy JSON for role '{role_name}': {e}")
+    raise
+```
+
+**Status**: The catch-log-raise pattern is acceptable here because the error context (which role) is valuable.
+
+**But**: Could simplify by removing try/except and letting json.loads raise naturally with a clear traceback.
+
+#### 📊 Summary Statistics
+
+- **Total try/except blocks**: 19
+- **Generic Exception catches**: 4 (all in organization.py)
+- **Silent failures**: 2 (generate_org_info.py)
+- **Unnecessary wrapping**: 5
+- **Acceptable defensive code**: 2
+
+### Recommendations Priority
+
+**High Priority (Fix Now)**:
+1. Replace all `except Exception` with specific exception types in `organization.py`
+2. Remove silent failures in `generate_org_info.py` - let exceptions propagate
+3. Remove unnecessary IOError catch in `write_results.py`
+
+**Medium Priority**:
+4. Simplify exception handling in `parse_results.py` (remove KeyError)
+5. Consider not wrapping ClientError in sessions.py and ec2.py
+6. Add logging when falling back to default region in ec2.py
+
+**Low Priority**:
+7. Review whether any other try/except blocks add value vs just catching and re-raising
+
+### Alignment with Repo Rules
+
+Current violations of repo rules:
+- ❌ "Never do except Exception, always catch the specific exceptions" - 4 violations
+- ❌ "Do not add extra defensive checks or try/catch blocks" - Multiple violations
+- ✅ "Try and search online first rather than try to use the AWS CLI" - Followed
+- ✅ "Do not add stray blank lines randomly" - Mostly followed
+- ✅ "Think like the Clean Code guy" - Good function decomposition, needs exception cleanup
+
+### Philosophy
+
+Defensive programming leads to:
+1. **Hidden bugs** - Catching Exception hides programming errors
+2. **Silent failures** - Logging and returning None masks problems
+3. **Loss of context** - Wrapping exceptions loses original types
+4. **False sense of safety** - Try/except doesn't fix the root problem
+
+Better approach:
+1. **Fail fast** - Let exceptions propagate with full context
+2. **Specific exceptions** - Only catch what you can actually handle
+3. **Don't catch-and-rethrow** - If you can't handle it, don't catch it
+4. **Clear error messages** - Let the original exception speak for itself
+
+---
+
+## 2025-11-08 Saturday - Fixing High-Priority Defensive Programming Issues
+
+### Changes Made
+
+#### 1. Fixed `headroom/aws/organization.py` - Replaced 4 `except Exception` blocks
+
+**Before**: Caught generic `Exception` (violates repo rule)
+**After**: Catches specific `ClientError` and `BotoCoreError` from boto3
+
+Lines changed:
+- Line 12: Added import `from botocore.exceptions import BotoCoreError, ClientError`
+- Line 86: `except Exception` → `except (ClientError, BotoCoreError)`
+- Line 96: `except Exception` → `except (ClientError, BotoCoreError)`
+- Line 115: `except Exception` → `except (ClientError, BotoCoreError)`
+- Line 137: `except Exception` → `except (ClientError, BotoCoreError)`
+
+**Impact**: Now only catches AWS API errors, lets programming errors propagate naturally
+
+#### 2. Fixed `headroom/terraform/generate_org_info.py` - Removed silent failures
+
+**Before**: Caught exceptions, logged, and returned None (silent failure)
+**After**: Lets exceptions propagate (fail fast)
+
+Changes:
+- Removed try/except around `analyze_organization_structure()` call
+- Removed try/except around file write operations
+- Updated docstring to document raised exceptions
+- Reduced function from 52 lines to 48 lines
+
+**Impact**: Errors now properly propagate to caller (`main.py`) which has top-level error handling
+
+#### 3. Fixed `headroom/write_results.py` - Removed unnecessary catch-and-rethrow
+
+**Before**: Caught IOError, logged it, then re-raised
+**After**: Removed try/except entirely
+
+Changes:
+- Removed lines 92-99 (try/except/log/raise)
+- Reduced function from 100 lines to 95 lines
+
+**Impact**: IOError now propagates naturally with full traceback, no redundant logging
+
+#### 4. Updated Tests - Aligned with fail-fast behavior
+
+**test_generate_terraform.py**:
+- Added `import pytest`
+- Updated `test_generate_terraform_org_info_analysis_error` to expect RuntimeError
+- Updated `test_generate_terraform_org_info_file_error` to expect IOError
+
+**test_write_results.py**:
+- Updated `test_write_check_results_raises_on_io_error` to remove logger assertion
+- Test now just verifies IOError is raised (no logging check)
+
+**test_main_integration.py**:
+- Added `patch('headroom.main.generate_terraform_org_info')` to 7 integration tests
+- This prevents real boto3 calls during testing
+
+### Test Results
+
+✅ **All 313 tests pass**
+✅ **No functionality broken**
+✅ **Code reduced by ~10 lines** (less defensive code)
+
+### Files Modified
+
+1. `headroom/aws/organization.py` - 4 exception handlers fixed
+2. `headroom/terraform/generate_org_info.py` - 2 silent failures removed
+3. `headroom/write_results.py` - 1 catch-and-rethrow removed
+4. `tests/test_generate_terraform.py` - 2 tests updated, pytest imported
+5. `tests/test_write_results.py` - 1 test updated
+6. `tests/test_main_integration.py` - 7 tests updated with proper mocking
+
+### Remaining Issues (Not Fixed Today)
+
+**Medium Priority**:
+- `headroom/parse_results.py:44` - Catches KeyError unnecessarily
+- `headroom/aws/sessions.py:36` - Wraps ClientError in RuntimeError
+- `headroom/aws/ec2.py:40` - Silent fallback to single region
+
+**Low Priority**:
+- `headroom/iam.py:158-162` - Catch-log-raise pattern (acceptable for context)
+
+### Summary
+
+**What we fixed**: All high-priority defensive programming anti-patterns
+- ❌ Generic `Exception` catches → ✅ Specific boto3 exceptions
+- ❌ Silent failures → ✅ Fail fast propagation
+- ❌ Catch-log-rethrow → ✅ Natural error flow
+
+**Repo rules now satisfied**:
+- ✅ "Never do except Exception, always catch the specific exceptions"
+- ✅ "Do not add extra defensive checks or try/catch blocks"
+
+**Philosophy**:
+Code now fails fast with clear errors instead of hiding problems with defensive patterns. Exceptions provide full context and stack traces. No more silent failures.
+
+---
+
+## 2025-11-08 Saturday - Completed All Defensive Programming Fixes
+
+### Summary
+
+Successfully completed all remaining defensive programming fixes identified in the analysis. All changes follow the "fail fast" principle, eliminate unnecessary exception handling, and ensure errors propagate naturally with proper context.
+
+### Changes Implemented
+
+#### 1. Fixed parse_results.py (Medium Priority) ✅
+- **File**: `headroom/parse_results.py:44`
+- **Issue**: Caught `KeyError` unnecessarily alongside `json.JSONDecodeError`
+- **Fix**: Removed `KeyError` from the except clause
+- **Rationale**: The code uses `.get()` for dictionary access throughout, so a `KeyError` indicates a programming error, not a runtime condition to handle
+
+```python
+# Before
+except (json.JSONDecodeError, KeyError) as e:
+    raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+
+# After
+except json.JSONDecodeError as e:
+    raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+```
+
+#### 2. Fixed sessions.py (Medium Priority) ✅
+- **File**: `headroom/aws/sessions.py:36`
+- **Issue**: Wrapped `ClientError` in `RuntimeError`, losing original exception type
+- **Fix**: Removed the try/except block entirely, letting `ClientError` propagate naturally
+- **Rationale**: ClientError already contains all necessary context (error code, role ARN in operation). Wrapping it loses valuable type information for callers who may want to handle specific AWS error codes differently
+- **Updated**: 5 test files to expect `ClientError` instead of `RuntimeError`
+
+```python
+# Before
+try:
+    resp = sts.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName=session_name
+    )
+except ClientError as e:
+    raise RuntimeError(f"Failed to assume role {role_arn}: {e}")
+
+# After
+resp = sts.assume_role(
+    RoleArn=role_arn,
+    RoleSessionName=session_name
+)
+```
+
+#### 3. Fixed analysis.py (Related to sessions.py) ✅
+- **File**: `headroom/analysis.py:307-308`
+- **Issue**: Caught and re-wrapped `RuntimeError`, creating double-wrapping
+- **Fix**: Removed the try/except block entirely
+- **Rationale**: With sessions.py now propagating `ClientError` directly, there's no need for this catch-and-rewrap pattern
+
+```python
+# Before
+try:
+    headroom_session = get_headroom_session(config, security_session, account_info.account_id)
+    # ... rest of code ...
+except RuntimeError as e:
+    raise RuntimeError(f"Failed to run checks for account {account_identifier}: {e}")
+
+# After
+headroom_session = get_headroom_session(config, security_session, account_info.account_id)
+# ... rest of code ...
+```
+
+#### 4. Fixed ec2.py (Medium Priority) ✅
+- **File**: `headroom/aws/ec2.py:40`
+- **Issue**: Silent fallback to single region when `describe_regions` fails
+- **Fix**: Added warning log with details about the fallback
+- **Rationale**: Makes the fallback explicit and visible to operators, who can then investigate why region listing failed
+
+```python
+# Before
+except ClientError:
+    # If we can't get regions, fall back to current region
+    regions = [session.region_name or 'us-east-1']
+
+# After
+except ClientError as e:
+    # If we can't get regions, fall back to current region
+    fallback_region = session.region_name or 'us-east-1'
+    logger.warning(
+        f"Failed to list regions (ec2:DescribeRegions permission may be missing): {e}. "
+        f"Falling back to single region: {fallback_region}. "
+        f"This may miss IMDS v1 violations in other regions."
+    )
+    regions = [fallback_region]
+```
+
+#### 5. Reviewed iam.py (Low Priority) ✅
+- **File**: `headroom/aws/iam.py:158-162`
+- **Decision**: Kept the catch-log-raise pattern as-is
+- **Rationale**: This is an acceptable use case because:
+  - The JSON parsing happens inside a loop over many roles
+  - The error message adds critical context (which role has malformed JSON)
+  - The exception is re-raised, preserving the original error
+  - Without the log, debugging would be significantly harder
+
+### Test Updates
+
+Updated 5 test files to align with the new exception handling:
+1. `tests/test_analysis.py` - Updated `test_get_subaccount_information_assume_role_failure`
+2. `tests/test_analysis_extended.py` - Updated 3 tests:
+   - `test_get_headroom_session_assume_role_failure`
+   - `test_run_checks_session_failure`
+   - `test_get_all_organization_account_ids_assume_role_failure`
+3. `tests/test_parse_results.py` - Updated `test_parse_scp_results_assume_role_failure`
+
+All tests now expect `ClientError` to propagate naturally instead of being wrapped in `RuntimeError`.
+
+### Test Results
+
+All 313 tests pass:
+```
+============================= 313 passed in 0.51s ==============================
+```
+
+### Files Modified
+
+#### Core Code (4 files modified in this session)
+1. `headroom/parse_results.py` - Removed unnecessary `KeyError` catch
+2. `headroom/aws/sessions.py` - Stopped wrapping `ClientError` in `RuntimeError`
+3. `headroom/analysis.py` - Removed double-wrapping of exceptions
+4. `headroom/aws/ec2.py` - Added logging to silent region fallback
+
+#### Tests (3 files updated)
+1. `tests/test_analysis.py`
+2. `tests/test_analysis_extended.py`
+3. `tests/test_parse_results.py`
+
+### Principles Applied
+
+1. **Fail Fast**: Removed defensive code that handled "impossible" cases
+2. **Let Exceptions Propagate**: Stopped wrapping exceptions that already contain sufficient context
+3. **Preserve Exception Types**: Callers can now distinguish between different error conditions
+4. **Make Silent Failures Visible**: Added logging where fallback behavior occurs
+5. **Only Catch What You Can Handle**: Removed catches for generic exceptions
+
+### Alignment with Repo Rules
+
+All changes strictly adhere to the repo rule:
+> "Never do except Exception, always catch the specific exceptions that the code can raise"
+
+The codebase now has:
+- ✅ No `except Exception` blocks (previously had 4)
+- ✅ No unnecessary exception wrapping
+- ✅ No silent failures (previously had 2)
+- ✅ Specific exception types throughout
+- ✅ Natural error propagation
+
+### Complete List of All Changes (Both Sessions)
+
+#### High Priority Fixes (Previous Session):
+1. `headroom/aws/organization.py` - Replaced 4x `except Exception` with `ClientError`
+2. `headroom/terraform/generate_org_info.py` - Removed 2x silent failures
+3. `headroom/write_results.py` - Removed unnecessary `IOError` catch-log-raise
+4. Updated 3 test files accordingly
+
+#### Medium/Low Priority Fixes (This Session):
+1. `headroom/parse_results.py` - Removed unnecessary `KeyError` catch
+2. `headroom/aws/sessions.py` - Stopped wrapping `ClientError` in `RuntimeError`
+3. `headroom/analysis.py` - Removed double-wrapping try/except
+4. `headroom/aws/ec2.py` - ~~Added logging to silent region fallback~~ **Updated**: Removed fallback entirely
+5. `headroom/aws/iam.py` - Kept acceptable catch-log-raise pattern
+6. Updated 3 test files accordingly
+
+---
+
+## 2025-11-08 Saturday - Final Update: Removed AWS Error Fallbacks
+
+### Change Made
+
+Removed the region enumeration fallback in `headroom/aws/ec2.py` to align with strict "fail fast" principle.
+
+#### Before:
+```python
+try:
+    # Get all available regions
+    regions_response = ec2_client.describe_regions()
+    regions = [region['RegionName'] for region in regions_response['Regions']]
+except ClientError as e:
+    # If we can't get regions, fall back to current region
+    fallback_region = session.region_name or 'us-east-1'
+    logger.warning(
+        f"Failed to list regions (ec2:DescribeRegions permission may be missing): {e}. "
+        f"Falling back to single region: {fallback_region}. "
+        f"This may miss IMDS v1 violations in other regions."
+    )
+    regions = [fallback_region]
+```
+
+#### After:
+```python
+# Get all available regions
+regions_response = ec2_client.describe_regions()
+regions = [region['RegionName'] for region in regions_response['Regions']]
+```
+
+### Rationale
+
+If `describe_regions` fails, it indicates:
+1. Missing IAM permissions (`ec2:DescribeRegions`)
+2. AWS service issue
+3. Network connectivity problem
+
+In all cases, it's better to fail fast and alert the operator rather than silently scanning only one region and potentially missing violations in other regions.
+
+### Test Updates
+
+Updated `tests/test_aws_ec2.py`:
+- Renamed `test_get_imds_v1_ec2_analysis_no_regions_fallback` → `test_get_imds_v1_ec2_analysis_no_regions_raises_error`
+- Changed test to verify `ClientError` is raised instead of testing fallback behavior
+
+### Test Results
+
+All 313 tests pass:
+```
+============================= 313 passed in 0.45s ==============================
+```
+
+### Final Status
+
+The codebase now has **zero defensive fallbacks for AWS errors**. All AWS API errors propagate naturally, making issues immediately visible rather than hidden behind fallback logic.
+
+---
+
+## 2025-11-08 Saturday - Fixed Tox Coverage Issues
+
+### Issue
+
+Tox was failing due to coverage being 99% instead of the required 100%.
+
+### Root Cause
+
+Two uncovered code paths:
+1. Line 250 in `headroom/analysis.py` - `continue` statement in `run_checks_for_type` when individual check results exist
+2. Lines 53-55, 70, 96 in `headroom/checks/registry.py` - Helper functions that had no test coverage
+
+### Fixes Applied
+
+#### 1. Added Test for Individual Check Skipping
+Created `test_run_checks_for_type_skips_individual_check` in `tests/test_analysis_extended.py`:
+- Tests the scenario where some (but not all) checks of a type have existing results
+- Verifies that individual checks with existing results are skipped via `continue`
+- Covers line 250 in `headroom/analysis.py`
+
+#### 2. Created Registry Module Tests
+Created new test file `tests/test_checks_registry.py` with comprehensive coverage:
+- `test_get_check_class_deny_imds_v1_ec2` - Tests retrieving SCP check class
+- `test_get_check_class_third_party_assumerole` - Tests retrieving RCP check class
+- `test_get_check_class_unknown_raises_value_error` - Tests error handling (lines 53-55)
+- `test_get_all_check_classes_no_filter` - Tests getting all checks without filter (line 70)
+- `test_get_all_check_classes_filter_by_scps` - Tests SCP filtering
+- `test_get_all_check_classes_filter_by_rcps` - Tests RCP filtering
+- `test_get_check_type_map_returns_correct_mapping` - Tests type map generation (line 96)
+
+#### 3. Added Type Ignore Comments
+Added `# type: ignore[attr-defined]` comments to suppress mypy warnings about dynamically added `CHECK_NAME` and `CHECK_TYPE` attributes on check classes.
+
+### Test Results
+
+✅ **All 321 tests pass**
+✅ **100% code coverage** for `headroom/` (1165 statements, 0 missed)
+✅ **100% code coverage** for `tests/` (3139 statements, 0 missed)
+
+```
+============================= 321 passed in 0.73s ==============================
+------------------------------------------------------------------------------------
+TOTAL                                                   1165      0   100%
+------------------------------------------------------------------------------------
+TOTAL                                                   3139      0   100%
+```
+
+### Remaining Pre-Existing Issues
+
+Tox still shows 7 pre-existing mypy errors in files **not** modified by our defensive programming refactoring:
+1. `headroom/checks/rcps/check_third_party_assumerole.py:134` - Return type mismatch
+2. `headroom/parse_results.py:187, 238` - Missing type annotations
+3. `headroom/terraform/generate_rcps.py:185, 192, 195, 235` - Type annotation issues
+
+These mypy errors existed before our changes and are unrelated to the defensive programming fixes.
+
+---
+
+## 2025-11-08 Saturday - Improved Type Safety (Removed type: ignore Comments)
+
+### Question from User
+
+> "why are all the `type: ignore` necessary? is that best practice?"
+
+**Answer**: No! Using `# type: ignore` is NOT best practice - it's a code smell that indicates an underlying type system issue.
+
+### Root Cause
+
+The `BaseCheck` class didn't declare `CHECK_NAME` and `CHECK_TYPE` as class attributes. The `@register_check` decorator added them dynamically at runtime, but mypy couldn't see them during type checking.
+
+### Proper Solution
+
+Instead of suppressing warnings with `# type: ignore`, we **declared the attributes in the base class**:
+
+```python
+class BaseCheck(ABC, Generic[T]):
+    """Base class for all compliance checks."""
+
+    # These are set by the @register_check decorator
+    CHECK_NAME: str
+    CHECK_TYPE: str
+```
+
+### Impact
+
+✅ **Removed ALL `# type: ignore[attr-defined]` comments** (17 occurrences across 4 files)
+✅ **Reduced mypy errors from 25 to 7** (68% reduction!)
+✅ **Better type safety** - mypy now knows these attributes exist
+✅ **More maintainable** - explicit is better than implicit
+
+### Files Modified
+
+1. `headroom/checks/base.py` - Added `CHECK_NAME` and `CHECK_TYPE` class attribute declarations
+2. `headroom/checks/registry.py` - Removed 4x `# type: ignore[attr-defined]`
+3. `headroom/analysis.py` - Removed 2x `# type: ignore[attr-defined]`
+4. `tests/test_checks_registry.py` - Removed 8x `# type: ignore[attr-defined]`
+
+### Remaining Mypy Errors
+
+Down to **7 pre-existing errors** unrelated to defensive programming:
+1. `check_third_party_assumerole.py:134` - Return type mismatch
+2. `parse_results.py:187, 238` - Missing type annotations
+3. `generate_rcps.py:185, 192, 195, 235` - Type annotation issues
+
+### Principle
+
+**"Explicit is better than implicit"** - Declare attributes in the base class rather than adding them dynamically and hiding type errors with `# type: ignore`.
+
+---
+
+## 2025-11-08 Saturday - Fixed Dynamic Import Violation
+
+### Issue
+
+User caught a violation of the repo rule: **"Never do dynamic imports"**
+
+Found in `tests/test_analysis_extended.py` lines 392-394:
+```python
+def test_run_checks_for_type_skips_individual_check(...):
+    from headroom.analysis import run_checks_for_type  # ❌ Dynamic import!
+    from headroom.checks.base import BaseCheck          # ❌ Dynamic import!
+    import boto3                                         # ❌ Dynamic import!
+```
+
+### Fix
+
+Moved all imports to the top of the file where they belong:
+
+```python
+# At top of file
+import boto3
+from headroom.analysis import (
+    get_relevant_subaccounts,
+    get_headroom_session,
+    run_checks,
+    run_checks_for_type,  # ✅ Now at top
+    get_all_organization_account_ids,
+    AccountInfo
+)
+from headroom.checks.base import BaseCheck  # ✅ Now at top
+```
+
+### Verification
+
+✅ **All 321 tests pass**
+✅ **No dynamic imports in entire codebase** (verified with grep)
+✅ **All imports at top of files**
+
+### Principle
+
+**Top-level imports only** - Never import inside functions, even in tests. This ensures:
+- Faster test execution (imports happen once, not per test)
+- Better error detection (import errors caught immediately)
+- Clearer dependencies (all imports visible at top of file)
+- Compliance with repo rules
+
+---
+
+## 2025-11-08 Saturday - Removed Last type: ignore Comment
+
+### Question from User
+
+> "why is there still `# type: ignore[no-untyped-def]`? how to solve?"
+
+### Issue
+
+The `register_check` decorator function was missing a return type annotation, requiring `# type: ignore[no-untyped-def]` to suppress the mypy error.
+
+```python
+# Before
+def register_check(check_type: str, check_name: str):  # type: ignore[no-untyped-def]
+    def decorator(cls: Type[BaseCheck]) -> Type[BaseCheck]:
+        ...
+    return decorator
+```
+
+### Proper Solution
+
+**Add the return type annotation** instead of suppressing the error:
+
+```python
+# After
+def register_check(check_type: str, check_name: str) -> Callable[[Type[BaseCheck]], Type[BaseCheck]]:
+    """
+    Decorator to register a check class.
+
+    Returns:
+        Decorator function that registers a check class
+    """
+    def decorator(cls: Type[BaseCheck]) -> Type[BaseCheck]:
+        ...
+    return decorator
+```
+
+### Changes Made
+
+1. **Added `Callable` import** from `typing`
+2. **Added return type annotation**: `-> Callable[[Type[BaseCheck]], Type[BaseCheck]]`
+   - This says: "returns a function that takes a BaseCheck class and returns a BaseCheck class"
+3. **Added Returns section** to docstring
+4. **Removed `# type: ignore[no-untyped-def]` comment**
+
+### Result
+
+✅ **Zero `# type: ignore` comments in our defensive programming code**
+✅ **All 321 tests pass**
+✅ **Proper type annotations throughout**
+
+### Principle
+
+**Never use `# type: ignore` to hide missing type annotations.** Always add proper type hints instead. This makes the code more maintainable and lets mypy catch real type errors.
+
+---
+
+## Session 11: Fixed Remaining Pre-existing Mypy Errors
+
+**Date:** Saturday, November 8, 2025
+**Time:** [Current Session]
+
+### User Request
+
+User reported that mypy was still failing despite our previous fixes.
+
+### Analysis
+
+Ran `tox` and found 7 remaining pre-existing mypy errors in 3 files:
+1. `headroom/checks/rcps/check_third_party_assumerole.py:134` - Return type mismatch with base class
+2. `headroom/parse_results.py:187` - Missing type annotation for `analyzer`
+3. `headroom/parse_results.py:238` - `str | None` passed to `.get()` which expects `str`
+4. `headroom/terraform/generate_rcps.py:185` - Missing type annotation for `analyzer`
+5. `headroom/terraform/generate_rcps.py:192, 195` - Using `any` (builtin) instead of `Any` (typing)
+6. `headroom/terraform/generate_rcps.py:235` - `str | None` passed to `.get()` which expects `str`
+
+### Changes Made
+
+#### 1. Fixed Return Type Mismatch in `check_third_party_assumerole.py`
+
+```python
+# Before
+def execute(self, session: boto3.Session) -> Set[str]:
+    """Execute the check and return third-party account IDs."""
+    super().execute(session)
+    return self.all_third_party_accounts
+
+# After
+def execute(self, session: boto3.Session) -> None:
+    """Execute the check."""
+    super().execute(session)
+```
+
+Updated tests to access `check.all_third_party_accounts` directly instead of using the return value.
+
+#### 2. Added Type Annotations in `parse_results.py`
+
+```python
+# Before
+analyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
+
+# After
+analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
+```
+
+Fixed `None` check for `candidate.target_id`:
+
+```python
+# Before
+elif candidate.level == "ou":
+    ou_name = organization_hierarchy.organizational_units.get(
+        candidate.target_id,  # Could be None!
+        OrganizationalUnit("", "", None, [], [])
+    ).name
+
+# After
+elif candidate.level == "ou" and candidate.target_id is not None:
+    ou_name = organization_hierarchy.organizational_units.get(
+        candidate.target_id,  # Now guaranteed to be str
+        OrganizationalUnit("", "", None, [], [])
+    ).name
+```
+
+#### 3. Fixed Type Issues in `generate_rcps.py`
+
+Added `Any` import:
+
+```python
+# Before
+from typing import Dict, List, Optional, Set
+
+# After
+from typing import Any, Dict, List, Optional, Set
+```
+
+Fixed builtin `any` vs typing `Any`:
+
+```python
+# Before
+def is_safe_for_root_rcp(results: List[Dict[str, any]]) -> bool:
+def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, any]]) -> bool:
+
+# After
+def is_safe_for_root_rcp(results: List[Dict[str, Any]]) -> bool:
+def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
+```
+
+Added type annotation and None check:
+
+```python
+# Before
+analyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
+# ...
+elif candidate.level == "ou":
+    ou_info = organization_hierarchy.organizational_units.get(candidate.target_id)
+
+# After
+analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
+# ...
+elif candidate.level == "ou" and candidate.target_id is not None:
+    ou_info = organization_hierarchy.organizational_units.get(candidate.target_id)
+```
+
+### Test Results
+
+All 321 tests pass with 100% code coverage:
+
+```bash
+============================= 321 passed in 0.75s ======================
+headroom/*: 1163 statements, 100% coverage
+tests/*: 3138 statements, 100% coverage
+mypy headroom/ tests/: Success: no issues found in 46 source files
+pre-commit run --all-files: ✅ All checks passed
+```
+
+### Summary
+
+✅ **All 7 pre-existing mypy errors fixed**
+✅ **Zero mypy errors in entire codebase (46 files)**
+✅ **All 321 tests pass**
+✅ **100% code coverage maintained**
+✅ **Pre-commit checks pass**
+
+### Key Lessons
+
+1. **`any` vs `Any`**: Python has a builtin `any()` function. For type hints, always use `typing.Any`.
+2. **Type narrowing**: When a value could be `None`, add explicit checks like `if x is not None:` before using it, so mypy can narrow the type.
+3. **Explicit type annotations**: When mypy can't infer the type, add explicit annotations like `analyzer: HierarchyPlacementAnalyzer = ...`
+4. **LSP compliance**: Subclass method signatures must match base class signatures (return types, parameter types, etc.).
+
+---
+
+## Saturday, November 8, 2025 - Fixed Check Registration Issue
+
+### Problem
+
+After the recent refactoring to use the decorator-based registry pattern, running the tool resulted in:
+
+```
+🚨 Terraform Generation Error:
+
+Unknown check name: third_party_assumerole. Must be one of []
+```
+
+The registry was empty because check modules were never being imported.
+
+### Root Cause
+
+The `headroom/checks/__init__.py` file had a comment about importing modules to trigger registration, but the actual imports were missing:
+
+```python
+"""
+Compliance checks for Headroom security analysis.
+
+Imports all check modules to ensure they register themselves via the
+@register_check decorator.
+"""
+
+
+# Import modules to trigger registration
+# Check classes are accessed via registry, not direct imports
+__all__ = []
+```
+
+The `@register_check` decorator only executes when the module is imported. Without importing the check modules, the decorators never ran and the checks never registered themselves in `_CHECK_REGISTRY`.
+
+### Solution
+
+Added the missing imports to `headroom/checks/__init__.py`:
+
+```python
+from .rcps import check_third_party_assumerole  # noqa: F401
+from .scps import deny_imds_v1_ec2  # noqa: F401
+```
+
+The `# noqa: F401` comment tells flake8 to ignore "imported but unused" warnings, which is appropriate here since we're importing for the side effect of registration, not to use the imported names.
+
+### Verification
+
+All tests pass with 100% coverage:
+
+```bash
+============================= 321 passed in 0.70s ==============================
+
+headroom/*: 1165 statements, 100% coverage
+tests/*: 3138 statements, 100% coverage
+
+mypy headroom/ tests/: Success: no issues found in 46 source files
+
+pre-commit run --all-files: ✅ All checks passed
+```
+
+### Key Lesson
+
+When using decorator-based registration patterns, ensure that all modules containing decorated classes are imported somewhere. Otherwise, the decorators never execute and registration never happens. A common pattern is to import all registerable modules in the package's `__init__.py` file.
+
+### Follow-up
+
+Added a detailed comment explaining why the imports are necessary:
+
+```python
+# These imports are required to trigger decorator execution and register checks.
+# The @register_check decorator only runs when the module is imported, so without
+# these imports, the checks would never register themselves in _CHECK_REGISTRY.
+from .rcps import check_third_party_assumerole  # noqa: F401
+from .scps import deny_imds_v1_ec2  # noqa: F401
+```
+
+This makes the intent clear to future maintainers and prevents accidental removal of these "unused" imports.

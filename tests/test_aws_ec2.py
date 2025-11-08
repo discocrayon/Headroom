@@ -246,8 +246,8 @@ class TestGetImdsV1Ec2Analysis:
         assert results[3].imdsv1_allowed is False
         assert results[3].exemption_tag_present is False
 
-    def test_get_imds_v1_ec2_analysis_no_regions_fallback(self) -> None:
-        """Test fallback to current region when describe_regions fails."""
+    def test_get_imds_v1_ec2_analysis_no_regions_raises_error(self) -> None:
+        """Test that describe_regions failure raises ClientError."""
         mock_session = MagicMock()
         mock_session.region_name = "us-west-1"
 
@@ -258,37 +258,13 @@ class TestGetImdsV1Ec2Analysis:
             "DescribeRegions"
         )
 
-        # Mock regional client
-        mock_regional_ec2 = MagicMock()
-        mock_paginator = MagicMock()
+        mock_session.client.return_value = mock_ec2
 
-        instances_page = {
-            "Reservations": [
-                {
-                    "Instances": [
-                        self.create_mock_instance("i-fallback123")
-                    ]
-                }
-            ]
-        }
+        # Execute function - should raise ClientError
+        with pytest.raises(ClientError) as exc_info:
+            get_imds_v1_ec2_analysis(mock_session)
 
-        mock_paginator.paginate.return_value = [instances_page]
-        mock_regional_ec2.get_paginator.return_value = mock_paginator
-
-        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
-            if region_name is None:
-                return mock_ec2
-            return mock_regional_ec2
-
-        mock_session.client.side_effect = client_side_effect
-
-        # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
-
-        # Verify fallback worked
-        assert len(results) == 1
-        assert results[0].region == "us-west-1"
-        assert results[0].instance_id == "i-fallback123"
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
     def test_get_imds_v1_ec2_analysis_skips_terminated_instances(self) -> None:
         """Test that terminated instances are skipped."""

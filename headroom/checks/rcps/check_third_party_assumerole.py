@@ -115,7 +115,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             Dictionary with check-specific summary fields
         """
         total_roles = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
-        
+
         roles_with_wildcards_and_third_party = sum(
             1 for role in check_result.violations
             if role.get("third_party_account_ids")
@@ -131,18 +131,14 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             "third_party_account_count": len(self.all_third_party_accounts),
         }
 
-    def execute(self, session: boto3.Session) -> Set[str]:
+    def execute(self, session: boto3.Session) -> None:
         """
-        Execute the check and return third-party account IDs.
+        Execute the check.
 
         Args:
             session: boto3 Session with appropriate permissions
-
-        Returns:
-            Set of third-party account IDs found in this account
         """
         super().execute(session)
-        return self.all_third_party_accounts
 
     def _build_results_data(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
         """

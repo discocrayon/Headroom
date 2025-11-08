@@ -89,14 +89,10 @@ def write_check_results(
             data_to_write["summary"] = data_to_write["summary"].copy()
             data_to_write["summary"].pop("account_id", None)
 
-    try:
-        with open(output_file, 'w') as f:
-            json.dump(data_to_write, f, indent=2, default=str)
-            f.write('\n')
-        logger.info(f"Wrote results to {output_file}")
-    except IOError as e:
-        logger.error(f"Failed to write results to {output_file}: {e}")
-        raise
+    with open(output_file, 'w') as f:
+        json.dump(data_to_write, f, indent=2, default=str)
+        f.write('\n')
+    logger.info(f"Wrote results to {output_file}")
 
 
 def get_results_dir(check_name: str, results_base_dir: str) -> str:

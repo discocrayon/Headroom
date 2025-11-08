@@ -85,18 +85,17 @@ class TestAssumeRole:
             "AssumeRole"
         )
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(ClientError) as exc_info:
             assume_role(
                 role_arn="arn:aws:iam::123456789012:role/TestRole",
                 session_name="TestSession",
                 base_session=mock_base_session
             )
 
-        assert "Failed to assume role" in str(exc_info.value)
-        assert "arn:aws:iam::123456789012:role/TestRole" in str(exc_info.value)
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
-    def test_assume_role_includes_role_arn_in_error(self) -> None:
-        """Test that error message includes the role ARN."""
+    def test_assume_role_propagates_client_error_type(self) -> None:
+        """Test that ClientError propagates with original error code."""
         mock_base_session = MagicMock()
         mock_sts_client = MagicMock()
         mock_base_session.client.return_value = mock_sts_client
@@ -108,15 +107,14 @@ class TestAssumeRole:
 
         role_arn = "arn:aws:iam::999999999999:role/SpecificRole"
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(ClientError) as exc_info:
             assume_role(
                 role_arn=role_arn,
                 session_name="TestSession",
                 base_session=mock_base_session
             )
 
-        error_message = str(exc_info.value)
-        assert role_arn in error_message
+        assert exc_info.value.response["Error"]["Code"] == "InvalidParameter"
 
     def test_assume_role_extracts_credentials_correctly(self) -> None:
         """Test that credentials are extracted correctly from response."""
@@ -175,4 +173,3 @@ class TestAssumeRole:
         )
 
         mock_base_session.client.assert_called_once_with("sts")
-

@@ -7,7 +7,7 @@ Generates Terraform files for RCP deployment based on third-party account analys
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from .utils import make_safe_variable_name, write_terraform_file
 from ..types import (
@@ -182,17 +182,17 @@ def determine_rcp_placement(
         logger.info("No third-party accounts found in any account (excluding accounts with wildcards)")
         return []
 
-    analyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
+    analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
 
     account_data = [
         {"account_id": acc_id, "third_party_accounts": third_parties}
         for acc_id, third_parties in account_third_party_map.items()
     ]
 
-    def is_safe_for_root_rcp(results: List[Dict[str, any]]) -> bool:
+    def is_safe_for_root_rcp(results: List[Dict[str, Any]]) -> bool:
         return len(accounts_with_wildcards) == 0
 
-    def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, any]]) -> bool:
+    def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
         if _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards):
             return False
         return len(results) >= MIN_ACCOUNTS_FOR_OU_LEVEL_RCP
@@ -226,7 +226,7 @@ def determine_rcp_placement(
             ))
             return recommendations
 
-        elif candidate.level == "ou":
+        elif candidate.level == "ou" and candidate.target_id is not None:
             ou_third_party_accounts: Set[str] = set()
             for acc_id in candidate.affected_accounts:
                 if acc_id in account_third_party_map:

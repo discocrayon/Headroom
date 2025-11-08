@@ -140,4 +140,3 @@ class HierarchyPlacementAnalyzer(Generic[T]):
                 ou_results[ou_id] = []
             ou_results[ou_id].append(result)
         return ou_results
-

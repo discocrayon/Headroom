@@ -51,7 +51,7 @@ class TestCheckThirdPartyAssumeRole:
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
             )
-            result = check.execute(mock_session)
+            check.execute(mock_session)
 
             mock_analyze.assert_called_once_with(mock_session, org_account_ids)
             mock_write.assert_called_once()
@@ -77,7 +77,7 @@ class TestCheckThirdPartyAssumeRole:
             assert len(results_data["roles_third_parties_can_access"]) == 2
             assert len(results_data["roles_with_wildcards"]) == 0
 
-            assert result == {"777777777777", "888888888888", "999999999999"}
+            assert check.all_third_party_accounts == {"777777777777", "888888888888", "999999999999"}
 
     def test_roles_with_wildcards(self) -> None:
         """Test check with roles having wildcard principals."""
@@ -109,7 +109,7 @@ class TestCheckThirdPartyAssumeRole:
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
             )
-            result = check.execute(mock_session)
+            check.execute(mock_session)
 
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]
@@ -123,7 +123,7 @@ class TestCheckThirdPartyAssumeRole:
             assert len(results_data["roles_with_wildcards"]) == 1
             assert results_data["roles_with_wildcards"][0]["has_wildcard_principal"] is True
 
-            assert result == set()
+            assert check.all_third_party_accounts == set()
 
     def test_roles_with_both_wildcard_and_third_party(self) -> None:
         """Test check with role having both wildcard and third-party accounts."""
@@ -155,7 +155,7 @@ class TestCheckThirdPartyAssumeRole:
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
             )
-            result = check.execute(mock_session)
+            check.execute(mock_session)
 
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]
@@ -163,7 +163,7 @@ class TestCheckThirdPartyAssumeRole:
             assert len(results_data["roles_with_wildcards"]) == 1
             assert len(results_data["roles_third_parties_can_access"]) == 1
 
-            assert result == {"999999999999"}
+            assert check.all_third_party_accounts == {"999999999999"}
 
     def test_no_roles_with_findings(self) -> None:
         """Test check with no roles having third-party access or wildcards."""
@@ -188,7 +188,7 @@ class TestCheckThirdPartyAssumeRole:
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
             )
-            result = check.execute(mock_session)
+            check.execute(mock_session)
 
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]
@@ -200,7 +200,7 @@ class TestCheckThirdPartyAssumeRole:
             assert summary["violations"] == 0
             assert summary["third_party_account_count"] == 0
 
-            assert result == set()
+            assert check.all_third_party_accounts == set()
 
     def test_exclude_account_ids_parameter(self) -> None:
         """Test that exclude_account_ids parameter is passed correctly."""

@@ -116,6 +116,7 @@ class TestMainIntegration:
         with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
@@ -161,6 +162,7 @@ class TestMainIntegration:
         with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
@@ -211,6 +213,7 @@ class TestMainIntegration:
         with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
@@ -531,6 +534,7 @@ class TestMainIntegration:
         with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
@@ -569,6 +573,7 @@ class TestMainIntegration:
         with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
@@ -624,6 +629,7 @@ class TestMainIntegration:
                 account_third_party_map={},
                 accounts_with_wildcards=set()
             )),
+            patch('headroom.main.generate_terraform_org_info'),
             patch('headroom.main.analyze_organization_structure')
         ):
             main()
@@ -731,6 +737,7 @@ class TestMainIntegration:
                 account_third_party_map={"111111111111": {"333333333333"}},
                 accounts_with_wildcards=set()
             )),
+            patch('headroom.main.generate_terraform_org_info'),
             patch('headroom.main.analyze_organization_structure', return_value=mock_org_hierarchy),
             patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
             patch('headroom.main.generate_rcp_terraform') as mock_gen_rcp,

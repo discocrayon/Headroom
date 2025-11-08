@@ -4,6 +4,7 @@ Tests for terraform.generate_org_info module.
 Tests Terraform configuration generation for AWS Organizations structure data.
 """
 
+import pytest
 from unittest.mock import Mock, patch
 
 
@@ -130,8 +131,9 @@ class TestTerraformGeneration:
         mock_analyze.side_effect = RuntimeError("Analysis failed")
         mock_session = Mock()
 
-        # Should not raise exception, just log error
-        generate_terraform_org_info(mock_session, "test_path/grab_org_info.tf")
+        # Should raise exception (fail fast)
+        with pytest.raises(RuntimeError, match="Analysis failed"):
+            generate_terraform_org_info(mock_session, "test_path/grab_org_info.tf")
 
         mock_analyze.assert_called_once_with(mock_session)
 
@@ -148,8 +150,9 @@ class TestTerraformGeneration:
         mock_analyze.return_value = hierarchy
         mock_session = Mock()
 
-        # Should not raise exception, just log error
-        generate_terraform_org_info(mock_session, "test_path/grab_org_info.tf")
+        # Should raise exception (fail fast)
+        with pytest.raises(IOError, match="File write error"):
+            generate_terraform_org_info(mock_session, "test_path/grab_org_info.tf")
 
         mock_analyze.assert_called_once_with(mock_session)
         mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)

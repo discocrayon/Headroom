@@ -163,7 +163,7 @@ class TestWriteCheckResults:
             assert expected_path.exists()
 
     def test_write_check_results_raises_on_io_error(self) -> None:
-        """Test that IOError is raised and logged when file writing fails."""
+        """Test that IOError is raised when file writing fails."""
         check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
         account_id = "111111111111"
@@ -177,9 +177,9 @@ class TestWriteCheckResults:
         with (
             patch("os.makedirs"),  # Mock makedirs to avoid actual directory creation
             patch("builtins.open", return_value=mock_file_handle),
-            patch("headroom.write_results.logger") as mock_logger,
             patch("json.dump", side_effect=IOError("Permission denied"))
         ):
+            # Should raise IOError (fail fast, no catch-and-rethrow)
             with pytest.raises(IOError, match="Permission denied"):
                 write_check_results(
                     check_name=check_name,
@@ -188,9 +188,6 @@ class TestWriteCheckResults:
                     results_data=results_data,
                     results_base_dir="/some/dir",
                 )
-
-            # Verify error was logged
-            assert mock_logger.error.called
 
     def test_write_check_results_excludes_account_id_from_json(self) -> None:
         """Test that account_id is excluded from JSON when exclude_account_ids=True."""

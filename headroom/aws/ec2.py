@@ -1,11 +1,14 @@
 """EC2-related security analysis functions for Headroom."""
 
+import logging
 import boto3
 from dataclasses import dataclass
 from typing import List
 
 from botocore.exceptions import ClientError
 from mypy_boto3_ec2.client import EC2Client
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,13 +36,9 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
     results = []
     ec2_client: EC2Client = session.client('ec2')
 
-    try:
-        # Get all available regions
-        regions_response = ec2_client.describe_regions()
-        regions = [region['RegionName'] for region in regions_response['Regions']]
-    except ClientError:
-        # If we can't get regions, fall back to current region
-        regions = [session.region_name or 'us-east-1']
+    # Get all available regions
+    regions_response = ec2_client.describe_regions()
+    regions = [region['RegionName'] for region in regions_response['Regions']]
 
     for region in regions:
         try:

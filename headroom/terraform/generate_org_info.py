@@ -26,15 +26,15 @@ def generate_terraform_org_info(session: boto3.Session, output_path: str) -> Non
     Args:
         session: AWS session with Organizations API access
         output_path: Path to write the Terraform file
+
+    Raises:
+        RuntimeError: If organization structure analysis fails
+        IOError: If file write fails
     """
     logger.info("Generating Terraform organization info file")
 
-    try:
-        organization_hierarchy = analyze_organization_structure(session)
-        logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs and {len(organization_hierarchy.accounts)} accounts")
-    except RuntimeError as e:
-        logger.error(f"Failed to analyze organization structure: {e}")
-        return
+    organization_hierarchy = analyze_organization_structure(session)
+    logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs and {len(organization_hierarchy.accounts)} accounts")
 
     # Generate Terraform content
     terraform_content = _generate_terraform_content(organization_hierarchy)
@@ -43,12 +43,9 @@ def generate_terraform_org_info(session: boto3.Session, output_path: str) -> Non
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    try:
-        with open(output_file, 'w') as f:
-            f.write(terraform_content)
-        logger.info(f"Successfully generated Terraform file: {output_path}")
-    except IOError as e:
-        logger.error(f"Failed to write Terraform file: {e}")
+    with open(output_file, 'w') as f:
+        f.write(terraform_content)
+    logger.info(f"Successfully generated Terraform file: {output_path}")
 
 
 def _generate_terraform_header() -> List[str]:

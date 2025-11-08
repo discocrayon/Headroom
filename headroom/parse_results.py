@@ -14,8 +14,8 @@ from .analysis import get_security_analysis_session, get_management_account_sess
 from .config import HeadroomConfig
 from .aws.organization import analyze_organization_structure
 from .types import (
-    OrganizationalUnit, AccountOrgPlacement, OrganizationHierarchy,
-    SCPCheckResult, SCPPlacementRecommendations, RCPPlacementRecommendations
+    OrganizationalUnit, OrganizationHierarchy, SCPCheckResult,
+    SCPPlacementRecommendations, RCPPlacementRecommendations
 )
 from .aws.organization import lookup_account_id_by_name
 from .placement import HierarchyPlacementAnalyzer
@@ -41,7 +41,7 @@ def _load_result_file_json(result_file: Path) -> Dict[str, Any]:
         with open(result_file, 'r') as f:
             data: Dict[str, Any] = json.load(f)
             return data
-    except (json.JSONDecodeError, KeyError) as e:
+    except json.JSONDecodeError as e:
         raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
 
 
@@ -184,7 +184,7 @@ def determine_scp_placement(
     Ensures safe deployment without breaking existing violations that would cause operational issues.
     """
     recommendations: List[SCPPlacementRecommendations] = []
-    analyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
+    analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
 
     check_groups: Dict[str, List[SCPCheckResult]] = {}
     for result in results_data:
@@ -233,7 +233,7 @@ def determine_scp_placement(
                     compliance_percentage=100.0,
                     reasoning="All accounts in organization have zero violations - safe to deploy at root level"
                 ))
-            elif candidate.level == "ou":
+            elif candidate.level == "ou" and candidate.target_id is not None:
                 ou_name = organization_hierarchy.organizational_units.get(
                     candidate.target_id,
                     OrganizationalUnit("", "", None, [], [])

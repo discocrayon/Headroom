@@ -293,19 +293,15 @@ def run_checks(
 
         logger.info(f"Running checks for account: {account_identifier}")
 
-        try:
-            headroom_session = get_headroom_session(config, security_session, account_info.account_id)
+        headroom_session = get_headroom_session(config, security_session, account_info.account_id)
 
-            if not scp_exist:
-                run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
+        if not scp_exist:
+            run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
 
-            if not rcp_exist:
-                run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
+        if not rcp_exist:
+            run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
 
-            logger.info(f"Checks completed for account: {account_identifier}")
-
-        except RuntimeError as e:
-            raise RuntimeError(f"Failed to run checks for account {account_identifier}: {e}")
+        logger.info(f"Checks completed for account: {account_identifier}")
 
 
 def perform_analysis(config: HeadroomConfig) -> None:

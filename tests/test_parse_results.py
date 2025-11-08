@@ -414,6 +414,7 @@ class TestResultFileParsing:
             with pytest.raises(RuntimeError, match="Account name 'unknown-account' .* not found in organization hierarchy"):
                 parse_scp_result_files(temp_dir, org_hierarchy)
 
+
 class TestSCPPlacementDetermination:
     """Test SCP placement determination logic."""
 
@@ -725,8 +726,10 @@ class TestParseResultsIntegration:
         )
 
         with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session):
-            # Should return early without error
-            parse_scp_results(config)
+            with pytest.raises(ClientError) as exc_info:
+                parse_scp_results(config)
+
+            assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
     def test_parse_scp_results_organization_analysis_failure(self) -> None:
         """Test error handling when organization analysis fails."""
