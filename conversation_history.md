@@ -10284,3 +10284,218 @@ The specification now provides complete reproduction instructions for all framew
 ✅ Complete code examples provided for all major patterns
 ✅ Architecture benefits and design decisions documented
 ✅ Test coverage and quality metrics included
+
+---
+
+## Saturday, November 8, 2025 - 18:30 - Updated README.md with RCP Support and Recent Changes
+
+**User Request:** "Can you update the @README.md file with all the changes made to @Headroom-Specification.md detailed in @conversation_history.md ? There is RCP support now"
+
+**Task:** Update README.md to reflect all the RCP (Resource Control Policy) support and other improvements documented in the Headroom-Specification.md and conversation history.
+
+### Changes Made to README.md
+
+**1. Updated About Section:**
+- Changed "Create allowlists of violations, passing them to SCPs module" to "Create allowlists of violations, passing them to RCPs/SCPs modules (e.g., RCP third-party account allowlists)"
+- Reflects that allowlisting functionality is now implemented for RCPs
+
+**2. Updated Usage Section:**
+- Changed "writes SCP Terraform" to "writes SCP/RCP Terraform"
+- Updated CLI help output to include `--rcps-dir` parameter
+- Updated usage description from "analyze AWS org and generate SCP Terraform" to "analyze AWS org and generate SCP/RCP Terraform"
+
+**3. Updated Documentation Links:**
+- Added reference to `test_environments/rcps/` alongside `test_environments/scps/`
+
+**4. Updated Implementation Status:**
+- Added: "✅ **RCP Analysis Engine** - IAM trust policy analysis for third-party account access detection"
+- Updated: "✅ **Terraform Generation** - Auto-generation of AWS Organization structure via data sources and corresponding SCP/RCP configurations"
+- Updated: "✅ **Code Quality** - 100% test coverage, type safety, modern Python standards, extensible check framework"
+
+**5. Added RCPs Module Section:**
+- Added new section for RCPs Module with link to test_environment/modules/rcps
+- Documented that it implements Resource Control Policies for identity-based controls
+- Noted support for third-party account allowlists with union strategy
+
+**6. Added RCP Compliance Analysis Section:**
+- Added new section for RCP checks
+- Documented Third-Party AssumeRole Check:
+  - Check name: `third_party_assumerole`
+  - Purpose: Analyzes IAM role trust policies to identify third-party account access
+  - Detection: Identifies third-party account IDs and wildcard principals
+
+**7. Updated General Check Information:**
+- Modified to indicate checks scan "all AWS regions (SCPs) or analyzes IAM policies (RCPs)"
+- Updated to mention both SCP/RCP module exemption support
+
+**8. Updated Terraform Auto-Generation:**
+- Added: "**RCP Configurations**: Creates account-specific, OU-specific, and root-level RCP deployment files with third-party account allowlists"
+- Updated: "**Safety-First Deployment**: Only generates SCPs for 100% compliant targets; RCPs use wildcard detection for safety"
+- Added: "**Union Strategy**: OU and root-level RCPs combine all third-party accounts from child accounts/OUs for comprehensive allowlisting"
+
+**9. Updated Comprehensive Reporting:**
+- Changed "SCP Recommendations" to "SCP/RCP Recommendations"
+- Added: "**Third-Party Account Detection**: Automatic identification of all external accounts with AssumeRole access"
+
+**10. Updated Running Analysis Section:**
+- Changed comment from "Run SCP compliance analysis" to "Run SCP and RCP compliance analysis"
+
+**11. Updated Output Section:**
+- Reorganized to show both SCP and RCP output files:
+  - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
+- Added RCP grab_org_info.tf: `test_environment/rcps/grab_org_info.tf`
+- Added RCP configurations: `test_environment/rcps/{account_name}_rcps.tf`
+
+**12. Updated Module Structure:**
+- Added `aws/iam.py` - IAM trust policy analysis
+- Added `aws/sessions.py` - Session management utilities
+- Restructured checks/ to show extensible framework:
+  - Added `base.py` - BaseCheck abstract class (Template Method pattern)
+  - Added `registry.py` - Check registration and discovery
+  - Organized into `scps/` and `rcps/` subdirectories
+- Added terraform modules:
+  - Added `generate_rcps.py` - RCP configurations
+  - Added `utils.py` - Shared Terraform utilities
+- Added new modules:
+  - Added `constants.py` - Shared constants
+  - Added `output.py` - Centralized output handling
+
+**13. Updated Data Flow:**
+- Changed "Execute SCP compliance checks" to "Execute SCP and RCP compliance checks"
+- Changed "determine SCP placement" to "determine SCP/RCP placement"
+- Changed "Create deployment configurations" to "Create deployment configurations with appropriate allowlists"
+
+**14. Reorganized Current Checks Section:**
+- Changed from "Current SCP Checks" to "Current Checks"
+- Created subsections for "SCP Checks" and "RCP Checks"
+- Added detailed Third-Party AssumeRole Analysis section with:
+  - Check name, purpose, detection capabilities
+  - Output description
+  - Allowlisting functionality
+
+**15. Enhanced Sample Output:**
+- Added example RCP placement recommendation output showing:
+  - OU-level RCP recommendation
+  - Third-party account count
+  - Reasoning for OU-level deployment
+- Added log line: "INFO:headroom.parse_results:RCP placement analysis completed"
+- Added log line: "INFO:headroom.terraform.generate_rcps:Generated RCP Terraform file: test_environment/rcps/acme_acquisition_ou_rcps.tf"
+- Added complete example of generated RCP Terraform file showing:
+  - Module configuration for OU-level RCP
+  - `enforce_assume_role_org_identities = true`
+  - `third_party_assumerole_account_ids_allowlist` with sample account IDs
+  - Comment explaining union strategy
+- Added link to RCPs module documentation
+
+### Key Improvements Documented
+
+**RCP Support:**
+- Complete RCP analysis engine for IAM trust policy analysis
+- Third-party account detection and allowlisting
+- Wildcard principal detection for safety
+- Multi-level RCP deployment (account, OU, root)
+- Union strategy for combining third-party accounts at OU/root levels
+
+**Framework Improvements:**
+- Extensible check framework with BaseCheck abstract class
+- Registry pattern for check discovery
+- Template Method pattern for consistent check execution
+- Session management extraction
+- Centralized output handling
+
+**Architecture:**
+- Clear separation of SCP and RCP checks into subdirectories
+- Shared Terraform utilities
+- Consistent data models and types
+
+### Verification
+- All changes based on documented improvements in Headroom-Specification.md
+- Sample output reflects actual tool behavior
+- Module structure matches current codebase organization
+- No linter errors in updated README.md
+
+### Files Modified
+- README.md: Updated with comprehensive RCP support documentation
+- conversation_history.md: Added this entry
+
+### Outcome
+✅ README.md now fully documents RCP support
+✅ All major features from recent development documented
+✅ Sample output updated with RCP examples
+✅ Architecture section reflects current codebase structure
+✅ Clear documentation of both SCP and RCP checks
+✅ Usage examples updated for both policy types
+
+---
+
+## Saturday, November 8, 2025 - Update Documentation Mermaid Diagrams
+
+### Request
+User asked to update the mermaid diagrams in the documentation/ folder to reflect the current codebase.
+
+### Changes Made
+
+#### 1. Updated class_diagram.md
+- Added `rcps_dir` field to `HeadroomConfig`
+- Split `CheckResult` into base class with two subclasses:
+  - `SCPCheckResult` (with violations, exemptions, compliant, total_instances, compliance_percentage)
+  - `RCPCheckResult` (with third_party_account_ids, has_wildcard, total_roles_analyzed)
+- Added `RCPPlacementRecommendations` class
+- Added `RCPParseResult` class (with account_third_party_map and accounts_with_wildcards)
+- Added `BaseCheck<T>` abstract class with template method pattern
+- Added `CategorizedCheckResult` class
+- Added `PlacementCandidate` class
+- Added `HierarchyPlacementAnalyzer<T>` class
+- Added relationships showing inheritance (CheckResult parent classes) and composition
+
+#### 2. Updated module_dependency.md
+- Added all new module dependencies including:
+  - `headroom.checks.registry` and `headroom.checks.base`
+  - `headroom.checks.scps.deny_imds_v1_ec2`
+  - `headroom.checks.rcps.check_third_party_assumerole`
+  - `headroom.placement.hierarchy`
+  - `headroom.terraform.generate_rcps`
+  - `headroom.output`
+  - `headroom.aws.iam`
+  - `headroom.aws.sessions`
+- Updated main.py dependencies to reflect RCP workflow
+- Updated analysis.py to use registry pattern
+- Added complete dependency graph showing all current module relationships
+
+#### 3. Updated execution_flow.md
+- Enhanced Step 2 to show both SCP and RCP checks running via registry
+- Added detail showing SCP checks (EC2 IMDSv2 compliance)
+- Added detail showing RCP checks (IAM role trust policies)
+- Enhanced Step 3 to show both SCP and RCP result parsing and Terraform generation
+- Shows placement determination for both policy types (root/OU/account)
+
+#### 4. Updated sequences.md
+- **Main CLI Flow**: Updated to show separate SCP and RCP workflows
+  - Added organization context setup
+  - Shows SCP result parsing and Terraform generation
+  - Shows RCP result parsing and Terraform generation
+  - Reflects actual function calls from current codebase
+- **Security Analysis**: Completely rewrote to show registry-based check execution
+  - Shows `get_all_check_classes()` calls to registry
+  - Shows BaseCheck template method execution pattern
+  - Shows separate loops for SCP and RCP checks
+  - Shows analyze() -> categorize_result() -> build_summary_fields() flow
+  - Results written to separate scps/ and rcps/ subdirectories
+- **Added SCP Results Parsing and Placement**: New diagram showing:
+  - File parsing from results_dir/scps/**/*.json
+  - HierarchyPlacementAnalyzer usage with safety predicates
+  - Root/OU/account level determination based on violations
+- **Added RCP Results Parsing and Placement**: New diagram showing:
+  - File parsing from results_dir/rcps/third_party_assumerole/*.json
+  - RCPParseResult creation with account-to-third-party mapping
+  - Wildcard account filtering
+  - Per-third-party-account placement recommendations
+
+### Outcome
+✅ All mermaid diagrams now accurately reflect the current codebase
+✅ Registry pattern and BaseCheck template method documented
+✅ Both SCP and RCP workflows fully represented
+✅ HierarchyPlacementAnalyzer integration shown
+✅ Type hierarchy (CheckResult -> SCPCheckResult/RCPCheckResult) documented
+✅ Complete module dependency graph updated
