@@ -6702,7 +6702,7 @@ Files changed:
 
 ✅ All 311 tests pass (3 new tests added)
 ✅ 100% code coverage on headroom/* (1089 statements)
-✅ 100% code coverage on tests/* (3048 statements)  
+✅ 100% code coverage on tests/* (3048 statements)
 ✅ mypy: no issues found in 40 source files
 ✅ All pre-commit hooks pass (flake8, autoflake, autopep8)
 ✅ tox passes completely
@@ -6713,3 +6713,118 @@ Files changed:
 - No linter errors
 - No type errors
 - All pre-commit hooks passing
+
+---
+
+## 2025-11-08 - Refactoring Item 8: Type Aliases for Complex Types
+
+**Date:** Saturday, November 8, 2025
+
+**Task:** Add type aliases for commonly-used complex types to improve code readability and maintainability (REFACTORING_IDEAS.md Item 8).
+
+**Problem:**
+Complex type hints like `Dict[str, Set[str]]` and `Dict[str, List[SCPPlacementRecommendations]]` appear multiple times across the codebase, making the code harder to read and maintain.
+
+**Analysis:**
+
+Searched the codebase for complex type patterns:
+- `Dict[str, Set[str]]` - Found 18 occurrences (6 in headroom code, 12 in tests)
+  - Used for account third-party mappings in RCP generation
+- `Dict[str, List[SCPPlacementRecommendations]]` - Found 2 occurrences
+  - Used for grouping SCP recommendations by target ID in generate_scps.py
+
+**Implementation:**
+
+### 1. Added Type Aliases to `headroom/types.py`
+
+```python
+# Type aliases for commonly-used complex types
+AccountThirdPartyMap = Dict[str, Set[str]]
+"""Mapping of account IDs to sets of third-party account IDs they grant access to."""
+
+GroupedSCPRecommendations = Dict[str, List["SCPPlacementRecommendations"]]
+"""Mapping of target IDs (account/OU) to lists of SCP placement recommendations."""
+```
+
+### 2. Updated `RCPParseResult` in `headroom/types.py`
+
+Changed `account_third_party_map` field to use new type alias:
+```python
+@dataclass
+class RCPParseResult:
+    account_third_party_map: AccountThirdPartyMap  # Was: Dict[str, Set[str]]
+    accounts_with_wildcards: Set[str]
+```
+
+### 3. Updated Headroom Code Files
+
+**`headroom/terraform/generate_rcps.py`:**
+- Added `AccountThirdPartyMap` to imports
+- Updated 5 function signatures and variable annotations:
+  - `parse_rcp_result_files()` - variable annotation
+  - `_check_root_level_placement()` - parameter type
+  - `_check_ou_level_placements()` - parameter type
+  - `_check_account_level_placements()` - parameter type
+  - `determine_rcp_placement()` - parameter type
+
+**`headroom/terraform/generate_scps.py`:**
+- Added `GroupedSCPRecommendations` to imports
+- Updated 2 variable annotations in `generate_scp_terraform()`:
+  - `account_recommendations`
+  - `ou_recommendations`
+
+### 4. Updated Test Files
+
+**`tests/test_generate_rcps.py`:**
+- Added `AccountThirdPartyMap` to imports
+- Replaced all 12 occurrences of `Dict[str, Set[str]]` with `AccountThirdPartyMap`
+- Tests affected: All tests in `TestDetermineRcpPlacement` class
+
+**Files Modified:**
+- `headroom/types.py` - Added type aliases and updated RCPParseResult
+- `headroom/terraform/generate_rcps.py` - 6 type hint updates
+- `headroom/terraform/generate_scps.py` - 2 type hint updates
+- `tests/test_generate_rcps.py` - 12 type hint updates
+
+**Benefits:**
+
+1. **Improved Readability:**
+   - `AccountThirdPartyMap` is more self-documenting than `Dict[str, Set[str]]`
+   - `GroupedSCPRecommendations` clearly describes intent vs generic Dict type
+
+2. **Single Source of Truth:**
+   - Type definitions centralized in `types.py`
+   - Future changes only need to be made in one place
+
+3. **Self-Documenting:**
+   - Type alias names convey semantic meaning
+   - Docstrings explain what each alias represents
+
+4. **Easier Refactoring:**
+   - If we need to change the underlying type structure, only update `types.py`
+   - All usages automatically get the new type
+
+**Results:**
+
+✅ All 311 tests pass
+✅ 100% code coverage maintained (1093 statements in headroom, 3048 in tests)
+✅ mypy: Success - no issues found in 40 source files
+✅ All pre-commit hooks pass
+✅ tox passes completely
+
+**Impact:**
+- 20 type hints made more readable (18 in code + 2 new aliases)
+- Zero runtime changes - purely type system improvements
+- Maintained full backward compatibility
+- No changes to public APIs
+
+**Refactoring Statistics:**
+- Total occurrences replaced: 20
+  - `AccountThirdPartyMap`: 18 replacements (6 in code, 12 in tests)
+  - `GroupedSCPRecommendations`: 2 replacements
+- Files modified: 4
+- Lines of type definition added: 5 (2 aliases + 3 docstring lines)
+
+**Completion:**
+
+This completes Refactoring Item 8 from REFACTORING_IDEAS.md. All items in the document are now complete! 🎉

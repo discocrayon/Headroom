@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import pytest
 from pathlib import Path
-from typing import Dict, List, Set, Generator
+from typing import List, Set, Generator
 from unittest.mock import patch
 from headroom.terraform.generate_rcps import (
     parse_rcp_result_files,
@@ -24,6 +24,7 @@ from headroom.terraform.generate_rcps import (
     _build_rcp_terraform_module
 )
 from headroom.types import (
+    AccountThirdPartyMap,
     OrganizationHierarchy,
     OrganizationalUnit,
     AccountOrgPlacement,
@@ -327,7 +328,7 @@ class TestCheckRootLevelPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that None is returned when any accounts have wildcards."""
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": {"999999999999"}
         }
         accounts_with_wildcards: Set[str] = {"222222222222"}
@@ -376,7 +377,7 @@ class TestCheckRootLevelPlacement:
         )
 
         # Only 2 accounts in map with matching third-party sets
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": set(),
             "222222222222": set()
         }
@@ -445,7 +446,7 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test root level placement when all accounts have same third-party accounts."""
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": {"999999999999"},
             "222222222222": {"999999999999"},
             "333333333333": {"999999999999"}
@@ -467,7 +468,7 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test root level placement unions different third-party accounts from different accounts."""
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": {"999999999999"},
             "222222222222": {"888888888888"},
             "333333333333": {"999999999999", "777777777777"}
@@ -491,7 +492,7 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test OU level placement unions third-party accounts from accounts in OU."""
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": {"999999999999", "888888888888"},
             "222222222222": {"999999999999", "666666666666"},
             "333333333333": {"777777777777"}
@@ -525,7 +526,7 @@ class TestDetermineRcpPlacement:
 
         With union logic, different third-party requirements can be combined at root level.
         """
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": {"999999999999"},
             "222222222222": {"888888888888"},
             "333333333333": {"777777777777"}
@@ -544,7 +545,7 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test with no third-party accounts."""
-        account_third_party_map: Dict[str, Set[str]] = {}
+        account_third_party_map: AccountThirdPartyMap = {}
         accounts_with_wildcards: Set[str] = set()
 
         recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
@@ -563,7 +564,7 @@ class TestDetermineRcpPlacement:
         the root RCP would affect those accounts too.
         """
         # Two accounts with identical (empty) third-party sets
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": set(),
             "222222222222": set()
         }
@@ -588,7 +589,7 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that OU-level RCP is skipped when any account in OU has wildcards, falls back to account-level."""
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": {"999999999999"},
             # 222222222222 has wildcards, not in map
             "333333333333": {"777777777777"}
@@ -622,7 +623,7 @@ class TestDetermineRcpPlacement:
 
         We need to block root-level with wildcards to force OU-level processing.
         """
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": {"999999999999"},
             "222222222222": {"999999999999"},
             "999999999999": {"888888888888"}  # This account doesn't exist in hierarchy
@@ -639,7 +640,7 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test with accounts that have empty third-party sets."""
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "111111111111": set(),
             "222222222222": set(),
             "333333333333": set()
@@ -661,7 +662,7 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that OU-level RCP is skipped when OU has fewer accounts than MIN_ACCOUNTS_FOR_OU_LEVEL_RCP."""
-        account_third_party_map: Dict[str, Set[str]] = {
+        account_third_party_map: AccountThirdPartyMap = {
             "333333333333": {"999999999999"}  # Single account in Development OU (ou-2222)
         }
         accounts_with_wildcards: Set[str] = {"dummy_account"}  # Block root to force OU processing

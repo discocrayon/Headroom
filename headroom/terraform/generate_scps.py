@@ -6,10 +6,10 @@ Generates Terraform files for SCP deployment based on compliance analysis recomm
 
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 from .utils import make_safe_variable_name, write_terraform_file
-from ..types import OrganizationHierarchy, SCPPlacementRecommendations
+from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlacementRecommendations
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -174,8 +174,8 @@ def generate_scp_terraform(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Group recommendations by level and target
-    account_recommendations: Dict[str, List[SCPPlacementRecommendations]] = {}
-    ou_recommendations: Dict[str, List[SCPPlacementRecommendations]] = {}
+    account_recommendations: GroupedSCPRecommendations = {}
+    ou_recommendations: GroupedSCPRecommendations = {}
     root_recommendations: List[SCPPlacementRecommendations] = []
 
     for rec in recommendations:

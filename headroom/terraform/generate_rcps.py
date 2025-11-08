@@ -10,7 +10,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .utils import make_safe_variable_name, write_terraform_file
-from ..types import OrganizationHierarchy, RCPCheckResult, RCPParseResult, RCPPlacementRecommendations
+from ..types import (
+    AccountThirdPartyMap,
+    OrganizationHierarchy,
+    RCPCheckResult,
+    RCPParseResult,
+    RCPPlacementRecommendations,
+)
 from ..constants import THIRD_PARTY_ASSUMEROLE
 from ..write_results import get_results_dir
 from ..parse_results import _load_result_file_json, _extract_account_id_from_result
@@ -94,7 +100,7 @@ def parse_rcp_result_files(
     check_dir_str = get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
     check_dir = Path(check_dir_str)
 
-    account_third_party_map: Dict[str, Set[str]] = {}
+    account_third_party_map: AccountThirdPartyMap = {}
     accounts_with_wildcards: Set[str] = set()
 
     if not check_dir.exists():
@@ -118,7 +124,7 @@ def parse_rcp_result_files(
 
 
 def _check_root_level_placement(
-    account_third_party_map: Dict[str, Set[str]],
+    account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy,
     accounts_with_wildcards: Set[str]
 ) -> Optional[RCPPlacementRecommendations]:
@@ -203,7 +209,7 @@ def _should_skip_ou_for_rcp(
 
 
 def _check_ou_level_placements(
-    account_third_party_map: Dict[str, Set[str]],
+    account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy,
     accounts_with_wildcards: Set[str]
 ) -> List[RCPPlacementRecommendations]:
@@ -260,7 +266,7 @@ def _check_ou_level_placements(
 
 
 def _check_account_level_placements(
-    account_third_party_map: Dict[str, Set[str]],
+    account_third_party_map: AccountThirdPartyMap,
     ou_recommendations: List[RCPPlacementRecommendations]
 ) -> List[RCPPlacementRecommendations]:
     """
@@ -295,7 +301,7 @@ def _check_account_level_placements(
 
 
 def determine_rcp_placement(
-    account_third_party_map: Dict[str, Set[str]],
+    account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy,
     accounts_with_wildcards: Set[str]
 ) -> List[RCPPlacementRecommendations]:

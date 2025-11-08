@@ -10,6 +10,14 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
 
+# Type aliases for commonly-used complex types
+AccountThirdPartyMap = Dict[str, Set[str]]
+"""Mapping of account IDs to sets of third-party account IDs they grant access to."""
+
+GroupedSCPRecommendations = Dict[str, List["SCPPlacementRecommendations"]]
+"""Mapping of target IDs (account/OU) to lists of SCP placement recommendations."""
+
+
 @dataclass
 class OrganizationalUnit:
     """Information about an Organizational Unit."""
@@ -106,7 +114,7 @@ class RCPParseResult:
     Contains mapping of accounts to their third-party accounts,
     and tracks which accounts have wildcard principals.
     """
-    account_third_party_map: Dict[str, Set[str]]
+    account_third_party_map: AccountThirdPartyMap
     accounts_with_wildcards: Set[str]
 
 
