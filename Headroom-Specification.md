@@ -1,10 +1,10 @@
 # Headroom - AWS Multi-Account Security Analysis Tool
 ## Product Design Requirements (PDR)
 
-**Version:** 3.0
+**Version:** 4.4
 **Created:** 2025-10-26
-**Last Updated:** 2025-10-26
-**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation)
+**Last Updated:** 2025-11-08
+**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation + RCP Analysis + RCP Auto-Generation + RCP Placement Optimization + RCP Union Strategy + Critical Bug Fixes + Architectural Organization + Framework Abstraction + Registry Pattern + Defensive Programming Elimination + Output Standardization)
 
 ---
 
@@ -42,6 +42,7 @@ exclude_account_ids: boolean                      # Exclude account IDs from res
 use_account_name_from_tags: boolean              # If true, use account tag for name; if false, use AWS account name
 results_dir: string (optional)                   # Base directory for results (default: test_environment/headroom_results)
 scps_dir: string (optional)                      # Base directory for SCP Terraform files (default: test_environment/scps)
+rcps_dir: string (optional)                      # Base directory for RCP Terraform files (default: test_environment/rcps)
 account_tag_layout:
   environment: string   # Tag key for environment identification (optional tag, falls back to "unknown")
   name: string         # Tag key for account name (optional tag, used when use_account_name_from_tags is true)
@@ -108,19 +109,30 @@ class AccountInfo:
 **Module Organization:**
 - **`main.py`**: Entry point orchestrating configuration, analysis, results processing, and Terraform generation flow
 - **`config.py`**: Pydantic models for configuration validation (`HeadroomConfig`, `AccountTagLayout`) and default directory constants
+- **`constants.py`**: Single source of truth for check names, type mappings, and dynamic check registration (`CHECK_TYPE_MAP`, `register_check_type()`)
 - **`usage.py`**: CLI parsing, YAML loading, and configuration merging logic
-- **`analysis.py`**: AWS integration, security analysis implementation, and check execution optimization
+- **`analysis.py`**: AWS integration, generic check execution via registry, session management, and organization account ID retrieval
 - **`parse_results.py`**: SCP/RCP compliance results analysis and organization structure processing
 - **`write_results.py`**: JSON result file writing, path resolution, and results existence checking
-- **`types.py`**: Shared data models and type definitions for organization hierarchy and SCP recommendations
+- **`types.py`**: Shared data models and type definitions for organization hierarchy, SCP recommendations, RCP placement recommendations, and PolicyRecommendation type alias
+- **`output.py`**: Centralized output handler for consistent user-facing formatting (check completion, errors, success messages, section headers)
 - **`aws/`**: AWS service integration modules
   - **`ec2.py`**: EC2 service integration and analysis functions
-  - **`organization.py`**: AWS Organizations API integration and hierarchy analysis
-- **`checks/`**: SCP compliance check implementations
-  - **`deny_imds_v1_ec2.py`**: EC2 IMDS v1 compliance check implementation
+  - **`iam.py`**: IAM trust policy analysis and third-party account detection
+  - **`organization.py`**: AWS Organizations API integration, hierarchy analysis, and shared account lookup utilities (`lookup_account_id_by_name`)
+  - **`sessions.py`**: AWS session management and role assumption utilities (`assume_role`)
+- **`checks/`**: SCP/RCP compliance check implementations organized by policy type
+  - **`base.py`**: BaseCheck abstract class implementing Template Method pattern for check execution
+  - **`registry.py`**: Check registration system with `@register_check` decorator and discovery functions
+  - **`scps/`**: Service Control Policy check implementations
+    - **`deny_imds_v1_ec2.py`**: EC2 IMDS v1 compliance check (DenyImdsV1Ec2Check class)
+  - **`rcps/`**: Resource Control Policy check implementations
+    - **`check_third_party_assumerole.py`**: IAM trust policy third-party AssumeRole access check (ThirdPartyAssumeRoleCheck class)
 - **`terraform/`**: Terraform configuration generation modules
   - **`generate_org_info.py`**: AWS Organizations structure data source generation
   - **`generate_scps.py`**: SCP deployment configuration generation
+  - **`generate_rcps.py`**: RCP deployment configuration generation
+  - **`utils.py`**: Shared Terraform utilities (safe variable name generation)
 - **`__main__.py`**: Python module entry point for `python -m headroom` execution
 
 **Error Handling Strategy:**
@@ -249,10 +261,174 @@ class DenyImdsV1Ec2:
 
 **Analysis Architecture:**
 - **Results Parsing:** `parse_results.py` module processes JSON result files from `test_environment/headroom_results/`
+- **SCP/RCP Separation:** `parse_scp_result_files()` excludes RCP checks by default to prevent RCP checks from generating SCP Terraform
+- **Check Configuration:** `constants.py` module defines `CHECK_TYPE_MAP`, `SCP_CHECK_NAMES`, and `RCP_CHECK_NAMES` as single source of truth
+- **RCP Check Filtering:** `RCP_CHECK_NAMES` imported from `constants.py` identifies checks to exclude from SCP analysis
 - **Organization Structure Analysis:** Function to analyze AWS Organizations OU hierarchy and account relationships
 - **Account-to-OU Mapping:** Function to create comprehensive mapping of accounts to their direct parent OUs
+- **Account ID Lookup:** Shared `lookup_account_id_by_name()` function in `aws/organization.py` for consistent account resolution
 - **Greatest Common Denominator Logic:** Function to determine optimal SCP/RCP placement level (root, OU, or account-specific)
 - **Terraform Generation:** `generate_terraform.py` module generates Terraform configuration files for organization structure data
+- **Directory Path Construction:** Centralized `get_results_dir()` function in `write_results.py` for consistent path resolution
+
+**Results Parsing Implementation:**
+
+The system implements two separate but structurally similar parsing flows for SCP and RCP checks. Understanding these patterns is critical for reproducing the implementation.
+
+**Common Parsing Patterns (SCP and RCP):**
+
+Both parsers share the following implementation patterns:
+
+1. **Directory Structure Expectation:**
+   - Both expect results in: `{results_dir}/{check_type}/{check_name}/*.json` where check_type is "scps" or "rcps"
+   - Both use `Path(results_dir)` for path operations
+   - Both iterate through check subdirectories
+
+2. **File Iteration:**
+   - Both use `check_dir.glob("*.json")` to find result files
+   - Both process one JSON file per account per check
+
+3. **JSON Parsing with Error Handling:**
+   ```python
+   try:
+       with open(result_file, 'r') as f:
+           data = json.load(f)
+       # ... processing ...
+   except (json.JSONDecodeError, KeyError) as e:
+       raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+   ```
+   - Identical exception handling: `(json.JSONDecodeError, KeyError)`
+   - Both convert to `RuntimeError` with context
+   - No generic `except Exception` handlers
+
+4. **Summary Data Extraction:**
+   ```python
+   summary = data.get("summary", {})
+   account_id = summary.get("account_id", "")
+   account_name = summary.get("account_name", "")
+   ```
+   - Both extract from `summary` dictionary
+   - Both use `.get()` with default empty strings
+
+5. **Account ID Fallback Logic:**
+   - Both handle missing `account_id` by using shared `lookup_account_id_by_name()` function
+   - Function defined in `aws/organization.py` for DRY compliance
+   - Raises `RuntimeError` if account not found in organization
+   - Pattern:
+   ```python
+   if not account_id:
+       account_id = lookup_account_id_by_name(
+           account_name,
+           organization_hierarchy,
+           context="result file"  # or "SCP check result", "RCP result", etc.
+       )
+   ```
+   - **Benefits:** Single source of truth, consistent error messages, reduced code duplication
+
+6. **Organization Hierarchy Dependency:**
+   - Both ultimately use `organization_hierarchy.accounts` for account lookups
+   - SCP: Provided during placement determination phase (`determine_scp_placement`)
+   - RCP: Provided during parsing phase (`parse_rcp_result_files`)
+
+7. **Logging Pattern:**
+   - Both use `logger.info()` for status messages
+   - Both log when processing checks or looking up accounts
+
+8. **RuntimeError Usage:**
+   - Both use `RuntimeError` for critical failures (missing directories, accounts)
+   - No silent failures or exception suppression
+
+**Key Differences (SCP vs RCP):**
+
+1. **Check Selection Strategy:**
+   - **SCP (`parse_scp_result_files`):** Iterates through ALL check directories in scps/ subdirectory, explicitly excludes RCP checks
+     ```python
+     from .constants import RCP_CHECK_NAMES  # Imported from constants.py
+     scps_path = results_path / "scps"
+     for check_dir in scps_path.iterdir():
+         if not check_dir.is_dir():
+             continue
+         if exclude_rcp_checks and check_name in RCP_CHECK_NAMES:
+             continue  # Skip RCP checks
+     ```
+   - **RCP (`parse_rcp_result_files`):** Directly targets specific check directory using centralized path function
+     ```python
+     from ..constants import THIRD_PARTY_ASSUMEROLE
+     from ..write_results import get_results_dir
+     check_dir_str = get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
+     check_dir = Path(check_dir_str)
+     if not check_dir.exists():
+         raise RuntimeError(f"Third-party AssumeRole check directory does not exist: {check_dir}")
+     ```
+   - **Rationale:** SCP parser is extensible for multiple checks; RCP parser is specialized for one check. Constants and path functions centralized for DRY compliance.
+
+2. **Data Extracted from JSON:**
+   - **SCP:** Extracts compliance metrics for policy placement decisions
+     ```python
+     CheckResult(
+         account_id=account_id,
+         account_name=summary.get("account_name", ""),
+         check_name=summary.get("check", check_name),
+         violations=summary.get("violations", 0),
+         exemptions=summary.get("exemptions", 0),
+         compliant=summary.get("compliant", 0),
+         total_instances=summary.get("total_instances", 0),
+         compliance_percentage=summary.get("compliance_percentage", 0.0)
+     )
+     ```
+   - **RCP:** Extracts third-party account patterns and wildcard status
+     ```python
+     third_party_accounts = summary.get("unique_third_party_accounts", [])
+     roles_with_wildcards = summary.get("roles_with_wildcards", 0)
+     # Results in: account_third_party_map[account_id] = set(third_party_accounts)
+     ```
+   - **Rationale:** SCPs care about violation counts; RCPs care about trust relationships
+
+3. **Return Type:**
+   - **SCP:** Returns `List[CheckResult]` - flat list of check results across all accounts and checks
+   - **RCP:** Returns `RCPParseResult` - structured object with two components:
+     ```python
+     @dataclass
+     class RCPParseResult:
+         account_third_party_map: Dict[str, Set[str]]  # Eligible accounts
+         accounts_with_wildcards: Set[str]              # Excluded accounts
+     ```
+   - **Rationale:** RCPs need to segregate wildcard accounts (unsafe) from normal accounts (safe)
+
+4. **Wildcard Handling:**
+   - **SCP:** No wildcard logic - treats all accounts uniformly based on violation counts
+   - **RCP:** Special wildcard exclusion logic
+     ```python
+     if roles_with_wildcards > 0:
+         accounts_with_wildcards.add(account_id)
+         logger.info(f"Account {account_name} has {roles_with_wildcards} roles with wildcard principals - cannot deploy RCP")
+         continue  # Skip this account from account_third_party_map
+     ```
+   - **Rationale:** Wildcard trust policies (`"Principal": "*"`) prevent safe RCP deployment
+
+5. **Organization Hierarchy Timing:**
+   - **SCP:** `organization_hierarchy` parameter NOT required in `parse_result_files()`, provided later in `determine_scp_placement()`
+   - **RCP:** `organization_hierarchy` parameter REQUIRED in `parse_rcp_result_files()` for account name lookups
+   - **Rationale:** RCP parsing needs immediate account ID resolution; SCP can defer until placement phase
+
+6. **Data Processing:**
+   - **SCP:** Appends each result to flat list; no filtering beyond check exclusion
+   - **RCP:** Conditionally adds to map OR wildcard set based on `roles_with_wildcards`; uses `set()` for third-party IDs
+   - **Rationale:** RCPs need set operations for union strategy; SCPs need comprehensive result lists
+
+7. **Placement Philosophy:**
+   - **SCP:** Based on ZERO VIOLATIONS principle - where can policy be deployed without breaking existing compliant resources
+   - **RCP:** Based on COMMON PATTERNS principle - where do accounts share third-party trust relationships (union strategy)
+   - **Rationale:** Different security control types require different deployment strategies
+
+**Architectural Design Principles:**
+
+1. **Separation of Concerns:** SCP and RCP parsing are separate functions in separate modules to avoid coupling
+2. **Common Error Handling:** Both use identical exception patterns for consistency and maintainability
+3. **Type Safety:** Both return strongly-typed dataclasses for downstream processing
+4. **Fail-Loud:** Both raise exceptions on critical errors rather than returning partial results
+5. **Logging:** Both provide informative logging for debugging and audit trails
+6. **Organization Integration:** Both integrate with organization hierarchy for account metadata
 
 **Module Organization:**
 - **`parse_results.py`**: Module containing results analysis and organization structure processing
@@ -709,6 +885,1778 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
 - **File Content Validation:** Verify correct Terraform content generation
 - **Integration Tests:** End-to-end testing with real recommendation data
 
+### PR-011: RCP Compliance Analysis Engine
+
+**Requirement:** The system MUST provide comprehensive Resource Control Policy (RCP) compliance analysis by examining IAM role trust policies to identify third-party account access patterns and automatically generate RCP Terraform configurations to enforce organization identity controls.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**RCP Analysis Architecture:**
+- **IAM Trust Policy Analysis:** `aws/iam.py` module analyzes all IAM role trust policies across organization accounts
+- **Third-Party Detection:** Identifies account IDs in trust policies that are external to the organization
+- **Wildcard Detection:** Detects and reports roles with wildcard principals (requiring CloudTrail analysis)
+- **Organization Account Baseline:** Compares trust policy principals against full organization account list
+- **Check Orchestration:** `checks/rcps/check_third_party_assumerole.py` coordinates RCP analysis execution
+- **Fail-Loud Exception Handling:** All exceptions are specific (no generic `Exception` catching), logged with context, and immediately re-raised
+
+**IAM Trust Policy Analysis:**
+
+**Core Functions (in `aws/iam.py`):**
+```python
+def analyze_iam_roles_trust_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str]
+) -> List[TrustPolicyAnalysis]:
+    """
+    Analyze all IAM roles in an account to identify third-party account principals.
+
+    Examines AssumeRole trust policies and extracts account IDs that are not part
+    of the organization.
+
+    Returns list of roles with third-party access or wildcard principals.
+    """
+
+def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
+    """
+    Extract AWS account IDs from IAM policy principal field.
+
+    Handles:
+    - String principals (ARNs, account IDs, wildcards)
+    - List principals (recursive processing)
+    - Dict principals (AWS, Service, Federated keys)
+    - Mixed principals (e.g., {"AWS": [...], "Service": "..."})
+
+    Validates all principal types are known (AWS, Service, Federated).
+    Only processes AWS principals for account ID extraction.
+    Service and Federated principals are validated but skipped.
+    """
+
+def _has_wildcard_principal(principal: Any) -> bool:
+    """
+    Check if principal contains wildcard (*) allowing any principal to assume role.
+    """
+```
+
+**Data Model:**
+```python
+@dataclass
+class TrustPolicyAnalysis:
+    role_name: str
+    role_arn: str
+    third_party_account_ids: Set[str]
+    has_wildcard_principal: bool
+```
+
+**Principal Type Handling:**
+- **AWS Principals:** Processed for account ID extraction from ARNs and plain account IDs
+- **Service Principals:** Validated but skipped (e.g., `lambda.amazonaws.com`, `ec2.amazonaws.com`)
+- **Federated Principals:** Validated but skipped (SAML/OIDC providers)
+- **Mixed Principals:** Correctly handles dicts with multiple principal types
+- **Unknown Types:** Raises `UnknownPrincipalTypeError` to catch typos or new AWS types
+
+**Principal Validation:**
+- **Allowed Types:** `{"AWS", "Service", "Federated"}` enforced via validation
+- **Federated Action Validation:** Ensures Federated principals use `sts:AssumeRoleWithSAML` or `sts:AssumeRoleWithWebIdentity`, not `sts:AssumeRole`
+- **Custom Exceptions:** `UnknownPrincipalTypeError` and `InvalidFederatedPrincipalError` for clear error messaging
+
+**Exception Handling:**
+- **Specific Exceptions Only:** No generic `except Exception:` - all handlers catch specific types
+- **JSON Parsing:** `json.JSONDecodeError` for trust policy parsing failures
+- **AWS API Errors:** `ClientError` for boto3/botocore API failures
+- **Custom Validation:** `UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError` for policy validation
+- **Fail Loudly:** All exceptions logged with context and immediately re-raised
+- **No Silent Failures:** System prevents partial results from suppressed errors
+
+**RCP Check Implementation:**
+
+**Check Function (in `checks/rcps/check_third_party_assumerole.py`):**
+```python
+def check_third_party_assumerole(
+    headroom_session: boto3.Session,
+    account_name: str,
+    account_id: str,
+    results_base_dir: str,
+    exclude_account_ids: bool,
+    org_account_ids: Set[str]
+) -> Set[str]:
+    """
+    Check IAM roles for third-party account access in trust policies.
+
+    Returns set of all third-party account IDs found.
+    Writes detailed JSON results including role names, ARNs, and findings.
+    """
+```
+
+**Result Structure:**
+```json
+{
+  "summary": {
+    "account_name": "account-name",
+    "account_id": "111111111111",
+    "check": "third_party_assumerole",
+    "total_roles_analyzed": 50,
+    "roles_third_parties_can_access": 3,
+    "roles_with_wildcards": 1,
+    "unique_third_party_accounts": 2,
+    "violations": 1
+  },
+  "roles_third_parties_can_access": [
+    {
+      "role_name": "CrossAccountRole",
+      "role_arn": "arn:aws:iam::111111111111:role/CrossAccountRole",
+      "third_party_account_ids": ["999999999999"]
+    }
+  ],
+  "roles_with_wildcards": [
+    {
+      "role_name": "WildcardRole",
+      "role_arn": "arn:aws:iam::111111111111:role/WildcardRole"
+    }
+  ]
+}
+```
+
+**Violations Field:** The `violations` field in the summary counts roles with wildcard principals, as these represent violations that prevent RCP deployment at root/OU levels.
+
+**Organization Account ID Retrieval:**
+
+**Function (in `analysis.py`):**
+```python
+def get_all_organization_account_ids(
+    config: HeadroomConfig,
+    session: boto3.Session
+) -> Set[str]:
+    """
+    Retrieve all account IDs in the organization including management account.
+
+    Assumes OrgAndAccountInfoReader role in management account.
+    Returns set of all account IDs for third-party filtering.
+    """
+```
+
+**Wildcard Safety:**
+- **Detection:** Identifies roles with `"Principal": "*"` or `"AWS": "*"` allowing any principal
+- **Skip Logic:** Accounts with wildcard principals excluded from RCP generation
+- **OU-Level Safety:** OU-level RCPs skipped if ANY account in OU has wildcards
+- **CloudTrail TODO:** Comments indicate need for CloudTrail analysis to determine actual assuming accounts
+
+### PR-012: RCP Terraform Auto-Generation
+
+**Requirement:** The system MUST auto-generate Terraform configuration files for RCP deployment based on IAM trust policy analysis, creating RCP configurations that enforce organization identity controls while allowing approved third-party accounts.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**RCP Generation Architecture:**
+- **Target Module:** `terraform/generate_rcps.py` handles all RCP Terraform configuration generation
+- **Target Directory:** Generate RCP files under configured `rcps_dir` (default: `test_environment/rcps/`)
+- **Safety-First Logic:** Excludes accounts with wildcard principals from RCP generation
+- **Multi-Level Support:** Account-level, OU-level, and root-level RCP deployment
+- **Union Strategy:** Third-party account IDs from multiple accounts/OUs are combined (unioned) together
+- **Third-Party Allowlist:** Includes approved third-party account IDs in RCP policy allowlist
+- **Missing Account ID Handling:** Looks up accounts by name in organization hierarchy when account_id is missing
+
+**Generated RCP Terraform Structure:**
+
+**Account-Level RCPs:**
+```hcl
+# Auto-generated RCP Terraform configuration for account-name
+# Generated by Headroom based on IAM trust policy analysis
+
+module "rcps_account_name" {
+  source = "./modules/rcps"
+  target_id = locals.account_name_account_id
+
+  # Third-party accounts approved for role assumption
+  third_party_assumerole_account_ids_allowlist = [
+    "999999999999",
+    "888888888888"
+  ]
+}
+```
+
+**OU-Level RCPs:**
+```hcl
+# Auto-generated RCP Terraform configuration for production OU
+# Generated by Headroom based on IAM trust policy analysis
+
+module "rcps_production_ou" {
+  source = "./modules/rcps"
+  target_id = locals.top_level_production_ou_id
+
+  # Third-party accounts approved for role assumption (unioned from all accounts in OU)
+  third_party_assumerole_account_ids_allowlist = [
+    "999999999999",
+    "888888888888"
+  ]
+}
+```
+
+**Root-Level RCPs:**
+```hcl
+# Auto-generated RCP Terraform configuration for root
+# Generated by Headroom based on IAM trust policy analysis
+
+module "rcps_root" {
+  source = "./modules/rcps"
+  target_id = locals.root_ou_id
+
+  # Third-party accounts approved for role assumption (unioned from all accounts in organization)
+  third_party_assumerole_account_ids_allowlist = [
+    "999999999999",
+    "888888888888"
+  ]
+}
+```
+
+**RCP Terraform Module (in `test_environment/modules/rcps/`):**
+
+**Module Structure:**
+- **`variables.tf`:** Defines `target_id` and `third_party_assumerole_account_ids_allowlist` variables
+- **`locals.tf`:** Defines RCP policy with EnforceOrgIdentities statement
+- **`rcps.tf`:** Creates `aws_organizations_policy` and `aws_organizations_policy_attachment` resources
+- **`data.tf`:** Contains `aws_organizations_organization.current` data source for org ID
+- **`README.md`:** Documents module usage and RCP policy logic
+
+**RCP Policy Logic:**
+```hcl
+# Deny sts:AssumeRole EXCEPT:
+# 1. Principals from the organization (aws:PrincipalOrgID)
+# 2. Principals from approved third-party accounts (aws:PrincipalAccount)
+# 3. Resources tagged with dp:exclude:identity: true
+# 4. AWS service principals
+```
+
+**Implementation Functions:**
+
+**1. Results Parsing (in `terraform/generate_rcps.py`):**
+```python
+def parse_rcp_result_files(
+    results_dir: str,
+    organization_hierarchy: OrganizationHierarchy
+) -> Tuple[Dict[str, Set[str]], Set[str]]:
+    """
+    Parse RCP check results and extract third-party account mappings.
+
+    Args:
+        results_dir: Directory containing RCP check result files
+        organization_hierarchy: Organization structure for account lookup when account_id is missing
+
+    Returns:
+        Tuple of (account_third_party_map, accounts_with_wildcards)
+        - account_third_party_map: Dict mapping account IDs to sets of third-party account IDs
+        - accounts_with_wildcards: Set of account IDs that have roles with wildcard principals
+
+    Missing Account ID Handling:
+        When account_id is missing or empty (e.g., when exclude_account_ids=True),
+        the function looks up the account_id by account_name in the organization hierarchy.
+        Raises RuntimeError if account_name is not found.
+
+    Accounts with wildcards are NOT excluded from the account_third_party_map (included with empty sets).
+    Accounts with no third-party accounts are included with empty sets to ensure they get RCPs.
+    """
+```
+
+**2. Placement Determination (in `terraform/generate_rcps.py`):**
+```python
+def determine_rcp_placement(
+    account_third_party_map: Dict[str, Set[str]],
+    organization_hierarchy: OrganizationHierarchy,
+    accounts_with_wildcards: Set[str]
+) -> List[RCPPlacementRecommendations]:
+    """
+    Determine optimal RCP placement levels based on third-party account patterns.
+
+    Uses "union strategy" to combine third-party accounts at each level:
+    - Root level: If NO accounts have wildcard principals, unions all third-party
+                 account IDs from all accounts and deploys single RCP at root
+    - OU level: If any accounts in an OU have wildcards, OU-level RCP is skipped for that OU;
+               otherwise, unions all third-party account IDs from accounts in the OU
+    - Account level: For accounts with wildcards, no RCP is generated (static analysis cannot
+                    determine required principals)
+
+    Union Strategy Rationale:
+    - Third-party account IDs can be safely combined into a single allowlist
+    - Account A trusts [111111111111], Account B trusts [222222222222] can both
+      be protected with allowlist [111111111111, 222222222222]
+    - More permissive than "identical sets" requirement, enables broader root/OU deployment
+    - Still safe because RCPs use allowlists, not deny lists
+
+    Critical Safety Rules:
+    - Root-level RCPs are ONLY deployed if NO accounts have wildcards (affects ALL accounts)
+    - OU-level RCPs are ONLY deployed if NO accounts in that OU have wildcards
+    - Accounts with wildcards are excluded from ALL RCP recommendations
+    - Single-account OUs receive OU-level RCPs (not account-level) for better hierarchy alignment
+    """
+```
+
+**3. Terraform Generation (in `terraform/generate_rcps.py`):**
+```python
+def generate_rcp_terraform(
+    recommendations: List[RCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy,
+    output_dir: str = "test_environment/rcps"
+) -> None:
+    """
+    Generate RCP Terraform files based on placement recommendations.
+
+    Args:
+        recommendations: List of RCP placement recommendations
+        organization_hierarchy: Organization structure for account/OU name lookup
+        output_dir: Directory to write RCP Terraform files (default: test_environment/rcps)
+
+    Creates separate .tf files for root, OU, and account level RCPs.
+    Uses union strategy to combine third-party account IDs at each level.
+    """
+```
+
+**Data Model:**
+```python
+@dataclass
+class RCPPlacementRecommendations:
+    check_name: str
+    recommended_level: str  # "root", "ou", or "account"
+    target_ou_id: Optional[str]
+    affected_accounts: List[str]
+    third_party_account_ids: Set[str]
+    reasoning: str
+```
+
+**Placement Logic:**
+
+**Union Strategy (Default Behavior):**
+- **Root Level:** Deploy at root when NO accounts have wildcards; combines (unions) all third-party account IDs from all accounts
+- **OU Level:** Deploy at OU level when NO accounts in that OU have wildcards; combines third-party IDs from accounts in the OU
+- **Account Level:** Deploy at account level for accounts with wildcards (but wildcards prevent RCP deployment, so effectively skipped)
+- **Single-Account OUs:** Treated as OU-level deployments (not account-level) for organizational hierarchy alignment
+
+**Critical Safety Rules:**
+- **Wildcard Exclusion:** Accounts with wildcard principals (`"Principal": "*"`) are excluded from RCP deployment
+- **Root Wildcard Blocking:** If ANY account has wildcards, root-level RCP is NOT deployed (would affect all accounts)
+- **OU Wildcard Blocking:** If ANY account in an OU has wildcards, OU-level RCP is NOT deployed for that OU
+- **Affected Accounts:** Root-level RCPs list ALL accounts in organization as affected (not just those without wildcards)
+- **Union Allowlist:** Third-party account IDs are combined (unioned) together, not required to be identical
+
+**Union Strategy Benefits:**
+- More permissive than requiring identical third-party account sets
+- Enables root/OU-level deployment in more scenarios
+- Still safe because RCPs use allowlists (approved principals) not deny lists
+- Example: Account A [111], Account B [222] → Root RCP allowlist [111, 222]
+
+**Integration Flow:**
+1. **Analysis Phase:** IAM trust policy analysis identifies third-party accounts and wildcards
+2. **Results Parsing:** Parse check results from `headroom_results/rcps/third_party_assumerole/` directory
+3. **Wildcard Filtering:** Separate accounts with wildcards from those eligible for RCP deployment
+4. **Placement Calculation:** Determine optimal RCP levels based on common third-party account patterns
+5. **OU Safety Check:** Verify no wildcards exist in OU before creating OU-level RCP
+6. **Terraform Generation:** Create RCP Terraform files with appropriate third-party account whitelists
+7. **Console Output:** Display RCP recommendations including level, target, accounts, and reasoning
+
+**Testing Strategy:**
+- **IAM Analysis Tests:** 27 tests covering principal extraction, wildcard detection, exception handling
+- **Check Tests:** 6 tests covering aggregation, wildcards, empty results, violations counting
+- **RCP Generation Tests:** 30+ tests covering parsing, placement, union strategy, wildcard safety, Terraform generation, missing account ID lookup
+- **Integration Tests:** End-to-end RCP display and generation flow
+- **BDD-Style Test Names:** Descriptive test names following "test_<action>_when_<condition>" pattern
+- **100% Coverage:** All RCP-related code fully covered (245 total tests passing, 1022+ statements in headroom/, 2466+ in tests/)
+
+**Code Quality:**
+- **Specific Exceptions:** All exception handlers catch specific types (`json.JSONDecodeError`, `ClientError`, custom exceptions)
+- **No Silent Failures:** All exceptions logged and re-raised
+- **Type Safety:** Full type annotations satisfying mypy strict mode
+- **Clean Architecture:** Clear separation between IAM analysis, check execution, and Terraform generation
+- **DRY Compliance:** Shared utilities in `terraform/utils.py` for variable name generation
+
+### PR-013: RCP Code Quality & Bug Fixes
+
+**Requirement:** The system MUST maintain high code quality standards and fix critical bugs discovered during RCP implementation.
+
+**Implementation Status:** ✅ COMPLETED (rcp_support_initial branch)
+
+**Refactoring Improvements:**
+
+1. **Function Extraction for Single Responsibility:**
+   - Created `_should_skip_ou_for_rcp()` helper function (32 lines) to encapsulate OU validation logic
+   - Separated file writing from content generation with `_write_terraform_file()` helper (10 lines)
+   - Reduced code duplication and improved testability
+   - Simplified calling functions from 10 lines of inline logic to 1-line function calls
+
+2. **Pattern Alignment:**
+   - Aligned RCP generation pattern with SCP pattern (grouping-then-generating approach)
+   - Changed from inline switching to two-phase approach: group by level, then generate files
+   - Improved consistency across SCP and RCP generation modules
+
+3. **BDD-Style Test Names:**
+   - Renamed tests to descriptive BDD format: `test_<action>_when_<condition>`
+   - Example: `test_root_level_placement` → `test_recommends_root_level_when_all_accounts_have_identical_third_party_accounts`
+   - Self-documenting tests that serve as specifications
+
+**Critical Bug Fixes:**
+
+1. **RCP Generation Writing to Wrong Directory:**
+   - **Problem:** RCPs were being written to `test_environment/scps/` instead of `test_environment/rcps/`
+   - **Root Cause:** Missing `rcps_dir` config field, wrong default directory in generate_rcps.py, missing CLI argument
+   - **Solution:** Added `rcps_dir` config field with `DEFAULT_RCPS_DIR = "test_environment/rcps"` constant
+   - **Impact:** RCPs and SCPs now properly separated into different directories
+
+2. **RCP Check Generating SCP Terraform:**
+   - **Problem:** `third_party_role_access` RCP check was generating SCP Terraform files
+   - **Root Cause:** `parse_result_files()` was processing ALL checks including RCP checks
+   - **Solution:** Added `exclude_rcp_checks: bool = True` parameter and `RCP_CHECK_NAMES = {"third_party_role_access"}` set
+   - **Impact:** RCP checks now only processed by RCP-specific flow, not SCP flow
+
+3. **Missing Account ID Handling:**
+   - **Problem:** When `exclude_account_ids=True`, account_id was empty and parsing failed
+   - **Root Cause:** No fallback mechanism to look up accounts by name
+   - **Solution:** Added organization_hierarchy parameter to parse functions, lookup by account_name when account_id missing
+   - **Impact:** Tool now works correctly with `exclude_account_ids=True` configuration
+
+4. **Accounts Without Third-Party Access Excluded:**
+   - **Problem:** Accounts with no third-party accounts were being skipped entirely
+   - **Root Cause:** Condition `if account_id and third_party_accounts:` evaluated to False for empty lists
+   - **Solution:** Changed to `if account_id:` to include accounts with empty third-party lists
+   - **Impact:** Accounts without third-party access now get organization-identities-only RCPs
+
+5. **Incorrect Root-Level RCP Logic:**
+   - **Problem:** Root-level RCPs showed wrong "Affected Accounts" count and ignored third-party accounts from wildcard accounts
+   - **Root Cause:** Function only considered accounts without wildcards, but root RCPs affect ALL accounts
+   - **Solution:** Added `organization_hierarchy` and `accounts_with_wildcards` parameters, include ALL org accounts in affected list
+   - **Impact:** Root-level RCPs now correctly refused when ANY account has wildcards, preventing broken third-party access
+
+6. **Violations Count Missing:**
+   - **Problem:** RCP check results didn't include violations count needed for parse_results analysis
+   - **Root Cause:** Summary section didn't include violations field
+   - **Solution:** Added `"violations": len(roles_with_wildcards)` to summary
+   - **Impact:** Wildcard trust relationships now properly counted as violations
+
+7. **Conservative Identical-Sets Requirement:**
+   - **Problem:** Root/OU-level RCPs only deployed when ALL accounts had IDENTICAL third-party account sets
+   - **Root Cause:** Overly conservative placement logic
+   - **Solution:** Implemented union strategy - combine (union) all third-party account IDs at each level
+   - **Impact:** More permissive deployment enabling root/OU-level RCPs in many more scenarios
+
+8. **Parameter Name Ambiguity:**
+   - **Problem:** Parameter named `third_party_account_ids` didn't clearly indicate it was an allowlist
+   - **Root Cause:** Generic parameter name
+   - **Solution:** Renamed to `third_party_assumerole_account_ids_allowlist` throughout codebase
+   - **Impact:** Clearer intent and purpose of the parameter
+
+9. **Single-Account OU Handling:**
+   - **Problem:** Single-account OUs were getting account-level RCPs instead of OU-level RCPs
+   - **Root Cause:** `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 2` arbitrary constraint
+   - **Solution:** Changed to `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1`
+   - **Impact:** Better organizational hierarchy alignment, future-proofing for additional accounts
+
+**Files Modified:**
+- `headroom/config.py`: Added rcps_dir field
+- `headroom/main.py`: Updated to use rcps_dir, pass organization_hierarchy
+- `headroom/usage.py`: Added --rcps-dir CLI argument
+- `headroom/terraform/generate_rcps.py`: Fixed directory, union strategy, root-level logic, missing account ID lookup
+- `headroom/parse_results.py`: Added RCP check exclusion, account lookup by name
+- `headroom/checks/check_third_party_role_access.py`: Added violations count
+- `test_environment/modules/rcps/variables.tf`: Renamed parameter
+- `test_environment/modules/rcps/locals.tf`: Updated parameter reference
+- `test_environment/modules/rcps/README.md`: Updated documentation
+- `tests/test_config.py`: Added rcps_dir testing
+- `tests/test_generate_rcps.py`: Added 8+ new tests, updated existing tests
+- `tests/test_parse_results.py`: Added RCP exclusion test, account lookup tests
+- `tests/test_checks_third_party_role_access.py`: Updated to assert violations field
+
+**Verification:**
+- All 245 tests pass with 100% code coverage
+- No linter errors (flake8, autopep8, autoflake)
+- Full mypy type safety compliance
+- No behavioral regressions
+
+### PR-014: Architectural Organization - SCP/RCP Directory Structure
+
+**Requirement:** The system MUST organize SCP and RCP checks and results into clearly separated directory structures to improve code organization, scalability, and maintainability.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**Organizational Improvements:**
+
+1. **Function and File Renaming for Clarity:**
+   - Renamed `parse_result_files()` to `parse_scp_result_files()` to explicitly indicate SCP-specific parsing
+   - Renamed `check_third_party_role_access` to `check_third_party_assumerole` for more accurate naming
+   - Renamed variable `rcp_results_exist` to `third_party_assumerole_results_exist` for consistency
+   - Updated `RCP_CHECK_NAMES` from `{"third_party_role_access"}` to `{"third_party_assumerole"}`
+
+2. **Checks Directory Reorganization:**
+   - Created `checks/scps/` subdirectory for Service Control Policy check implementations
+   - Created `checks/rcps/` subdirectory for Resource Control Policy check implementations
+   - Moved `deny_imds_v1_ec2.py` to `checks/scps/deny_imds_v1_ec2.py`
+   - Moved and renamed `check_third_party_role_access.py` to `checks/rcps/check_third_party_assumerole.py`
+   - Added `__init__.py` files to both subdirectories for proper Python package structure
+   - Updated all relative imports to account for increased directory depth (using `...` for parent references)
+
+3. **Results Directory Reorganization:**
+   - Implemented hierarchical structure: `results_dir/scps/{check_name}/*.json` and `results_dir/rcps/{check_name}/*.json`
+   - Added `CHECK_TYPE_MAP` in `write_results.py` mapping check names to types: `{"deny_imds_v1_ec2": "scps", "third_party_assumerole": "rcps"}`
+   - Updated `get_results_dir()` to construct paths: `{results_base_dir}/{check_type}/{check_name}`
+   - Updated `get_results_path()` to use new directory structure
+   - **Breaking Change:** No backward compatibility for old flat results structure - clean break for better organization
+   - Updated `parse_scp_result_files()` to look in `results_dir/scps/` subdirectory
+   - Added warning when `scps/` subdirectory doesn't exist
+   - Updated `parse_rcp_result_files()` to look in `results_dir/rcps/third_party_assumerole/` subdirectory
+
+4. **Analysis Module Refactoring (analysis.py):**
+   - Extracted `run_scp_checks()` function to encapsulate SCP check execution logic
+     ```python
+     def run_scp_checks(
+         headroom_session: boto3.Session,
+         account_info: AccountInfo,
+         config: HeadroomConfig
+     ) -> None:
+         """Execute all SCP checks for a single account."""
+     ```
+   - Extracted `run_rcp_checks()` function to encapsulate RCP check execution logic
+     ```python
+     def run_rcp_checks(
+         headroom_session: boto3.Session,
+         account_info: AccountInfo,
+         config: HeadroomConfig,
+         org_account_ids: Set[str]
+     ) -> None:
+         """Execute all RCP checks for a single account."""
+     ```
+   - Added `all_scp_results_exist()` helper to check if all SCP results exist for an account
+     ```python
+     def all_scp_results_exist(
+         account_info: AccountInfo,
+         config: HeadroomConfig
+     ) -> bool:
+         """Check if all SCP check results exist for an account."""
+     ```
+   - Added `all_rcp_results_exist()` helper to check if all RCP results exist for an account
+     ```python
+     def all_rcp_results_exist(
+         account_info: AccountInfo,
+         config: HeadroomConfig
+     ) -> bool:
+         """Check if all RCP check results exist for an account."""
+     ```
+   - Simplified `run_checks()` to orchestrate the extracted functions with clearer skip logic
+   - Updated log message from "Results already exist" to "All results already exist" for clarity
+
+5. **RCP Generation Updates:**
+   - Moved `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP` constant to module level in `generate_rcps.py` for testability
+   - Updated error messages to reference "Third-party AssumeRole" instead of "Third-party role access"
+   - Updated check_name references in data structures to use "third_party_assumerole"
+
+**Test Suite Updates:**
+
+6. **Comprehensive Test Refactoring:**
+   - Updated all import statements to reflect new directory structure:
+     - `from headroom.checks.scps.deny_imds_v1_ec2 import check_deny_imds_v1_ec2`
+     - `from headroom.checks.rcps.check_third_party_assumerole import check_third_party_assumerole`
+   - Updated all path assertions in tests to expect `scps/` and `rcps/` subdirectories
+   - Updated all `@patch` decorators to use new module paths:
+     - `@patch("headroom.checks.scps.deny_imds_v1_ec2.get_imds_v1_ec2_analysis")`
+     - `@patch("headroom.checks.rcps.check_third_party_assumerole.analyze_iam_roles_trust_policies")`
+   - Updated all check name assertions from "third_party_role_access" to "third_party_assumerole"
+   - Added `parents=True` to `mkdir()` calls to ensure parent directories are created
+   - Updated mock `side_effect` values to account for additional `results_exist` calls from new helper functions
+   - Renamed test file from `test_checks_third_party_role_access.py` to `test_checks_third_party_assumerole.py`
+   - Renamed test class from `TestCheckThirdPartyRoleAccess` to `TestCheckThirdPartyAssumeRole`
+   - Updated test directory structures in `test_environment/headroom_results/` to include `scps/` and `rcps/` subdirectories
+
+**Coverage Improvements:**
+
+7. **Edge Case Testing:**
+   - Added test for non-directory files in `scps/` directory (covers `parse_results.py:60`)
+   - Added test for unknown check names in `get_results_dir()` (covers `write_results.py:121`)
+   - Added test for missing `scps/` subdirectory (covers `parse_results.py:54-55`)
+   - Added test for OU-level RCP skip when below minimum accounts threshold (covers `generate_rcps.py:210`)
+   - Achieved and maintained 100% code coverage (1044 statements in headroom/, 2515 statements in tests/)
+
+**Architectural Benefits:**
+
+- **Clear Separation of Concerns:** SCP and RCP checks are now clearly separated in both implementation and results
+- **Improved Scalability:** Easy to add new SCP or RCP checks in their respective directories
+- **Better Code Organization:** Single Responsibility Principle applied to check execution functions
+- **Reduced Cognitive Load:** Developers can focus on SCP or RCP checks independently
+- **Enhanced Maintainability:** Clear directory structure makes it easier to navigate and understand the codebase
+- **Future-Proof:** Structure supports easy addition of new policy types (e.g., SCCPs, permission boundaries)
+- **Module-Level Constants:** Testable configuration constants enable better test coverage
+- **Explicit Function Names:** Function names clearly indicate their purpose and scope
+
+**Files Modified:**
+
+**Core Modules:**
+- `headroom/analysis.py`: Extracted SCP/RCP check functions, added result existence helpers
+- `headroom/parse_results.py`: Renamed to `parse_scp_result_files`, updated to use `scps/` subdirectory
+- `headroom/write_results.py`: Added `CHECK_TYPE_MAP`, updated path generation functions
+- `headroom/terraform/generate_rcps.py`: Updated to use `rcps/` subdirectory, moved constant to module level
+- `headroom/checks/scps/deny_imds_v1_ec2.py`: Moved and updated relative imports (`.` to `...`)
+- `headroom/checks/rcps/check_third_party_assumerole.py`: Renamed, moved, updated relative imports
+
+**Test Files:**
+- `tests/test_analysis.py`: Updated imports for new directory structure
+- `tests/test_analysis_extended.py`: Updated imports, mock side effects, log message assertions
+- `tests/test_checks_deny_imds_v1_ec2.py`: Updated all patch paths to `checks.scps.*`
+- `tests/test_checks_third_party_assumerole.py`: Renamed file, updated all patch paths to `checks.rcps.*`, updated check name assertions
+- `tests/test_parse_results.py`: Updated all path expectations with `scps/` subdirectory, added edge case tests
+- `tests/test_generate_rcps.py`: Updated all path expectations with `rcps/` subdirectory, added MIN threshold test
+- `tests/test_write_results.py`: Updated all path expectations, added unknown check name test
+- `tests/test_main_integration.py`: Updated check name references
+
+**Test Environment:**
+- `test_environment/headroom_results/`: Reorganized into `scps/` and `rcps/` subdirectories
+
+**Verification:**
+- All 246 tests passing (increased from 245 due to new edge case tests)
+- 100% code coverage maintained (1044 statements in headroom/, 2515 statements in tests/)
+- All mypy type checks passing with strict mode
+- All pre-commit hooks passing (flake8, autopep8, autoflake, trailing whitespace, end-of-file)
+- No behavioral regressions in existing functionality
+- Clean tox run with no warnings or errors
+
+### PR-015: DRY Refactoring & Constants Module
+
+**Requirement:** The system MUST eliminate code duplication and establish single sources of truth for configuration constants and shared utility functions.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**DRY Violations Identified and Fixed:**
+
+1. **Constants Module Creation**
+   - Created `headroom/constants.py` as dedicated module for check configuration
+   - Moved check name constants from `write_results.py`
+   - Moved `CHECK_TYPE_MAP` from `write_results.py`
+   - Added pre-computed `SCP_CHECK_NAMES` and `RCP_CHECK_NAMES` sets
+
+2. **CHECK_TYPE_MAP as Single Source of Truth**
+   - **Before:** `RCP_CHECK_NAMES = {"third_party_assumerole"}` hardcoded in `parse_results.py`
+   - **After:** Derived from `CHECK_TYPE_MAP` in `constants.py`:
+     ```python
+     RCP_CHECK_NAMES = {name for name, check_type in CHECK_TYPE_MAP.items() if check_type == "rcps"}
+     SCP_CHECK_NAMES = {name for name, check_type in CHECK_TYPE_MAP.items() if check_type == "scps"}
+     ```
+   - **Impact:** Adding new checks only requires updating `CHECK_TYPE_MAP` in one place
+
+3. **Shared Account ID Lookup Function**
+   - **Before:** Duplicate lookup logic in `parse_results.py` (9 lines) and `generate_rcps.py` (12 lines)
+   - **After:** Extracted to `aws/organization.py`:
+     ```python
+     def lookup_account_id_by_name(
+         account_name: str,
+         organization_hierarchy: OrganizationHierarchy,
+         context: str = "result file"
+     ) -> str:
+         """Look up account ID by name in organization hierarchy."""
+         for acc_id, acc_info in organization_hierarchy.accounts.items():
+             if acc_info.account_name == account_name:
+                 logger.info(f"Looked up account_id {acc_id} for account name '{account_name}'")
+                 return acc_id
+         raise RuntimeError(
+             f"Account name '{account_name}' from {context} not found in organization hierarchy"
+         )
+     ```
+   - **Impact:** 21 lines of duplicate code reduced to single 13-line function
+
+4. **Check Name Constants**
+   - **Before:** Magic strings scattered across 14 locations in 4 files
+   - **After:** Constants in `constants.py`:
+     ```python
+     DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
+     THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+     ```
+   - **Locations Updated:**
+     - `analysis.py`: 6 occurrences replaced with constants
+     - `generate_rcps.py`: 4 occurrences replaced with constants
+     - `check_deny_imds_v1_ec2.py`: 2 occurrences replaced with constants
+     - `check_third_party_assumerole.py`: 2 occurrences replaced with constants
+   - **Impact:** Type-safe, refactoring-friendly constant references
+
+5. **Centralized Directory Path Construction**
+   - **Before:** Manual path construction in `generate_rcps.py`:
+     ```python
+     check_dir = results_path / "rcps" / "third_party_assumerole"
+     ```
+   - **After:** Using centralized function:
+     ```python
+     check_dir_str = get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
+     check_dir = Path(check_dir_str)
+     ```
+   - **Impact:** Single source of truth for results directory path logic
+
+**Benefits Achieved:**
+
+1. **Single Source of Truth:** Check classification, constants, and path construction all centralized
+2. **Reduced Duplication:** ~30 lines of duplicate code eliminated
+3. **Improved Maintainability:** Adding new checks requires fewer code changes
+4. **Type Safety:** Using constants catches typos at import time
+5. **Better Testability:** Shared functions can be tested independently
+6. **Consistent Behavior:** Account lookup and path construction now uniform across modules
+7. **Clearer Intent:** Dedicated constants module explicitly indicates purpose
+
+**Files Modified:**
+
+1. **Created:** `headroom/constants.py` (21 lines)
+   - Check name constants: `DENY_IMDS_V1_EC2`, `THIRD_PARTY_ASSUMEROLE`
+   - Type mapping: `CHECK_TYPE_MAP`
+   - Derived sets: `SCP_CHECK_NAMES`, `RCP_CHECK_NAMES`
+
+2. **Updated:** `headroom/write_results.py`
+   - Removed local constant definitions
+   - Added import: `from .constants import CHECK_TYPE_MAP`
+
+3. **Updated:** `headroom/parse_results.py`
+   - Changed to import `RCP_CHECK_NAMES` from `constants.py`
+   - Removed local derivation of `RCP_CHECK_NAMES`
+   - Import and use `lookup_account_id_by_name()`
+
+4. **Updated:** `headroom/analysis.py`
+   - Import constants from `constants.py`
+   - Use constants instead of magic strings (6 replacements)
+
+5. **Updated:** `headroom/terraform/generate_rcps.py`
+   - Import constants from `constants.py`
+   - Import and use `get_results_dir()`
+   - Import and use `lookup_account_id_by_name()`
+   - Use constants instead of magic strings (4 replacements)
+
+6. **Updated:** `headroom/aws/organization.py`
+   - Added `lookup_account_id_by_name()` shared function (13 lines)
+
+7. **Updated:** `headroom/checks/scps/deny_imds_v1_ec2.py`
+   - Import and use `DENY_IMDS_V1_EC2` constant (2 replacements)
+
+8. **Updated:** `headroom/checks/rcps/check_third_party_assumerole.py`
+   - Import and use `THIRD_PARTY_ASSUMEROLE` constant (2 replacements)
+
+9. **Updated:** `tests/test_parse_results.py`
+   - Updated error message assertion to match new shared function format
+
+**Architecture Improvements:**
+
+**Before:**
+- Constants defined in `write_results.py`
+- RCP check names derived locally in `parse_results.py`
+- Account lookup logic duplicated in 2 modules
+- Check names as magic strings in 4 files
+- Directory paths manually constructed
+
+**After:**
+- All constants in dedicated `constants.py`
+- Both SCP and RCP check name sets pre-computed
+- Single shared account lookup function
+- Check names as importable constants
+- Directory paths via centralized function
+- Clean separation of concerns
+
+**Testing:**
+- All 248 tests passing
+- No behavioral changes
+- No linter errors
+- Full type safety maintained (mypy strict mode)
+- 100% code coverage maintained
+
+**Code Quality Metrics:**
+- Lines of duplicate code removed: ~30
+- Single sources of truth created: 3
+- Magic strings eliminated: 14
+- Shared functions created: 1
+- Constants created: 2
+- Pre-computed sets: 2
+
+### PR-016: Check Framework Abstraction & Registry Pattern
+
+**Requirement:** The system MUST provide a reusable, extensible framework for implementing compliance checks with zero-code-change addition of new checks through self-registration patterns.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**Check Framework Architecture:**
+
+The check framework implements three design patterns:
+1. **Template Method Pattern:** `BaseCheck` abstract class defines the skeleton of check execution
+2. **Strategy Pattern:** Each concrete check implements its unique analysis logic
+3. **Registry Pattern:** Checks self-register via decorators for auto-discovery
+
+**1. BaseCheck Abstract Class (headroom/checks/base.py):**
+
+```python
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Generic, List, TypeVar
+import boto3
+from dataclasses import dataclass
+
+# Type variable for analysis result types
+T = TypeVar('T')
+
+@dataclass
+class CategorizedCheckResult:
+    """Result of categorizing check analysis."""
+    violations: List[Dict[str, Any]]
+    exemptions: List[Dict[str, Any]]
+    compliant: List[Dict[str, Any]]
+
+class BaseCheck(ABC, Generic[T]):
+    """Base class for all compliance checks.
+    
+    Implements Template Method pattern for check execution flow.
+    Subclasses must implement three abstract methods:
+    - analyze(): Perform AWS API calls and return raw analysis results
+    - categorize_result(): Categorize single result into violation/exemption/compliant
+    - build_summary_fields(): Build check-specific summary fields
+    
+    These attributes are set by the @register_check decorator:
+    """
+    CHECK_NAME: str
+    CHECK_TYPE: str
+    
+    def __init__(
+        self,
+        account_name: str,
+        account_id: str,
+        results_base_dir: str,
+        exclude_account_ids: bool = False,
+        **kwargs: Any
+    ) -> None:
+        """Initialize base check with common parameters.
+        
+        **kwargs allows subclasses to accept additional parameters
+        without breaking uniform instantiation pattern.
+        """
+        self.account_name = account_name
+        self.account_id = account_id
+        self.results_base_dir = results_base_dir
+        self.exclude_account_ids = exclude_account_ids
+        self.check_name = self.CHECK_NAME
+    
+    @abstractmethod
+    def analyze(self, session: boto3.Session) -> List[T]:
+        """Perform analysis and return raw results.
+        
+        Subclasses implement AWS API calls here.
+        """
+        pass
+    
+    @abstractmethod
+    def categorize_result(self, result: T) -> tuple[str, Dict[str, Any]]:
+        """Categorize a single result.
+        
+        Returns:
+            Tuple of (category, result_dict) where category is one of:
+            - "violation": Non-compliant resource
+            - "exemption": Exempted from compliance requirement
+            - "compliant": Fully compliant resource
+        """
+        pass
+    
+    @abstractmethod
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+        """Build check-specific summary fields.
+        
+        Returns:
+            Dictionary of summary fields like total_instances, compliance_percentage, etc.
+        """
+        pass
+    
+    def execute(self, session: boto3.Session) -> None:
+        """Execute the check (Template Method).
+        
+        This method orchestrates the entire check execution flow:
+        1. Call analyze() to get raw results
+        2. Categorize each result via categorize_result()
+        3. Build summary with base fields + check-specific fields
+        4. Write results to JSON file
+        5. Print completion message
+        """
+        # Step 1: Analyze
+        analysis_results = self.analyze(session)
+        
+        # Step 2: Categorize
+        violations: List[Dict[str, Any]] = []
+        exemptions: List[Dict[str, Any]] = []
+        compliant: List[Dict[str, Any]] = []
+        
+        for result in analysis_results:
+            category, result_dict = self.categorize_result(result)
+            if category == "violation":
+                violations.append(result_dict)
+            elif category == "exemption":
+                exemptions.append(result_dict)
+            elif category == "compliant":
+                compliant.append(result_dict)
+        
+        check_result = CategorizedCheckResult(
+            violations=violations,
+            exemptions=exemptions,
+            compliant=compliant
+        )
+        
+        # Step 3: Build summary
+        summary_fields = self.build_summary_fields(check_result)
+        summary = {
+            "account_name": self.account_name,
+            "account_id": self.account_id if not self.exclude_account_ids else "",
+            "check": self.check_name,
+            **summary_fields
+        }
+        
+        # Step 4: Write results
+        results_data = self._build_results_data(summary, check_result)
+        write_check_results(
+            self.check_name,
+            self.account_name,
+            self.account_id,
+            results_data,
+            self.results_base_dir,
+            self.exclude_account_ids
+        )
+        
+        # Step 5: Print completion
+        account_identifier = self.account_name
+        if not self.exclude_account_ids:
+            account_identifier = f"{self.account_name} ({self.account_id})"
+        
+        OutputHandler.check_completed(
+            self.check_name,
+            account_identifier,
+            {
+                "violations": len(violations),
+                "exemptions": len(exemptions),
+                "compliant": len(compliant),
+            }
+        )
+    
+    def _build_results_data(
+        self,
+        summary: Dict[str, Any],
+        check_result: CategorizedCheckResult
+    ) -> Dict[str, Any]:
+        """Build results data structure.
+        
+        Hookpoint for subclasses with different result structures.
+        Default returns standard structure with compliant_instances.
+        """
+        return {
+            "summary": summary,
+            "violations": check_result.violations,
+            "exemptions": check_result.exemptions,
+            "compliant_instances": check_result.compliant
+        }
+```
+
+**Key Design Decisions:**
+- **Generic Type Parameter `T`:** Each check specifies its analysis result type (e.g., `BaseCheck[DenyImdsV1Ec2]`)
+- **Three Abstract Methods:** Minimal interface for maximum flexibility
+- **Template Method:** `execute()` handles all orchestration, subclasses only implement domain logic
+- **Hookpoint:** `_build_results_data()` allows custom result structures (used by RCP checks)
+- **`**kwargs` Pattern:** Allows uniform instantiation while supporting check-specific parameters
+
+**2. Registry Pattern (headroom/checks/registry.py):**
+
+```python
+from typing import Callable, Dict, List, Optional, Type
+from .base import BaseCheck
+
+# Registry storage
+_CHECK_REGISTRY: Dict[str, Type[BaseCheck]] = {}
+
+def register_check(check_type: str, check_name: str) -> Callable[[Type[BaseCheck]], Type[BaseCheck]]:
+    """Decorator to register a check class.
+    
+    Args:
+        check_type: "scps" or "rcps"
+        check_name: Unique check identifier (e.g., "deny_imds_v1_ec2")
+    
+    Returns:
+        Decorator function that registers a check class
+    
+    Usage:
+        @register_check("scps", "deny_imds_v1_ec2")
+        class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
+            pass
+    """
+    def decorator(cls: Type[BaseCheck]) -> Type[BaseCheck]:
+        # Store in registry
+        _CHECK_REGISTRY[check_name] = cls
+        
+        # Set class attributes for later access
+        cls.CHECK_NAME = check_name
+        cls.CHECK_TYPE = check_type
+        
+        # Register check type in constants module
+        from ..constants import register_check_type
+        register_check_type(check_name, check_type)
+        
+        return cls
+    return decorator
+
+def get_check_class(check_name: str) -> Type[BaseCheck]:
+    """Retrieve check class by name."""
+    if check_name not in _CHECK_REGISTRY:
+        raise ValueError(
+            f"Unknown check name: {check_name}. "
+            f"Must be one of {list(_CHECK_REGISTRY.keys())}"
+        )
+    return _CHECK_REGISTRY[check_name]
+
+def get_all_check_classes(check_type: Optional[str] = None) -> List[Type[BaseCheck]]:
+    """Get all registered check classes, optionally filtered by type."""
+    if check_type is None:
+        return list(_CHECK_REGISTRY.values())
+    
+    return [
+        cls for cls in _CHECK_REGISTRY.values()
+        if cls.CHECK_TYPE == check_type
+    ]
+
+def get_check_names(check_type: str) -> List[str]:
+    """Get all check names for a given type."""
+    return [
+        name for name, cls in _CHECK_REGISTRY.items()
+        if cls.CHECK_TYPE == check_type
+    ]
+```
+
+**Registry Benefits:**
+- **Zero-Code-Change Extensibility:** Add new check = create class + add decorator
+- **Auto-Discovery:** No hardcoded imports or lists
+- **Type Safety:** Registry maintains type information
+- **Dynamic Querying:** Can list checks by type at runtime
+
+**3. Example Check Implementation:**
+
+```python
+# headroom/checks/scps/deny_imds_v1_ec2.py
+
+from typing import Any, Dict, List
+import boto3
+from dataclasses import asdict
+
+from ...aws.ec2 import get_imds_v1_ec2_analysis, DenyImdsV1Ec2
+from ...constants import DENY_IMDS_V1_EC2
+from ..base import BaseCheck, CategorizedCheckResult
+from ..registry import register_check
+
+@register_check("scps", DENY_IMDS_V1_EC2)
+class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
+    """Check for EC2 instances allowing IMDSv1."""
+    
+    def analyze(self, session: boto3.Session) -> List[DenyImdsV1Ec2]:
+        """Get all EC2 instances with IMDSv1 analysis."""
+        return get_imds_v1_ec2_analysis(session)
+    
+    def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, Dict[str, Any]]:
+        """Categorize instance into violation/exemption/compliant."""
+        result_dict = asdict(result)
+        
+        if result.imdsv1_allowed and result.exemption_tag_present:
+            return ("exemption", result_dict)
+        elif result.imdsv1_allowed:
+            return ("violation", result_dict)
+        else:
+            return ("compliant", result_dict)
+    
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+        """Build summary with instance counts and compliance percentage."""
+        total = (
+            len(check_result.violations) +
+            len(check_result.exemptions) +
+            len(check_result.compliant)
+        )
+        
+        if total == 0:
+            compliance_percentage = 100.0
+        else:
+            compliant_count = len(check_result.exemptions) + len(check_result.compliant)
+            compliance_percentage = (compliant_count / total) * 100
+        
+        return {
+            "total_instances": total,
+            "violations": len(check_result.violations),
+            "exemptions": len(check_result.exemptions),
+            "compliant": len(check_result.compliant),
+            "compliance_percentage": round(compliance_percentage, 2)
+        }
+```
+
+**Adding a New Check (Only 50 Lines):**
+
+To add a new check, developers only need:
+1. Create file in `checks/scps/` or `checks/rcps/`
+2. Define class extending `BaseCheck[YourAnalysisType]`
+3. Add `@register_check("scps", "your_check_name")` decorator
+4. Implement 3 methods: `analyze()`, `categorize_result()`, `build_summary_fields()`
+
+**No changes needed to:**
+- ✅ constants.py (auto-updates via registration)
+- ✅ analysis.py (auto-discovery)
+- ✅ Any other files
+
+**4. Generic Check Execution (headroom/analysis.py):**
+
+```python
+from headroom.checks.registry import get_all_check_classes
+
+def run_checks_for_type(
+    check_type: str,
+    headroom_session: boto3.Session,
+    account_info: AccountInfo,
+    config: HeadroomConfig,
+    org_account_ids: Set[str]
+) -> None:
+    """Execute all checks of a given type for a single account.
+    
+    Discovers checks dynamically from registry.
+    """
+    check_classes = get_all_check_classes(check_type)
+    
+    for check_class in check_classes:
+        check_name = check_class.CHECK_NAME
+        
+        # Skip if results already exist
+        if results_exist(check_name, account_info.name, account_info.account_id,
+                        config.results_dir, config.exclude_account_ids):
+            logger.info(f"Results for {check_name} already exist for {account_info.name}, skipping")
+            continue
+        
+        # Instantiate and execute check
+        check = check_class(
+            account_name=account_info.name,
+            account_id=account_info.account_id,
+            results_base_dir=config.results_dir,
+            exclude_account_ids=config.exclude_account_ids,
+            org_account_ids=org_account_ids  # RCP checks use this, SCP checks ignore via **kwargs
+        )
+        check.execute(headroom_session)
+
+def run_checks(
+    subaccounts: List[AccountInfo],
+    config: HeadroomConfig,
+    session: boto3.Session
+) -> None:
+    """Run all checks across all accounts."""
+    org_account_ids = get_all_organization_account_ids(config, session)
+    
+    for account_info in subaccounts:
+        # Skip if all results exist
+        if (all_check_results_exist("scps", account_info, config) and
+            all_check_results_exist("rcps", account_info, config)):
+            logger.info(f"All results already exist for {account_info.name}, skipping")
+            continue
+        
+        headroom_session = get_headroom_session(account_info.account_id, config)
+        
+        # Run SCP checks
+        run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
+        
+        # Run RCP checks
+        run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
+```
+
+**Key Features:**
+- **Dynamic Discovery:** Checks found via registry, not hardcoded imports
+- **Uniform Execution:** Same code path for all checks regardless of type
+- **Type-Aware:** Can filter by check type ("scps" or "rcps")
+- **Extensible:** Adding new check types requires no code changes
+
+**5. Constants Module Integration (headroom/constants.py):**
+
+```python
+# Check name constants
+DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
+THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+
+# Check type mapping (dynamically populated by registry)
+_CHECK_TYPE_MAP: Dict[str, str] = {}
+
+def register_check_type(check_name: str, check_type: str) -> None:
+    """Register a check type in the CHECK_TYPE_MAP.
+    
+    Called by the @register_check decorator.
+    """
+    _CHECK_TYPE_MAP[check_name] = check_type
+
+def get_check_type_map() -> Dict[str, str]:
+    """Get the check type map.
+    
+    Returns dynamically-built map from check names to types.
+    Lazy-loaded to ensure all checks are registered first.
+    """
+    if not _CHECK_TYPE_MAP:
+        # Import checks to trigger registration
+        import headroom.checks  # noqa: F401
+    return _CHECK_TYPE_MAP
+
+# Derived sets (computed from CHECK_TYPE_MAP)
+def get_check_names(check_type: str) -> List[str]:
+    """Get all check names for a given type."""
+    from headroom.checks.registry import get_check_names as registry_get_check_names
+    return registry_get_check_names(check_type)
+```
+
+**6. Check Module Initialization (headroom/checks/__init__.py):**
+
+```python
+"""
+Compliance checks for Headroom security analysis.
+
+Imports all check modules to ensure they register themselves via the
+@register_check decorator.
+"""
+
+# These imports are required to trigger decorator execution and register checks.
+# The @register_check decorator only runs when the module is imported, so without
+# these imports, the checks would never register themselves in _CHECK_REGISTRY.
+from .rcps import check_third_party_assumerole  # noqa: F401
+from .scps import deny_imds_v1_ec2  # noqa: F401
+
+__all__ = []
+```
+
+**Critical Detail:** Without these imports, decorators never execute and checks never register.
+
+**Architecture Benefits:**
+
+1. **Extensibility:**
+   - Add new check: 1 file, ~50 lines, zero other changes
+   - Add new check type: Add to CHECK_TYPE_MAP values, zero code changes
+   
+2. **Maintainability:**
+   - Single source of truth for check execution flow (BaseCheck)
+   - All checks benefit from improvements to base class
+   - Consistent error handling and output formatting
+
+3. **Type Safety:**
+   - Generic type parameter ensures correct types in categorize_result()
+   - Mypy validates entire flow from analysis to categorization
+
+4. **Testability:**
+   - Easy to test checks in isolation
+   - Can mock BaseCheck methods for unit testing
+   - Registry can be cleared/mocked in tests
+
+5. **Clean Code:**
+   - Each check focuses only on domain logic (3 methods)
+   - No boilerplate code duplication
+   - Template Method pattern eliminates copy-paste errors
+
+**Files Created:**
+- `headroom/checks/base.py` (189 lines)
+- `headroom/checks/registry.py` (96 lines)
+- `tests/test_checks_registry.py` (102 lines)
+
+**Files Modified:**
+- `headroom/checks/scps/deny_imds_v1_ec2.py`: Refactored to use BaseCheck (reduced from 88 to 115 lines, but public API is 9 lines)
+- `headroom/checks/rcps/check_third_party_assumerole.py`: Refactored to use BaseCheck (190 lines with complex override logic)
+- `headroom/analysis.py`: Replaced check-specific functions with generic `run_checks_for_type()`
+- `headroom/constants.py`: Added dynamic check type registration
+- `headroom/checks/__init__.py`: Added imports to trigger registration
+- Multiple test files updated to use check classes instead of wrapper functions
+
+**Test Coverage:**
+- All 329 tests passing
+- 100% code coverage maintained (1190 statements in headroom/, 3179 in tests/)
+- Comprehensive registry tests covering all code paths
+
+### PR-017: Session Management Extraction
+
+**Requirement:** The system MUST eliminate code duplication in AWS session management by extracting the common role assumption pattern into a reusable utility function.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Problem Statement:**
+
+Three functions in `analysis.py` contained nearly identical session creation logic:
+- `get_security_analysis_session()` - 21 lines
+- `get_management_account_session()` - 34 lines (with docstring)
+- `get_headroom_session()` - 17 lines
+
+Each duplicated the same pattern:
+1. Create STS client from a session
+2. Call `assume_role()` with role ARN and session name
+3. Handle `ClientError` exceptions
+4. Extract credentials from response
+5. Create new `boto3.Session` with temporary credentials
+
+**Solution:**
+
+Created `headroom/aws/sessions.py` with a single `assume_role()` function:
+
+```python
+from typing import Optional
+import boto3
+from botocore.exceptions import ClientError
+
+def assume_role(
+    role_arn: str,
+    session_name: str,
+    base_session: Optional[boto3.Session] = None
+) -> boto3.Session:
+    """Assume an IAM role and return a session with temporary credentials.
+    
+    Args:
+        role_arn: ARN of the role to assume
+        session_name: Name for the assumed role session
+        base_session: Session to use for assuming the role (default: creates new session)
+    
+    Returns:
+        New boto3 Session with temporary credentials from the assumed role
+    
+    Raises:
+        ClientError: If role assumption fails (e.g., permission denied, role not found)
+    """
+    if base_session is None:
+        base_session = boto3.Session()
+    
+    sts_client = base_session.client("sts")
+    response = sts_client.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName=session_name
+    )
+    
+    credentials = response["Credentials"]
+    return boto3.Session(
+        aws_access_key_id=credentials["AccessKeyId"],
+        aws_secret_access_key=credentials["SecretAccessKey"],
+        aws_session_token=credentials["SessionToken"]
+    )
+```
+
+**Refactored Functions:**
+
+```python
+def get_security_analysis_session(config: HeadroomConfig) -> boto3.Session:
+    """Get session for the security analysis account."""
+    account_id = config.security_analysis_account_id
+    if not account_id:
+        return boto3.Session()
+    role_arn = f"arn:aws:iam::{account_id}:role/OrganizationAccountAccessRole"
+    return assume_role(role_arn, "HeadroomSecurityAnalysisSes")
+
+def get_management_account_session(config: HeadroomConfig, session: boto3.Session) -> boto3.Session:
+    """Assume role in management account for organization access."""
+    if not config.management_account_id:
+        raise RuntimeError("management_account_id must be set in config")
+    role_arn = f"arn:aws:iam::{config.management_account_id}:role/OrgAndAccountInfoReader"
+    return assume_role(role_arn, "HeadroomManagementAccountSession", session)
+
+def get_headroom_session(account_id: str, config: HeadroomConfig) -> boto3.Session:
+    """Get session for analyzing a specific account."""
+    security_session = get_security_analysis_session(config)
+    role_arn = f"arn:aws:iam::{account_id}:role/Headroom"
+    return assume_role(role_arn, f"Headroom-{account_id}", security_session)
+```
+
+**Benefits:**
+- **DRY Compliance:** Eliminated 53 lines of duplicate code
+- **Single Source of Truth:** One place to update role assumption logic
+- **Consistent Error Handling:** All role assumptions handle ClientError identically
+- **Easier Testing:** Can mock single assume_role() function
+- **Simplified Functions:** Each function now 2-3 lines of implementation
+
+**Impact:**
+- Lines removed: ~53 (from duplicated implementations)
+- Lines added: ~28 (new sessions.py module + imports)
+- Net change: -25 lines with significantly better architecture
+
+**Test Coverage:**
+- All existing tests updated to patch `headroom.aws.sessions.assume_role`
+- All 329 tests passing with 100% coverage
+
+### PR-018: Defensive Programming Elimination
+
+**Requirement:** The system MUST eliminate defensive programming patterns that suppress errors and replace them with fail-loud error handling following the principle "Never do except Exception, always catch the specific exceptions that the code can raise."
+
+**Implementation Status:** ✅ COMPLETED
+
+**Anti-Patterns Eliminated:**
+
+**1. Generic Exception Catching (4 occurrences removed):**
+
+Before:
+```python
+try:
+    # AWS API call
+except Exception as e:  # ❌ Too broad
+    logger.error(f"Error: {e}")
+    # Silent failure or wrapping
+```
+
+After:
+```python
+try:
+    # AWS API call
+except ClientError as e:  # ✅ Specific exception
+    logger.error(f"Error: {e}", exc_info=True)
+    raise  # ✅ Re-raise for visibility
+```
+
+**2. Unnecessary Exception Wrapping (3 occurrences removed):**
+
+Before:
+```python
+try:
+    response = sts_client.assume_role(...)
+except ClientError as e:
+    raise RuntimeError(f"Failed to assume role: {e}")  # ❌ Double-wrapping
+```
+
+After:
+```python
+response = sts_client.assume_role(...)  # ✅ Let ClientError propagate
+```
+
+**Rationale:** `ClientError` already contains sufficient context (error code, message, role ARN). Wrapping in `RuntimeError` loses type information that callers might need (e.g., to distinguish AccessDenied from NoSuchEntity).
+
+**3. Catch-Log-Raise (2 occurrences removed):**
+
+Before:
+```python
+try:
+    with open(file_path, 'w') as f:
+        f.write(content)
+except IOError as e:
+    logger.error(f"Failed to write: {e}")  # ❌ Redundant logging
+    raise  # Exception already has traceback
+```
+
+After:
+```python
+with open(file_path, 'w') as f:  # ✅ Let IOError propagate
+    f.write(content)
+```
+
+**Rationale:** Python's traceback already shows the error location and context. Catch-log-raise adds no value and creates duplicate log entries.
+
+**4. Defensive KeyError Catching (1 occurrence removed):**
+
+Before:
+```python
+try:
+    summary = data["summary"]
+    account_id = summary["account_id"]
+except KeyError as e:
+    raise RuntimeError(f"Missing key: {e}")  # ❌ Impossible case
+```
+
+After:
+```python
+summary = data.get("summary", {})  # ✅ .get() handles missing keys
+account_id = summary.get("account_id", "")
+```
+
+**Rationale:** Using `.get()` with defaults is cleaner than try/except for expected variations.
+
+**5. Silent Failures (2 occurrences fixed):**
+
+Before:
+```python
+try:
+    regions_response = ec2_client.describe_regions()
+except ClientError as e:
+    logger.warning(f"Failed to list regions: {e}")
+    regions = [fallback_region]  # ❌ Silent fallback hides permission issues
+```
+
+After:
+```python
+regions_response = ec2_client.describe_regions()  # ✅ Fail loudly
+regions = [region['RegionName'] for region in regions_response['Regions']]
+```
+
+**Rationale:** If `describe_regions` fails, it indicates a serious problem (missing IAM permissions, AWS service issue). Silently falling back to one region could miss violations in other regions.
+
+**Principles Applied:**
+
+1. **Fail Fast:** Removed defensive code that handled "impossible" cases
+2. **Let Exceptions Propagate:** Stopped wrapping exceptions that already contain sufficient context
+3. **Preserve Exception Types:** Callers can now distinguish between different error conditions
+4. **Make Silent Failures Visible:** Removed fallback behavior that hid permission/configuration issues
+5. **Only Catch What You Can Handle:** Removed catches for generic exceptions
+
+**Files Modified:**
+
+1. **headroom/aws/organization.py:** Replaced 4x `except Exception` with `except ClientError`
+2. **headroom/aws/sessions.py:** Removed unnecessary `ClientError` wrapping
+3. **headroom/aws/ec2.py:** Removed silent region fallback
+4. **headroom/parse_results.py:** Removed unnecessary `KeyError` catching
+5. **headroom/write_results.py:** Removed catch-log-raise pattern
+6. **headroom/analysis.py:** Removed double-wrapping of exceptions
+
+**Test Updates:**
+
+Updated tests to expect natural exception propagation:
+- Tests now assert `ClientError` is raised (not wrapped `RuntimeError`)
+- Removed tests for fallback behaviors that no longer exist
+- Added `exc_info=True` assertions for proper logging
+
+**Benefits:**
+
+1. **Clearer Error Messages:** Exception types and messages now accurately reflect the actual problem
+2. **Better Debugging:** Full stack traces preserved without log noise
+3. **Type Safety:** Callers can catch specific exceptions (e.g., `ClientError`) with proper type information
+4. **No Hidden Failures:** All errors are visible immediately
+5. **Simpler Code:** Removed ~80 lines of unnecessary exception handling
+
+**Test Results:**
+- All 313 tests passing
+- 100% code coverage maintained
+- Zero generic `except Exception` blocks remaining
+
+### PR-019: Output Standardization
+
+**Requirement:** The system MUST standardize all user-facing output through a centralized handler to ensure consistent formatting, enable future enhancements, and eliminate scattered print statements.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Problem Statement:**
+
+Output was scattered across multiple modules with inconsistent formatting:
+- Print statements in `main.py` for configuration validation
+- Print statements in `checks/base.py` for check completion
+- Print statements in `parse_results.py` for section headers
+- Inconsistent emoji usage and formatting
+
+**Solution:**
+
+Created `headroom/output.py` with `OutputHandler` class:
+
+```python
+from typing import Any, Dict, Optional
+
+class OutputHandler:
+    """Centralized handler for all user-facing output.
+    
+    Provides consistent formatting for different message types:
+    - check_completed(): Check execution completion with statistics
+    - error(): Error messages with 🚨 emoji
+    - success(): Success messages with ✅ emoji
+    - section_header(): Section dividers with formatting
+    
+    Future enhancements (not yet implemented):
+    - Colored output (green for success, red for errors)
+    - Quiet mode (suppress non-error output)
+    - JSON output mode (machine-readable)
+    - Log file redirection
+    """
+    
+    @staticmethod
+    def check_completed(check_name: str, account_identifier: str, data: Optional[Dict[str, Any]] = None) -> None:
+        """Print check completion message with optional statistics."""
+        print(f"✅ Completed {check_name} for account {account_identifier}")
+        if not data:
+            return
+        
+        violations = data.get("violations", 0)
+        exemptions = data.get("exemptions", 0)
+        compliant = data.get("compliant", 0)
+        
+        print(f"   Violations: {violations}, Exemptions: {exemptions}, Compliant: {compliant}")
+    
+    @staticmethod
+    def error(title: str, error: Exception) -> None:
+        """Print error message with 🚨 emoji."""
+        print(f"\n🚨 {title}:\n{error}\n")
+    
+    @staticmethod
+    def success(title: str, data: Any) -> None:
+        """Print success message with ✅ emoji."""
+        print(f"\n✅ {title}:")
+        print(data)
+    
+    @staticmethod
+    def section_header(title: str) -> None:
+        """Print section header with formatting."""
+        print(f"\n{'='*80}")
+        print(f"{title}")
+        print(f"{'='*80}\n")
+```
+
+**Integration Points:**
+
+1. **Configuration Validation (main.py):**
+```python
+# Before
+print(f"\n🚨 Configuration Validation Error:\n{e}\n")
+
+# After
+OutputHandler.error("Configuration Error", e)
+```
+
+2. **Check Completion (checks/base.py):**
+```python
+# Before
+print(f"✅ Completed {check_name} for account {account_identifier}")
+print(f"   Violations: {violations}, Exemptions: {exemptions}, Compliant: {compliant}")
+
+# After
+OutputHandler.check_completed(check_name, account_identifier, {
+    "violations": len(violations),
+    "exemptions": len(exemptions),
+    "compliant": len(compliant),
+})
+```
+
+3. **Section Headers (parse_results.py):**
+```python
+# Before
+print(f"\n{'='*80}")
+print(f"{title}")
+print(f"{'='*80}\n")
+
+# After
+OutputHandler.section_header(title)
+```
+
+**Benefits:**
+
+1. **Consistent Formatting:** All output goes through one handler
+2. **DRY Compliance:** No duplicate formatting code
+3. **Maintainability:** Change output style in one place
+4. **Extensibility:** Easy to add features like:
+   - Colored terminal output
+   - Quiet mode flag
+   - JSON output format
+   - Log file redirection
+   - Progress indicators
+5. **Professional Appearance:** Consistent emoji usage and formatting
+6. **Early Returns:** Used in implementation to minimize indentation
+
+**Files Created:**
+- `headroom/output.py` (76 lines)
+- `tests/test_output.py` (102 lines with 8 test cases)
+
+**Files Modified:**
+- `headroom/main.py`: Replaced 4 print statements with OutputHandler calls
+- `headroom/checks/base.py`: Replaced check completion print with OutputHandler call
+- `headroom/parse_results.py`: Replaced section header prints with OutputHandler calls
+- Multiple test files updated to match new output format
+
+**Test Coverage:**
+- All 329 tests passing
+- 100% code coverage maintained
+- Comprehensive OutputHandler tests covering all methods and edge cases
+
+### PR-020: Minor Code Quality Improvements
+
+**Requirement:** The system MUST complete remaining low-priority code quality improvements identified in REFACTORING_IDEAS.md.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Improvements Implemented:**
+
+**1. Type Alias for Union (Item 11):**
+
+Before:
+```python
+def print_policy_recommendations(
+    recommendations: Sequence[Union[SCPPlacementRecommendations, RCPPlacementRecommendations]],
+    ...
+```
+
+After (in types.py):
+```python
+PolicyRecommendation = Union["SCPPlacementRecommendations", "RCPPlacementRecommendations"]
+"""Type alias for either SCP or RCP placement recommendations."""
+
+# Usage
+def print_policy_recommendations(
+    recommendations: Sequence[PolicyRecommendation],
+    ...
+```
+
+**2. Simplified Config Validation (Item 7):**
+
+Before:
+```python
+except ValueError as e:
+    OutputHandler.error("Configuration Validation Error", e)
+    exit(1)
+except TypeError as e:
+    OutputHandler.error("Configuration Type Error", e)
+    exit(1)
+```
+
+After:
+```python
+except (ValueError, TypeError) as e:
+    OutputHandler.error("Configuration Error", e)
+    exit(1)
+```
+
+**3. Refactored Account ID Extraction (Item 8):**
+
+Before (nested conditionals):
+```python
+account_id: str = summary.get("account_id", "")
+if not account_id:
+    account_name = summary.get("account_name", "")
+    if not account_name:
+        raise RuntimeError(...)
+    looked_up_id: str = lookup_account_id_by_name(...)
+    return looked_up_id
+return account_id
+```
+
+After (early returns):
+```python
+# Happy path: account_id present
+account_id: str = summary.get("account_id", "")
+if account_id:
+    return account_id
+
+# Fallback: look up by account name
+account_name = summary.get("account_name", "")
+if not account_name:
+    raise RuntimeError(...)
+
+return lookup_account_id_by_name(...)
+```
+
+**4. Removed MIN_ACCOUNTS Constant (Item 10):**
+
+Before:
+```python
+MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1  # Threshold with no effect
+
+def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
+    if _should_skip_ou_for_rcp(...):
+        return False
+    return len(results) >= MIN_ACCOUNTS_FOR_OU_LEVEL_RCP
+```
+
+After:
+```python
+def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
+    return not _should_skip_ou_for_rcp(...)
+```
+
+**Benefits:**
+- Reduced cognitive complexity (Item 8: from 4 to 2)
+- Eliminated unnecessary variable (Item 8: `looked_up_id`)
+- Clearer guard clause pattern (Item 8)
+- Removed confusing constant with no effect (Item 10)
+- Simplified boolean logic (Item 10)
+- More readable type signatures (Item 11)
+- Combined duplicate exception handling (Item 7)
+
+**Line Count Changes:**
+- Item 11: +3 lines (type alias definition), -2 characters per usage
+- Item 7: -4 lines
+- Item 8: -3 lines (better readability, same functionality)
+- Item 10: -6 lines
+- **Net change:** -10 lines with significantly better code quality
+
+**Test Updates:**
+- Updated tests to expect "Configuration Error" instead of "Configuration Validation Error"
+- Updated test for single-account OUs to verify they now get OU-level recommendations
+- All 329 tests passing with 100% coverage
+
 ---
 
 ## Technical Architecture
@@ -727,11 +2675,13 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
    - Extract account information with tag-based metadata
 
 3. **Analysis Phase**
+   - Retrieve all organization account IDs from management account via `get_all_organization_account_ids()`
    - Filter accounts using `get_relevant_subaccounts()` (currently returns all accounts)
-   - For each account, check if results already exist via `check_results_exist()` (skip if found)
+   - For each account, check if results already exist via `all_scp_results_exist()` and `all_rcp_results_exist()` (skip if found)
    - For accounts without results, assume `Headroom` role via `get_headroom_session()`
    - Execute SCP checks (e.g., `check_deny_imds_v1_ec2()`) using AWS library functions
-   - Generate structured JSON results in `test_environment/headroom_results/`
+   - Execute RCP checks (e.g., `check_third_party_assumerole()`) with IAM trust policy analysis
+   - Generate structured JSON results in `test_environment/headroom_results/scps/` and `test_environment/headroom_results/rcps/`
    - Console output with compliance summaries per account
 
 4. **Results Analysis Phase**
@@ -744,8 +2694,10 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
 5. **Terraform Generation Phase**
    - Generate `grab_org_info.tf` with AWS Organizations data sources and local variables
    - Auto-generate SCP Terraform configurations based on compliance analysis results
+   - Auto-generate RCP Terraform configurations based on IAM trust policy analysis
    - Create account-specific, OU-specific, and root-level SCP deployment files
-   - Ensure safety-first deployment (only 100% compliant targets)
+   - Create account-specific, OU-specific, and root-level RCP deployment files with third-party account whitelists
+   - Ensure safety-first deployment (only 100% compliant SCPs, wildcard-free RCPs)
    - Output ready-to-use Terraform configurations in `test_environment/scps/` directory
 
 ### Error Handling Matrix
@@ -818,10 +2770,67 @@ def generate_scp_terraform(recommendations: List[SCPPlacementRecommendations],
 - ✅ Early return refactoring for improved code readability
 - ✅ Dynamic import elimination and top-level import organization
 
-### Phase 7: SCP Expansion (PLANNED)
+### Phase 7: RCP Analysis & Auto-Generation (COMPLETED)
+- ✅ IAM trust policy analysis with account ID extraction (`aws/iam.py`)
+- ✅ Third-party account detection and organization baseline comparison
+- ✅ Wildcard principal detection with CloudTrail TODO comments
+- ✅ RCP compliance check implementation (`check_third_party_assumerole`)
+- ✅ RCP Terraform auto-generation with third-party account allowlists
+- ✅ Multi-level RCP deployment (account, OU, root)
+- ✅ Wildcard safety logic (OU-level RCPs excluded if any account has wildcards)
+- ✅ Fail-loud exception handling (specific exceptions only, no silent failures)
+- ✅ Principal type validation (AWS, Service, Federated)
+- ✅ Mixed principal support (e.g., `{"AWS": [...], "Service": "..."}`)
+- ✅ Custom exceptions (`UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError`)
+- ✅ Comprehensive test coverage (245 tests, 100% coverage for all modules)
+- ✅ RCP Terraform module with EnforceOrgIdentities policy
+- ✅ Union strategy for combining third-party accounts at root/OU levels
+- ✅ Intelligent RCP placement at most specific safe level (root, OU, or account)
+- ✅ Multi-level RCP deployment: root, OU (including single-account OUs), and account-level
+- ✅ Violations counting for wildcard roles
+- ✅ Separate RCP directory configuration and generation
+- ✅ Missing account ID lookup by name when exclude_account_ids=True
+- ✅ Critical bug fixes for RCP analysis and generation
+
+### Phase 8: Architectural Organization (COMPLETED)
+- ✅ Directory structure reorganization: `checks/scps/` and `checks/rcps/` subdirectories
+- ✅ Results directory reorganization: `results_dir/scps/` and `results_dir/rcps/` subdirectories
+- ✅ Function renaming for clarity: `parse_scp_result_files`, `check_third_party_assumerole`
+- ✅ Analysis module refactoring: extracted `run_scp_checks()` and `run_rcp_checks()` functions
+- ✅ Helper functions for result existence checking: `all_scp_results_exist()`, `all_rcp_results_exist()`
+- ✅ `CHECK_TYPE_MAP` implementation for organizing results by policy type
+- ✅ Module-level constants for testability (`MIN_ACCOUNTS_FOR_OU_LEVEL_RCP`)
+- ✅ Comprehensive test suite updates (246 tests, all passing)
+- ✅ Edge case testing for 100% code coverage (1044 statements in headroom/, 2515 in tests/)
+- ✅ Breaking change: clean directory structure with no backward compatibility for flat results
+
+### Phase 8.5: DRY Refactoring & Constants Module (COMPLETED)
+- ✅ Created dedicated `constants.py` module for check configuration
+- ✅ Established `CHECK_TYPE_MAP` as single source of truth for check type classification
+- ✅ Pre-computed `SCP_CHECK_NAMES` and `RCP_CHECK_NAMES` sets for convenience
+- ✅ Extracted shared `lookup_account_id_by_name()` function to eliminate 21 lines of duplicate code
+- ✅ Centralized directory path construction with `get_results_dir()` function
+- ✅ Replaced 14 hardcoded check name strings with constants
+- ✅ All 248 tests passing with 100% coverage maintained
+
+### Phase 9: Framework Abstraction & Code Quality (COMPLETED)
+- ✅ **Check Framework Abstraction (PR-016):** Implemented BaseCheck abstract class with Template Method pattern
+- ✅ **Registry Pattern (PR-016):** Self-registering checks via `@register_check` decorator
+- ✅ **Zero-Code-Change Extensibility:** Adding new checks requires only 1 file (~50 lines), zero other changes
+- ✅ **Generic Check Execution:** Unified `run_checks_for_type()` function for all check types
+- ✅ **Session Management (PR-017):** Extracted `assume_role()` function, eliminated 53 lines of duplication
+- ✅ **Defensive Programming Elimination (PR-018):** Removed all generic exception catches, fail-loud error handling
+- ✅ **No Silent Failures:** Removed 2 silent fallback behaviors that hid permission/configuration issues
+- ✅ **Output Standardization (PR-019):** Centralized OutputHandler for consistent user-facing output
+- ✅ **Code Quality Improvements (PR-020):** Type aliases, simplified validation, early returns, removed ineffective constants
+- ✅ All 329 tests passing with 100% coverage (1190 statements in headroom/, 3179 in tests/)
+- ✅ Zero mypy errors with strict mode
+- ✅ All pre-commit hooks passing
+
+### Phase 10: SCP Expansion (PLANNED)
 - 🔄 Additional SCP checks for other AWS services
 - 🔄 Metrics-based decision making for SCP deployment
-- 🔄 CloudTrail historical analysis integration
+- 🔄 CloudTrail historical analysis integration for actions items such as wildcard resolution
 - 🔄 OU-based account filtering implementation
 - 🔄 Advanced SCP deployment strategies
 
@@ -856,6 +2865,7 @@ account_tag_layout:
 - `--config CONFIG` (required): Path to configuration YAML file
 - `--results-dir RESULTS_DIR` (optional): Override directory for results output (default: `test_environment/headroom_results`)
 - `--scps-dir SCPS_DIR` (optional): Override directory for SCP Terraform output (default: `test_environment/scps`)
+- `--rcps-dir RCPS_DIR` (optional): Override directory for RCP Terraform output (default: `test_environment/rcps`)
 - `--security-analysis-account-id ID` (optional): Override security analysis account ID from YAML
 - `--management-account-id ID` (optional): Override management account ID from YAML
 - `--exclude-account-ids` (optional): Exclude account IDs from result files and filenames
@@ -916,6 +2926,31 @@ mypy headroom/ tests/
 10. **Terraform Generation:** Auto-generation of AWS Organizations data sources and SCP configurations ✅
 11. **SCP Auto-Deployment:** Safety-first SCP Terraform generation for compliant targets ✅
 12. **Architecture:** Clean module separation with terraform/ and aws/ folder organization ✅
+13. **RCP Analysis:** IAM trust policy analysis with third-party account detection and wildcard identification ✅
+14. **RCP Auto-Generation:** Terraform RCP configurations with third-party account allowlists and wildcard safety ✅
+15. **Exception Handling:** Fail-loud with specific exception types, no silent failures or generic catches ✅
+16. **Principal Validation:** Comprehensive handling of AWS, Service, Federated, and mixed principals ✅
+17. **Union Strategy:** Third-party account IDs combined at root/OU levels for more permissive RCP deployment ✅
+18. **Wildcard Safety:** Root/OU-level RCP deployment blocked when ANY account has wildcard principals ✅
+19. **Configuration Separation:** Separate rcps_dir configuration for clean RCP/SCP directory separation ✅
+20. **Missing Data Handling:** Account lookup by name when account_id missing (exclude_account_ids=True support) ✅
+21. **Critical Bug Fixes:** All major RCP generation and analysis bugs fixed with comprehensive test coverage ✅
+22. **Architectural Organization:** Clear separation of SCP and RCP code in checks/ and results directories ✅
+23. **Function Extraction:** Single Responsibility Principle applied with dedicated check execution functions ✅
+24. **Scalable Structure:** Directory organization supports easy addition of new SCP and RCP checks ✅
+25. **Test Coverage Excellence:** 248 tests with 100% coverage maintained through comprehensive test refactoring ✅
+26. **DRY Compliance:** Code duplication eliminated through shared functions and centralized constants ✅
+27. **Constants Module:** Dedicated `constants.py` for single source of truth on check configuration ✅
+28. **Shared Utilities:** Account lookup and path construction functions reusable across modules ✅
+29. **Type-Safe Constants:** Check names as importable constants instead of magic strings ✅
+30. **Maintainable Architecture:** Adding new checks requires minimal code changes in single location ✅
+31. **Check Framework Abstraction:** BaseCheck abstract class with Template Method pattern for reusable check execution ✅
+32. **Registry Pattern:** Self-registering checks via decorators enable zero-code-change extensibility ✅
+33. **Generic Check Execution:** Unified run_checks_for_type() function replaces check-specific execution code ✅
+34. **Session Management Extraction:** Single assume_role() function eliminates 53 lines of duplication ✅
+35. **Fail-Loud Error Handling:** All exceptions are specific, no silent failures or generic catches ✅
+36. **Output Standardization:** Centralized OutputHandler for consistent user-facing output formatting ✅
+37. **Code Quality Excellence:** 329 tests with 100% coverage, zero mypy errors, all pre-commit hooks passing ✅
 
 ---
 

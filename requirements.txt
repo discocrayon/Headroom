@@ -1,4 +1,5 @@
 annotated-types==0.7.0
+boto3-stubs[ec2,iam,organizations,sts]==1.35.84
 cachetools==6.1.0
 cfgv==3.4.0
 chardet==5.2.0

@@ -1,7 +1,16 @@
 import pytest
 from unittest.mock import MagicMock, patch, mock_open
-from typing import Dict, Any
+from typing import Any, Dict, List
 from headroom.usage import load_yaml_config, parse_cli_args, merge_configs
+from headroom.main import (
+    setup_configuration,
+    process_policy_recommendations,
+    setup_organization_context,
+    handle_scp_workflow,
+    handle_rcp_workflow,
+)
+from headroom.config import HeadroomConfig
+from headroom.types import OrganizationHierarchy, RCPParseResult
 from pydantic import ValidationError
 
 
@@ -257,3 +266,289 @@ class TestMergeConfigs:
         # Original YAML should be unchanged
         assert yaml_config == original_yaml
         assert result.use_account_name_from_tags is False
+
+
+class TestSetupConfiguration:
+    """Test setup_configuration function."""
+
+    def test_setup_configuration_success(self) -> None:
+        """Test successful configuration setup."""
+        yaml_config = {
+            "use_account_name_from_tags": True,
+            "account_tag_layout": {
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner"
+            }
+        }
+        cli_args = MagicMock()
+        cli_args.config = "test.yaml"
+
+        with patch('builtins.print'):
+            result = setup_configuration(cli_args, yaml_config)
+
+        assert isinstance(result, HeadroomConfig)
+        assert result.use_account_name_from_tags is True
+
+    def test_setup_configuration_value_error(self) -> None:
+        """Test configuration setup with ValidationError (ValueError)."""
+        yaml_config: Dict[str, Any] = {}
+        cli_args = MagicMock()
+        cli_args.config = "test.yaml"
+
+        with patch('builtins.print'):
+            with pytest.raises(SystemExit) as exc_info:
+                setup_configuration(cli_args, yaml_config)
+            assert exc_info.value.code == 1
+
+    def test_setup_configuration_prints_config(self) -> None:
+        """Test that configuration is printed."""
+        yaml_config = {
+            "use_account_name_from_tags": False,
+            "account_tag_layout": {
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner"
+            }
+        }
+        cli_args = MagicMock()
+        cli_args.config = "test.yaml"
+
+        with patch('builtins.print') as mock_print:
+            result = setup_configuration(cli_args, yaml_config)
+
+        mock_print.assert_any_call("\n✅ Final Config")
+        assert isinstance(result, HeadroomConfig)
+
+
+class TestProcessPolicyRecommendations:
+    """Test process_policy_recommendations function."""
+
+    def test_process_policy_recommendations_with_recommendations(self) -> None:
+        """Test processing non-empty recommendations."""
+        recommendations = {"check1": "recommendation1"}
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+        terraform_generator = MagicMock()
+
+        with patch('headroom.main.print_policy_recommendations') as mock_print:
+            process_policy_recommendations(
+                recommendations,
+                org_hierarchy,
+                "Test Recommendations",
+                terraform_generator,
+                "arg1",
+                "arg2"
+            )
+
+        mock_print.assert_called_once_with(recommendations, org_hierarchy, "Test Recommendations")
+        terraform_generator.assert_called_once_with(recommendations, org_hierarchy, "arg1", "arg2")
+
+    def test_process_policy_recommendations_empty(self) -> None:
+        """Test processing empty recommendations."""
+        recommendations: Dict[str, str] = {}
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+        terraform_generator = MagicMock()
+
+        with patch('headroom.main.print_policy_recommendations') as mock_print:
+            process_policy_recommendations(
+                recommendations,
+                org_hierarchy,
+                "Test Recommendations",
+                terraform_generator,
+                "arg1"
+            )
+
+        mock_print.assert_not_called()
+        terraform_generator.assert_not_called()
+
+    def test_process_policy_recommendations_none(self) -> None:
+        """Test processing None recommendations."""
+        recommendations: List[str] = []
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+        terraform_generator = MagicMock()
+
+        with patch('headroom.main.print_policy_recommendations') as mock_print:
+            process_policy_recommendations(
+                recommendations,
+                org_hierarchy,
+                "Test Recommendations",
+                terraform_generator
+            )
+
+        mock_print.assert_not_called()
+        terraform_generator.assert_not_called()
+
+    def test_process_policy_recommendations_list(self) -> None:
+        """Test processing list of recommendations."""
+        recommendations = ["rec1", "rec2"]
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+        terraform_generator = MagicMock()
+
+        with patch('headroom.main.print_policy_recommendations') as mock_print:
+            process_policy_recommendations(
+                recommendations,
+                org_hierarchy,
+                "Test Recommendations",
+                terraform_generator,
+                "arg1"
+            )
+
+        mock_print.assert_called_once()
+        terraform_generator.assert_called_once()
+
+
+class TestSetupOrganizationContext:
+    """Test setup_organization_context function."""
+
+    def test_setup_organization_context_success(self) -> None:
+        """Test successful organization context setup."""
+        config = MagicMock(spec=HeadroomConfig)
+        config.scps_dir = "/test/scps"
+        security_session = MagicMock()
+        mgmt_session = MagicMock()
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        with patch('headroom.main.get_management_account_session', return_value=mgmt_session):
+            with patch('headroom.main.analyze_organization_structure', return_value=org_hierarchy):
+                with patch('headroom.main.generate_terraform_org_info') as mock_gen:
+                    result_session, result_hierarchy = setup_organization_context(config, security_session)
+
+        assert result_session == mgmt_session
+        assert result_hierarchy == org_hierarchy
+        mock_gen.assert_called_once_with(mgmt_session, "/test/scps/grab_org_info.tf")
+
+    def test_setup_organization_context_raises_value_error(self) -> None:
+        """Test organization context setup with missing management account."""
+        config = MagicMock(spec=HeadroomConfig)
+        security_session = MagicMock()
+
+        with patch('headroom.main.get_management_account_session', side_effect=ValueError("Missing management_account_id")):
+            with pytest.raises(ValueError, match="Missing management_account_id"):
+                setup_organization_context(config, security_session)
+
+
+class TestHandleScpWorkflow:
+    """Test handle_scp_workflow function."""
+
+    def test_handle_scp_workflow_with_recommendations(self) -> None:
+        """Test SCP workflow with recommendations."""
+        config = MagicMock(spec=HeadroomConfig)
+        config.scps_dir = "/test/scps"
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+        recommendations = {"check1": "recommendation1"}
+
+        with patch('headroom.main.parse_scp_results', return_value=recommendations):
+            with patch('headroom.main.process_policy_recommendations') as mock_process:
+                handle_scp_workflow(config, org_hierarchy)
+
+        mock_process.assert_called_once()
+        call_args = mock_process.call_args
+        assert call_args[0][0] == recommendations
+        assert call_args[0][1] == org_hierarchy
+        assert call_args[0][2] == "SCP PLACEMENT RECOMMENDATIONS"
+
+    def test_handle_scp_workflow_no_recommendations(self) -> None:
+        """Test SCP workflow with no recommendations."""
+        config = MagicMock(spec=HeadroomConfig)
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        with patch('headroom.main.parse_scp_results', return_value={}):
+            with patch('headroom.main.process_policy_recommendations') as mock_process:
+                handle_scp_workflow(config, org_hierarchy)
+
+        mock_process.assert_not_called()
+
+    def test_handle_scp_workflow_none_recommendations(self) -> None:
+        """Test SCP workflow with None recommendations."""
+        config = MagicMock(spec=HeadroomConfig)
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        with patch('headroom.main.parse_scp_results', return_value=None):
+            with patch('headroom.main.process_policy_recommendations') as mock_process:
+                handle_scp_workflow(config, org_hierarchy)
+
+        mock_process.assert_not_called()
+
+
+class TestHandleRcpWorkflow:
+    """Test handle_rcp_workflow function."""
+
+    def test_handle_rcp_workflow_complete(self) -> None:
+        """Test RCP workflow with complete data."""
+        config = MagicMock(spec=HeadroomConfig)
+        config.results_dir = "/test/results"
+        config.rcps_dir = "/test/rcps"
+        config.scps_dir = "/test/scps"
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        parse_result = RCPParseResult(
+            account_third_party_map={"account1": {"third_party1"}},
+            accounts_with_wildcards=set()
+        )
+        recommendations = [{"recommendation": "test"}]
+
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
+            with patch('headroom.main.determine_rcp_placement', return_value=recommendations):
+                with patch('headroom.main.process_policy_recommendations') as mock_process:
+                    handle_rcp_workflow(config, org_hierarchy)
+
+        mock_process.assert_called_once()
+        call_args = mock_process.call_args
+        assert call_args[0][0] == recommendations
+        assert call_args[0][1] == org_hierarchy
+        assert call_args[0][2] == "RCP PLACEMENT RECOMMENDATIONS"
+
+    def test_handle_rcp_workflow_no_third_party_map(self) -> None:
+        """Test RCP workflow with empty third party map."""
+        config = MagicMock(spec=HeadroomConfig)
+        config.results_dir = "/test/results"
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        parse_result = RCPParseResult(
+            account_third_party_map={},
+            accounts_with_wildcards=set()
+        )
+
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
+            with patch('headroom.main.determine_rcp_placement') as mock_determine:
+                with patch('headroom.main.process_policy_recommendations') as mock_process:
+                    handle_rcp_workflow(config, org_hierarchy)
+
+        mock_determine.assert_not_called()
+        mock_process.assert_not_called()
+
+    def test_handle_rcp_workflow_no_recommendations(self) -> None:
+        """Test RCP workflow with no recommendations from determine_rcp_placement."""
+        config = MagicMock(spec=HeadroomConfig)
+        config.results_dir = "/test/results"
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        parse_result = RCPParseResult(
+            account_third_party_map={"account1": {"third_party1"}},
+            accounts_with_wildcards=set()
+        )
+
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
+            with patch('headroom.main.determine_rcp_placement', return_value=[]):
+                with patch('headroom.main.process_policy_recommendations') as mock_process:
+                    handle_rcp_workflow(config, org_hierarchy)
+
+        mock_process.assert_not_called()
+
+    def test_handle_rcp_workflow_none_recommendations(self) -> None:
+        """Test RCP workflow with None recommendations from determine_rcp_placement."""
+        config = MagicMock(spec=HeadroomConfig)
+        config.results_dir = "/test/results"
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        parse_result = RCPParseResult(
+            account_third_party_map={"account1": {"third_party1"}},
+            accounts_with_wildcards=set()
+        )
+
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
+            with patch('headroom.main.determine_rcp_placement', return_value=None):
+                with patch('headroom.main.process_policy_recommendations') as mock_process:
+                    handle_rcp_workflow(config, org_hierarchy)
+
+        mock_process.assert_not_called()

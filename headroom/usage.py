@@ -54,6 +54,12 @@ def parse_cli_args() -> argparse.Namespace:
         type=str,
         help='Directory to output SCP Terraform (default test_environment/scps)'
     )
+    parser.add_argument(
+        '--rcps-dir',
+        dest='rcps_dir',
+        type=str,
+        help='Directory to output RCP Terraform (default test_environment/rcps)'
+    )
 
     # Account IDs
     parser.add_argument(

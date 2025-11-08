@@ -4,9 +4,11 @@ Tests for headroom.aws.ec2 module.
 Tests for DenyImdsV1Ec2 dataclass and get_imds_v1_ec2_analysis function.
 """
 
-from unittest.mock import MagicMock, patch
+import pytest
+from unittest.mock import MagicMock
 from typing import List, Optional
-from botocore.exceptions import ClientError  # type: ignore
+
+from botocore.exceptions import ClientError
 from headroom.aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
 
 
@@ -244,8 +246,8 @@ class TestGetImdsV1Ec2Analysis:
         assert results[3].imdsv1_allowed is False
         assert results[3].exemption_tag_present is False
 
-    def test_get_imds_v1_ec2_analysis_no_regions_fallback(self) -> None:
-        """Test fallback to current region when describe_regions fails."""
+    def test_get_imds_v1_ec2_analysis_no_regions_raises_error(self) -> None:
+        """Test that describe_regions failure raises ClientError."""
         mock_session = MagicMock()
         mock_session.region_name = "us-west-1"
 
@@ -256,37 +258,13 @@ class TestGetImdsV1Ec2Analysis:
             "DescribeRegions"
         )
 
-        # Mock regional client
-        mock_regional_ec2 = MagicMock()
-        mock_paginator = MagicMock()
+        mock_session.client.return_value = mock_ec2
 
-        instances_page = {
-            "Reservations": [
-                {
-                    "Instances": [
-                        self.create_mock_instance("i-fallback123")
-                    ]
-                }
-            ]
-        }
+        # Execute function - should raise ClientError
+        with pytest.raises(ClientError) as exc_info:
+            get_imds_v1_ec2_analysis(mock_session)
 
-        mock_paginator.paginate.return_value = [instances_page]
-        mock_regional_ec2.get_paginator.return_value = mock_paginator
-
-        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
-            if region_name is None:
-                return mock_ec2
-            return mock_regional_ec2
-
-        mock_session.client.side_effect = client_side_effect
-
-        # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
-
-        # Verify fallback worked
-        assert len(results) == 1
-        assert results[0].region == "us-west-1"
-        assert results[0].instance_id == "i-fallback123"
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
     def test_get_imds_v1_ec2_analysis_skips_terminated_instances(self) -> None:
         """Test that terminated instances are skipped."""
@@ -382,28 +360,14 @@ class TestGetImdsV1Ec2Analysis:
                 return mock_ec2
             elif region_name == "us-east-1":
                 return mock_regional_ec2_1
-            elif region_name == "us-west-2":
-                return mock_regional_ec2_2
-            # This covers the fallback case for ap-south-1
-            return mock_regional_ec2_fallback
+            return mock_regional_ec2_2
 
         mock_session.client.side_effect = client_side_effect
         mock_session.region_name = "us-east-1"
 
-        # Execute function - should not raise exception
-        with patch("builtins.print") as mock_print:
-            results = get_imds_v1_ec2_analysis(mock_session)
-
-        # Verify partial success - us-east-1 and ap-south-1 work, us-west-2 fails
-        assert len(results) == 2
-        instance_ids = [r.instance_id for r in results]
-        assert "i-success" in instance_ids
-        assert "i-fallback-success" in instance_ids
-
-        # Verify error was printed
-        mock_print.assert_called_once()
-        print_call = mock_print.call_args[0][0]
-        assert "Warning: Could not analyze EC2 instances in region us-west-2" in print_call
+        # Execute function - should raise exception on first regional failure
+        with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances in region us-west-2"):
+            get_imds_v1_ec2_analysis(mock_session)
 
     def test_get_imds_v1_ec2_analysis_exemption_tag_case_insensitive(self) -> None:
         """Test that exemption tag value is case insensitive."""

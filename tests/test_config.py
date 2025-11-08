@@ -88,18 +88,21 @@ class TestHeadroomConfig:
             },
             "results_dir": "from_yaml/results",
             "scps_dir": "from_yaml/scps",
+            "rcps_dir": "from_yaml/rcps",
         }
 
         cli_args = argparse.Namespace(
             config="dummy.yaml",
             results_dir="from_cli/results",
             scps_dir="from_cli/scps",
+            rcps_dir="from_cli/rcps",
         )
 
         merged = merge_configs(yaml_cfg, cli_args)
         assert isinstance(merged, HeadroomConfig)
         assert merged.results_dir == "from_cli/results"
         assert merged.scps_dir == "from_cli/scps"
+        assert merged.rcps_dir == "from_cli/rcps"
 
     def test_yaml_defaults_for_dirs_when_cli_not_provided(self) -> None:
         yaml_cfg = {
@@ -111,17 +114,20 @@ class TestHeadroomConfig:
             },
             "results_dir": "from_yaml/results",
             "scps_dir": "from_yaml/scps",
+            "rcps_dir": "from_yaml/rcps",
         }
 
         cli_args = argparse.Namespace(
             config="dummy.yaml",
             results_dir=None,
             scps_dir=None,
+            rcps_dir=None,
         )
 
         merged = merge_configs(yaml_cfg, cli_args)
         assert merged.results_dir == "from_yaml/results"
         assert merged.scps_dir == "from_yaml/scps"
+        assert merged.rcps_dir == "from_yaml/rcps"
 
     def test_headroom_config_missing_use_account_name_from_tags(self) -> None:
         """Test HeadroomConfig with missing use_account_name_from_tags field."""
