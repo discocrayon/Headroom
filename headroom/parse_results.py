@@ -8,7 +8,7 @@ levels (root, OU, account) based on violation patterns and organization structur
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Sequence, Union
 
 from .analysis import get_security_analysis_session, get_management_account_session
 from .config import HeadroomConfig
@@ -322,7 +322,7 @@ def _get_organization_context(config: HeadroomConfig) -> OrganizationHierarchy:
 
 
 def print_policy_recommendations(
-    recommendations: List[Union[SCPPlacementRecommendations, RCPPlacementRecommendations]],
+    recommendations: Sequence[Union[SCPPlacementRecommendations, RCPPlacementRecommendations]],
     organization_hierarchy: OrganizationHierarchy,
     title: str = "SCP/RCP PLACEMENT RECOMMENDATIONS"
 ) -> None:

@@ -17,6 +17,7 @@ from headroom.parse_results import (
     parse_scp_result_files,
     determine_scp_placement,
     parse_scp_results,
+    print_policy_recommendations,
 )
 from headroom.terraform.generate_scps import generate_scp_terraform
 from headroom.aws.organization import (
@@ -29,6 +30,7 @@ from headroom.types import (
     AccountOrgPlacement,
     SCPCheckResult,
     SCPPlacementRecommendations,
+    RCPPlacementRecommendations,
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
 
@@ -1166,3 +1168,99 @@ class TestGenerateSCPTerraform:
                 with open(file_path, 'r') as f:
                     content = f.read()
                     assert "deny_imds_v1_ec2 = true" in content
+
+
+class TestPrintPolicyRecommendations:
+    """Test print_policy_recommendations function."""
+
+    def test_print_policy_recommendations_with_empty_list(self) -> None:
+        """Test that empty recommendations list returns early without printing."""
+        org_hierarchy = OrganizationHierarchy(
+            root_id="r-test",
+            organizational_units={},
+            accounts={}
+        )
+
+        with patch('builtins.print') as mock_print:
+            print_policy_recommendations([], org_hierarchy, "Test Title")
+
+        mock_print.assert_not_called()
+
+    def test_print_policy_recommendations_with_scp_recommendations(self) -> None:
+        """Test printing SCP recommendations shows compliance percentage."""
+        org_hierarchy = OrganizationHierarchy(
+            root_id="r-test",
+            organizational_units={
+                "ou-123": OrganizationalUnit(
+                    ou_id="ou-123",
+                    name="Production",
+                    parent_ou_id="r-test",
+                    child_ous=[],
+                    accounts=["111111111111"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="prod-account",
+                    parent_ou_id="ou-123",
+                    ou_path=["r-test", "ou-123"]
+                )
+            }
+        )
+
+        recommendations = [
+            SCPPlacementRecommendations(
+                check_name="deny_imds_v1_ec2",
+                recommended_level="ou",
+                target_ou_id="ou-123",
+                affected_accounts=["111111111111"],
+                compliance_percentage=75.5,
+                reasoning="Test reasoning"
+            )
+        ]
+
+        with patch('builtins.print') as mock_print:
+            print_policy_recommendations(recommendations, org_hierarchy, "SCP RECOMMENDATIONS")
+
+        printed_calls = [str(call) for call in mock_print.call_args_list]
+
+        assert any("SCP RECOMMENDATIONS" in str(call) for call in printed_calls)
+        assert any("deny_imds_v1_ec2" in str(call) for call in printed_calls)
+        assert any("75.5%" in str(call) for call in printed_calls)
+        assert any("Compliance:" in str(call) for call in printed_calls)
+
+    def test_print_policy_recommendations_with_rcp_recommendations(self) -> None:
+        """Test printing RCP recommendations shows third-party accounts."""
+        org_hierarchy = OrganizationHierarchy(
+            root_id="r-test",
+            organizational_units={},
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="test-account",
+                    parent_ou_id="r-test",
+                    ou_path=["r-test"]
+                )
+            }
+        )
+
+        recommendations = [
+            RCPPlacementRecommendations(
+                check_name="third_party_assumerole",
+                recommended_level="account",
+                target_ou_id=None,
+                affected_accounts=["111111111111"],
+                third_party_account_ids=["999999999999", "888888888888"],
+                reasoning="Test reasoning for RCP"
+            )
+        ]
+
+        with patch('builtins.print') as mock_print:
+            print_policy_recommendations(recommendations, org_hierarchy, "RCP RECOMMENDATIONS")
+
+        printed_calls = [str(call) for call in mock_print.call_args_list]
+
+        assert any("RCP RECOMMENDATIONS" in str(call) for call in printed_calls)
+        assert any("third_party_assumerole" in str(call) for call in printed_calls)
+        assert any("Third-Party Accounts: 2" in str(call) for call in printed_calls)

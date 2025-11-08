@@ -6563,3 +6563,153 @@ Files changed:
 - `tests/test_main_integration.py` - Updated print count assertion to allow for additional prints from recommendation display
 
 All 292 tests pass.
+
+---
+
+## 2025-11-08 - main() Function Refactoring Using Clean Code Principles
+
+**Date:** Saturday, November 8, 2025
+
+**Analysis of main() Function:**
+
+Reviewed `headroom/main.py` main() function (originally 71 lines) and identified multiple violations of Clean Code principles:
+
+**Major Issues Identified:**
+1. **Violation of Single Responsibility Principle** - Function handled 6+ responsibilities (config loading, validation, analysis, SCP parsing, RCP parsing, Terraform generation)
+2. **DRY Violation** - Duplicate pattern for SCP and RCP workflows (print + generate terraform)
+3. **Inconsistent Error Handling** - Config errors exited with code 1, but Terraform errors only printed and continued (bug!)
+4. **Deep Nesting** - 3+ levels of nesting with arrow anti-pattern
+5. **Magic Values** - Hardcoded "grab_org_info.tf" filename and exit codes
+6. **Poor Separation of Concerns** - Mixed business logic, error handling, output formatting, and file I/O
+7. **Missing Guard Clauses** - Could use early returns to reduce nesting
+8. **Overly Long Function** - 71 lines violated "functions should be small" principle
+
+**Clean Code Score: 4/10**
+
+**Refactoring Plan Created:**
+
+Phase 1: Add constants (ORG_INFO_FILENAME)
+Phase 2: Extract setup_configuration() function
+Phase 3: Extract common process_policy_recommendations() function
+Phase 4: Extract setup_organization_context() function
+Phase 5: Extract handle_scp_workflow() function
+Phase 6: Extract handle_rcp_workflow() function
+Phase 7: Fix error handling inconsistency
+Phase 8: Refactor main() to orchestrate extracted functions
+Phase 9: Add unit tests for all extracted functions
+Phase 10: Run tox to verify
+
+**Implementation:**
+
+Added constant to `headroom/constants.py`:
+- `ORG_INFO_FILENAME = "grab_org_info.tf"`
+
+Created 5 new focused functions in `headroom/main.py`:
+1. **setup_configuration()** - Merges and validates config, handles errors consistently
+2. **process_policy_recommendations()** - DRY extraction of common print + generate pattern
+3. **setup_organization_context()** - Gets management session and org hierarchy
+4. **handle_scp_workflow()** - Parses SCP results and generates Terraform with guard clause
+5. **handle_rcp_workflow()** - Parses RCP results and generates Terraform with guard clauses
+
+Refactored main() function:
+- Reduced from 71 lines to 20 lines
+- Eliminated all nesting (flat, sequential flow)
+- Single responsibility: orchestrates the workflow
+- Clear, readable function calls with explicit intent
+- Consistent error handling (now properly exits on Terraform generation errors)
+
+**Testing:**
+
+Added comprehensive unit tests in `tests/test_main.py`:
+- TestSetupConfiguration (3 tests)
+- TestProcessPolicyRecommendations (4 tests)
+- TestSetupOrganizationContext (2 tests)
+- TestHandleScpWorkflow (3 tests)
+- TestHandleRcpWorkflow (4 tests)
+
+Updated integration tests in `tests/test_main_integration.py`:
+- Fixed 2 tests to expect SystemExit now that error handling is consistent
+- Updated assertions to check for new error message format
+
+**Results:**
+
+All 308 tests pass (16 new tests added).
+
+**Before vs After:**
+
+Before:
+- 1 function, 71 lines
+- 3 levels of nesting
+- 6+ responsibilities
+- Hard to test
+- Code duplication
+- Inconsistent error handling
+- Critical bug: continued after Terraform errors
+
+After:
+- 6 focused functions, each <25 lines
+- Max 1 level of nesting (mostly 0)
+- Single responsibility per function
+- Fully testable (can mock each component)
+- DRY - common pattern extracted
+- Consistent error handling
+- Bug fixed: now exits properly on errors
+- Type-annotated for mypy compliance
+
+Files changed:
+- `headroom/constants.py` - Added ORG_INFO_FILENAME constant
+- `headroom/main.py` - Extracted 5 functions, refactored main() to 20 lines
+- `tests/test_main.py` - Added 16 new unit tests for extracted functions
+- `tests/test_main_integration.py` - Updated 2 integration tests for new error handling
+
+All 308 tests pass with 99% coverage (2 lines missing coverage in parse_results.py unrelated to this refactoring).
+
+---
+
+## 2025-11-08 - Achieved 100% Test Coverage
+
+**Date:** Saturday, November 8, 2025
+
+**Task:** Add test coverage for missing lines in `print_policy_recommendations()` to achieve 100% coverage for tox.
+
+**Missing Coverage:**
+- Line 342: Early return when recommendations list is empty
+- Line 371: SCP-specific compliance percentage printing
+
+**Solution:**
+
+Added 3 new unit tests in `tests/test_parse_results.py`:
+
+1. **test_print_policy_recommendations_with_empty_list** - Tests early return with empty recommendations
+2. **test_print_policy_recommendations_with_scp_recommendations** - Tests SCP-specific fields (compliance percentage)
+3. **test_print_policy_recommendations_with_rcp_recommendations** - Tests RCP-specific fields (third-party accounts)
+
+**Type Annotation Fixes:**
+
+Updated type signatures for mypy compliance:
+- Changed `print_policy_recommendations()` to use `Sequence` instead of `List` (covariant type)
+- Updated `process_policy_recommendations()` to properly handle Union types with type: ignore
+- Added missing `List` import in test_main.py
+- Fixed test type annotations
+
+Files changed:
+- `headroom/parse_results.py` - Added `Sequence` to imports, updated function signature
+- `headroom/main.py` - Updated type annotations for `process_policy_recommendations()`
+- `tests/test_parse_results.py` - Added 3 new tests, imported `print_policy_recommendations` and `RCPPlacementRecommendations`
+- `tests/test_main.py` - Added `List` import, fixed type annotations
+
+**Results:**
+
+✅ All 311 tests pass (3 new tests added)
+✅ 100% code coverage on headroom/* (1089 statements)
+✅ 100% code coverage on tests/* (3048 statements)  
+✅ mypy: no issues found in 40 source files
+✅ All pre-commit hooks pass (flake8, autoflake, autopep8)
+✅ tox passes completely
+
+**Final Stats:**
+- Total tests: 311
+- Code coverage: 100% (headroom + tests)
+- No linter errors
+- No type errors
+- All pre-commit hooks passing

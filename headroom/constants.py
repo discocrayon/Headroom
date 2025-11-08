@@ -18,3 +18,6 @@ CHECK_TYPE_MAP = {
 # Derived sets for convenience
 SCP_CHECK_NAMES = {name for name, check_type in CHECK_TYPE_MAP.items() if check_type == "scps"}
 RCP_CHECK_NAMES = {name for name, check_type in CHECK_TYPE_MAP.items() if check_type == "rcps"}
+
+# Terraform file generation constants
+ORG_INFO_FILENAME = "grab_org_info.tf"

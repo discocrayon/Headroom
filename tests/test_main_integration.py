@@ -649,10 +649,13 @@ class TestMainIntegration:
 
         with patch('headroom.main.parse_scp_results', return_value=[MagicMock()]), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess:
-            main()
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
 
-        # We return before attempting to use the session if no management_account_id
         mock_get_sess.assert_called_once()
+        printed = [c.args[0] for c in mocks['print'].call_args_list]
+        assert any("Terraform Generation Error" in msg for msg in printed)
 
     def test_main_client_error_in_generation_is_handled(
         self,
@@ -660,7 +663,7 @@ class TestMainIntegration:
         valid_yaml_config: Dict[str, Any],
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
-        """Covers the ClientError exception handler branch (prints failure)."""
+        """Covers the ClientError exception handler branch (prints failure and exits)."""
 
         mocks = mock_dependencies
         mocks['parse'].return_value = mock_cli_args
@@ -678,10 +681,12 @@ class TestMainIntegration:
             # cause sts.assume_role to raise
             mock_get_sess.return_value.client.return_value.assume_role.side_effect = err
             mock_analyze.return_value = None
-            main()
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
 
         printed = [c.args[0] for c in mocks['print'].call_args_list]
-        assert any("Failed to generate Terraform files:" in msg for msg in printed)
+        assert any("Terraform Generation Error" in msg for msg in printed)
 
     def test_main_with_rcp_recommendations_display(
         self,
