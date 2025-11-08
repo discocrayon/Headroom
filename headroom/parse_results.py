@@ -17,8 +17,8 @@ from .types import (
     OrganizationalUnit, AccountOrgPlacement, OrganizationHierarchy,
     SCPCheckResult, SCPPlacementRecommendations, RCPPlacementRecommendations
 )
-from .checks.registry import get_check_names
 from .aws.organization import lookup_account_id_by_name
+from .placement import HierarchyPlacementAnalyzer
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -127,8 +127,7 @@ def _parse_single_scp_result_file(
 
 def parse_scp_result_files(
     results_dir: str,
-    organization_hierarchy: OrganizationHierarchy,
-    exclude_rcp_checks: bool = True
+    organization_hierarchy: OrganizationHierarchy
 ) -> List[SCPCheckResult]:
     """
     Parse all JSON result files from headroom_results directory.
@@ -138,10 +137,9 @@ def parse_scp_result_files(
     Args:
         results_dir: Path to the headroom_results directory
         organization_hierarchy: Organization structure for account ID lookups
-        exclude_rcp_checks: If True, exclude RCP checks (like third_party_assumerole)
 
     Returns:
-        List of SCPCheckResult objects for SCP checks only (if exclude_rcp_checks is True).
+        List of SCPCheckResult objects.
     """
     results_path = Path(results_dir)
     if not results_path.exists():
@@ -161,13 +159,6 @@ def parse_scp_result_files(
             continue
 
         check_name = check_dir.name
-
-        # Skip RCP checks if requested - they have their own analysis flow
-        rcp_check_names = get_check_names("rcps")
-        if exclude_rcp_checks and check_name in rcp_check_names:
-            logger.info(f"Skipping RCP check: {check_name} (will be processed separately)")
-            continue
-
         logger.info(f"Processing check: {check_name}")
 
         # Process each account result file
@@ -193,8 +184,8 @@ def determine_scp_placement(
     Ensures safe deployment without breaking existing violations that would cause operational issues.
     """
     recommendations: List[SCPPlacementRecommendations] = []
+    analyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
 
-    # Group results by check name
     check_groups: Dict[str, List[SCPCheckResult]] = {}
     for result in results_data:
         if result.check_name not in check_groups:
@@ -204,27 +195,7 @@ def determine_scp_placement(
     for check_name, check_results in check_groups.items():
         logger.info(f"Analyzing placement for check: {check_name}")
 
-        # Check if ALL accounts have zero violations (root level)
-        all_accounts_zero_violations = all(
-            result.violations == 0 for result in check_results
-        )
-
-        if all_accounts_zero_violations:
-            recommendations.append(SCPPlacementRecommendations(
-                check_name=check_name,
-                recommended_level="root",
-                target_ou_id=None,
-                affected_accounts=[result.account_id for result in check_results],
-                compliance_percentage=100.0,
-                reasoning="All accounts in organization have zero violations - safe to deploy at root level"
-            ))
-            continue
-
-        # Check OU level - find OUs where ALL accounts have zero violations
-        ou_violation_status: Dict[str, Dict[str, int]] = {}
-
         for result in check_results:
-            # If account_id is missing, look up by account name
             if not result.account_id:
                 result.account_id = lookup_account_id_by_name(
                     result.account_name,
@@ -232,60 +203,9 @@ def determine_scp_placement(
                     "SCP check result"
                 )
 
-            account_info = organization_hierarchy.accounts.get(result.account_id)
-            if not account_info:
-                raise RuntimeError(f"Account {result.account_name} ({result.account_id}) not found in organization hierarchy")
+        safe_check_results = [r for r in check_results if r.violations == 0]
 
-            parent_ou_id = account_info.parent_ou_id
-            if parent_ou_id not in ou_violation_status:
-                ou_violation_status[parent_ou_id] = {"total_accounts": 0, "zero_violation_accounts": 0}
-
-            ou_violation_status[parent_ou_id]["total_accounts"] += 1
-            if result.violations == 0:
-                ou_violation_status[parent_ou_id]["zero_violation_accounts"] += 1
-
-        # Find OUs where all accounts have zero violations
-        safe_ous: List[str] = []
-        for ou_id, status in ou_violation_status.items():
-            if status["zero_violation_accounts"] == status["total_accounts"] and status["total_accounts"] > 0:
-                safe_ous.append(ou_id)
-
-        if safe_ous:
-            # Recommend OU level deployment for the largest safe OU
-            largest_ou = max(safe_ous, key=lambda ou_id: ou_violation_status[ou_id]["total_accounts"])
-            ou_name = organization_hierarchy.organizational_units.get(largest_ou, OrganizationalUnit("", "", None, [], [])).name
-
-            affected_accounts = [
-                result.account_id for result in check_results
-                if organization_hierarchy.accounts.get(result.account_id, AccountOrgPlacement("", "", "", [])).parent_ou_id == largest_ou
-            ]
-
-            recommendations.append(SCPPlacementRecommendations(
-                check_name=check_name,
-                recommended_level="ou",
-                target_ou_id=largest_ou,
-                affected_accounts=affected_accounts,
-                compliance_percentage=100.0,
-                reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level"
-            ))
-            continue
-
-        # Check account level - individual accounts with zero violations
-        safe_accounts = [
-            result for result in check_results if result.violations == 0
-        ]
-
-        if safe_accounts:
-            recommendations.append(SCPPlacementRecommendations(
-                check_name=check_name,
-                recommended_level="account",
-                target_ou_id=None,
-                affected_accounts=[result.account_id for result in safe_accounts],
-                compliance_percentage=len(safe_accounts) / len(check_results) * 100.0,
-                reasoning=f"Only {len(safe_accounts)} out of {len(check_results)} accounts have zero violations - deploy at individual account level"
-            ))
-        else:
-            # No safe deployment possible
+        if not safe_check_results:
             recommendations.append(SCPPlacementRecommendations(
                 check_name=check_name,
                 recommended_level="none",
@@ -294,6 +214,48 @@ def determine_scp_placement(
                 compliance_percentage=0.0,
                 reasoning="No accounts have zero violations - SCP deployment would break existing violations"
             ))
+            continue
+
+        candidates = analyzer.determine_placement(
+            check_results=check_results,
+            is_safe_for_root=lambda results: all(r.violations == 0 for r in results),
+            is_safe_for_ou=lambda ou_id, results: all(r.violations == 0 for r in results),
+            get_account_id=lambda r: r.account_id
+        )
+
+        for candidate in candidates:
+            if candidate.level == "root":
+                recommendations.append(SCPPlacementRecommendations(
+                    check_name=check_name,
+                    recommended_level="root",
+                    target_ou_id=None,
+                    affected_accounts=candidate.affected_accounts,
+                    compliance_percentage=100.0,
+                    reasoning="All accounts in organization have zero violations - safe to deploy at root level"
+                ))
+            elif candidate.level == "ou":
+                ou_name = organization_hierarchy.organizational_units.get(
+                    candidate.target_id,
+                    OrganizationalUnit("", "", None, [], [])
+                ).name
+                recommendations.append(SCPPlacementRecommendations(
+                    check_name=check_name,
+                    recommended_level="ou",
+                    target_ou_id=candidate.target_id,
+                    affected_accounts=candidate.affected_accounts,
+                    compliance_percentage=100.0,
+                    reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level"
+                ))
+            elif candidate.level == "account":
+                recommendations.append(SCPPlacementRecommendations(
+                    check_name=check_name,
+                    recommended_level="account",
+                    target_ou_id=None,
+                    affected_accounts=[r.account_id for r in safe_check_results],
+                    compliance_percentage=len(safe_check_results) / len(check_results) * 100.0,
+                    reasoning=f"Only {len(safe_check_results)} out of {len(check_results)} accounts have zero violations - deploy at individual account level"
+                ))
+                break
 
     return recommendations
 

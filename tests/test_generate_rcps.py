@@ -16,7 +16,6 @@ from headroom.terraform.generate_rcps import (
     parse_rcp_result_files,
     determine_rcp_placement,
     generate_rcp_terraform,
-    _check_root_level_placement,
     _create_org_info_symlink,
     _generate_account_rcp_terraform,
     _generate_ou_rcp_terraform,
@@ -294,105 +293,6 @@ class TestParseRcpResultFiles:
 
         with pytest.raises(RuntimeError, match="Account name 'unknown-account'.* not found in organization hierarchy"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
-
-
-class TestCheckRootLevelPlacement:
-    """Test _check_root_level_placement helper function."""
-
-    @pytest.fixture
-    def sample_org_hierarchy(self) -> OrganizationHierarchy:
-        """Create sample organization hierarchy."""
-        return OrganizationHierarchy(
-            root_id="r-1234",
-            organizational_units={},
-            accounts={
-                "111111111111": AccountOrgPlacement(
-                    account_id="111111111111",
-                    account_name="test-account",
-                    parent_ou_id="r-1234",
-                    ou_path=[]
-                )
-            }
-        )
-
-    def test_returns_none_when_account_map_is_empty(
-        self,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """Test that None is returned when no accounts are provided."""
-        result = _check_root_level_placement({}, sample_org_hierarchy, set())
-        assert result is None
-
-    def test_returns_none_when_accounts_have_wildcards(
-        self,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """Test that None is returned when any accounts have wildcards."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
-        }
-        accounts_with_wildcards: Set[str] = {"222222222222"}
-
-        result = _check_root_level_placement(
-            account_third_party_map,
-            sample_org_hierarchy,
-            accounts_with_wildcards
-        )
-        assert result is None
-
-    def test_affected_accounts_includes_all_org_accounts(
-        self,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """
-        Test that affected_accounts includes ALL accounts in the organization.
-
-        This is critical because root-level RCPs affect ALL accounts,
-        not just those analyzed in account_third_party_map.
-        """
-        # Expand sample_org_hierarchy to have multiple accounts
-        expanded_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
-            organizational_units={},
-            accounts={
-                "111111111111": AccountOrgPlacement(
-                    account_id="111111111111",
-                    account_name="account-1",
-                    parent_ou_id="r-1234",
-                    ou_path=[]
-                ),
-                "222222222222": AccountOrgPlacement(
-                    account_id="222222222222",
-                    account_name="account-2",
-                    parent_ou_id="r-1234",
-                    ou_path=[]
-                ),
-                "333333333333": AccountOrgPlacement(
-                    account_id="333333333333",
-                    account_name="account-3",
-                    parent_ou_id="r-1234",
-                    ou_path=[]
-                )
-            }
-        )
-
-        # Only 2 accounts in map with matching third-party sets
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": set(),
-            "222222222222": set()
-        }
-        accounts_with_wildcards: Set[str] = set()
-
-        result = _check_root_level_placement(
-            account_third_party_map,
-            expanded_hierarchy,
-            accounts_with_wildcards
-        )
-
-        assert result is not None
-        # Affected accounts should include ALL 3 accounts, not just the 2 in the map
-        assert set(result.affected_accounts) == {"111111111111", "222222222222", "333333333333"}
-        assert "All 3 accounts" in result.reasoning
 
 
 class TestDetermineRcpPlacement:

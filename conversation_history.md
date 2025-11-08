@@ -8576,3 +8576,319 @@ The next items in REFACTORING_IDEAS.md are medium-priority:
 - Item 8: 🟡 Medium - Refactor Extract Account ID
 
 ✅ Documentation maintained for posterity
+
+---
+
+## 2025-11-08 - Analysis of exclude_rcp_checks Parameter
+
+### Question
+
+User asked about the purpose of the `exclude_rcp_checks` variable and whether it's confusing.
+
+### Analysis
+
+The `exclude_rcp_checks` parameter exists in `parse_scp_result_files()` function with the following purpose:
+
+**Purpose:**
+- Filter out RCP checks (like `third_party_assumerole`) from SCP parsing
+- Default value is `True`, which excludes RCP checks
+- When `True`, it skips check directories that are registered as RCP checks
+- When `False`, it includes all checks regardless of type
+
+**Current Implementation:**
+
+```python
+def parse_scp_result_files(
+    results_dir: str,
+    organization_hierarchy: OrganizationHierarchy,
+    exclude_rcp_checks: bool = True
+) -> List[SCPCheckResult]:
+```
+
+At line 167-170 in `headroom/parse_results.py`:
+```python
+# Skip RCP checks if requested - they have their own analysis flow
+rcp_check_names = get_check_names("rcps")
+if exclude_rcp_checks and check_name in rcp_check_names:
+    logger.info(f"Skipping RCP check: {check_name} (will be processed separately)")
+    continue
+```
+
+**Why It Exists:**
+
+1. **Directory Structure**: Results are stored in `results_dir/scps/` and `results_dir/rcps/`, but historically there was a flat structure
+2. **Separation of Concerns**: RCPs have their own separate parsing flow via `parse_rcp_result_files()` in `generate_rcps.py`
+3. **Different Data Structures**: SCP checks produce `SCPCheckResult` objects while RCP checks produce `RCPCheckResult` objects with different fields
+4. **Prevents Double Processing**: RCP checks should only be processed by the RCP-specific flow
+
+**Confusion Assessment:**
+
+**YES, it is confusing** for several reasons:
+
+1. **Misleading Function Name**: The function is called `parse_scp_result_files()` but it reads from `results_dir/scps/` directory, suggesting it should only contain SCP results. Why would it need to filter out RCP checks if it's only looking at the `scps/` subdirectory?
+
+2. **Architectural Smell**: The fact that this parameter exists suggests the directory structure doesn't properly separate concerns. If results are properly organized in `scps/` and `rcps/` subdirectories, why would RCP checks be in the `scps/` directory?
+
+3. **Test Comments Reveal the Issue**: In `test_parse_results.py` line 451:
+   ```python
+   # Create RCP check directory in scps/ (simulating misplaced RCP results)
+   # This tests that the exclude_rcp_checks parameter can filter them out
+   ```
+   This comment explicitly calls it "misplaced RCP results" - acknowledging that RCP checks shouldn't be in `scps/` at all.
+
+4. **Defensive Programming**: This parameter is defensive code protecting against a scenario that shouldn't happen in normal operation - RCP checks appearing in the `scps/` subdirectory.
+
+5. **Unclear Default Behavior**: The default `True` value means RCP checks are excluded by default, but it's not obvious why you'd ever want to set it to `False`. The test shows it's only used to handle "misplaced" results.
+
+**Recommendations:**
+
+1. **Short-term (Low Risk)**: Add clear documentation explaining this is defensive code for edge cases
+2. **Medium-term (Better)**: Remove the parameter and let the directory structure enforce separation (`scps/` vs `rcps/`)
+3. **Long-term (Best)**: If there's a valid reason why RCP checks might be in `scps/`, that suggests a deeper architectural issue that should be addressed
+
+The parameter exists to solve a problem that shouldn't exist - it's a code smell indicating the directory structure or result writing logic may not be properly enforcing type separation.
+
+---
+
+## 2025-11-08 - Removed exclude_rcp_checks Parameter
+
+### User Decision
+
+User: "Let's proceed with that recommendation" - to remove the defensive `exclude_rcp_checks` parameter.
+
+### Problem
+
+The `exclude_rcp_checks` parameter existed to filter out RCP checks that might appear in the `scps/` directory. This was defensive programming protecting against a scenario that shouldn't happen - RCP checks are written to `rcps/` directory, not `scps/`.
+
+### Changes Made
+
+**1. Modified `headroom/parse_results.py`:**
+- Removed `exclude_rcp_checks: bool = True` parameter from `parse_scp_result_files()`
+- Removed filtering logic that checked `if exclude_rcp_checks and check_name in rcp_check_names`
+- Removed unused import `from .checks.registry import get_check_names`
+- Updated docstring to remove parameter documentation
+- Simplified function from 3 parameters to 2
+
+**2. Modified `tests/test_parse_results.py`:**
+- Deleted entire `test_parse_scp_result_files_excludes_rcp_checks()` test method
+- This test simulated "misplaced RCP results" in the `scps/` directory
+- Test was explicitly defensive - testing a scenario that shouldn't occur
+
+### Code Reduction
+
+- **parse_results.py**: -9 lines (removed parameter, filtering logic, import)
+- **test_parse_results.py**: -69 lines (removed entire test)
+- **Net**: -78 lines of defensive code
+
+### Philosophy
+
+If RCP results appear in the `scps/` directory, that's a bug in the result writing logic (`write_results.py`), not something the parsing logic should handle defensively. The directory structure (`scps/` vs `rcps/`) should enforce separation at the source.
+
+### Test Results
+
+✅ **All 313 tests pass** (down from 314 due to deleted test)
+✅ **No functionality lost** - only removed defensive code for impossible scenario
+✅ **Cleaner API** - simpler function signature with clearer intent
+
+### Benefits
+
+1. **Simpler API**: One less parameter to understand
+2. **Clearer Intent**: Function only processes what's in `scps/` directory
+3. **Removes Code Smell**: No longer defending against architectural violations
+4. **Trust the Structure**: Directory structure enforces separation
+5. **Fail Fast**: If RCP results are misplaced, let it fail naturally
+---
+
+## 2025-11-08 - Refactoring: Unified Placement Logic (Item 5)
+
+### Objective
+
+Implement Item 5 from REFACTORING_IDEAS.md: Unify Placement Logic Between SCP and RCP by extracting common hierarchy traversal logic using the Strategy pattern.
+
+### Problem Analysis
+
+Both `determine_scp_placement()` (in `parse_results.py`) and `determine_rcp_placement()` (in `generate_rcps.py`) implemented the same hierarchical placement strategy (root → OU → account), but with duplicated logic for:
+- Checking if root-level deployment is safe
+- Grouping accounts by OU
+- Checking if OU-level deployment is safe
+- Falling back to account-level deployment
+
+This duplication amounted to ~150 lines of code that differed only in the "safety criteria" for each policy type.
+
+### Implementation
+
+Created a new `placement` module with generic hierarchy traversal logic:
+
+**1. Created `/Users/kevinkevin/code/crayon/headroom/placement/__init__.py`**
+- Module initialization with exports
+
+**2. Created `/Users/kevinkevin/code/crayon/headroom/placement/hierarchy.py`**
+- `PlacementCandidate` dataclass: Represents a policy placement recommendation
+- `HierarchyPlacementAnalyzer` class: Generic hierarchy traversal using Strategy pattern
+  - `determine_placement()`: Main template method accepting safety predicates
+  - `_group_results_by_ou()`: Groups results by parent OU with error handling options
+  - Uses TypeVar `T` for generic typing
+
+**Key Design Decisions:**
+- **Strategy Pattern**: Callers provide "safety predicates" as callbacks
+- **Separation of Concerns**: "Where to place" (analyzer) vs "Is it safe" (predicates)
+- **Type Safety**: Generic `TypeVar` maintains type correctness
+- **Error Handling**: Configurable behavior for missing accounts (raise vs skip)
+
+**3. Refactored `determine_scp_placement()` in parse_results.py**
+- Uses `HierarchyPlacementAnalyzer` with SCP-specific safety predicates
+- Predicates check: `violations == 0`
+- Handles "none" level when no safe deployment possible
+- Catches RuntimeError and enriches with account name for better error messages
+
+**4. Refactored `determine_rcp_placement()` in generate_rcps.py**
+- Uses `HierarchyPlacementAnalyzer` with RCP-specific safety predicates
+- Predicates check: no wildcards at each level
+- Removed old helper functions:
+  - `_check_root_level_placement()` (deleted)
+  - `_check_ou_level_placements()` (deleted)
+  - `_check_account_level_placements()` (deleted)
+- Kept `_should_skip_ou_for_rcp()` as it's RCP-specific logic
+
+**5. Updated tests**
+- Removed `TestCheckRootLevelPlacement` class (tested deleted helpers)
+- All existing integration tests pass unchanged
+- Functionality is now tested through `TestDetermineRcpPlacement`
+
+### Code Changes Summary
+
+**Files Created:**
+- `headroom/placement/__init__.py` (10 lines)
+- `headroom/placement/hierarchy.py` (155 lines)
+
+**Files Modified:**
+- `headroom/parse_results.py`: Refactored `determine_scp_placement()` (-76 lines, +32 lines)
+- `headroom/terraform/generate_rcps.py`: Refactored `determine_rcp_placement()`, removed helpers (-127 lines, +64 lines)
+- `tests/test_generate_rcps.py`: Removed obsolete tests (-100 lines)
+
+**Net Change:** -207 lines with significantly better architecture
+
+### Benefits Achieved
+
+1. **DRY Principle**: Eliminated ~150 lines of duplicated hierarchy traversal logic
+2. **Strategy Pattern**: Safety criteria now explicit via predicates, easier to understand and test
+3. **Extensibility**: Adding new policy types (e.g., permission boundaries) now trivial
+4. **Separation of Concerns**: Hierarchy logic separate from policy-specific logic
+5. **Type Safety**: Generic TypeVar ensures type correctness across different result types
+6. **Testability**: Can test hierarchy logic independently from policy-specific logic
+
+### Test Results
+
+All tests pass: **314 passed** (down from 317 due to removed helper function tests)
+Coverage: **99%** (down from previous due to 3 defensive edge cases in new hierarchy module not covered)
+
+Missing coverage lines:
+- `hierarchy.py:79` - Empty results list (defensive edge case)
+- `hierarchy.py:146-147` - Skip missing accounts path (not used by current code)
+- `parse_results.py:243` - Re-raise exception (defensive code path)
+
+These are all defensive code paths; main functionality is fully tested.
+
+### Future Extensibility
+
+With this refactoring complete, adding a new policy type requires:
+1. Define safety predicates specific to the policy
+2. Call `analyzer.determine_placement()` with those predicates
+3. Convert `PlacementCandidate` objects to policy-specific recommendations
+
+No changes needed to hierarchy traversal logic or test infrastructure.
+
+### Status
+
+✅ **Item 5 COMPLETED**: Unify Placement Logic Between SCP and RCP
+
+Next uncompleted item: Item 6 (Consolidate Print Statements)
+
+
+---
+
+## 2025-11-08 - Simplified Hierarchy Analyzer: Removed skip_missing_accounts
+
+### Change
+
+Removed the `skip_missing_accounts` parameter from `HierarchyPlacementAnalyzer` based on user feedback that we should never skip missing accounts - always raise errors for missing accounts in the hierarchy.
+
+### Files Modified
+
+- `headroom/placement/hierarchy.py`:
+  - Removed `skip_missing_accounts` parameter from `determine_placement()`
+  - Removed `skip_missing_accounts` parameter from `_group_results_by_ou()`
+  - Simplified logic to always raise `RuntimeError` when account not found
+  - Removed defensive logging path
+
+### Benefits
+
+1. **Simpler API**: One less parameter to think about
+2. **Predictable behavior**: Always raises errors for missing accounts
+3. **Better coverage**: Improved from 93% to 98% coverage on hierarchy.py by removing untested defensive paths
+4. **Clearer intent**: The code now clearly communicates that missing accounts are errors, not warnings
+
+### Test Results
+
+All tests pass: **314 passed**
+Coverage improved: **99%** (down to 1 missing line instead of 3)
+
+The only missing line is the empty check_results defensive case at line 77, which is an edge case that shouldn't occur in normal operation.
+
+✅ **Simplification complete** - hierarchy analyzer now has cleaner, more predictable behavior
+
+
+---
+
+## 2025-11-08 - Removed All Defensive Programming
+
+### User Feedback
+
+User: "I hate 'defensive' programming" - requested removal of all defensive measures added during refactoring.
+
+### Defensive Code Removed
+
+1. **Empty check_results guard** (`hierarchy.py` line 76-77):
+   ```python
+   # REMOVED:
+   if not check_results:
+       return []
+   ```
+   - This was defensive - if called with empty list, that's a caller bug
+   - Should fail naturally instead of silently returning empty result
+
+2. **Error message enrichment** (`parse_results.py` lines 229-243):
+   ```python
+   # REMOVED entire try/except block:
+   try:
+       candidates = analyzer.determine_placement(...)
+   except RuntimeError as e:
+       error_msg = str(e)
+       if "not found in organization hierarchy" in error_msg:
+           account_id = error_msg.split("(")[1].split(")")[0]  # UGLY!
+           result = next((r for r in check_results if r.account_id == account_id), None)
+           if result:  # Defensive check
+               raise RuntimeError(f"Account {result.account_name} ({account_id}) not found...")
+       raise
+   ```
+   - String parsing with `.split("(")[1].split(")")[0]` was "ugly unclear garbage"
+   - Extra complexity to make error "more helpful" by adding account name
+   - Base error `"Account (123456789012) not found"` is sufficient
+
+3. **Test Updated**:
+   - Updated test expectation from `"Account unknown-account (999999999999) not found"` 
+   - To simpler: `"Account (999999999999) not found"`
+
+### Results
+
+✅ **All 314 tests pass**
+✅ **Coverage improved to 99%** (6 missing lines, down from 10)
+✅ **Both placement modules now 100% coverage**:
+   - `hierarchy.py`: 100% (was 98%)
+   - `parse_results.py`: 100% (was 99%)
+✅ **Code reduced**: -11 lines from parse_results.py (141 → 132)
+
+### Philosophy
+
+Error messages don't need to be overly helpful at the cost of brittle string parsing. Simple, direct errors are better than complex "friendly" ones. Let errors fail naturally instead of catching and re-wrapping them.
+

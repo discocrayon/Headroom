@@ -20,6 +20,7 @@ from ..types import (
 from ..constants import THIRD_PARTY_ASSUMEROLE
 from ..write_results import get_results_dir
 from ..parse_results import _load_result_file_json, _extract_account_id_from_result
+from ..placement import HierarchyPlacementAnalyzer
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -123,58 +124,6 @@ def parse_rcp_result_files(
     )
 
 
-def _check_root_level_placement(
-    account_third_party_map: AccountThirdPartyMap,
-    organization_hierarchy: OrganizationHierarchy,
-    accounts_with_wildcards: Set[str]
-) -> Optional[RCPPlacementRecommendations]:
-    """
-    Check if root-level RCP can be deployed by unioning all third-party account IDs.
-
-    Root-level RCPs affect ALL accounts in the organization, so we can only recommend
-    root-level deployment if NO accounts have wildcard principals (we can't determine
-    their needs from static analysis).
-
-    If safe to deploy at root, unions together all third-party account IDs from all
-    accounts into a single allowlist.
-
-    Args:
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
-        organization_hierarchy: Organization structure for getting total account count
-        accounts_with_wildcards: Set of account IDs that have wildcard principals
-
-    Returns:
-        Root-level RCP recommendation with unioned third-party account IDs if no wildcards, None otherwise
-    """
-    # Cannot deploy root-level RCP if ANY accounts have wildcards
-    # Root-level RCPs affect those accounts too, and we can't determine their needs
-    if accounts_with_wildcards:
-        logger.info(f"Cannot recommend root-level RCP: {len(accounts_with_wildcards)} accounts have wildcard principals")
-        return None
-
-    if not account_third_party_map:
-        return None
-
-    # Union all third-party account IDs from all accounts
-    all_third_party_accounts: Set[str] = set()
-    for third_party_set in account_third_party_map.values():
-        all_third_party_accounts.update(third_party_set)
-
-    unioned_third_party = sorted(list(all_third_party_accounts))
-
-    # Get ALL accounts in the org (root-level RCPs affect everyone)
-    all_account_ids = list(organization_hierarchy.accounts.keys())
-
-    return RCPPlacementRecommendations(
-        check_name=THIRD_PARTY_ASSUMEROLE,
-        recommended_level="root",
-        target_ou_id=None,
-        affected_accounts=all_account_ids,
-        third_party_account_ids=unioned_third_party,
-        reasoning=f"All {len(all_account_ids)} accounts can be protected with root-level RCP (allowlist contains {len(unioned_third_party)} third-party accounts from union of all account requirements)"
-    )
-
-
 def _should_skip_ou_for_rcp(
     ou_id: str,
     organization_hierarchy: OrganizationHierarchy,
@@ -208,98 +157,6 @@ def _should_skip_ou_for_rcp(
     return False
 
 
-def _check_ou_level_placements(
-    account_third_party_map: AccountThirdPartyMap,
-    organization_hierarchy: OrganizationHierarchy,
-    accounts_with_wildcards: Set[str]
-) -> List[RCPPlacementRecommendations]:
-    """
-    Check each OU and create RCPs by unioning third-party accounts within each OU.
-
-    Args:
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
-        organization_hierarchy: Organization structure information
-        accounts_with_wildcards: Set of account IDs that have wildcard principals
-
-    Returns:
-        List of OU-level RCP recommendations
-    """
-    recommendations: List[RCPPlacementRecommendations] = []
-
-    ou_account_map: Dict[str, List[str]] = {}
-    for account_id in account_third_party_map.keys():
-        account_info = organization_hierarchy.accounts.get(account_id)
-        if not account_info:
-            raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
-        parent_ou_id = account_info.parent_ou_id
-        if parent_ou_id not in ou_account_map:
-            ou_account_map[parent_ou_id] = []
-        ou_account_map[parent_ou_id].append(account_id)
-
-    for ou_id, ou_account_ids in ou_account_map.items():
-        if _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards):
-            continue
-
-        if len(ou_account_ids) < MIN_ACCOUNTS_FOR_OU_LEVEL_RCP:
-            continue
-
-        # Union all third-party account IDs from accounts in this OU
-        ou_third_party_accounts: Set[str] = set()
-        for acc_id in ou_account_ids:
-            if acc_id in account_third_party_map:
-                ou_third_party_accounts.update(account_third_party_map[acc_id])
-
-        ou_info = organization_hierarchy.organizational_units.get(ou_id)
-        ou_name = ou_info.name if ou_info else ou_id
-
-        unioned_third_party = sorted(list(ou_third_party_accounts))
-        recommendations.append(RCPPlacementRecommendations(
-            check_name=THIRD_PARTY_ASSUMEROLE,
-            recommended_level="ou",
-            target_ou_id=ou_id,
-            affected_accounts=ou_account_ids,
-            third_party_account_ids=unioned_third_party,
-            reasoning=f"OU '{ou_name}' with {len(ou_account_ids)} accounts can be protected with OU-level RCP (allowlist contains {len(unioned_third_party)} third-party accounts from union of account requirements)"
-        ))
-
-    return recommendations
-
-
-def _check_account_level_placements(
-    account_third_party_map: AccountThirdPartyMap,
-    ou_recommendations: List[RCPPlacementRecommendations]
-) -> List[RCPPlacementRecommendations]:
-    """
-    Create account-level RCPs for accounts not covered by OU-level RCPs.
-
-    Args:
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
-        ou_recommendations: List of OU-level recommendations (to determine which accounts are already covered)
-
-    Returns:
-        List of account-level RCP recommendations
-    """
-    recommendations: List[RCPPlacementRecommendations] = []
-
-    ou_covered_accounts = set()
-    for rec in ou_recommendations:
-        if rec.recommended_level == "ou":
-            ou_covered_accounts.update(rec.affected_accounts)
-
-    for account_id, third_party_accounts in account_third_party_map.items():
-        if account_id not in ou_covered_accounts:
-            recommendations.append(RCPPlacementRecommendations(
-                check_name=THIRD_PARTY_ASSUMEROLE,
-                recommended_level="account",
-                target_ou_id=None,
-                affected_accounts=[account_id],
-                third_party_account_ids=sorted(list(third_party_accounts)),
-                reasoning=f"Account has unique third-party account requirements ({len(third_party_accounts)} accounts) - deploy at account level"
-            ))
-
-    return recommendations
-
-
 def determine_rcp_placement(
     account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy,
@@ -325,26 +182,82 @@ def determine_rcp_placement(
         logger.info("No third-party accounts found in any account (excluding accounts with wildcards)")
         return []
 
-    root_recommendation = _check_root_level_placement(
-        account_third_party_map,
-        organization_hierarchy,
-        accounts_with_wildcards
-    )
-    if root_recommendation:
-        return [root_recommendation]
+    analyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
 
-    ou_recommendations = _check_ou_level_placements(
-        account_third_party_map,
-        organization_hierarchy,
-        accounts_with_wildcards
+    account_data = [
+        {"account_id": acc_id, "third_party_accounts": third_parties}
+        for acc_id, third_parties in account_third_party_map.items()
+    ]
+
+    def is_safe_for_root_rcp(results: List[Dict[str, any]]) -> bool:
+        return len(accounts_with_wildcards) == 0
+
+    def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, any]]) -> bool:
+        if _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards):
+            return False
+        return len(results) >= MIN_ACCOUNTS_FOR_OU_LEVEL_RCP
+
+    candidates = analyzer.determine_placement(
+        check_results=account_data,
+        is_safe_for_root=is_safe_for_root_rcp,
+        is_safe_for_ou=is_safe_for_ou_rcp,
+        get_account_id=lambda r: r["account_id"]
     )
 
-    account_recommendations = _check_account_level_placements(
-        account_third_party_map,
-        ou_recommendations
-    )
+    recommendations: List[RCPPlacementRecommendations] = []
+    ou_covered_accounts: Set[str] = set()
 
-    return ou_recommendations + account_recommendations
+    for candidate in candidates:
+        if candidate.level == "root":
+            all_third_party_accounts: Set[str] = set()
+            for third_party_set in account_third_party_map.values():
+                all_third_party_accounts.update(third_party_set)
+
+            unioned_third_party = sorted(list(all_third_party_accounts))
+            all_account_ids = list(organization_hierarchy.accounts.keys())
+
+            recommendations.append(RCPPlacementRecommendations(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                recommended_level="root",
+                target_ou_id=None,
+                affected_accounts=all_account_ids,
+                third_party_account_ids=unioned_third_party,
+                reasoning=f"All {len(all_account_ids)} accounts can be protected with root-level RCP (allowlist contains {len(unioned_third_party)} third-party accounts from union of all account requirements)"
+            ))
+            return recommendations
+
+        elif candidate.level == "ou":
+            ou_third_party_accounts: Set[str] = set()
+            for acc_id in candidate.affected_accounts:
+                if acc_id in account_third_party_map:
+                    ou_third_party_accounts.update(account_third_party_map[acc_id])
+
+            ou_info = organization_hierarchy.organizational_units.get(candidate.target_id)
+            ou_name = ou_info.name if ou_info else candidate.target_id
+
+            unioned_third_party = sorted(list(ou_third_party_accounts))
+            recommendations.append(RCPPlacementRecommendations(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                recommended_level="ou",
+                target_ou_id=candidate.target_id,
+                affected_accounts=candidate.affected_accounts,
+                third_party_account_ids=unioned_third_party,
+                reasoning=f"OU '{ou_name}' with {len(candidate.affected_accounts)} accounts can be protected with OU-level RCP (allowlist contains {len(unioned_third_party)} third-party accounts from union of account requirements)"
+            ))
+            ou_covered_accounts.update(candidate.affected_accounts)
+
+    for account_id, third_party_accounts in account_third_party_map.items():
+        if account_id not in ou_covered_accounts:
+            recommendations.append(RCPPlacementRecommendations(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                recommended_level="account",
+                target_ou_id=None,
+                affected_accounts=[account_id],
+                third_party_account_ids=sorted(list(third_party_accounts)),
+                reasoning=f"Account has unique third-party account requirements ({len(third_party_accounts)} accounts) - deploy at account level"
+            ))
+
+    return recommendations
 
 
 def _build_rcp_terraform_module(
