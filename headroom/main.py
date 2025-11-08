@@ -32,11 +32,8 @@ def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> Head
     """
     try:
         final_config = merge_configs(yaml_config, cli_args)
-    except ValueError as e:
-        OutputHandler.error("Configuration Validation Error", e)
-        exit(1)
-    except TypeError as e:
-        OutputHandler.error("Configuration Type Error", e)
+    except (ValueError, TypeError) as e:
+        OutputHandler.error("Configuration Error", e)
         exit(1)
 
     OutputHandler.success("Final Config", final_config.model_dump())

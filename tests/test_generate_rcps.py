@@ -11,7 +11,6 @@ import shutil
 import pytest
 from pathlib import Path
 from typing import List, Set, Generator
-from unittest.mock import patch
 from headroom.terraform.generate_rcps import (
     parse_rcp_result_files,
     determine_rcp_placement,
@@ -557,27 +556,27 @@ class TestDetermineRcpPlacement:
         # Verify affected_accounts includes ALL accounts in the org
         assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
 
-    def test_skips_ou_level_when_below_minimum_accounts_threshold(
+    def test_ou_level_rcp_for_single_account_ou(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test that OU-level RCP is skipped when OU has fewer accounts than MIN_ACCOUNTS_FOR_OU_LEVEL_RCP."""
+        """Test that OU-level RCP works even for single-account OUs (no minimum threshold)."""
         account_third_party_map: AccountThirdPartyMap = {
             "333333333333": {"999999999999"}  # Single account in Development OU (ou-2222)
         }
         accounts_with_wildcards: Set[str] = {"dummy_account"}  # Block root to force OU processing
 
-        # Patch MIN_ACCOUNTS_FOR_OU_LEVEL_RCP to 2 to trigger the skip
-        with patch("headroom.terraform.generate_rcps.MIN_ACCOUNTS_FOR_OU_LEVEL_RCP", 2):
-            recommendations = determine_rcp_placement(
-                account_third_party_map,
-                sample_org_hierarchy,
-                accounts_with_wildcards
-            )
+        recommendations = determine_rcp_placement(
+            account_third_party_map,
+            sample_org_hierarchy,
+            accounts_with_wildcards
+        )
 
-        # Should only get account-level recommendation since OU has 1 account but MIN is 2
+        # Should get OU-level recommendation even though OU has only 1 account
+        # (no minimum threshold anymore)
         assert len(recommendations) == 1
-        assert recommendations[0].recommended_level == "account"
+        assert recommendations[0].recommended_level == "ou"
+        assert recommendations[0].target_ou_id == "ou-2222"
         assert recommendations[0].affected_accounts == ["333333333333"]
 
 

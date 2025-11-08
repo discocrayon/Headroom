@@ -25,10 +25,6 @@ from ..placement import HierarchyPlacementAnalyzer
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Minimum number of accounts required in an OU to recommend OU-level RCP
-# Set to 1 to allow OU-level RCPs even for single-account OUs
-MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1
-
 
 def _parse_single_rcp_result_file(
     result_file: Path,
@@ -193,9 +189,7 @@ def determine_rcp_placement(
         return len(accounts_with_wildcards) == 0
 
     def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
-        if _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards):
-            return False
-        return len(results) >= MIN_ACCOUNTS_FOR_OU_LEVEL_RCP
+        return not _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards)
 
     candidates = analyzer.determine_placement(
         check_results=account_data,

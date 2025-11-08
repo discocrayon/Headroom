@@ -8,13 +8,13 @@ levels (root, OU, account) based on violation patterns and organization structur
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Union
+from typing import Any, Dict, List, Sequence
 
 from .analysis import get_security_analysis_session, get_management_account_session
 from .config import HeadroomConfig
 from .aws.organization import analyze_organization_structure
 from .types import (
-    OrganizationalUnit, OrganizationHierarchy, SCPCheckResult,
+    OrganizationalUnit, OrganizationHierarchy, PolicyRecommendation, SCPCheckResult,
     SCPPlacementRecommendations, RCPPlacementRecommendations
 )
 from .aws.organization import lookup_account_id_by_name
@@ -69,21 +69,23 @@ def _extract_account_id_from_result(
     Raises:
         RuntimeError: If account ID cannot be determined
     """
+    # Happy path: account_id present
     account_id: str = summary.get("account_id", "")
-    if not account_id:
-        account_name = summary.get("account_name", "")
-        if not account_name:
-            raise RuntimeError(
-                f"Result file {result_file} missing both account_id and account_name in summary"
-            )
-        # Use org hierarchy lookup - works for both SCP and RCP
-        looked_up_id: str = lookup_account_id_by_name(
-            account_name,
-            organization_hierarchy,
-            str(result_file)
+    if account_id:
+        return account_id
+
+    # Fallback: look up by account name
+    account_name = summary.get("account_name", "")
+    if not account_name:
+        raise RuntimeError(
+            f"Result file {result_file} missing both account_id and account_name in summary"
         )
-        return looked_up_id
-    return account_id
+
+    return lookup_account_id_by_name(
+        account_name,
+        organization_hierarchy,
+        str(result_file)
+    )
 
 
 def _parse_single_scp_result_file(
@@ -286,7 +288,7 @@ def _get_organization_context(config: HeadroomConfig) -> OrganizationHierarchy:
 
 
 def print_policy_recommendations(
-    recommendations: Sequence[Union[SCPPlacementRecommendations, RCPPlacementRecommendations]],
+    recommendations: Sequence[PolicyRecommendation],
     organization_hierarchy: OrganizationHierarchy,
     title: str = "SCP/RCP PLACEMENT RECOMMENDATIONS"
 ) -> None:
@@ -308,7 +310,7 @@ def print_policy_recommendations(
     OutputHandler.section_header(title)
 
     # Group recommendations by check name
-    check_groups: Dict[str, List[Union[SCPPlacementRecommendations, RCPPlacementRecommendations]]] = {}
+    check_groups: Dict[str, List[PolicyRecommendation]] = {}
     for rec in recommendations:
         if rec.check_name not in check_groups:
             check_groups[rec.check_name] = []

@@ -7,7 +7,7 @@ for data structures.
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 
 
 # Type aliases for commonly-used complex types
@@ -16,6 +16,9 @@ AccountThirdPartyMap = Dict[str, Set[str]]
 
 GroupedSCPRecommendations = Dict[str, List["SCPPlacementRecommendations"]]
 """Mapping of target IDs (account/OU) to lists of SCP placement recommendations."""
+
+PolicyRecommendation = Union["SCPPlacementRecommendations", "RCPPlacementRecommendations"]
+"""Type alias for either SCP or RCP placement recommendations."""
 
 
 @dataclass

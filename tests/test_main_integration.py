@@ -240,7 +240,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nValidation error: missing required fields\n"
+        expected_error_message = "\n🚨 Configuration Error:\nValidation error: missing required fields\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -269,7 +269,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Type Error:\nType error: expected bool, got str\n"
+        expected_error_message = "\n🚨 Configuration Error:\nType error: expected bool, got str\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -298,7 +298,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nMissing required fields: account_tag_layout\n"
+        expected_error_message = "\n🚨 Configuration Error:\nMissing required fields: account_tag_layout\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -333,7 +333,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nInvalid account tag layout: environment cannot be empty\n"
+        expected_error_message = "\n🚨 Configuration Error:\nInvalid account tag layout: environment cannot be empty\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -391,7 +391,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nMissing required fields: account_tag_layout\n"
+        expected_error_message = "\n🚨 Configuration Error:\nMissing required fields: account_tag_layout\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -448,7 +448,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nConfiguration cannot be None\n"
+        expected_error_message = "\n🚨 Configuration Error:\nConfiguration cannot be None\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -481,7 +481,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nInvalid account tag layout: must be a dictionary\n"
+        expected_error_message = "\n🚨 Configuration Error:\nInvalid account tag layout: must be a dictionary\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 

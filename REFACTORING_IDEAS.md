@@ -35,11 +35,11 @@ The codebase demonstrates solid engineering practices with strong type safety, g
 | 🟠 High | Registry pattern for checks | High | 3 hours | -100, +80 | ✅ DONE |
 | 🟡 Medium | Unify placement analysis | Medium | 3 hours | -150, +100 | ✅ DONE |
 | 🟡 Medium | Consolidate print statements | Low | 1 hour | -20, +30 | ✅ DONE |
-| 🟡 Medium | Simplify config validation | Low | 5 min | -4 | |
-| 🟡 Medium | Refactor extract account ID | Low | 5 min | -3 | |
+| 🟡 Medium | Simplify config validation | Low | 5 min | -4 | ✅ DONE |
+| 🟡 Medium | Refactor extract account ID | Low | 5 min | -3 | ✅ DONE |
 | 🟢 Low | Standardize error messages | Low | 30 min | ~20 | |
-| 🟢 Low | Review MIN_ACCOUNTS constant | Low | 5 min | -3 | |
-| 🟢 Low | Type alias for Union | Low | 2 min | +1, -2 | |
+| 🟢 Low | Review MIN_ACCOUNTS constant | Low | 5 min | -6 | ✅ DONE |
+| 🟢 Low | Type alias for Union | Low | 2 min | +3, -2 | ✅ DONE |
 
 ---
 
@@ -1002,7 +1002,7 @@ OutputHandler.check_completed(
 
 ---
 
-### 7. 🟡 Simplify Config Validation
+### 7. 🟡 ✅ Simplify Config Validation - COMPLETED
 
 **Problem:** `setup_configuration()` in `main.py` has separate handlers for ValueError and TypeError that do the same thing:
 
@@ -1054,9 +1054,11 @@ def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> Head
 - Reduces 4 lines
 - More maintainable
 
+**Status: ✅ COMPLETED - 2025-11-08**
+
 ---
 
-### 8. 🟡 Refactor `_extract_account_id_from_result()`
+### 8. 🟡 ✅ Refactor `_extract_account_id_from_result()` - COMPLETED
 
 **Problem:** Nested conditionals with multiple return points reduce readability:
 
@@ -1127,6 +1129,8 @@ def _extract_account_id_from_result(
 - Reduces 3 lines
 - Much more readable
 
+**Status: ✅ COMPLETED - 2025-11-08**
+
 ---
 
 ## Low-Priority / Style Improvements
@@ -1153,7 +1157,7 @@ def _extract_account_id_from_result(
 
 ---
 
-### 10. 🟢 Review MIN_ACCOUNTS_FOR_OU_LEVEL_RCP Constant
+### 10. 🟢 ✅ Review MIN_ACCOUNTS_FOR_OU_LEVEL_RCP Constant - COMPLETED
 
 **Location:** `generate_rcps.py:29`
 
@@ -1178,12 +1182,20 @@ With `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1`, this only skips OUs with 0 accounts (w
 3. Make it configurable if there's a future use case
 
 **Impact:**
-- Reduces 3 lines
+- Reduces 6 lines (removed constant, comments, and simplified logic)
 - Removes confusion
+
+**Status: ✅ COMPLETED - 2025-11-08**
+
+**Implementation Notes:**
+- Removed the `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1` constant entirely
+- Simplified `is_safe_for_ou_rcp()` to single line return statement
+- Updated test from `test_skips_ou_level_when_below_minimum_accounts_threshold` to `test_ou_level_rcp_for_single_account_ou`
+- New behavior: OU-level RCPs work for any number of accounts (including single-account OUs)
 
 ---
 
-### 11. 🟢 Type Alias for Union in `print_policy_recommendations()`
+### 11. 🟢 ✅ Type Alias for Union in `print_policy_recommendations()` - COMPLETED
 
 **Location:** `parse_results.py:325`
 
@@ -1214,9 +1226,11 @@ def print_policy_recommendations(
 - Reusable if pattern appears elsewhere
 
 **Impact:**
-- +1 line in types.py
-- -2 characters in function signature
+- +3 lines in types.py (import Union, type alias, docstring)
+- -2 characters per function signature usage
 - Improved readability
+
+**Status: ✅ COMPLETED - 2025-11-08**
 
 ---
 

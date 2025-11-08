@@ -9948,3 +9948,193 @@ All tests pass with 100% code coverage:
 ✅ **COMPLETED** - Item #6 from REFACTORING_IDEAS.md
 
 Next item to implement: Item #7 - Simplify Config Validation (Medium priority)
+
+---
+
+## 2025-11-08: Completed Remaining Medium-Priority Refactorings (Items 7, 8, 10, 11)
+
+### Overview
+
+Implemented the remaining 4 refactoring items from REFACTORING_IDEAS.md (skipping Item 9 - error message standardization for now):
+- Item 11: Type Alias for Union
+- Item 7: Simplify Config Validation
+- Item 8: Refactor Extract Account ID
+- Item 10: Remove MIN_ACCOUNTS Constant
+
+All changes maintain 100% test coverage and pass all linting checks.
+
+### Item 11: Type Alias for Union (2 minutes)
+
+**Problem**: `Union[SCPPlacementRecommendations, RCPPlacementRecommendations]` was repeated in multiple places, reducing readability.
+
+**Solution**: Created reusable type alias in `types.py`:
+
+```python
+PolicyRecommendation = Union["SCPPlacementRecommendations", "RCPPlacementRecommendations"]
+"""Type alias for either SCP or RCP placement recommendations."""
+```
+
+**Changes**:
+- Modified: `headroom/types.py` - Added Union import and PolicyRecommendation type alias
+- Modified: `headroom/parse_results.py` - Updated 2 function signatures to use new type alias
+
+**Benefits**:
+- More readable function signatures
+- Consistent type naming across the codebase
+- Easier to modify if recommendation types change in the future
+
+### Item 7: Simplify Config Validation (5 minutes)
+
+**Problem**: Two separate exception handlers for `ValueError` and `TypeError` doing identical work:
+
+```python
+except ValueError as e:
+    OutputHandler.error("Configuration Validation Error", e)
+    exit(1)
+except TypeError as e:
+    OutputHandler.error("Configuration Type Error", e)
+    exit(1)
+```
+
+**Solution**: Combined into single exception handler:
+
+```python
+except (ValueError, TypeError) as e:
+    OutputHandler.error("Configuration Error", e)
+    exit(1)
+```
+
+**Changes**:
+- Modified: `headroom/main.py` - Combined exception handlers in `setup_configuration()`
+- Modified: `tests/test_main_integration.py` - Updated 7 test cases with new error message format
+
+**Benefits**:
+- Simpler, cleaner code (-4 lines)
+- Both exceptions need identical handling
+- More maintainable
+
+### Item 8: Refactor Extract Account ID (5 minutes)
+
+**Problem**: Nested conditionals with multiple return points reduced readability (cognitive complexity 4):
+
+```python
+account_id: str = summary.get("account_id", "")
+if not account_id:
+    account_name = summary.get("account_name", "")
+    if not account_name:
+        raise RuntimeError(...)
+    looked_up_id: str = lookup_account_id_by_name(...)
+    return looked_up_id
+return account_id
+```
+
+**Solution**: Used early returns (guard clause pattern) to reduce nesting:
+
+```python
+# Happy path: account_id present
+account_id: str = summary.get("account_id", "")
+if account_id:
+    return account_id
+
+# Fallback: look up by account name
+account_name = summary.get("account_name", "")
+if not account_name:
+    raise RuntimeError(...)
+
+return lookup_account_id_by_name(...)
+```
+
+**Changes**:
+- Modified: `headroom/parse_results.py` - Refactored `_extract_account_id_from_result()` function
+
+**Benefits**:
+- Reduced cognitive complexity from 4 to 2
+- Eliminated unnecessary variable `looked_up_id`
+- Clearer flow: handle simple case first, then complex case
+- Better follows "guard clause" pattern from Clean Code
+
+### Item 10: Remove MIN_ACCOUNTS Constant (5 minutes)
+
+**Problem**: `MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1` constant had no practical effect. A threshold of 1 only skips OUs with 0 accounts (which wouldn't be in the map anyway).
+
+**Solution**: Removed constant and simplified the OU safety check:
+
+Before:
+```python
+MIN_ACCOUNTS_FOR_OU_LEVEL_RCP = 1
+
+def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
+    if _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards):
+        return False
+    return len(results) >= MIN_ACCOUNTS_FOR_OU_LEVEL_RCP
+```
+
+After:
+```python
+def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
+    return not _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards)
+```
+
+**Changes**:
+- Modified: `headroom/terraform/generate_rcps.py` - Removed constant and simplified logic (-6 lines)
+- Modified: `tests/test_generate_rcps.py` - Updated test to verify single-account OU support
+
+**Benefits**:
+- Removes confusing constant with no effect
+- Simplifies code by eliminating unnecessary check
+- Makes behavior clearer: OU-level RCPs work for any number of accounts (including 1)
+
+### Test Updates
+
+Updated tests to match new behavior:
+- **test_generate_rcps.py**: Changed `test_skips_ou_level_when_below_minimum_accounts_threshold` to `test_ou_level_rcp_for_single_account_ou` to verify that single-account OUs now get OU-level recommendations (no minimum threshold)
+- **test_main_integration.py**: Updated 7 tests to expect "Configuration Error" instead of "Configuration Validation Error" or "Configuration Type Error"
+
+### Verification
+
+All changes verified with:
+```bash
+tox  # All 329 tests pass with 100% coverage
+```
+
+Results:
+- ✅ 329 tests passing
+- ✅ 100% code coverage (1185 statements in headroom/, 3177 in tests/)
+- ✅ No mypy errors (48 source files)
+- ✅ All pre-commit hooks passing
+
+### Line Count Changes
+
+Total reductions:
+- Item 11: +3 lines (type alias), -2 characters per usage
+- Item 7: -4 lines
+- Item 8: -3 lines (better readability, same functionality)
+- Item 10: -6 lines
+
+**Net change: -10 lines with significantly better code quality**
+
+### Status
+
+✅ **COMPLETED** - Items 7, 8, 10, 11 from REFACTORING_IDEAS.md
+
+**Remaining item**: Item 9 - Standardize Error Messages (Low priority, ~30 minutes)
+
+### Updated Completion Summary
+
+From REFACTORING_IDEAS.md Priority Summary:
+
+| Priority | Item | Impact | Effort | LOC Change | Status |
+|----------|------|--------|--------|------------|--------|
+| 🔴 Critical | Delete duplicate file | High | 1 min | -110 | ✅ DONE |
+| 🟠 High | Abstract check framework | Very High | 4 hours | -200, +150 | ✅ DONE |
+| 🟠 High | Extract session management | Medium | 1 hour | -53, +28 | ✅ DONE |
+| 🟠 High | Registry pattern for checks | High | 3 hours | -100, +80 | ✅ DONE |
+| 🟡 Medium | Unify placement analysis | Medium | 3 hours | -150, +100 | ✅ DONE |
+| 🟡 Medium | Consolidate print statements | Low | 1 hour | -20, +30 | ✅ DONE |
+| 🟡 Medium | Simplify config validation | Low | 5 min | -4 | ✅ DONE |
+| 🟡 Medium | Refactor extract account ID | Low | 5 min | -3 | ✅ DONE |
+| 🟢 Low | Standardize error messages | Low | 30 min | ~20 | ⏸️ PENDING |
+| 🟢 Low | Review MIN_ACCOUNTS constant | Low | 5 min | -6 | ✅ DONE |
+| 🟢 Low | Type alias for Union | Low | 2 min | +3, -2 | ✅ DONE |
+
+**Progress**: 10 of 11 items completed (91%)
