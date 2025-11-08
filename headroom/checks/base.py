@@ -13,6 +13,7 @@ from typing import Any, Dict, Generic, List, TypeVar
 import boto3
 
 from ..write_results import write_check_results
+from ..output import OutputHandler
 
 T = TypeVar('T')
 
@@ -186,8 +187,12 @@ class BaseCheck(ABC, Generic[T]):
         )
 
         account_identifier = f"{self.account_name}_{self.account_id}"
-        print(
-            f"{self.check_name} completed for {account_identifier}: "
-            f"{len(violations)} violations, {len(exemptions)} exemptions, "
-            f"{len(compliant)} compliant"
+        OutputHandler.check_completed(
+            self.check_name,
+            account_identifier,
+            {
+                "violations": len(violations),
+                "exemptions": len(exemptions),
+                "compliant": len(compliant),
+            }
         )

@@ -19,6 +19,7 @@ from .types import (
 )
 from .aws.organization import lookup_account_id_by_name
 from .placement import HierarchyPlacementAnalyzer
+from .output import OutputHandler
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -304,9 +305,7 @@ def print_policy_recommendations(
     if not recommendations:
         return
 
-    print("\n" + "=" * 80)
-    print(title)
-    print("=" * 80)
+    OutputHandler.section_header(title)
 
     # Group recommendations by check name
     check_groups: Dict[str, List[Union[SCPPlacementRecommendations, RCPPlacementRecommendations]]] = {}

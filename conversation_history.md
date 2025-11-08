@@ -9864,3 +9864,87 @@ from .scps import deny_imds_v1_ec2  # noqa: F401
 ```
 
 This makes the intent clear to future maintainers and prevents accidental removal of these "unused" imports.
+
+---
+
+## 2025-11-08 - Refactoring Item #6: Consolidate Print Statements
+
+### Overview
+
+Implemented refactoring item #6 from REFACTORING_IDEAS.md: "Consolidate Print Statements" (Medium priority). Created a centralized OutputHandler class to replace scattered print statements throughout the codebase with consistent, maintainable formatting.
+
+### Changes Made
+
+#### 1. Created headroom/output.py
+
+New module with `OutputHandler` class providing centralized output handling:
+- `check_completed()` - for check completion messages with statistics
+- `error()` - for error messages with 🚨 emoji
+- `success()` - for success messages with ✅ emoji
+- `section_header()` - for section dividers
+
+Key implementation detail: Used early return pattern (`if not data: return`) to minimize indentation, following Clean Code principles.
+
+#### 2. Updated headroom/main.py
+
+Replaced print statements with OutputHandler calls:
+- Configuration validation errors: `OutputHandler.error("Configuration Validation Error", e)`
+- Configuration type errors: `OutputHandler.error("Configuration Type Error", e)`
+- Success message: `OutputHandler.success("Final Config", final_config.model_dump())`
+- Terraform generation errors: `OutputHandler.error("Terraform Generation Error", e)`
+
+#### 3. Updated headroom/checks/base.py
+
+Replaced check completion print statement with:
+```python
+OutputHandler.check_completed(
+    self.check_name,
+    account_identifier,
+    {
+        "violations": len(violations),
+        "exemptions": len(exemptions),
+        "compliant": len(compliant),
+    }
+)
+```
+
+#### 4. Updated headroom/parse_results.py
+
+Replaced section header printing with `OutputHandler.section_header(title)`.
+
+#### 5. Test Updates
+
+Updated tests to match new output format:
+- `tests/test_main.py`: Updated expected print calls
+- `tests/test_main_integration.py`: Updated 3 test methods to check for new format
+- Created `tests/test_output.py`: Comprehensive test suite with 8 tests covering all OutputHandler methods
+
+### Test Results
+
+All tests pass with 100% code coverage:
+- 329 tests passed
+- 100% coverage on headroom/* (1190 statements)
+- 100% coverage on tests/* (3179 statements)
+- All mypy checks pass
+- All pre-commit hooks pass
+
+### Benefits
+
+1. **Consistent formatting**: All user-facing output goes through a single point of control
+2. **Reduced indentation**: Using early returns as requested
+3. **Maintainability**: Easy to modify output style in one place
+4. **Extensibility**: Simple to add features like colored output, quiet mode, JSON output mode, or log file redirection
+5. **Professional appearance**: Consistent emoji usage and formatting
+
+### Line Count Changes
+
+- Added: `headroom/output.py` (76 lines)
+- Added: `tests/test_output.py` (102 lines)
+- Modified: 4 files with print statements replaced
+- Net result: Consolidated scattered print statements into centralized handler
+
+### Status
+
+✅ **COMPLETED** - Item #6 from REFACTORING_IDEAS.md
+
+Next item to implement: Item #7 - Simplify Config Validation (Medium priority)

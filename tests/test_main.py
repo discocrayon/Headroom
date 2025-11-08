@@ -317,7 +317,7 @@ class TestSetupConfiguration:
         with patch('builtins.print') as mock_print:
             result = setup_configuration(cli_args, yaml_config)
 
-        mock_print.assert_any_call("\n✅ Final Config:")
+        mock_print.assert_any_call("\n✅ Final Config")
         assert isinstance(result, HeadroomConfig)
 
 

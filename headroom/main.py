@@ -13,6 +13,7 @@ from .terraform.generate_org_info import generate_terraform_org_info
 from .aws.organization import analyze_organization_structure
 from .types import OrganizationHierarchy
 from .constants import ORG_INFO_FILENAME
+from .output import OutputHandler
 
 
 def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> HeadroomConfig:
@@ -32,14 +33,13 @@ def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> Head
     try:
         final_config = merge_configs(yaml_config, cli_args)
     except ValueError as e:
-        print(f"\n🚨 Configuration Validation Error:\n{e}\n")
+        OutputHandler.error("Configuration Validation Error", e)
         exit(1)
     except TypeError as e:
-        print(f"\n🚨 Configuration Type Error:\n{e}\n")
+        OutputHandler.error("Configuration Type Error", e)
         exit(1)
 
-    print("\n✅ Final Config:")
-    print(final_config.model_dump())
+    OutputHandler.success("Final Config", final_config.model_dump())
 
     return final_config
 
@@ -167,5 +167,5 @@ def main() -> None:
         handle_rcp_workflow(final_config, org_hierarchy)
 
     except (ValueError, RuntimeError, ClientError) as e:
-        print(f"\n🚨 Terraform Generation Error:\n{e}\n")
+        OutputHandler.error("Terraform Generation Error", e)
         exit(1)
