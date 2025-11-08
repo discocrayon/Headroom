@@ -8,6 +8,7 @@ from headroom.main import (
     setup_organization_context,
     handle_scp_workflow,
     handle_rcp_workflow,
+    ensure_org_info_symlink,
 )
 from headroom.config import HeadroomConfig
 from headroom.types import OrganizationHierarchy, RCPParseResult
@@ -410,12 +411,12 @@ class TestSetupOrganizationContext:
 
         with patch('headroom.main.get_management_account_session', return_value=mgmt_session):
             with patch('headroom.main.analyze_organization_structure', return_value=org_hierarchy):
-                with patch('headroom.main.generate_terraform_org_info') as mock_gen:
-                    result_session, result_hierarchy = setup_organization_context(config, security_session)
+                result_session, result_hierarchy = setup_organization_context(config, security_session)
 
         assert result_session == mgmt_session
         assert result_hierarchy == org_hierarchy
-        mock_gen.assert_called_once_with(mgmt_session, "/test/scps/grab_org_info.tf")
+        # Note: generate_terraform_org_info is no longer called inside setup_organization_context
+        # It's now called separately in main()
 
     def test_setup_organization_context_raises_value_error(self) -> None:
         """Test organization context setup with missing management account."""
@@ -552,3 +553,27 @@ class TestHandleRcpWorkflow:
                     handle_rcp_workflow(config, org_hierarchy)
 
         mock_process.assert_not_called()
+
+
+class TestEnsureOrgInfoSymlink:
+    """Test ensure_org_info_symlink function."""
+
+    def test_ensure_org_info_symlink_creates_directory_and_symlink(self) -> None:
+        """Test that ensure_org_info_symlink creates RCP directory and calls _create_org_info_symlink."""
+        with (
+            patch('headroom.main.Path') as mock_path_class,
+            patch('headroom.main._create_org_info_symlink') as mock_create_symlink
+        ):
+            mock_rcps_path = MagicMock()
+            mock_path_class.return_value = mock_rcps_path
+
+            ensure_org_info_symlink("test_rcps", "test_scps")
+
+            # Verify Path was called with rcps_dir
+            mock_path_class.assert_called_once_with("test_rcps")
+
+            # Verify mkdir was called to create directory
+            mock_rcps_path.mkdir.assert_called_once_with(parents=True, exist_ok=True)
+
+            # Verify _create_org_info_symlink was called with correct args
+            mock_create_symlink.assert_called_once_with(mock_rcps_path, "test_scps")

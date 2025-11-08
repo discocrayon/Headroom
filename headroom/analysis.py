@@ -95,6 +95,45 @@ def _determine_account_name(account: AccountTypeDef, tags: Dict[str, str], confi
     return account_name
 
 
+def _build_account_info_from_account_dict(
+    account: AccountTypeDef,
+    org_client: OrganizationsClient,
+    config: HeadroomConfig
+) -> AccountInfo:
+    """
+    Build AccountInfo object from AWS Organizations account dictionary.
+
+    Fetches account tags, extracts metadata, and constructs AccountInfo.
+
+    Args:
+        account: Account dictionary from Organizations API
+        org_client: AWS Organizations client for fetching tags
+        config: Headroom configuration
+
+    Returns:
+        AccountInfo object with account metadata
+
+    Raises:
+        ClientError: If AWS API calls fail
+    """
+    account_id = account["Id"]
+    account_name = account.get("Name", account_id)
+
+    tags = _fetch_account_tags(org_client, account_id, account_name)
+
+    layout = config.account_tag_layout
+    environment = tags.get(layout.environment) or "unknown"
+    owner = tags.get(layout.owner) or "unknown"
+    name = _determine_account_name(account, tags, config)
+
+    return AccountInfo(
+        account_id=account_id,
+        environment=environment,
+        name=name,
+        owner=owner
+    )
+
+
 def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -> List[AccountInfo]:
     """
     Get subaccount information from the management account.
@@ -122,26 +161,11 @@ def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -
         for acct in page.get("Accounts", []):
             account_id = acct["Id"]
 
-            # Skip the management account itself
             if account_id == config.management_account_id:
                 continue
 
-            # Fetch account tags
-            account_name = acct.get("Name", account_id)
-            tags = _fetch_account_tags(org_client, account_id, account_name)
-
-            # Extract account metadata from tags
-            layout = config.account_tag_layout
-            environment = tags.get(layout.environment) or "unknown"
-            owner = tags.get(layout.owner) or "unknown"
-            name = _determine_account_name(acct, tags, config)
-
-            accounts.append(AccountInfo(
-                account_id=account_id,
-                environment=environment,
-                name=name,
-                owner=owner
-            ))
+            account_info = _build_account_info_from_account_dict(acct, org_client, config)
+            accounts.append(account_info)
 
     return accounts
 

@@ -164,6 +164,46 @@ def _generate_ou_locals(
     return content_parts
 
 
+def _group_accounts_by_top_level_ou(
+    accounts: Dict[str, AccountOrgPlacement],
+    organizational_units: Dict[str, OrganizationalUnit]
+) -> Dict[str, List[AccountOrgPlacement]]:
+    """
+    Group accounts by their top-level parent OU.
+
+    Walks the OU hierarchy for each account to find which top-level OU
+    (direct child of root) the account belongs to.
+
+    Args:
+        accounts: All accounts in the organization
+        organizational_units: All OUs (needed for hierarchy traversal)
+
+    Returns:
+        Dictionary mapping top-level OU ID -> list of accounts under that OU
+    """
+    accounts_by_top_level_ou: Dict[str, List[AccountOrgPlacement]] = {}
+
+    for account in accounts.values():
+        top_level_ou_id = account.parent_ou_id
+        current_ou_id = account.parent_ou_id
+
+        # Walk up the OU hierarchy to find the top-level parent
+        while current_ou_id in organizational_units:
+            current_ou = organizational_units[current_ou_id]
+            if current_ou.parent_ou_id is None:
+                # This is a top-level OU (direct child of root)
+                top_level_ou_id = current_ou_id
+                break
+            current_ou_id = current_ou.parent_ou_id
+
+        # Group account under its top-level OU
+        if top_level_ou_id not in accounts_by_top_level_ou:
+            accounts_by_top_level_ou[top_level_ou_id] = []
+        accounts_by_top_level_ou[top_level_ou_id].append(account)
+
+    return accounts_by_top_level_ou
+
+
 def _generate_account_locals(
     accounts: Dict[str, AccountOrgPlacement],
     organizational_units: Dict[str, OrganizationalUnit]
@@ -171,55 +211,48 @@ def _generate_account_locals(
     """
     Generate local variables for account IDs.
 
-    Walks the OU hierarchy to group accounts by their top-level parent OU.
-
     Args:
         accounts: All accounts in the organization
-        organizational_units: All OUs (needed for hierarchy traversal)
+        organizational_units: All OUs (for name lookups)
 
     Returns:
         List of Terraform lines for account local variables with validations
     """
     content_parts: List[str] = []
 
-    if accounts:
-        content_parts.extend([
-            "  # Account IDs by name",
-        ])
+    if not accounts:
+        return content_parts
 
-        accounts_by_top_level_ou: Dict[str, List[AccountOrgPlacement]] = {}
-        for account in accounts.values():
-            top_level_ou_id = account.parent_ou_id
-            current_ou_id = account.parent_ou_id
+    content_parts.extend([
+        "  # Account IDs by name",
+    ])
 
-            while current_ou_id in organizational_units:
-                current_ou = organizational_units[current_ou_id]
-                if current_ou.parent_ou_id is None:
-                    top_level_ou_id = current_ou_id
-                    break
-                current_ou_id = current_ou.parent_ou_id
+    # Data preparation: group accounts by top-level OU
+    accounts_by_top_level_ou = _group_accounts_by_top_level_ou(
+        accounts,
+        organizational_units
+    )
 
-            if top_level_ou_id not in accounts_by_top_level_ou:
-                accounts_by_top_level_ou[top_level_ou_id] = []
-            accounts_by_top_level_ou[top_level_ou_id].append(account)
+    # Code generation: build Terraform locals for each account
+    for top_level_ou_id, accounts_list in accounts_by_top_level_ou.items():
+        if top_level_ou_id not in organizational_units:
+            continue
 
-        for top_level_ou_id, accounts_list in accounts_by_top_level_ou.items():
-            if top_level_ou_id in organizational_units:
-                ou_name = organizational_units[top_level_ou_id].name
-                safe_ou_name = make_safe_variable_name(ou_name)
+        ou_name = organizational_units[top_level_ou_id].name
+        safe_ou_name = make_safe_variable_name(ou_name)
 
-                for account in accounts_list:
-                    safe_account_name = make_safe_variable_name(account.account_name)
-                    content_parts.extend([
-                        f"  # Validation for {account.account_name} account",
-                        f"  validation_check_{safe_account_name}_account = (length([for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts : account.id if account.name == \"{account.account_name}\"]) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {account.account_name} account, found ${{length([for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts : account.id if account.name == \"{account.account_name}\"])}}\")",
-                        "",
-                        f"  {safe_account_name}_account_id = [",
-                        f"    for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts :",
-                        f"    account.id if account.name == \"{account.account_name}\"",
-                        "  ][0]",
-                        "",
-                    ])
+        for account in accounts_list:
+            safe_account_name = make_safe_variable_name(account.account_name)
+            content_parts.extend([
+                f"  # Validation for {account.account_name} account",
+                f"  validation_check_{safe_account_name}_account = (length([for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts : account.id if account.name == \"{account.account_name}\"]) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {account.account_name} account, found ${{length([for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts : account.id if account.name == \"{account.account_name}\"])}}\")",
+                "",
+                f"  {safe_account_name}_account_id = [",
+                f"    for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts :",
+                f"    account.id if account.name == \"{account.account_name}\"",
+                "  ][0]",
+                "",
+            ])
 
     return content_parts
 

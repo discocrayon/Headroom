@@ -1,14 +1,25 @@
 {
   "summary": {
     "account_name": "acme-co",
-    "check": "third_party_role_access",
-    "total_roles_analyzed": 0,
-    "roles_third_parties_can_access": 0,
+    "check": "third_party_assumerole",
+    "total_roles_analyzed": 1,
+    "roles_third_parties_can_access": 1,
     "roles_with_wildcards": 0,
     "violations": 0,
-    "unique_third_party_accounts": [],
-    "third_party_account_count": 0
+    "unique_third_party_accounts": [
+      "749430749651"
+    ],
+    "third_party_account_count": 1
   },
-  "roles_third_parties_can_access": [],
+  "roles_third_parties_can_access": [
+    {
+      "role_name": "ThirdPartyVendorA",
+      "role_arn": "arn:aws:iam::REDACTED:role/ThirdPartyVendorA",
+      "third_party_account_ids": [
+        "749430749651"
+      ],
+      "has_wildcard_principal": false
+    }
+  ],
   "roles_with_wildcards": []
 }

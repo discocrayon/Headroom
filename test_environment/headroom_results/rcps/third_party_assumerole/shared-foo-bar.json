@@ -1,7 +1,7 @@
 {
   "summary": {
     "account_name": "shared-foo-bar",
-    "check": "third_party_role_access",
+    "check": "third_party_assumerole",
     "total_roles_analyzed": 11,
     "roles_third_parties_can_access": 10,
     "roles_with_wildcards": 1,
@@ -22,6 +22,12 @@
     "third_party_account_count": 11
   },
   "roles_third_parties_can_access": [
+    {
+      "role_name": "WildcardRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/WildcardRole",
+      "third_party_account_ids": [],
+      "has_wildcard_principal": true
+    },
     {
       "role_name": "ComplexMultiStatementRole",
       "role_arn": "arn:aws:iam::REDACTED:role/ComplexMultiStatementRole",

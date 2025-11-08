@@ -292,10 +292,10 @@ mypy headroom/ tests/
 
 ### Output
 The tool generates:
-- **JSON Results**: 
+- **JSON Results**:
   - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
-- **Organization Data**: 
+- **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
   - `test_environment/rcps/grab_org_info.tf`
 - **SCP Configurations**: `test_environment/scps/{account_name}_scps.tf`

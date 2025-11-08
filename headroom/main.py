@@ -2,13 +2,14 @@ from typing import Any, Callable, Dict, List, Union
 import argparse
 import boto3
 from botocore.exceptions import ClientError
+from pathlib import Path
 
 from .config import HeadroomConfig
 from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session
 from .parse_results import parse_scp_results, print_policy_recommendations
 from .terraform.generate_scps import generate_scp_terraform
-from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform
+from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform, _create_org_info_symlink
 from .terraform.generate_org_info import generate_terraform_org_info
 from .aws.organization import analyze_organization_structure
 from .types import OrganizationHierarchy
@@ -70,7 +71,7 @@ def setup_organization_context(
     security_session: boto3.Session
 ) -> tuple[boto3.Session, OrganizationHierarchy]:
     """
-    Set up organization context for Terraform generation.
+    Set up organization context for policy analysis.
 
     Args:
         final_config: Validated Headroom configuration
@@ -86,10 +87,24 @@ def setup_organization_context(
     """
     mgmt_session = get_management_account_session(final_config, security_session)
     organization_hierarchy = analyze_organization_structure(mgmt_session)
-
-    generate_terraform_org_info(mgmt_session, f"{final_config.scps_dir}/{ORG_INFO_FILENAME}")
-
     return mgmt_session, organization_hierarchy
+
+
+def ensure_org_info_symlink(rcps_dir: str, scps_dir: str) -> None:
+    """
+    Create symlink from rcps/grab_org_info.tf to scps/grab_org_info.tf.
+
+    The grab_org_info.tf file contains shared organization structure data sources
+    needed by both SCP and RCP modules. This function ensures the symlink exists
+    in the RCP directory.
+
+    Args:
+        rcps_dir: RCP directory path where symlink should be created
+        scps_dir: SCP directory path (contains the actual grab_org_info.tf file)
+    """
+    rcps_path = Path(rcps_dir)
+    rcps_path.mkdir(parents=True, exist_ok=True)
+    _create_org_info_symlink(rcps_path, scps_dir)
 
 
 def handle_scp_workflow(final_config: HeadroomConfig, org_hierarchy: OrganizationHierarchy) -> None:
@@ -100,7 +115,7 @@ def handle_scp_workflow(final_config: HeadroomConfig, org_hierarchy: Organizatio
         final_config: Validated Headroom configuration
         org_hierarchy: Organization hierarchy structure
     """
-    scp_recommendations = parse_scp_results(final_config)
+    scp_recommendations = parse_scp_results(final_config, org_hierarchy)
 
     if not scp_recommendations:
         return
@@ -142,7 +157,6 @@ def handle_rcp_workflow(final_config: HeadroomConfig, org_hierarchy: Organizatio
         "RCP PLACEMENT RECOMMENDATIONS",
         generate_rcp_terraform,
         final_config.rcps_dir,
-        final_config.scps_dir,
     )
 
 
@@ -159,6 +173,12 @@ def main() -> None:
 
     try:
         mgmt_session, org_hierarchy = setup_organization_context(final_config, security_session)
+
+        # Generate Terraform organization info file (needed by both SCP and RCP workflows)
+        generate_terraform_org_info(mgmt_session, f"{final_config.scps_dir}/{ORG_INFO_FILENAME}")
+
+        # Create symlink from RCP directory to SCP grab_org_info.tf (needed for RCP Terraform)
+        ensure_org_info_symlink(final_config.rcps_dir, final_config.scps_dir)
 
         handle_scp_workflow(final_config, org_hierarchy)
         handle_rcp_workflow(final_config, org_hierarchy)

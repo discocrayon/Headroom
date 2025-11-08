@@ -1703,18 +1703,18 @@ class CategorizedCheckResult:
 
 class BaseCheck(ABC, Generic[T]):
     """Base class for all compliance checks.
-    
+
     Implements Template Method pattern for check execution flow.
     Subclasses must implement three abstract methods:
     - analyze(): Perform AWS API calls and return raw analysis results
     - categorize_result(): Categorize single result into violation/exemption/compliant
     - build_summary_fields(): Build check-specific summary fields
-    
+
     These attributes are set by the @register_check decorator:
     """
     CHECK_NAME: str
     CHECK_TYPE: str
-    
+
     def __init__(
         self,
         account_name: str,
@@ -1724,7 +1724,7 @@ class BaseCheck(ABC, Generic[T]):
         **kwargs: Any
     ) -> None:
         """Initialize base check with common parameters.
-        
+
         **kwargs allows subclasses to accept additional parameters
         without breaking uniform instantiation pattern.
         """
@@ -1733,19 +1733,19 @@ class BaseCheck(ABC, Generic[T]):
         self.results_base_dir = results_base_dir
         self.exclude_account_ids = exclude_account_ids
         self.check_name = self.CHECK_NAME
-    
+
     @abstractmethod
     def analyze(self, session: boto3.Session) -> List[T]:
         """Perform analysis and return raw results.
-        
+
         Subclasses implement AWS API calls here.
         """
         pass
-    
+
     @abstractmethod
     def categorize_result(self, result: T) -> tuple[str, Dict[str, Any]]:
         """Categorize a single result.
-        
+
         Returns:
             Tuple of (category, result_dict) where category is one of:
             - "violation": Non-compliant resource
@@ -1753,19 +1753,19 @@ class BaseCheck(ABC, Generic[T]):
             - "compliant": Fully compliant resource
         """
         pass
-    
+
     @abstractmethod
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
         """Build check-specific summary fields.
-        
+
         Returns:
             Dictionary of summary fields like total_instances, compliance_percentage, etc.
         """
         pass
-    
+
     def execute(self, session: boto3.Session) -> None:
         """Execute the check (Template Method).
-        
+
         This method orchestrates the entire check execution flow:
         1. Call analyze() to get raw results
         2. Categorize each result via categorize_result()
@@ -1775,12 +1775,12 @@ class BaseCheck(ABC, Generic[T]):
         """
         # Step 1: Analyze
         analysis_results = self.analyze(session)
-        
+
         # Step 2: Categorize
         violations: List[Dict[str, Any]] = []
         exemptions: List[Dict[str, Any]] = []
         compliant: List[Dict[str, Any]] = []
-        
+
         for result in analysis_results:
             category, result_dict = self.categorize_result(result)
             if category == "violation":
@@ -1789,13 +1789,13 @@ class BaseCheck(ABC, Generic[T]):
                 exemptions.append(result_dict)
             elif category == "compliant":
                 compliant.append(result_dict)
-        
+
         check_result = CategorizedCheckResult(
             violations=violations,
             exemptions=exemptions,
             compliant=compliant
         )
-        
+
         # Step 3: Build summary
         summary_fields = self.build_summary_fields(check_result)
         summary = {
@@ -1804,7 +1804,7 @@ class BaseCheck(ABC, Generic[T]):
             "check": self.check_name,
             **summary_fields
         }
-        
+
         # Step 4: Write results
         results_data = self._build_results_data(summary, check_result)
         write_check_results(
@@ -1815,12 +1815,12 @@ class BaseCheck(ABC, Generic[T]):
             self.results_base_dir,
             self.exclude_account_ids
         )
-        
+
         # Step 5: Print completion
         account_identifier = self.account_name
         if not self.exclude_account_ids:
             account_identifier = f"{self.account_name} ({self.account_id})"
-        
+
         OutputHandler.check_completed(
             self.check_name,
             account_identifier,
@@ -1830,14 +1830,14 @@ class BaseCheck(ABC, Generic[T]):
                 "compliant": len(compliant),
             }
         )
-    
+
     def _build_results_data(
         self,
         summary: Dict[str, Any],
         check_result: CategorizedCheckResult
     ) -> Dict[str, Any]:
         """Build results data structure.
-        
+
         Hookpoint for subclasses with different result structures.
         Default returns standard structure with compliant_instances.
         """
@@ -1867,14 +1867,14 @@ _CHECK_REGISTRY: Dict[str, Type[BaseCheck]] = {}
 
 def register_check(check_type: str, check_name: str) -> Callable[[Type[BaseCheck]], Type[BaseCheck]]:
     """Decorator to register a check class.
-    
+
     Args:
         check_type: "scps" or "rcps"
         check_name: Unique check identifier (e.g., "deny_imds_v1_ec2")
-    
+
     Returns:
         Decorator function that registers a check class
-    
+
     Usage:
         @register_check("scps", "deny_imds_v1_ec2")
         class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
@@ -1883,15 +1883,15 @@ def register_check(check_type: str, check_name: str) -> Callable[[Type[BaseCheck
     def decorator(cls: Type[BaseCheck]) -> Type[BaseCheck]:
         # Store in registry
         _CHECK_REGISTRY[check_name] = cls
-        
+
         # Set class attributes for later access
         cls.CHECK_NAME = check_name
         cls.CHECK_TYPE = check_type
-        
+
         # Register check type in constants module
         from ..constants import register_check_type
         register_check_type(check_name, check_type)
-        
+
         return cls
     return decorator
 
@@ -1908,7 +1908,7 @@ def get_all_check_classes(check_type: Optional[str] = None) -> List[Type[BaseChe
     """Get all registered check classes, optionally filtered by type."""
     if check_type is None:
         return list(_CHECK_REGISTRY.values())
-    
+
     return [
         cls for cls in _CHECK_REGISTRY.values()
         if cls.CHECK_TYPE == check_type
@@ -1945,22 +1945,22 @@ from ..registry import register_check
 @register_check("scps", DENY_IMDS_V1_EC2)
 class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
     """Check for EC2 instances allowing IMDSv1."""
-    
+
     def analyze(self, session: boto3.Session) -> List[DenyImdsV1Ec2]:
         """Get all EC2 instances with IMDSv1 analysis."""
         return get_imds_v1_ec2_analysis(session)
-    
+
     def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, Dict[str, Any]]:
         """Categorize instance into violation/exemption/compliant."""
         result_dict = asdict(result)
-        
+
         if result.imdsv1_allowed and result.exemption_tag_present:
             return ("exemption", result_dict)
         elif result.imdsv1_allowed:
             return ("violation", result_dict)
         else:
             return ("compliant", result_dict)
-    
+
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
         """Build summary with instance counts and compliance percentage."""
         total = (
@@ -1968,13 +1968,13 @@ class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
             len(check_result.exemptions) +
             len(check_result.compliant)
         )
-        
+
         if total == 0:
             compliance_percentage = 100.0
         else:
             compliant_count = len(check_result.exemptions) + len(check_result.compliant)
             compliance_percentage = (compliant_count / total) * 100
-        
+
         return {
             "total_instances": total,
             "violations": len(check_result.violations),
@@ -2010,20 +2010,20 @@ def run_checks_for_type(
     org_account_ids: Set[str]
 ) -> None:
     """Execute all checks of a given type for a single account.
-    
+
     Discovers checks dynamically from registry.
     """
     check_classes = get_all_check_classes(check_type)
-    
+
     for check_class in check_classes:
         check_name = check_class.CHECK_NAME
-        
+
         # Skip if results already exist
         if results_exist(check_name, account_info.name, account_info.account_id,
                         config.results_dir, config.exclude_account_ids):
             logger.info(f"Results for {check_name} already exist for {account_info.name}, skipping")
             continue
-        
+
         # Instantiate and execute check
         check = check_class(
             account_name=account_info.name,
@@ -2041,19 +2041,19 @@ def run_checks(
 ) -> None:
     """Run all checks across all accounts."""
     org_account_ids = get_all_organization_account_ids(config, session)
-    
+
     for account_info in subaccounts:
         # Skip if all results exist
         if (all_check_results_exist("scps", account_info, config) and
             all_check_results_exist("rcps", account_info, config)):
             logger.info(f"All results already exist for {account_info.name}, skipping")
             continue
-        
+
         headroom_session = get_headroom_session(account_info.account_id, config)
-        
+
         # Run SCP checks
         run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
-        
+
         # Run RCP checks
         run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
 ```
@@ -2076,14 +2076,14 @@ _CHECK_TYPE_MAP: Dict[str, str] = {}
 
 def register_check_type(check_name: str, check_type: str) -> None:
     """Register a check type in the CHECK_TYPE_MAP.
-    
+
     Called by the @register_check decorator.
     """
     _CHECK_TYPE_MAP[check_name] = check_type
 
 def get_check_type_map() -> Dict[str, str]:
     """Get the check type map.
-    
+
     Returns dynamically-built map from check names to types.
     Lazy-loaded to ensure all checks are registered first.
     """
@@ -2125,7 +2125,7 @@ __all__ = []
 1. **Extensibility:**
    - Add new check: 1 file, ~50 lines, zero other changes
    - Add new check type: Add to CHECK_TYPE_MAP values, zero code changes
-   
+
 2. **Maintainability:**
    - Single source of truth for check execution flow (BaseCheck)
    - All checks benefit from improvements to base class
@@ -2198,27 +2198,27 @@ def assume_role(
     base_session: Optional[boto3.Session] = None
 ) -> boto3.Session:
     """Assume an IAM role and return a session with temporary credentials.
-    
+
     Args:
         role_arn: ARN of the role to assume
         session_name: Name for the assumed role session
         base_session: Session to use for assuming the role (default: creates new session)
-    
+
     Returns:
         New boto3 Session with temporary credentials from the assumed role
-    
+
     Raises:
         ClientError: If role assumption fails (e.g., permission denied, role not found)
     """
     if base_session is None:
         base_session = boto3.Session()
-    
+
     sts_client = base_session.client("sts")
     response = sts_client.assume_role(
         RoleArn=role_arn,
         RoleSessionName=session_name
     )
-    
+
     credentials = response["Credentials"]
     return boto3.Session(
         aws_access_key_id=credentials["AccessKeyId"],
@@ -2431,44 +2431,44 @@ from typing import Any, Dict, Optional
 
 class OutputHandler:
     """Centralized handler for all user-facing output.
-    
+
     Provides consistent formatting for different message types:
     - check_completed(): Check execution completion with statistics
     - error(): Error messages with 🚨 emoji
     - success(): Success messages with ✅ emoji
     - section_header(): Section dividers with formatting
-    
+
     Future enhancements (not yet implemented):
     - Colored output (green for success, red for errors)
     - Quiet mode (suppress non-error output)
     - JSON output mode (machine-readable)
     - Log file redirection
     """
-    
+
     @staticmethod
     def check_completed(check_name: str, account_identifier: str, data: Optional[Dict[str, Any]] = None) -> None:
         """Print check completion message with optional statistics."""
         print(f"✅ Completed {check_name} for account {account_identifier}")
         if not data:
             return
-        
+
         violations = data.get("violations", 0)
         exemptions = data.get("exemptions", 0)
         compliant = data.get("compliant", 0)
-        
+
         print(f"   Violations: {violations}, Exemptions: {exemptions}, Compliant: {compliant}")
-    
+
     @staticmethod
     def error(title: str, error: Exception) -> None:
         """Print error message with 🚨 emoji."""
         print(f"\n🚨 {title}:\n{error}\n")
-    
+
     @staticmethod
     def success(title: str, data: Any) -> None:
         """Print success message with ✅ emoji."""
         print(f"\n✅ {title}:")
         print(data)
-    
+
     @staticmethod
     def section_header(title: str) -> None:
         """Print section header with formatting."""

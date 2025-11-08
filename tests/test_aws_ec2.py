@@ -106,7 +106,7 @@ class TestGetImdsV1Ec2Analysis:
         instance_id: str,
         state: str = "running",
         http_tokens: str = "optional",
-        metadata_state: str = "enabled",
+        http_endpoint: str = "enabled",
         tags: Optional[List[dict]] = None
     ) -> dict:
         """Helper to create mock EC2 instance data."""
@@ -118,7 +118,7 @@ class TestGetImdsV1Ec2Analysis:
             "State": {"Name": state},
             "MetadataOptions": {
                 "HttpTokens": http_tokens,
-                "State": metadata_state
+                "HttpEndpoint": http_endpoint
             },
             "Tags": tags
         }
@@ -173,7 +173,7 @@ class TestGetImdsV1Ec2Analysis:
                     "Instances": [
                         self.create_mock_instance(
                             "i-abcdef1234567890",
-                            metadata_state="disabled"
+                            http_endpoint="disabled"
                         )
                     ]
                 }

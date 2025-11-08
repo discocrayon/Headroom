@@ -2,13 +2,20 @@
   "summary": {
     "account_name": "acme-co",
     "check": "deny_imds_v1_ec2",
-    "total_instances": 0,
+    "total_instances": 1,
     "violations": 0,
     "exemptions": 0,
-    "compliant": 0,
-    "compliance_percentage": 100
+    "compliant": 1,
+    "compliance_percentage": 100.0
   },
   "violations": [],
   "exemptions": [],
-  "compliant_instances": []
+  "compliant_instances": [
+    {
+      "region": "us-east-1",
+      "instance_id": "i-0028862fcc86a6d7c",
+      "imdsv1_allowed": false,
+      "exemption_tag_present": false
+    }
+  ]
 }

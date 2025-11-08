@@ -57,12 +57,12 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
                         # Check IMDS configuration
                         metadata_options = instance.get('MetadataOptions', {})
                         http_tokens = metadata_options.get('HttpTokens', 'optional')
-                        state = metadata_options.get('State', 'enabled')
+                        http_endpoint = metadata_options.get('HttpEndpoint', 'enabled')
 
                         # Determine if IMDSv1 is allowed
                         # IMDSv1 is allowed if IMDS is enabled and HttpTokens is 'optional'
                         # IMDSv1 is blocked if HttpTokens is 'required' or IMDS is disabled
-                        imdsv1_allowed = (state == 'enabled' and http_tokens == 'optional')
+                        imdsv1_allowed = (http_endpoint == 'enabled' and http_tokens == 'optional')
 
                         # Check for exemption tag
                         exemption_tag_present = False
