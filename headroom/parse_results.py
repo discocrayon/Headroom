@@ -10,9 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
-from .analysis import get_security_analysis_session, get_management_account_session
 from .config import HeadroomConfig
-from .aws.organization import analyze_organization_structure
 from .types import (
     OrganizationalUnit, OrganizationHierarchy, PolicyRecommendation, SCPCheckResult,
     SCPPlacementRecommendations, RCPPlacementRecommendations
@@ -263,30 +261,6 @@ def determine_scp_placement(
     return recommendations
 
 
-def _get_organization_context(config: HeadroomConfig) -> OrganizationHierarchy:
-    """
-    Get management account session and analyze organization structure.
-
-    Args:
-        config: Headroom configuration
-
-    Returns:
-        Organization hierarchy with OUs and accounts
-
-    Raises:
-        ValueError: If management_account_id is not set
-        RuntimeError: If session creation or organization analysis fails
-    """
-    security_session = get_security_analysis_session(config)
-    mgmt_session = get_management_account_session(config, security_session)
-
-    logger.info("Analyzing organization structure")
-    organization_hierarchy = analyze_organization_structure(mgmt_session)
-    logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs and {len(organization_hierarchy.accounts)} accounts")
-
-    return organization_hierarchy
-
-
 def print_policy_recommendations(
     recommendations: Sequence[PolicyRecommendation],
     organization_hierarchy: OrganizationHierarchy,
@@ -340,32 +314,27 @@ def print_policy_recommendations(
             print("  " + "-" * 38)
 
 
-def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
+def parse_scp_results(
+    config: HeadroomConfig,
+    organization_hierarchy: OrganizationHierarchy
+) -> List[SCPPlacementRecommendations]:
     """
     Parse SCP results and determine optimal placement recommendations.
 
     Main orchestration function that coordinates:
-    1. Organization context setup (sessions and structure analysis)
-    2. Result file parsing
-    3. Placement recommendation determination
-    4. Console output of recommendations
+    1. Result file parsing
+    2. Placement recommendation determination
 
     Args:
         config: Headroom configuration
+        organization_hierarchy: Organization structure (from main.py)
 
     Returns:
         List of SCP placement recommendations for each check
     """
     logger.info("Starting SCP placement analysis")
 
-    # Get organization context (session + structure)
-    try:
-        organization_hierarchy = _get_organization_context(config)
-    except (ValueError, RuntimeError) as e:
-        logger.error(f"Failed to get organization context: {e}")
-        return []
-
-    # Parse result files
+    # Parse result files (organization_hierarchy already provided by caller)
     logger.info(f"Parsing result files from {config.results_dir}")
     results_data = parse_scp_result_files(config.results_dir, organization_hierarchy)
 

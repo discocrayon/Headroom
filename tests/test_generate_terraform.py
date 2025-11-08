@@ -5,6 +5,7 @@ Tests Terraform configuration generation for AWS Organizations structure data.
 """
 
 import pytest
+from typing import Dict
 from unittest.mock import Mock, patch
 
 
@@ -490,3 +491,19 @@ class TestTerraformHelperFunctions:
         result_str = "\n".join(result)
         assert "staging_account_account_id = [" in result_str
         assert "production_accounts.accounts" in result_str
+
+    def test_generate_account_locals_should_skip_accounts_with_missing_top_level_ou(self) -> None:
+        """Test that accounts whose top-level OU is missing from organizational_units are skipped."""
+        # Account's parent_ou_id points to an OU that doesn't exist in organizational_units
+        # This simulates an orphaned account or data inconsistency
+        accounts = {
+            "123456789012": AccountOrgPlacement("123456789012", "orphan-account", "ou-missing", ["Orphan"])
+        }
+        ous: Dict[str, OrganizationalUnit] = {}  # Empty ous dict - the OU doesn't exist
+
+        result = _generate_account_locals(accounts, ous)
+
+        # Should return only the header, no account locals generated (line 239 coverage)
+        result_str = "\n".join(result)
+        assert result_str == "  # Account IDs by name"
+        assert "orphan_account_account_id" not in result_str

@@ -616,20 +616,7 @@ class TestParseResultsIntegration:
             management_account_id="222222222222"
         )
 
-        # Mock the security session and management account session
-        mock_security_session = Mock()
-        mock_sts = Mock()
-        mock_security_session.client.return_value = mock_sts
-
-        mock_sts.assume_role.return_value = {
-            "Credentials": {
-                "AccessKeyId": "test-key",
-                "SecretAccessKey": "test-secret",
-                "SessionToken": "test-token"
-            }
-        }
-
-        # Mock organization analysis
+        # Mock organization hierarchy (now passed as parameter)
         mock_hierarchy = OrganizationHierarchy(
             root_id="r-1234",
             organizational_units={},
@@ -638,15 +625,12 @@ class TestParseResultsIntegration:
             }
         )
 
-        with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
-             patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
             # Should not raise any exceptions
-            parse_scp_results(config)
+            parse_scp_results(config, mock_hierarchy)
 
     def test_parse_scp_results_missing_management_account_id(self) -> None:
-        """Test error handling when management_account_id is missing."""
+        """Test that parse_scp_results works with minimal organization hierarchy."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -655,14 +639,18 @@ class TestParseResultsIntegration:
                 owner="Owner"
             ),
             security_analysis_account_id="111111111111",
-            management_account_id=None  # Missing management account ID
+            management_account_id=None
         )
 
-        mock_security_session = Mock()
+        # Organization hierarchy is now passed by caller
+        mock_hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={},
+            accounts={}
+        )
 
-        with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session):
-            # Should return early without error
-            parse_scp_results(config)
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
+            parse_scp_results(config, mock_hierarchy)
 
     def test_parse_scp_results_no_result_files(self) -> None:
         """Test handling when no result files are found."""
@@ -695,15 +683,12 @@ class TestParseResultsIntegration:
             accounts={}
         )
 
-        with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
-             patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
             # Should return early without error
-            parse_scp_results(config)
+            parse_scp_results(config, mock_hierarchy)
 
     def test_parse_scp_results_assume_role_failure(self) -> None:
-        """Test error handling when assume role fails."""
+        """Test that parse_scp_results handles empty results gracefully."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -715,24 +700,20 @@ class TestParseResultsIntegration:
             management_account_id="222222222222"
         )
 
-        mock_security_session = Mock()
-        mock_sts = Mock()
-        mock_security_session.client.return_value = mock_sts
-
-        # Mock assume role failure
-        mock_sts.assume_role.side_effect = ClientError(
-            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
-            "AssumeRole"
+        # Organization hierarchy is now passed by caller (role assumption happens before this)
+        mock_hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={},
+            accounts={}
         )
 
-        with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session):
-            with pytest.raises(ClientError) as exc_info:
-                parse_scp_results(config)
-
-            assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
+            # Should handle gracefully
+            result = parse_scp_results(config, mock_hierarchy)
+            assert result == []
 
     def test_parse_scp_results_organization_analysis_failure(self) -> None:
-        """Test error handling when organization analysis fails."""
+        """Test that parse_scp_results works with minimal hierarchy data."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -744,23 +725,16 @@ class TestParseResultsIntegration:
             management_account_id="222222222222"
         )
 
-        mock_security_session = Mock()
-        mock_sts = Mock()
-        mock_security_session.client.return_value = mock_sts
+        # Organization hierarchy is now passed by caller (analysis happens before this)
+        mock_hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={},
+            accounts={}
+        )
 
-        mock_sts.assume_role.return_value = {
-            "Credentials": {
-                "AccessKeyId": "test-key",
-                "SecretAccessKey": "test-secret",
-                "SessionToken": "test-token"
-            }
-        }
-
-        with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
-             patch('headroom.parse_results.analyze_organization_structure', side_effect=RuntimeError("Analysis failed")):
-
-            # Should return early without error
-            parse_scp_results(config)
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
+            result = parse_scp_results(config, mock_hierarchy)
+            assert result == []
 
     def test_parse_scp_results_with_recommendations_output(self) -> None:
         """Test parse_scp_results returns recommendations without printing."""
@@ -801,11 +775,8 @@ class TestParseResultsIntegration:
             SCPCheckResult("111111111111", "test-account", "deny_imds_v1_ec2", 0, 0, 5, 100.0, 5)
         ]
 
-        with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
-             patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results):
-
-            recommendations = parse_scp_results(config)
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results):
+            recommendations = parse_scp_results(config, mock_hierarchy)
 
             # Verify recommendations were returned
             assert len(recommendations) == 1
@@ -854,12 +825,10 @@ class TestParseResultsIntegration:
             SCPCheckResult("222222222222", "prod-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),  # No violations
         ]
 
-        with patch('headroom.parse_results.get_security_analysis_session', return_value=mock_security_session), \
-             patch('headroom.parse_results.analyze_organization_structure', return_value=mock_hierarchy), \
-             patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
              patch('builtins.print'):
 
-            recommendations = parse_scp_results(config)
+            recommendations = parse_scp_results(config, mock_hierarchy)
 
             # Verify that recommendations were returned
             assert isinstance(recommendations, list)

@@ -35,7 +35,7 @@ locals {
 
 # Role 1: Simple third-party account access (CrowdStrike)
 resource "aws_iam_role" "third_party_vendor_a" {
-  provider = aws.shared_foo_bar
+  provider = aws.acme_co
   name     = "ThirdPartyVendorA"
 
   assume_role_policy = jsonencode({

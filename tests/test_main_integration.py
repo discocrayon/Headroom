@@ -110,14 +110,17 @@ class TestMainIntegration:
 
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_scp_results'), \
+        with patch('headroom.main.parse_scp_results', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
@@ -152,14 +155,17 @@ class TestMainIntegration:
 
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = complex_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_scp_results'), \
+        with patch('headroom.main.parse_scp_results', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
@@ -199,14 +205,17 @@ class TestMainIntegration:
 
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = {}
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_scp_results'), \
+        with patch('headroom.main.parse_scp_results', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
@@ -520,14 +529,17 @@ class TestMainIntegration:
 
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = large_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_scp_results'), \
+        with patch('headroom.main.parse_scp_results', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
@@ -559,14 +571,17 @@ class TestMainIntegration:
 
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_scp_results'), \
+        with patch('headroom.main.parse_scp_results', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
@@ -608,6 +623,8 @@ class TestMainIntegration:
         mocks['load'].return_value = valid_yaml_config
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mocks['merge'].return_value = mock_final_config
 
         with (
@@ -618,7 +635,8 @@ class TestMainIntegration:
                 accounts_with_wildcards=set()
             )),
             patch('headroom.main.generate_terraform_org_info'),
-            patch('headroom.main.analyze_organization_structure')
+            patch('headroom.main.analyze_organization_structure'),
+            patch('headroom.main.ensure_org_info_symlink')
         ):
             main()
 
@@ -638,11 +656,14 @@ class TestMainIntegration:
         mocks['load'].return_value = valid_yaml_config
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mock_final_config.management_account_id = None
         mocks['merge'].return_value = mock_final_config
 
         with patch('headroom.main.parse_scp_results', return_value=[MagicMock()]), \
-             patch('headroom.main.get_security_analysis_session') as mock_get_sess:
+             patch('headroom.main.get_security_analysis_session') as mock_get_sess, \
+             patch('headroom.main.ensure_org_info_symlink'):
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
@@ -664,6 +685,8 @@ class TestMainIntegration:
         mocks['load'].return_value = valid_yaml_config
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mock_final_config.management_account_id = "111111111111"
         mocks['merge'].return_value = mock_final_config
 
@@ -671,7 +694,8 @@ class TestMainIntegration:
 
         with patch('headroom.main.parse_scp_results', return_value=[MagicMock()]), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess, \
-             patch('headroom.main.analyze_organization_structure') as mock_analyze:
+             patch('headroom.main.analyze_organization_structure') as mock_analyze, \
+             patch('headroom.main.ensure_org_info_symlink'):
             # cause sts.assume_role to raise
             mock_get_sess.return_value.client.return_value.assume_role.side_effect = err
             mock_analyze.return_value = None
@@ -694,6 +718,8 @@ class TestMainIntegration:
         mocks['load'].return_value = valid_yaml_config
         mock_final_config = MagicMock()
         mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
         mock_final_config.management_account_id = "999999999999"
         mocks['merge'].return_value = mock_final_config
 
@@ -729,7 +755,8 @@ class TestMainIntegration:
             patch('headroom.main.analyze_organization_structure', return_value=mock_org_hierarchy),
             patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
             patch('headroom.main.generate_rcp_terraform') as mock_gen_rcp,
-            patch('headroom.main.generate_scp_terraform')
+            patch('headroom.main.generate_scp_terraform'),
+            patch('headroom.main.ensure_org_info_symlink')
         ):
             mock_session = MagicMock()
             mock_get_sess.return_value = mock_session

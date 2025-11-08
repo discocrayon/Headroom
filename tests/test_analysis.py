@@ -1,9 +1,17 @@
 import pytest
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
+from mypy_boto3_organizations.type_defs import AccountTypeDef
 
-from headroom.analysis import get_security_analysis_session, perform_analysis, get_subaccount_information, AccountInfo
+from headroom.analysis import (
+    get_security_analysis_session,
+    perform_analysis,
+    get_subaccount_information,
+    _build_account_info_from_account_dict,
+    AccountInfo
+)
 from headroom.config import HeadroomConfig, AccountTagLayout
 
 
@@ -236,3 +244,135 @@ class TestGetSubaccountInformation:
             get_subaccount_information(config, session)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+
+
+class TestBuildAccountInfoFromAccountDict:
+    """Test _build_account_info_from_account_dict helper function."""
+
+    def test_build_account_info_with_tags_and_use_name_from_tags(self) -> None:
+        """Test building AccountInfo when using name from tags."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=True,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        mock_org_client = MagicMock()
+        mock_org_client.list_tags_for_resource.return_value = {
+            "Tags": [
+                {"Key": "Env", "Value": "production"},
+                {"Key": "NameTag", "Value": "TagAccountName"},
+                {"Key": "OwnerTag", "Value": "TeamA"}
+            ]
+        }
+
+        result = _build_account_info_from_account_dict(account, mock_org_client, config)
+
+        assert result.account_id == "123456789012"
+        assert result.name == "TagAccountName"
+        assert result.environment == "production"
+        assert result.owner == "TeamA"
+
+    def test_build_account_info_without_tags_use_api_name(self) -> None:
+        """Test building AccountInfo when not using name from tags."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        mock_org_client = MagicMock()
+        mock_org_client.list_tags_for_resource.return_value = {
+            "Tags": [
+                {"Key": "Env", "Value": "staging"},
+                {"Key": "NameTag", "Value": "TagAccountName"},
+                {"Key": "OwnerTag", "Value": "TeamB"}
+            ]
+        }
+
+        result = _build_account_info_from_account_dict(account, mock_org_client, config)
+
+        assert result.account_id == "123456789012"
+        assert result.name == "ApiAccountName"
+        assert result.environment == "staging"
+        assert result.owner == "TeamB"
+
+    def test_build_account_info_missing_tags_defaults_to_unknown(self) -> None:
+        """Test building AccountInfo with missing tags defaults to 'unknown'."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=True,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        mock_org_client = MagicMock()
+        mock_org_client.list_tags_for_resource.return_value = {"Tags": []}
+
+        result = _build_account_info_from_account_dict(account, mock_org_client, config)
+
+        assert result.account_id == "123456789012"
+        assert result.name == "123456789012"
+        assert result.environment == "unknown"
+        assert result.owner == "unknown"
+
+    def test_build_account_info_partial_tags(self) -> None:
+        """Test building AccountInfo with only some tags present."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        mock_org_client = MagicMock()
+        mock_org_client.list_tags_for_resource.return_value = {
+            "Tags": [
+                {"Key": "Env", "Value": "dev"}
+            ]
+        }
+
+        result = _build_account_info_from_account_dict(account, mock_org_client, config)
+
+        assert result.account_id == "123456789012"
+        assert result.name == "ApiAccountName"
+        assert result.environment == "dev"
+        assert result.owner == "unknown"
+
+    @patch("headroom.analysis.logger")
+    def test_build_account_info_tag_fetch_failure(self, mock_logger: MagicMock) -> None:
+        """Test building AccountInfo when tag fetching fails."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=True,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        mock_org_client = MagicMock()
+        mock_org_client.list_tags_for_resource.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
+            "ListTagsForResource"
+        )
+
+        result = _build_account_info_from_account_dict(account, mock_org_client, config)
+
+        assert result.account_id == "123456789012"
+        assert result.name == "123456789012"
+        assert result.environment == "unknown"
+        assert result.owner == "unknown"
+        mock_logger.warning.assert_called_once()
+
+    def test_build_account_info_missing_account_name_in_api(self) -> None:
+        """Test building AccountInfo when account Name field is missing."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+        account = cast(AccountTypeDef, {"Id": "123456789012"})
+        mock_org_client = MagicMock()
+        mock_org_client.list_tags_for_resource.return_value = {
+            "Tags": [
+                {"Key": "Env", "Value": "production"},
+                {"Key": "OwnerTag", "Value": "TeamC"}
+            ]
+        }
+
+        result = _build_account_info_from_account_dict(account, mock_org_client, config)
+
+        assert result.account_id == "123456789012"
+        assert result.name == "123456789012"
+        assert result.environment == "production"
+        assert result.owner == "TeamC"
