@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Union, cast
 
-from .constants import CHECK_TYPE_MAP
+from .constants import get_check_type_map
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -112,9 +112,10 @@ def get_results_dir(check_name: str, results_base_dir: str) -> str:
     Returns:
         Path to the check's results directory (e.g., '{results_base_dir}/scps/deny_imds_v1_ec2')
     """
-    check_type = CHECK_TYPE_MAP.get(check_name)
+    check_type_map = get_check_type_map()
+    check_type = check_type_map.get(check_name)
     if not check_type:
-        raise ValueError(f"Unknown check name: {check_name}. Must be one of {list(CHECK_TYPE_MAP.keys())}")
+        raise ValueError(f"Unknown check name: {check_name}. Must be one of {list(check_type_map.keys())}")
     return f"{results_base_dir}/{check_type}/{check_name}"
 
 

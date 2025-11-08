@@ -6,7 +6,8 @@ Tests for check_third_party_assumerole function and its integration with IAM ana
 
 from unittest.mock import MagicMock, patch
 from typing import List, Set
-from headroom.checks.rcps.check_third_party_assumerole import check_third_party_assumerole
+from headroom.checks.rcps.check_third_party_assumerole import ThirdPartyAssumeRoleCheck
+from headroom.constants import THIRD_PARTY_ASSUMEROLE
 from headroom.aws.iam import TrustPolicyAnalysis
 from headroom.config import DEFAULT_RESULTS_DIR
 
@@ -38,18 +39,19 @@ class TestCheckThirdPartyAssumeRole:
 
         with (
             patch("headroom.checks.rcps.check_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
-            patch("headroom.checks.rcps.check_third_party_assumerole.write_check_results") as mock_write,
+            patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
-            result = check_third_party_assumerole(
-                mock_session,
-                account_name,
-                account_id,
-                DEFAULT_RESULTS_DIR,
-                org_account_ids
+            check = ThirdPartyAssumeRoleCheck(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                account_name=account_name,
+                account_id=account_id,
+                results_dir=DEFAULT_RESULTS_DIR,
+                org_account_ids=org_account_ids,
             )
+            result = check.execute(mock_session)
 
             mock_analyze.assert_called_once_with(mock_session, org_account_ids)
             mock_write.assert_called_once()
@@ -95,18 +97,19 @@ class TestCheckThirdPartyAssumeRole:
 
         with (
             patch("headroom.checks.rcps.check_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
-            patch("headroom.checks.rcps.check_third_party_assumerole.write_check_results") as mock_write,
+            patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
-            result = check_third_party_assumerole(
-                mock_session,
-                account_name,
-                account_id,
-                DEFAULT_RESULTS_DIR,
-                org_account_ids
+            check = ThirdPartyAssumeRoleCheck(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                account_name=account_name,
+                account_id=account_id,
+                results_dir=DEFAULT_RESULTS_DIR,
+                org_account_ids=org_account_ids,
             )
+            result = check.execute(mock_session)
 
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]
@@ -140,18 +143,19 @@ class TestCheckThirdPartyAssumeRole:
 
         with (
             patch("headroom.checks.rcps.check_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
-            patch("headroom.checks.rcps.check_third_party_assumerole.write_check_results") as mock_write,
+            patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
-            result = check_third_party_assumerole(
-                mock_session,
-                account_name,
-                account_id,
-                DEFAULT_RESULTS_DIR,
-                org_account_ids
+            check = ThirdPartyAssumeRoleCheck(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                account_name=account_name,
+                account_id=account_id,
+                results_dir=DEFAULT_RESULTS_DIR,
+                org_account_ids=org_account_ids,
             )
+            result = check.execute(mock_session)
 
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]
@@ -172,18 +176,19 @@ class TestCheckThirdPartyAssumeRole:
 
         with (
             patch("headroom.checks.rcps.check_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
-            patch("headroom.checks.rcps.check_third_party_assumerole.write_check_results") as mock_write,
+            patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
-            result = check_third_party_assumerole(
-                mock_session,
-                account_name,
-                account_id,
-                DEFAULT_RESULTS_DIR,
-                org_account_ids
+            check = ThirdPartyAssumeRoleCheck(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                account_name=account_name,
+                account_id=account_id,
+                results_dir=DEFAULT_RESULTS_DIR,
+                org_account_ids=org_account_ids,
             )
+            result = check.execute(mock_session)
 
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]
@@ -215,19 +220,20 @@ class TestCheckThirdPartyAssumeRole:
 
         with (
             patch("headroom.checks.rcps.check_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
-            patch("headroom.checks.rcps.check_third_party_assumerole.write_check_results") as mock_write,
+            patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
-            check_third_party_assumerole(
-                mock_session,
-                account_name,
-                account_id,
-                DEFAULT_RESULTS_DIR,
-                org_account_ids,
-                exclude_account_ids=True
+            check = ThirdPartyAssumeRoleCheck(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                account_name=account_name,
+                account_id=account_id,
+                results_dir=DEFAULT_RESULTS_DIR,
+                org_account_ids=org_account_ids,
+                exclude_account_ids=True,
             )
+            check.execute(mock_session)
 
             write_call_args = mock_write.call_args
             assert write_call_args[1]["exclude_account_ids"] is True
@@ -250,18 +256,19 @@ class TestCheckThirdPartyAssumeRole:
 
         with (
             patch("headroom.checks.rcps.check_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
-            patch("headroom.checks.rcps.check_third_party_assumerole.write_check_results") as mock_write,
+            patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
-            check_third_party_assumerole(
-                mock_session,
-                account_name,
-                account_id,
-                DEFAULT_RESULTS_DIR,
-                org_account_ids
+            check = ThirdPartyAssumeRoleCheck(
+                check_name=THIRD_PARTY_ASSUMEROLE,
+                account_name=account_name,
+                account_id=account_id,
+                results_dir=DEFAULT_RESULTS_DIR,
+                org_account_ids=org_account_ids,
             )
+            check.execute(mock_session)
 
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]

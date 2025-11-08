@@ -1,19 +1,17 @@
 """Check for EC2 instances that violate the deny_imds_v1_ec2 SCP."""
 
+from typing import Any, Dict, List
+
 import boto3
 
-from ...aws.ec2 import get_imds_v1_ec2_analysis
+from ...aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
 from ...constants import DENY_IMDS_V1_EC2
-from ...write_results import write_check_results
+from ..base import BaseCheck, CategorizedCheckResult
+from ..registry import register_check
 
 
-def check_deny_imds_v1_ec2(
-    headroom_session: boto3.Session,
-    account_name: str,
-    account_id: str,
-    results_base_dir: str,
-    exclude_account_ids: bool = False,
-) -> None:
+@register_check("scps", DENY_IMDS_V1_EC2)
+class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
     """
     Check for EC2 instances that would be blocked by the deny_imds_v1_ec2 SCP.
 
@@ -21,67 +19,66 @@ def check_deny_imds_v1_ec2(
     - Instances that have IMDSv1 enabled (potential violations)
     - Instances that are exempt via ExemptFromIMDSv2 tag
     - Overall compliance status for the account
-
-    Args:
-        headroom_session: boto3.Session for the target account
-        account_name: Account name
-        account_id: Account ID
-        results_base_dir: Base directory for results
-        exclude_account_ids: If True, exclude account ID from results
     """
-    # Get IMDS analysis results
-    imds_results = get_imds_v1_ec2_analysis(headroom_session)
 
-    # Process results for SCP compliance
-    violations = []
-    exemptions = []
-    compliant = []
+    def analyze(self, session: boto3.Session) -> List[DenyImdsV1Ec2]:
+        """
+        Analyze EC2 instances for IMDS v1 configuration.
 
-    for result in imds_results:
+        Args:
+            session: boto3.Session for the target account
+
+        Returns:
+            List of DenyImdsV1Ec2 analysis results
+        """
+        return get_imds_v1_ec2_analysis(session)
+
+    def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, Dict[str, Any]]:
+        """
+        Categorize a single IMDS v1 analysis result.
+
+        Args:
+            result: Single DenyImdsV1Ec2 analysis result
+
+        Returns:
+            Tuple of (category, result_dict) where category is:
+            - "violation": IMDSv1 allowed without exemption tag
+            - "exemption": IMDSv1 allowed but has exemption tag
+            - "compliant": IMDSv1 not allowed
+        """
         result_dict = {
             "region": result.region,
             "instance_id": result.instance_id,
             "imdsv1_allowed": result.imdsv1_allowed,
-            "exemption_tag_present": result.exemption_tag_present
+            "exemption_tag_present": result.exemption_tag_present,
         }
 
         if result.imdsv1_allowed:
             if result.exemption_tag_present:
-                exemptions.append(result_dict)
+                return ("exemption", result_dict)
             else:
-                violations.append(result_dict)
+                return ("violation", result_dict)
         else:
-            compliant.append(result_dict)
+            return ("compliant", result_dict)
 
-    # Create summary
-    summary = {
-        "account_name": account_name,
-        "account_id": account_id,
-        "check": DENY_IMDS_V1_EC2,
-        "total_instances": len(imds_results),
-        "violations": len(violations),
-        "exemptions": len(exemptions),
-        "compliant": len(compliant),
-        "compliance_percentage": (len(compliant) + len(exemptions)) / len(imds_results) * 100 if imds_results else 100
-    }
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+        """
+        Build IMDS v1 check-specific summary fields.
 
-    # Prepare full results
-    results = {
-        "summary": summary,
-        "violations": violations,
-        "exemptions": exemptions,
-        "compliant_instances": compliant
-    }
+        Args:
+            check_result: Categorized check result
 
-    # Write results to JSON file
-    write_check_results(
-        check_name=DENY_IMDS_V1_EC2,
-        account_name=account_name,
-        account_id=account_id,
-        results_data=results,
-        results_base_dir=results_base_dir,
-        exclude_account_ids=exclude_account_ids,
-    )
+        Returns:
+            Dictionary with check-specific summary fields
+        """
+        total = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
+        compliant_count = len(check_result.compliant) + len(check_result.exemptions)
+        compliance_pct = (compliant_count / total * 100) if total else 100
 
-    account_identifier = f"{account_name}_{account_id}"
-    print(f"IMDS v1 check completed for {account_identifier}: {len(violations)} violations, {len(exemptions)} exemptions, {len(compliant)} compliant")
+        return {
+            "total_instances": total,
+            "violations": len(check_result.violations),
+            "exemptions": len(check_result.exemptions),
+            "compliant": len(check_result.compliant),
+            "compliance_percentage": compliance_pct,
+        }

@@ -17,7 +17,7 @@ from .types import (
     OrganizationalUnit, AccountOrgPlacement, OrganizationHierarchy,
     SCPCheckResult, SCPPlacementRecommendations, RCPPlacementRecommendations
 )
-from .constants import RCP_CHECK_NAMES
+from .checks.registry import get_check_names
 from .aws.organization import lookup_account_id_by_name
 
 # Set up logging
@@ -163,7 +163,8 @@ def parse_scp_result_files(
         check_name = check_dir.name
 
         # Skip RCP checks if requested - they have their own analysis flow
-        if exclude_rcp_checks and check_name in RCP_CHECK_NAMES:
+        rcp_check_names = get_check_names("rcps")
+        if exclude_rcp_checks and check_name in rcp_check_names:
             logger.info(f"Skipping RCP check: {check_name} (will be processed separately)")
             continue
 

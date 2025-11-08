@@ -219,8 +219,8 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_assumerole"),
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_scp_execute,
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False)
         ):
@@ -239,22 +239,11 @@ class TestRunChecks:
             mock_get_session.assert_any_call(mock_config, mock_security_session, "111111111111")
             mock_get_session.assert_any_call(mock_config, mock_security_session, "222222222222")
 
-            # Verify check function calls (includes results_dir and exclude_account_ids)
-            assert mock_check.call_count == 2
-            mock_check.assert_any_call(
-                mock_headroom_session1,
-                "prod-account",
-                "111111111111",
-                mock_config.results_dir,
-                mock_config.exclude_account_ids,
-            )
-            mock_check.assert_any_call(
-                mock_headroom_session2,
-                "dev-account",
-                "222222222222",
-                mock_config.results_dir,
-                mock_config.exclude_account_ids,
-            )
+            # Verify check execute method was called (once per account for SCP checks)
+            assert mock_scp_execute.call_count == 2
+            # Check classes are instantiated with check parameters, then execute() is called with session
+            mock_scp_execute.assert_any_call(mock_headroom_session1)
+            mock_scp_execute.assert_any_call(mock_headroom_session2)
 
             # Verify logging
             assert mock_logger.info.call_count == 4
@@ -274,8 +263,8 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_assumerole"),
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
             patch("os.getcwd") as mock_getcwd
@@ -287,14 +276,9 @@ class TestRunChecks:
             org_account_ids = {"111111111111", "222222222222"}
             run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
 
-            # Verify check called with account ID as fallback name (includes results_dir and exclude_account_ids)
-            mock_check.assert_called_once_with(
-                mock_headroom_session,
-                "111111111111",
-                "111111111111",
-                mock_config.results_dir,
-                mock_config.exclude_account_ids,
-            )
+            # Verify check execute method was called with session
+            # (check parameters are passed to constructor, not execute)
+            mock_check.assert_called_once_with(mock_headroom_session)
 
     def test_run_checks_session_failure(
         self,
@@ -307,8 +291,8 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2"),
-            patch("headroom.analysis.check_third_party_assumerole"),
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute"),
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
             patch("os.getcwd") as mock_getcwd,
@@ -331,8 +315,8 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_assumerole"),
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
@@ -363,15 +347,10 @@ class TestRunChecks:
             assert mock_get_session.call_count == 1
             mock_get_session.assert_called_with(mock_config, mock_security_session, "222222222222")
 
-            # Verify check was only called for the second account (includes results_dir and exclude_account_ids)
+            # Verify check execute method was only called for the second account
+            # (check parameters are passed to constructor, not execute)
             assert mock_check.call_count == 1
-            mock_check.assert_called_with(
-                mock_headroom_session,
-                "dev-account",
-                "222222222222",
-                mock_config.results_dir,
-                mock_config.exclude_account_ids,
-            )
+            mock_check.assert_called_with(mock_headroom_session)
 
             # Verify skip logging for first account
             mock_logger.info.assert_any_call("All results already exist for account prod-account_111111111111, skipping checks")
@@ -391,8 +370,8 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.check_third_party_assumerole") as mock_rcp_check
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute") as mock_rcp_check
         ):
             org_account_ids: set[str] = set()
             run_checks(mock_security_session, account_infos, mock_config, org_account_ids)

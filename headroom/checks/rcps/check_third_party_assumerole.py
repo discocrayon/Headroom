@@ -5,23 +5,18 @@ This check identifies IAM roles with trust policies that allow principals
 from accounts outside the organization to assume them.
 """
 
-from typing import Set
+from typing import Any, Dict, List, Set
 
 import boto3
 
-from ...aws.iam import analyze_iam_roles_trust_policies
+from ...aws.iam import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
 from ...constants import THIRD_PARTY_ASSUMEROLE
-from ...write_results import write_check_results
+from ..base import BaseCheck, CategorizedCheckResult
+from ..registry import register_check
 
 
-def check_third_party_assumerole(
-    headroom_session: boto3.Session,
-    account_name: str,
-    account_id: str,
-    results_base_dir: str,
-    org_account_ids: Set[str],
-    exclude_account_ids: bool = False,
-) -> Set[str]:
+@register_check("rcps", THIRD_PARTY_ASSUMEROLE)
+class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
     """
     Check for IAM roles that allow third-party account AssumeRole access.
 
@@ -29,81 +24,142 @@ def check_third_party_assumerole(
     - IAM roles with trust policies allowing accounts outside the organization
     - IAM roles with wildcard principals in trust policies
     - All unique third-party account IDs found
-
-    Args:
-        headroom_session: boto3.Session for the target account
-        account_name: Account name
-        account_id: Account ID
-        results_base_dir: Base directory for results
-        org_account_ids: Set of all account IDs in the organization
-        exclude_account_ids: If True, exclude account ID from results
-
-    Returns:
-        Set of third-party account IDs found in this account
     """
-    # Get IAM role trust policy analysis
-    trust_policy_results = analyze_iam_roles_trust_policies(
-        headroom_session,
-        org_account_ids
-    )
 
-    # Process results
-    roles_third_parties_can_access = []
-    roles_with_wildcards = []
-    all_third_party_accounts: Set[str] = set()
+    def __init__(
+        self,
+        check_name: str,
+        account_name: str,
+        account_id: str,
+        results_dir: str,
+        org_account_ids: Set[str],
+        exclude_account_ids: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Initialize the third-party AssumeRole check.
 
-    for result in trust_policy_results:
+        Args:
+            check_name: Name of the check
+            account_name: Account name
+            account_id: Account ID
+            results_dir: Base directory for results
+            org_account_ids: Set of all account IDs in the organization
+            exclude_account_ids: If True, exclude account ID from results
+            **kwargs: Additional parameters (ignored)
+        """
+        super().__init__(
+            check_name=check_name,
+            account_name=account_name,
+            account_id=account_id,
+            results_dir=results_dir,
+            exclude_account_ids=exclude_account_ids,
+            **kwargs,
+        )
+        self.org_account_ids = org_account_ids
+        self.all_third_party_accounts: Set[str] = set()
+
+    def analyze(self, session: boto3.Session) -> List[TrustPolicyAnalysis]:
+        """
+        Analyze IAM role trust policies for third-party access.
+
+        Filters to only return roles with wildcards or third-party access.
+        Roles with neither are not relevant to this check.
+
+        Args:
+            session: boto3.Session for the target account
+
+        Returns:
+            List of TrustPolicyAnalysis results with findings
+        """
+        all_results = analyze_iam_roles_trust_policies(session, self.org_account_ids)
+        return [
+            result for result in all_results
+            if result.has_wildcard_principal or result.third_party_account_ids
+        ]
+
+    def categorize_result(self, result: TrustPolicyAnalysis) -> tuple[str, Dict[str, Any]]:
+        """
+        Categorize a single trust policy analysis result.
+
+        Args:
+            result: Single TrustPolicyAnalysis result
+
+        Returns:
+            Tuple of (category, result_dict) where category is:
+            - "violation": Role has wildcard principal (blocks RCP deployment)
+            - "compliant": Role has third-party access but no wildcard
+        """
         result_dict = {
             "role_name": result.role_name,
             "role_arn": result.role_arn,
             "third_party_account_ids": sorted(list(result.third_party_account_ids)),
-            "has_wildcard_principal": result.has_wildcard_principal
+            "has_wildcard_principal": result.has_wildcard_principal,
         }
 
-        # Track all third-party accounts
-        all_third_party_accounts.update(result.third_party_account_ids)
+        self.all_third_party_accounts.update(result.third_party_account_ids)
 
         if result.has_wildcard_principal:
-            roles_with_wildcards.append(result_dict)
-        if result.third_party_account_ids:
-            roles_third_parties_can_access.append(result_dict)
+            return ("violation", result_dict)
+        else:
+            return ("compliant", result_dict)
 
-    # Create summary
-    # Wildcards are counted as violations because they make allowlist policies impossible
-    violations_count = len(roles_with_wildcards)
-    summary = {
-        "account_name": account_name,
-        "account_id": account_id,
-        "check": THIRD_PARTY_ASSUMEROLE,
-        "total_roles_analyzed": len(trust_policy_results),
-        "roles_third_parties_can_access": len(roles_third_parties_can_access),
-        "roles_with_wildcards": len(roles_with_wildcards),
-        "violations": violations_count,
-        "unique_third_party_accounts": sorted(list(all_third_party_accounts)),
-        "third_party_account_count": len(all_third_party_accounts)
-    }
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+        """
+        Build third-party AssumeRole check-specific summary fields.
 
-    # Prepare full results
-    results = {
-        "summary": summary,
-        "roles_third_parties_can_access": roles_third_parties_can_access,
-        "roles_with_wildcards": roles_with_wildcards
-    }
+        Args:
+            check_result: Categorized check result
 
-    # Write results to JSON file
-    write_check_results(
-        check_name=THIRD_PARTY_ASSUMEROLE,
-        account_name=account_name,
-        account_id=account_id,
-        results_data=results,
-        results_base_dir=results_base_dir,
-        exclude_account_ids=exclude_account_ids,
-    )
+        Returns:
+            Dictionary with check-specific summary fields
+        """
+        total_roles = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
+        
+        roles_with_wildcards_and_third_party = sum(
+            1 for role in check_result.violations
+            if role.get("third_party_account_ids")
+        )
+        roles_with_third_party_access = roles_with_wildcards_and_third_party + len(check_result.compliant)
 
-    account_identifier = f"{account_name}_{account_id}"
-    print(f"Third-party AssumeRole check completed for {account_identifier}: "
-          f"{len(roles_third_parties_can_access)} roles with third-party access, "
-          f"{len(roles_with_wildcards)} roles with wildcards, "
-          f"{len(all_third_party_accounts)} unique third-party accounts")
+        return {
+            "total_roles_analyzed": total_roles,
+            "roles_third_parties_can_access": roles_with_third_party_access,
+            "roles_with_wildcards": len(check_result.violations),
+            "violations": len(check_result.violations),
+            "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
+            "third_party_account_count": len(self.all_third_party_accounts),
+        }
 
-    return all_third_party_accounts
+    def execute(self, session: boto3.Session) -> Set[str]:
+        """
+        Execute the check and return third-party account IDs.
+
+        Args:
+            session: boto3 Session with appropriate permissions
+
+        Returns:
+            Set of third-party account IDs found in this account
+        """
+        super().execute(session)
+        return self.all_third_party_accounts
+
+    def _build_results_data(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+        """
+        Build results data in the format expected by this check.
+
+        Overrides the base implementation to use custom field names.
+
+        Args:
+            check_result: Categorized check result
+
+        Returns:
+            Dictionary with results data
+        """
+        roles_with_third_party_access = check_result.violations + check_result.compliant
+
+        return {
+            "summary": check_result.summary,
+            "roles_third_parties_can_access": roles_with_third_party_access,
+            "roles_with_wildcards": check_result.violations,
+        }

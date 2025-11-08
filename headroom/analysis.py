@@ -7,10 +7,8 @@ from mypy_boto3_organizations.client import OrganizationsClient
 from mypy_boto3_organizations.type_defs import AccountTypeDef
 
 from .config import HeadroomConfig
-from .checks.scps.deny_imds_v1_ec2 import check_deny_imds_v1_ec2
-from .checks.rcps.check_third_party_assumerole import check_third_party_assumerole
+from .checks.registry import get_check_names, get_all_check_classes
 from .write_results import results_exist
-from .constants import DENY_IMDS_V1_EC2, THIRD_PARTY_ASSUMEROLE
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -233,107 +231,72 @@ def get_headroom_session(config: HeadroomConfig, security_session: boto3.Session
     )
 
 
-def all_scp_results_exist(account_info: AccountInfo, config: HeadroomConfig) -> bool:
+def all_check_results_exist(check_type: str, account_info: AccountInfo, config: HeadroomConfig) -> bool:
     """
-    Check if all SCP check results exist for an account.
+    Check if all check results of a given type exist for an account.
 
     Args:
+        check_type: Type of checks to verify (scps, rcps)
         account_info: Account information
         config: Headroom configuration
 
     Returns:
-        True if all SCP results exist, False otherwise
+        True if all check results exist, False otherwise
     """
-    return results_exist(
-        check_name=DENY_IMDS_V1_EC2,
-        account_name=account_info.name,
-        account_id=account_info.account_id,
-        results_base_dir=config.results_dir,
-        exclude_account_ids=config.exclude_account_ids,
-    )
-
-
-def all_rcp_results_exist(account_info: AccountInfo, config: HeadroomConfig) -> bool:
-    """
-    Check if all RCP check results exist for an account.
-
-    Args:
-        account_info: Account information
-        config: Headroom configuration
-
-    Returns:
-        True if all RCP results exist, False otherwise
-    """
-    return results_exist(
-        check_name=THIRD_PARTY_ASSUMEROLE,
-        account_name=account_info.name,
-        account_id=account_info.account_id,
-        results_base_dir=config.results_dir,
-        exclude_account_ids=config.exclude_account_ids,
-    )
-
-
-def run_scp_checks(
-    headroom_session: boto3.Session,
-    account_info: AccountInfo,
-    config: HeadroomConfig
-) -> None:
-    """
-    Run all SCP compliance checks for a single account.
-
-    Args:
-        headroom_session: boto3 Session with Headroom role assumed
-        account_info: Account information
-        config: Headroom configuration
-    """
-    # Check deny_imds_v1_ec2
-    if not results_exist(
-        check_name=DENY_IMDS_V1_EC2,
-        account_name=account_info.name,
-        account_id=account_info.account_id,
-        results_base_dir=config.results_dir,
-        exclude_account_ids=config.exclude_account_ids,
-    ):
-        check_deny_imds_v1_ec2(
-            headroom_session,
-            account_info.name,
-            account_info.account_id,
-            config.results_dir,
-            config.exclude_account_ids,
+    check_names = get_check_names(check_type)
+    return all(
+        results_exist(
+            check_name=check_name,
+            account_name=account_info.name,
+            account_id=account_info.account_id,
+            results_base_dir=config.results_dir,
+            exclude_account_ids=config.exclude_account_ids,
         )
+        for check_name in check_names
+    )
 
 
-def run_rcp_checks(
+def run_checks_for_type(
+    check_type: str,
     headroom_session: boto3.Session,
     account_info: AccountInfo,
     config: HeadroomConfig,
     org_account_ids: Set[str]
 ) -> None:
     """
-    Run all RCP compliance checks for a single account.
+    Run all checks of a given type for a single account.
+
+    This function automatically discovers and runs all registered checks
+    of the specified type. No code changes needed when adding new checks.
 
     Args:
+        check_type: Type of checks to run (scps, rcps)
         headroom_session: boto3 Session with Headroom role assumed
         account_info: Account information
         config: Headroom configuration
         org_account_ids: Set of all account IDs in the organization
     """
-    # Check third_party_assumerole
-    if not results_exist(
-        check_name=THIRD_PARTY_ASSUMEROLE,
-        account_name=account_info.name,
-        account_id=account_info.account_id,
-        results_base_dir=config.results_dir,
-        exclude_account_ids=config.exclude_account_ids,
-    ):
-        check_third_party_assumerole(
-            headroom_session,
-            account_info.name,
-            account_info.account_id,
-            config.results_dir,
-            org_account_ids,
-            config.exclude_account_ids,
+    check_classes = get_all_check_classes(check_type)
+
+    for check_class in check_classes:
+        if results_exist(
+            check_name=check_class.CHECK_NAME,
+            account_name=account_info.name,
+            account_id=account_info.account_id,
+            results_base_dir=config.results_dir,
+            exclude_account_ids=config.exclude_account_ids,
+        ):
+            continue
+
+        check = check_class(
+            check_name=check_class.CHECK_NAME,
+            account_name=account_info.name,
+            account_id=account_info.account_id,
+            results_dir=config.results_dir,
+            org_account_ids=org_account_ids,
+            exclude_account_ids=config.exclude_account_ids,
         )
+        check.execute(headroom_session)
 
 
 def run_checks(
@@ -348,7 +311,7 @@ def run_checks(
     For each account:
     1. Checks if results already exist and skips if they do
     2. Assumes the Headroom role in that account
-    3. Runs all configured SCP/RCP checks
+    3. Runs all registered SCP/RCP checks
     4. Writes results to headroom_results folder
 
     Args:
@@ -360,9 +323,8 @@ def run_checks(
     for account_info in relevant_account_infos:
         account_identifier = f"{account_info.name}_{account_info.account_id}"
 
-        # Check if all results already exist
-        scp_exist = all_scp_results_exist(account_info, config)
-        rcp_exist = all_rcp_results_exist(account_info, config)
+        scp_exist = all_check_results_exist("scps", account_info, config)
+        rcp_exist = all_check_results_exist("rcps", account_info, config)
 
         if scp_exist and rcp_exist:
             logger.info(f"All results already exist for account {account_identifier}, skipping checks")
@@ -373,13 +335,11 @@ def run_checks(
         try:
             headroom_session = get_headroom_session(config, security_session, account_info.account_id)
 
-            # Run SCP checks
             if not scp_exist:
-                run_scp_checks(headroom_session, account_info, config)
+                run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
 
-            # Run RCP checks
             if not rcp_exist:
-                run_rcp_checks(headroom_session, account_info, config, org_account_ids)
+                run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
 
             logger.info(f"Checks completed for account: {account_identifier}")
 
