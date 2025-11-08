@@ -6,10 +6,17 @@ configuration loading, merging, validation, and analysis execution.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 from typing import Dict, Any, Generator
 from headroom.main import main
-from botocore.exceptions import ClientError  # type: ignore
+from headroom.types import (
+    RCPParseResult,
+    RCPPlacementRecommendations,
+    OrganizationHierarchy,
+    OrganizationalUnit
+)
+
+from botocore.exceptions import ClientError
 
 
 class TestMainIntegration:
@@ -106,10 +113,13 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_results'), \
+        with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.generate_terraform_org_info'), \
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert - Verify correct call sequence and parameters
@@ -118,11 +128,7 @@ class TestMainIntegration:
         mocks['merge'].assert_called_once_with(valid_yaml_config, mock_cli_args)
 
         # Verify success output
-        expected_calls = [
-            call("\n✅ Final Config:"),
-            call(valid_yaml_config)
-        ]
-        mocks['print'].assert_has_calls(expected_calls, any_order=False)
+        mocks['print'].assert_any_call("\n✅ Final Config")
 
         # Verify no error exit
         mocks['exit'].assert_not_called()
@@ -149,10 +155,13 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_results'), \
+        with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.generate_terraform_org_info'), \
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert
@@ -161,11 +170,7 @@ class TestMainIntegration:
         mocks['merge'].assert_called_once_with(complex_yaml_config, mock_cli_args)
 
         # Verify complex config output
-        expected_calls = [
-            call("\n✅ Final Config:"),
-            call(complex_yaml_config)
-        ]
-        mocks['print'].assert_has_calls(expected_calls, any_order=False)
+        mocks['print'].assert_any_call("\n✅ Final Config")
         mocks['exit'].assert_not_called()
 
     def test_main_success_with_empty_yaml_config(
@@ -197,10 +202,13 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_results'), \
+        with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.generate_terraform_org_info'), \
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert
@@ -232,7 +240,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nValidation error: missing required fields\n"
+        expected_error_message = "\n🚨 Configuration Error:\nValidation error: missing required fields\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -261,7 +269,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Type Error:\nType error: expected bool, got str\n"
+        expected_error_message = "\n🚨 Configuration Error:\nType error: expected bool, got str\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -290,7 +298,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nMissing required fields: account_tag_layout\n"
+        expected_error_message = "\n🚨 Configuration Error:\nMissing required fields: account_tag_layout\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -325,7 +333,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nInvalid account tag layout: environment cannot be empty\n"
+        expected_error_message = "\n🚨 Configuration Error:\nInvalid account tag layout: environment cannot be empty\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -383,7 +391,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nMissing required fields: account_tag_layout\n"
+        expected_error_message = "\n🚨 Configuration Error:\nMissing required fields: account_tag_layout\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -440,7 +448,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nConfiguration cannot be None\n"
+        expected_error_message = "\n🚨 Configuration Error:\nConfiguration cannot be None\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -473,7 +481,7 @@ class TestMainIntegration:
             main()
 
         # Verify error handling
-        expected_error_message = "\n🚨 Configuration Validation Error:\nInvalid account tag layout: must be a dictionary\n"
+        expected_error_message = "\n🚨 Configuration Error:\nInvalid account tag layout: must be a dictionary\n"
         mocks['print'].assert_called_once_with(expected_error_message)
         assert exc_info.value.code == 1
 
@@ -515,10 +523,13 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_results'), \
+        with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.generate_terraform_org_info'), \
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert
@@ -551,10 +562,13 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.parse_results'), \
+        with patch('headroom.main.parse_scp_results'), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.analyze_organization_structure'):
+             patch('headroom.main.generate_terraform_org_info'), \
+             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
+            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
             main()
 
         # Assert - Verify complete flow sequence
@@ -568,11 +582,7 @@ class TestMainIntegration:
         mocks['merge'].assert_called_once_with(valid_yaml_config, mock_cli_args)
 
         # 4. Display final configuration
-        expected_print_calls = [
-            call("\n✅ Final Config:"),
-            call(valid_yaml_config)
-        ]
-        mocks['print'].assert_has_calls(expected_print_calls, any_order=False)
+        mocks['print'].assert_any_call("\n✅ Final Config")
 
         # 5. Perform analysis (mocked in test)
 
@@ -583,7 +593,8 @@ class TestMainIntegration:
         assert mocks['parse'].call_count == 1
         assert mocks['load'].call_count == 1
         assert mocks['merge'].call_count == 1
-        assert mocks['print'].call_count == 2
+        # Print is called multiple times (config display + recommendation printing)
+        assert mocks['print'].call_count >= 2
 
     def test_main_early_return_when_no_recommendations(
         self,
@@ -591,7 +602,7 @@ class TestMainIntegration:
         valid_yaml_config: Dict[str, Any],
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
-        """Covers early return path when parse_results returns empty list."""
+        """Covers early return path when parse_scp_results returns empty list."""
         mocks = mock_dependencies
         mocks['parse'].return_value = mock_cli_args
         mocks['load'].return_value = valid_yaml_config
@@ -599,11 +610,21 @@ class TestMainIntegration:
         mock_final_config.model_dump.return_value = valid_yaml_config
         mocks['merge'].return_value = mock_final_config
 
-        with patch('headroom.main.parse_results', return_value=[]), \
-             patch('headroom.main.get_security_analysis_session') as mock_get_sess:
+        with (
+            patch('headroom.main.parse_scp_results', return_value=[]),
+            patch('headroom.main.get_security_analysis_session') as mock_get_sess,
+            patch('headroom.main.parse_rcp_result_files', return_value=RCPParseResult(
+                account_third_party_map={},
+                accounts_with_wildcards=set()
+            )),
+            patch('headroom.main.generate_terraform_org_info'),
+            patch('headroom.main.analyze_organization_structure')
+        ):
             main()
 
-        mock_get_sess.assert_not_called()
+        # get_security_analysis_session is now called even with no SCP recommendations
+        # because we still check for RCP recommendations
+        mock_get_sess.assert_called_once_with(mock_final_config)
 
     def test_main_early_return_when_no_management_account_id(
         self,
@@ -620,12 +641,15 @@ class TestMainIntegration:
         mock_final_config.management_account_id = None
         mocks['merge'].return_value = mock_final_config
 
-        with patch('headroom.main.parse_results', return_value=[MagicMock()]), \
+        with patch('headroom.main.parse_scp_results', return_value=[MagicMock()]), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess:
-            main()
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
 
-        # We return before attempting to use the session if no management_account_id
         mock_get_sess.assert_called_once()
+        printed = [c.args[0] for c in mocks['print'].call_args_list]
+        assert any("Terraform Generation Error" in msg for msg in printed)
 
     def test_main_client_error_in_generation_is_handled(
         self,
@@ -633,7 +657,7 @@ class TestMainIntegration:
         valid_yaml_config: Dict[str, Any],
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
-        """Covers the ClientError exception handler branch (prints failure)."""
+        """Covers the ClientError exception handler branch (prints failure and exits)."""
 
         mocks = mock_dependencies
         mocks['parse'].return_value = mock_cli_args
@@ -645,13 +669,77 @@ class TestMainIntegration:
 
         err = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "AssumeRole")
 
-        with patch('headroom.main.parse_results', return_value=[MagicMock()]), \
+        with patch('headroom.main.parse_scp_results', return_value=[MagicMock()]), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess, \
              patch('headroom.main.analyze_organization_structure') as mock_analyze:
             # cause sts.assume_role to raise
             mock_get_sess.return_value.client.return_value.assume_role.side_effect = err
             mock_analyze.return_value = None
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+        printed = [c.args[0] for c in mocks['print'].call_args_list]
+        assert any("Terraform Generation Error" in msg for msg in printed)
+
+    def test_main_with_rcp_recommendations_display(
+        self,
+        mock_cli_args: MagicMock,
+        valid_yaml_config: Dict[str, Any],
+        mock_dependencies: Dict[str, MagicMock]
+    ) -> None:
+        """Test that RCP recommendations are displayed when present."""
+        mocks = mock_dependencies
+        mocks['parse'].return_value = mock_cli_args
+        mocks['load'].return_value = valid_yaml_config
+        mock_final_config = MagicMock()
+        mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.management_account_id = "999999999999"
+        mocks['merge'].return_value = mock_final_config
+
+        mock_rcp_rec = RCPPlacementRecommendations(
+            check_name="check_third_party_assumerole",
+            recommended_level="ou",
+            target_ou_id="ou-test-123",
+            affected_accounts=["111111111111", "222222222222"],
+            third_party_account_ids=["333333333333"],
+            reasoning="Test reasoning"
+        )
+
+        mock_org_hierarchy = OrganizationHierarchy(
+            root_id="r-root",
+            organizational_units={"ou-test-123": OrganizationalUnit(
+                ou_id="ou-test-123",
+                name="TestOU",
+                parent_ou_id="r-root",
+                child_ous=[],
+                accounts=["111111111111", "222222222222"]
+            )},
+            accounts={}
+        )
+
+        with (
+            patch('headroom.main.parse_scp_results', return_value=[MagicMock()]),
+            patch('headroom.main.get_security_analysis_session') as mock_get_sess,
+            patch('headroom.main.parse_rcp_result_files', return_value=RCPParseResult(
+                account_third_party_map={"111111111111": {"333333333333"}},
+                accounts_with_wildcards=set()
+            )),
+            patch('headroom.main.generate_terraform_org_info'),
+            patch('headroom.main.analyze_organization_structure', return_value=mock_org_hierarchy),
+            patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
+            patch('headroom.main.generate_rcp_terraform') as mock_gen_rcp,
+            patch('headroom.main.generate_scp_terraform')
+        ):
+            mock_session = MagicMock()
+            mock_get_sess.return_value = mock_session
             main()
 
         printed = [c.args[0] for c in mocks['print'].call_args_list]
-        assert any("Failed to generate Terraform files:" in msg for msg in printed)
+        assert any("RCP PLACEMENT RECOMMENDATIONS" in msg for msg in printed)
+        assert any("Recommended Level: OU" in msg for msg in printed)
+        assert any("Target OU: TestOU (ou-test-123)" in msg for msg in printed)
+        assert any("Affected Accounts: 2" in msg for msg in printed)
+        assert any("Third-Party Accounts: 1" in msg for msg in printed)
+        assert any("Reasoning: Test reasoning" in msg for msg in printed)
+        mock_gen_rcp.assert_called_once()

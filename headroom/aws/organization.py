@@ -6,9 +6,11 @@ using the AWS Organizations API.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-import boto3  # type: ignore
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+from mypy_boto3_organizations.client import OrganizationsClient
 
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
 
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _build_ou_hierarchy(
-    org_client: Any,
+    org_client: OrganizationsClient,
     root_id: str,
     organizational_units: Dict[str, OrganizationalUnit],
     accounts: Dict[str, AccountOrgPlacement],
@@ -80,9 +82,8 @@ def _build_ou_hierarchy(
                 )
                 child_ous = [child_ou["Id"] for child_ou in child_ous_response.get("OrganizationalUnits", [])]
 
-            except Exception as e:
-                logger.warning(f"Failed to get accounts/child OUs for OU {ou_id}: {e}")
-                account_ids = []
+            except (ClientError, BotoCoreError) as e:
+                raise RuntimeError(f"Failed to get accounts/child OUs for OU {ou_id}: {e}")
 
             organizational_units[ou_id] = OrganizationalUnit(
                 ou_id=ou_id,
@@ -92,8 +93,8 @@ def _build_ou_hierarchy(
                 accounts=account_ids
             )
 
-    except Exception as e:
-        logger.warning(f"Failed to list OUs for parent {parent_ou_id}: {e}")
+    except (ClientError, BotoCoreError) as e:
+        raise RuntimeError(f"Failed to list OUs for parent {parent_ou_id}: {e}")
 
 
 def analyze_organization_structure(session: boto3.Session) -> OrganizationHierarchy:
@@ -102,7 +103,7 @@ def analyze_organization_structure(session: boto3.Session) -> OrganizationHierar
 
     Returns comprehensive hierarchy mapping.
     """
-    org_client = session.client("organizations")
+    org_client: OrganizationsClient = session.client("organizations")
 
     # Get root information
     try:
@@ -111,7 +112,7 @@ def analyze_organization_structure(session: boto3.Session) -> OrganizationHierar
             raise RuntimeError("No roots found in organization")
         root_id = roots_response["Roots"][0]["Id"]
         logger.info(f"Found organization root: {root_id}")
-    except Exception as e:
+    except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to get organization root: {e}")
 
     # Build OU hierarchy recursively
@@ -133,8 +134,8 @@ def analyze_organization_structure(session: boto3.Session) -> OrganizationHierar
                 parent_ou_id=root_id,
                 ou_path=["Root"]
             )
-    except Exception as e:
-        logger.warning(f"Failed to get accounts under root: {e}")
+    except (ClientError, BotoCoreError) as e:
+        raise RuntimeError(f"Failed to get accounts under root: {e}")
 
     return OrganizationHierarchy(
         root_id=root_id,
@@ -156,3 +157,31 @@ def create_account_ou_mapping(session: boto3.Session) -> Dict[str, str]:
         mapping[account_id] = account_info.parent_ou_id
 
     return mapping
+
+
+def lookup_account_id_by_name(
+    account_name: str,
+    organization_hierarchy: OrganizationHierarchy,
+    context: str = "result file"
+) -> str:
+    """
+    Look up account ID by name in organization hierarchy.
+
+    Args:
+        account_name: Account name to look up
+        organization_hierarchy: Organization structure containing accounts
+        context: Context string for error message (e.g., "result file", "check processing")
+
+    Returns:
+        Account ID matching the account name
+
+    Raises:
+        RuntimeError: If account name is not found in organization hierarchy
+    """
+    for acc_id, acc_info in organization_hierarchy.accounts.items():
+        if acc_info.account_name == account_name:
+            logger.info(f"Looked up account_id {acc_id} for account name '{account_name}'")
+            return acc_id
+    raise RuntimeError(
+        f"Account name '{account_name}' from {context} not found in organization hierarchy"
+    )

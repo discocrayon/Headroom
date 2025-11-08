@@ -7,15 +7,20 @@ Tests for get_relevant_subaccounts, get_headroom_session, and run_checks functio
 import pytest
 import tempfile
 import shutil
+import boto3
 from unittest.mock import MagicMock, patch
 from typing import List, Generator
-from botocore.exceptions import ClientError  # type: ignore
+
+from botocore.exceptions import ClientError
 from headroom.analysis import (
     get_relevant_subaccounts,
     get_headroom_session,
     run_checks,
+    run_checks_for_type,
+    get_all_organization_account_ids,
     AccountInfo
 )
+from headroom.checks.base import BaseCheck
 from headroom.config import HeadroomConfig, AccountTagLayout
 
 
@@ -106,9 +111,9 @@ class TestGetHeadroomSession:
 
         # Mock STS response
         creds = {
-            "AccessKeyId": "AKIA123456789",
-            "SecretAccessKey": "secret123",
-            "SessionToken": "token123"
+            "AccessKeyId": "FAKE_ACCESS_KEY_ID",
+            "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
+            "SessionToken": "FAKE_SESSION_TOKEN"
         }
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
@@ -127,9 +132,9 @@ class TestGetHeadroomSession:
 
             # Verify session creation
             mock_session_class.assert_called_once_with(
-                aws_access_key_id="AKIA123456789",
-                aws_secret_access_key="secret123",
-                aws_session_token="token123"
+                aws_access_key_id="FAKE_ACCESS_KEY_ID",
+                aws_secret_access_key="FAKE_SECRET_ACCESS_KEY",
+                aws_session_token="FAKE_SESSION_TOKEN"
             )
 
             assert result == mock_session
@@ -148,8 +153,10 @@ class TestGetHeadroomSession:
             "AssumeRole"
         )
 
-        with pytest.raises(RuntimeError, match="Failed to assume Headroom role in account 111111111111"):
+        with pytest.raises(ClientError) as exc_info:
             get_headroom_session(mock_config, mock_security_session, "111111111111")
+
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
     def test_get_headroom_session_different_account_ids(self, mock_config: HeadroomConfig) -> None:
         """Test get_headroom_session with different account IDs."""
@@ -159,9 +166,9 @@ class TestGetHeadroomSession:
         mock_security_session.client.return_value = mock_sts
 
         creds = {
-            "AccessKeyId": "AKIA123456789",
-            "SecretAccessKey": "secret123",
-            "SessionToken": "token123"
+            "AccessKeyId": "FAKE_ACCESS_KEY_ID",
+            "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
+            "SessionToken": "FAKE_SESSION_TOKEN"
         }
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
@@ -217,7 +224,8 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_scp_execute,
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False)
         ):
@@ -225,7 +233,8 @@ class TestRunChecks:
             mock_headroom_session2 = MagicMock()
             mock_get_session.side_effect = [mock_headroom_session1, mock_headroom_session2]
 
-            run_checks(mock_security_session, sample_account_infos, mock_config)
+            org_account_ids = {"111111111111", "222222222222", "333333333333"}
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
 
             # Directory creation is handled by individual check functions, not run_checks
             # run_checks itself no longer creates directories
@@ -235,22 +244,11 @@ class TestRunChecks:
             mock_get_session.assert_any_call(mock_config, mock_security_session, "111111111111")
             mock_get_session.assert_any_call(mock_config, mock_security_session, "222222222222")
 
-            # Verify check function calls (includes results_dir and exclude_account_ids)
-            assert mock_check.call_count == 2
-            mock_check.assert_any_call(
-                mock_headroom_session1,
-                "prod-account",
-                "111111111111",
-                mock_config.results_dir,
-                mock_config.exclude_account_ids,
-            )
-            mock_check.assert_any_call(
-                mock_headroom_session2,
-                "dev-account",
-                "222222222222",
-                mock_config.results_dir,
-                mock_config.exclude_account_ids,
-            )
+            # Verify check execute method was called (once per account for SCP checks)
+            assert mock_scp_execute.call_count == 2
+            # Check classes are instantiated with check parameters, then execute() is called with session
+            mock_scp_execute.assert_any_call(mock_headroom_session1)
+            mock_scp_execute.assert_any_call(mock_headroom_session2)
 
             # Verify logging
             assert mock_logger.info.call_count == 4
@@ -270,7 +268,9 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
+            patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
             patch("os.getcwd") as mock_getcwd
         ):
@@ -278,16 +278,12 @@ class TestRunChecks:
             mock_headroom_session = MagicMock()
             mock_get_session.return_value = mock_headroom_session
 
-            run_checks(mock_security_session, account_infos, mock_config)
+            org_account_ids = {"111111111111", "222222222222"}
+            run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
 
-            # Verify check called with account ID as fallback name (includes results_dir and exclude_account_ids)
-            mock_check.assert_called_once_with(
-                mock_headroom_session,
-                "111111111111",
-                "111111111111",
-                mock_config.results_dir,
-                mock_config.exclude_account_ids,
-            )
+            # Verify check execute method was called with session
+            # (check parameters are passed to constructor, not execute)
+            mock_check.assert_called_once_with(mock_headroom_session)
 
     def test_run_checks_session_failure(
         self,
@@ -300,25 +296,18 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
-            patch("headroom.analysis.logger") as mock_logger,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute"),
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.results_exist", return_value=False),
             patch("os.makedirs"),
-            patch("os.getcwd") as mock_getcwd
+            patch("os.getcwd") as mock_getcwd,
+            pytest.raises(RuntimeError, match="Failed to assume Headroom role")
         ):
             mock_getcwd.return_value = temp_results_dir
             mock_get_session.side_effect = RuntimeError("Failed to assume Headroom role")
 
-            run_checks(mock_security_session, sample_account_infos, mock_config)
-
-            # Verify error logging for both accounts
-            assert mock_logger.error.call_count == 2
-            mock_logger.error.assert_any_call(
-                "Failed to run checks for account prod-account_111111111111: Failed to assume Headroom role"
-            )
-
-            # Verify check was never called due to session failures
-            mock_check.assert_not_called()
+            org_account_ids = {"111111111111", "222222222222"}
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
 
     def test_run_checks_skip_existing_results(
         self,
@@ -331,34 +320,45 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check,
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
             # Mock that results exist for first account but not second
-            mock_check_results.side_effect = [True, False]
+            # Call pattern now:
+            # Account 1: all_scp_results_exist (1 call) → True, all_rcp_results_exist (1 call) → True, skip
+            # Account 2: all_scp_results_exist (1 call) → False, all_rcp_results_exist (1 call) → False
+            #   Then run_scp_checks calls results_exist (1 call) → False, runs check
+            #   Then run_rcp_checks calls results_exist (1 call) → False, runs check
+            # Total: 6 calls
+            mock_check_results.return_value = True  # Default
+            mock_check_results.side_effect = [
+                True,   # Account 1 - SCP exists
+                True,   # Account 1 - RCP exists
+                False,  # Account 2 - SCP exists check
+                False,  # Account 2 - RCP exists check
+                False,  # Account 2 - run_scp_checks internal check
+                False   # Account 2 - run_rcp_checks internal check
+            ]
 
             mock_headroom_session = MagicMock()
             mock_get_session.return_value = mock_headroom_session
 
-            run_checks(mock_security_session, sample_account_infos, mock_config)
+            org_account_ids = {"111111111111", "222222222222"}
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
 
             # Verify get_headroom_session was only called for the second account
             assert mock_get_session.call_count == 1
             mock_get_session.assert_called_with(mock_config, mock_security_session, "222222222222")
 
-            # Verify check was only called for the second account (includes results_dir and exclude_account_ids)
+            # Verify check execute method was only called for the second account
+            # (check parameters are passed to constructor, not execute)
             assert mock_check.call_count == 1
-            mock_check.assert_called_with(
-                mock_headroom_session,
-                "dev-account",
-                "222222222222",
-                mock_config.results_dir,
-                mock_config.exclude_account_ids,
-            )
+            mock_check.assert_called_with(mock_headroom_session)
 
             # Verify skip logging for first account
-            mock_logger.info.assert_any_call("Results already exist for account prod-account_111111111111, skipping checks")
+            mock_logger.info.assert_any_call("All results already exist for account prod-account_111111111111, skipping checks")
 
             # Verify normal execution logging for second account
             mock_logger.info.assert_any_call("Running checks for account: dev-account_222222222222")
@@ -375,10 +375,142 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.analysis.check_deny_imds_v1_ec2") as mock_check
+            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.rcps.check_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute") as mock_rcp_check
         ):
-            run_checks(mock_security_session, account_infos, mock_config)
+            org_account_ids: set[str] = set()
+            run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
 
             # Verify no sessions or checks attempted
             mock_get_session.assert_not_called()
             mock_check.assert_not_called()
+            mock_rcp_check.assert_not_called()
+
+    def test_run_checks_for_type_skips_individual_check(
+        self,
+        mock_config: HeadroomConfig,
+        sample_account_infos: List[AccountInfo]
+    ) -> None:
+        """Test run_checks_for_type skips individual checks when results exist."""
+        mock_session = MagicMock(spec=boto3.Session)
+        account_info = sample_account_infos[0]
+
+        # Create two mock check classes
+        mock_check1 = MagicMock(spec=BaseCheck)
+        mock_check1.CHECK_NAME = "check_1"
+        mock_check1_instance = MagicMock()
+        mock_check1.return_value = mock_check1_instance
+
+        mock_check2 = MagicMock(spec=BaseCheck)
+        mock_check2.CHECK_NAME = "check_2"
+        mock_check2_instance = MagicMock()
+        mock_check2.return_value = mock_check2_instance
+
+        with (
+            patch("headroom.analysis.get_all_check_classes", return_value=[mock_check1, mock_check2]),
+            patch("headroom.analysis.results_exist") as mock_results_exist
+        ):
+            # First check results exist (skip with continue), second doesn't (run it)
+            mock_results_exist.side_effect = [True, False]
+
+            org_account_ids = {"111111111111"}
+            run_checks_for_type("scps", mock_session, account_info, mock_config, org_account_ids)
+
+            # Verify first check was skipped (not instantiated or executed)
+            mock_check1.assert_not_called()
+            mock_check1_instance.execute.assert_not_called()
+
+            # Verify second check was instantiated and executed
+            mock_check2.assert_called_once()
+            mock_check2_instance.execute.assert_called_once_with(mock_session)
+
+
+class TestGetAllOrganizationAccountIds:
+    """Test get_all_organization_account_ids function."""
+
+    def test_get_all_organization_account_ids_success(self) -> None:
+        """Test successful retrieval of all organization account IDs."""
+        mock_config = MagicMock()
+        mock_config.management_account_id = "999999999999"
+
+        mock_session = MagicMock()
+        mock_sts = MagicMock()
+
+        def mock_client_factory(service_name: str) -> MagicMock:
+            if service_name == "sts":
+                return mock_sts
+            return MagicMock()  # pragma: no cover
+
+        mock_session.client.side_effect = mock_client_factory
+
+        mock_sts.assume_role.return_value = {
+            "Credentials": {
+                "AccessKeyId": "FAKE_ACCESS_KEY_ID",
+                "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
+                "SessionToken": "FAKE_SESSION_TOKEN"
+            }
+        }
+
+        mock_mgmt_session = MagicMock()
+        mock_org_client = MagicMock()
+        mock_mgmt_session.client.return_value = mock_org_client
+
+        mock_paginator = MagicMock()
+        mock_org_client.get_paginator.return_value = mock_paginator
+
+        mock_paginator.paginate.return_value = [
+            {
+                "Accounts": [
+                    {"Id": "111111111111", "Name": "Account1"},
+                    {"Id": "222222222222", "Name": "Account2"}
+                ]
+            },
+            {
+                "Accounts": [
+                    {"Id": "333333333333", "Name": "Account3"}
+                ]
+            }
+        ]
+
+        with patch("headroom.analysis.boto3.Session", return_value=mock_mgmt_session):
+            result = get_all_organization_account_ids(mock_config, mock_session)
+
+        assert result == {"111111111111", "222222222222", "333333333333"}
+        mock_sts.assume_role.assert_called_once_with(
+            RoleArn="arn:aws:iam::999999999999:role/OrgAndAccountInfoReader",
+            RoleSessionName="HeadroomOrgAndAccountInfoReaderSession"
+        )
+
+    def test_get_all_organization_account_ids_missing_management_account_id(self) -> None:
+        """Test that missing management_account_id raises ValueError."""
+        mock_session = MagicMock()
+        mock_config = MagicMock()
+        mock_config.management_account_id = None
+
+        with pytest.raises(ValueError, match="management_account_id must be set in config"):
+            get_all_organization_account_ids(mock_config, mock_session)
+
+    def test_get_all_organization_account_ids_assume_role_failure(self) -> None:
+        """Test that assume role failure raises RuntimeError."""
+        mock_config = MagicMock()
+        mock_config.management_account_id = "999999999999"
+
+        mock_session = MagicMock()
+        mock_sts = MagicMock()
+
+        def mock_client_factory(service_name: str) -> MagicMock:
+            if service_name == "sts":
+                return mock_sts
+            return MagicMock()  # pragma: no cover
+
+        mock_session.client.side_effect = mock_client_factory
+
+        mock_sts.assume_role.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
+            "AssumeRole"
+        )
+
+        with pytest.raises(ClientError) as exc_info:
+            get_all_organization_account_ids(mock_config, mock_session)
+
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"

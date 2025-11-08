@@ -8,7 +8,8 @@ directory structure, and JSON formatting.
 import json
 import tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,6 +18,7 @@ from headroom.write_results import (
     get_results_dir,
     get_results_path,
     results_exist,
+    _redact_account_ids_from_arns,
 )
 
 
@@ -53,7 +55,7 @@ class TestWriteCheckResults:
                 results_base_dir=temp_dir,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             assert expected_path.exists()
 
             with open(expected_path, 'r') as f:
@@ -69,7 +71,7 @@ class TestWriteCheckResults:
             results_data: Dict[str, Any] = {"summary": {}}
 
             # Ensure check directory doesn't exist yet
-            check_dir = Path(temp_dir) / check_name
+            check_dir = Path(temp_dir) / "scps" / check_name
             assert not check_dir.exists()
 
             write_check_results(
@@ -86,7 +88,7 @@ class TestWriteCheckResults:
     def test_write_check_results_json_formatting(self) -> None:
         """Test that JSON is written with proper formatting."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            check_name = "test_check"
+            check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
             account_id = "111111111111"
             results_data: Dict[str, Any] = {
@@ -102,7 +104,7 @@ class TestWriteCheckResults:
                 results_base_dir=temp_dir,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             with open(expected_path, 'r') as f:
                 content = f.read()
                 # Check that JSON is indented (formatted)
@@ -136,7 +138,7 @@ class TestWriteCheckResults:
                 results_base_dir=temp_dir,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             with open(expected_path, 'r') as f:
                 loaded_data = json.load(f)
                 assert loaded_data["summary"]["version"] == 2
@@ -144,7 +146,7 @@ class TestWriteCheckResults:
     def test_write_check_results_handles_special_characters(self) -> None:
         """Test that account names with special characters are handled correctly."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            check_name = "test_check"
+            check_name = "deny_imds_v1_ec2"
             account_name = "test-account-with-dashes"
             account_id = "111111111111"
             results_data: Dict[str, Any] = {"summary": {}}
@@ -157,14 +159,12 @@ class TestWriteCheckResults:
                 results_base_dir=temp_dir,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             assert expected_path.exists()
 
     def test_write_check_results_raises_on_io_error(self) -> None:
-        """Test that IOError is raised and logged when file writing fails."""
-        from unittest.mock import patch, MagicMock
-
-        check_name = "test_check"
+        """Test that IOError is raised when file writing fails."""
+        check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
         account_id = "111111111111"
         results_data: Dict[str, Any] = {"summary": {}}
@@ -177,9 +177,9 @@ class TestWriteCheckResults:
         with (
             patch("os.makedirs"),  # Mock makedirs to avoid actual directory creation
             patch("builtins.open", return_value=mock_file_handle),
-            patch("headroom.write_results.logger") as mock_logger,
             patch("json.dump", side_effect=IOError("Permission denied"))
         ):
+            # Should raise IOError (fail fast, no catch-and-rethrow)
             with pytest.raises(IOError, match="Permission denied"):
                 write_check_results(
                     check_name=check_name,
@@ -188,9 +188,6 @@ class TestWriteCheckResults:
                     results_data=results_data,
                     results_base_dir="/some/dir",
                 )
-
-            # Verify error was logged
-            assert mock_logger.error.called
 
     def test_write_check_results_excludes_account_id_from_json(self) -> None:
         """Test that account_id is excluded from JSON when exclude_account_ids=True."""
@@ -216,7 +213,7 @@ class TestWriteCheckResults:
                 exclude_account_ids=True,
             )
 
-            expected_path = Path(temp_dir) / check_name / f"{account_name}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}.json"
             assert expected_path.exists()
 
             with open(expected_path, 'r') as f:
@@ -242,11 +239,11 @@ class TestWriteCheckResults:
             )
 
             # Should create filename without account_id
-            expected_path = Path(temp_dir) / check_name / f"{account_name}.json"
+            expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}.json"
             assert expected_path.exists()
 
             # Should NOT create filename with account_id
-            unexpected_path = Path(temp_dir) / check_name / f"{account_name}_{account_id}.json"
+            unexpected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             assert not unexpected_path.exists()
 
 
@@ -259,16 +256,25 @@ class TestGetResultsDir:
         results_base_dir = "/path/to/results"
 
         result = get_results_dir(check_name, results_base_dir)
-        assert result == "/path/to/results/deny_imds_v1_ec2"
+        assert result == "/path/to/results/scps/deny_imds_v1_ec2"
 
     def test_get_results_dir_with_trailing_slash(self) -> None:
         """Test get_results_dir handles trailing slashes."""
-        check_name = "test_check"
+        check_name = "deny_imds_v1_ec2"
         results_base_dir = "/path/to/results/"
 
         result = get_results_dir(check_name, results_base_dir)
         # Should still work (may have double slash but that's okay)
         assert check_name in result
+        assert "scps" in result
+
+    def test_get_results_dir_unknown_check_name(self) -> None:
+        """Test that get_results_dir raises ValueError for unknown check names."""
+        check_name = "unknown_check"
+        results_base_dir = "/path/to/results"
+
+        with pytest.raises(ValueError, match="Unknown check name: unknown_check"):
+            get_results_dir(check_name, results_base_dir)
 
 
 class TestGetResultsPath:
@@ -282,12 +288,12 @@ class TestGetResultsPath:
         results_base_dir = "/path/to/results"
 
         result = get_results_path(check_name, account_name, account_id, results_base_dir)
-        expected = Path("/path/to/results/deny_imds_v1_ec2/test-account_111111111111.json")
+        expected = Path("/path/to/results/scps/deny_imds_v1_ec2/test-account_111111111111.json")
         assert result == expected
 
     def test_get_results_path_returns_path_object(self) -> None:
         """Test that get_results_path returns a Path object."""
-        result = get_results_path("check", "account", "123", "/base")
+        result = get_results_path("deny_imds_v1_ec2", "account", "123", "/base")
         assert isinstance(result, Path)
 
     def test_get_results_path_excludes_account_id_when_flag_set(self) -> None:
@@ -304,7 +310,7 @@ class TestGetResultsPath:
             results_base_dir,
             exclude_account_ids=True,
         )
-        expected = Path("/path/to/results/deny_imds_v1_ec2/test-account.json")
+        expected = Path("/path/to/results/scps/deny_imds_v1_ec2/test-account.json")
         assert result == expected
 
 
@@ -402,3 +408,183 @@ class TestResultsExist:
                 temp_dir,
                 exclude_account_ids=True,
             ) is True
+
+
+class TestRedactAccountIdsFromArns:
+    """Test _redact_account_ids_from_arns function."""
+
+    def test_redact_simple_arn_string(self) -> None:
+        """Test redacting account ID from a simple ARN string."""
+        arn = "arn:aws:iam::111111111111:role/MyRole"
+        result = _redact_account_ids_from_arns(arn)
+        assert result == "arn:aws:iam::REDACTED:role/MyRole"
+
+    def test_redact_multiple_arns_in_string(self) -> None:
+        """Test redacting multiple account IDs in a single string."""
+        text = "arn:aws:iam::111111111111:role/Role1 and arn:aws:iam::222222222222:role/Role2"
+        result = _redact_account_ids_from_arns(text)
+        assert result == "arn:aws:iam::REDACTED:role/Role1 and arn:aws:iam::REDACTED:role/Role2"
+
+    def test_redact_arns_in_dict(self) -> None:
+        """Test redacting account IDs from ARNs in a dictionary."""
+        data = {
+            "role_name": "MyRole",
+            "role_arn": "arn:aws:iam::111111111111:role/MyRole",
+            "other_field": "no arn here"
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["role_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
+        assert result["role_name"] == "MyRole"
+        assert result["other_field"] == "no arn here"
+
+    def test_redact_arns_in_list(self) -> None:
+        """Test redacting account IDs from ARNs in a list."""
+        data = [
+            "arn:aws:iam::111111111111:role/Role1",
+            "arn:aws:iam::222222222222:role/Role2",
+            "plain text"
+        ]
+        result = cast(List[Any], _redact_account_ids_from_arns(data))
+        assert result[0] == "arn:aws:iam::REDACTED:role/Role1"
+        assert result[1] == "arn:aws:iam::REDACTED:role/Role2"
+        assert result[2] == "plain text"
+
+    def test_redact_arns_in_nested_structure(self) -> None:
+        """Test redacting account IDs from ARNs in nested data structures."""
+        data = {
+            "summary": {
+                "account_name": "test-account",
+                "account_id": "111111111111"
+            },
+            "roles": [
+                {
+                    "role_name": "Role1",
+                    "role_arn": "arn:aws:iam::111111111111:role/Role1"
+                },
+                {
+                    "role_name": "Role2",
+                    "role_arn": "arn:aws:iam::222222222222:role/Role2"
+                }
+            ]
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["summary"]["account_id"] == "111111111111"
+        assert result["roles"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/Role1"
+        assert result["roles"][1]["role_arn"] == "arn:aws:iam::REDACTED:role/Role2"
+
+    def test_redact_preserves_non_string_types(self) -> None:
+        """Test that non-string types are preserved unchanged."""
+        data = {
+            "count": 42,
+            "percentage": 95.5,
+            "enabled": True,
+            "none_value": None
+        }
+        result = _redact_account_ids_from_arns(data)
+        assert result == data
+
+    def test_redact_handles_empty_structures(self) -> None:
+        """Test that empty structures are handled correctly."""
+        assert _redact_account_ids_from_arns({}) == {}
+        assert _redact_account_ids_from_arns([]) == []
+        assert _redact_account_ids_from_arns("") == ""
+
+    def test_redact_different_aws_services(self) -> None:
+        """Test redacting account IDs from ARNs of different AWS services."""
+        data = {
+            "iam_arn": "arn:aws:iam::111111111111:role/MyRole",
+            "s3_arn": "arn:aws:s3::111111111111:bucket/MyBucket",
+            "ec2_arn": "arn:aws:ec2::111111111111:instance/i-1234567890abcdef0"
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["iam_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
+        assert result["s3_arn"] == "arn:aws:s3::REDACTED:bucket/MyBucket"
+        assert result["ec2_arn"] == "arn:aws:ec2::REDACTED:instance/i-1234567890abcdef0"
+
+    def test_redact_does_not_affect_non_arn_numbers(self) -> None:
+        """Test that non-ARN 12-digit numbers are not affected."""
+        data = {
+            "instance_id": "i-111111111111",
+            "some_number": "111111111111",
+            "role_arn": "arn:aws:iam::111111111111:role/MyRole"
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["instance_id"] == "i-111111111111"
+        assert result["some_number"] == "111111111111"
+        assert result["role_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
+
+    def test_write_check_results_redacts_arns_when_exclude_account_ids(self) -> None:
+        """Test that ARNs are redacted when exclude_account_ids=True."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_name = "third_party_assumerole"
+            account_name = "test-account"
+            account_id = "111111111111"
+            results_data: Dict[str, Any] = {
+                "summary": {
+                    "account_name": account_name,
+                    "account_id": account_id,
+                    "check": check_name,
+                },
+                "roles_third_parties_can_access": [
+                    {
+                        "role_name": "ThirdPartyRole",
+                        "role_arn": "arn:aws:iam::111111111111:role/ThirdPartyRole",
+                        "third_party_account_ids": ["333333333333"]
+                    }
+                ]
+            }
+
+            write_check_results(
+                check_name=check_name,
+                account_name=account_name,
+                account_id=account_id,
+                results_data=results_data,
+                results_base_dir=temp_dir,
+                exclude_account_ids=True,
+            )
+
+            expected_path = Path(temp_dir) / "rcps" / check_name / f"{account_name}.json"
+            assert expected_path.exists()
+
+            with open(expected_path, 'r') as f:
+                loaded_data = json.load(f)
+                assert "account_id" not in loaded_data["summary"]
+                assert loaded_data["roles_third_parties_can_access"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/ThirdPartyRole"
+
+    def test_write_check_results_preserves_arns_when_exclude_account_ids_false(self) -> None:
+        """Test that ARNs are NOT redacted when exclude_account_ids=False."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_name = "third_party_assumerole"
+            account_name = "test-account"
+            account_id = "111111111111"
+            results_data: Dict[str, Any] = {
+                "summary": {
+                    "account_name": account_name,
+                    "account_id": account_id,
+                    "check": check_name,
+                },
+                "roles_third_parties_can_access": [
+                    {
+                        "role_name": "ThirdPartyRole",
+                        "role_arn": "arn:aws:iam::111111111111:role/ThirdPartyRole",
+                        "third_party_account_ids": ["333333333333"]
+                    }
+                ]
+            }
+
+            write_check_results(
+                check_name=check_name,
+                account_name=account_name,
+                account_id=account_id,
+                results_data=results_data,
+                results_base_dir=temp_dir,
+                exclude_account_ids=False,
+            )
+
+            expected_path = Path(temp_dir) / "rcps" / check_name / f"{account_name}_{account_id}.json"
+            assert expected_path.exists()
+
+            with open(expected_path, 'r') as f:
+                loaded_data = json.load(f)
+                assert loaded_data["summary"]["account_id"] == account_id
+                assert loaded_data["roles_third_parties_can_access"][0]["role_arn"] == "arn:aws:iam::111111111111:role/ThirdPartyRole"

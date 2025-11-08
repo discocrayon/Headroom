@@ -8,39 +8,156 @@ levels (root, OU, account) based on violation patterns and organization structur
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Sequence
 
-import boto3  # type: ignore
-from botocore.exceptions import ClientError  # type: ignore
-
-from .analysis import get_security_analysis_session
+from .analysis import get_security_analysis_session, get_management_account_session
 from .config import HeadroomConfig
-from .terraform.generate_org_info import generate_terraform_org_info
 from .aws.organization import analyze_organization_structure
 from .types import (
-    OrganizationalUnit, AccountOrgPlacement, OrganizationHierarchy,
-    CheckResult, SCPPlacementRecommendations
+    OrganizationalUnit, OrganizationHierarchy, PolicyRecommendation, SCPCheckResult,
+    SCPPlacementRecommendations, RCPPlacementRecommendations
 )
+from .aws.organization import lookup_account_id_by_name
+from .placement import HierarchyPlacementAnalyzer
+from .output import OutputHandler
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
 
-def parse_result_files(results_dir: str) -> List[CheckResult]:
+def _load_result_file_json(result_file: Path) -> Dict[str, Any]:
+    """
+    Load and parse a result JSON file.
+
+    Args:
+        result_file: Path to the JSON result file
+
+    Returns:
+        Parsed JSON data as dictionary
+
+    Raises:
+        RuntimeError: If JSON parsing fails
+    """
+    try:
+        with open(result_file, 'r') as f:
+            data: Dict[str, Any] = json.load(f)
+            return data
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+
+
+def _extract_account_id_from_result(
+    summary: Dict[str, Any],
+    organization_hierarchy: OrganizationHierarchy,
+    result_file: Path
+) -> str:
+    """
+    Extract account ID from result summary or organization hierarchy.
+
+    Universal strategy for both SCP and RCP results:
+    1. Try to get account_id directly from summary
+    2. If missing, look up account by name in organization hierarchy
+
+    Args:
+        summary: The summary dict from the result JSON
+        organization_hierarchy: Organization structure for account lookups
+        result_file: Path to result file (for error messages)
+
+    Returns:
+        Account ID string
+
+    Raises:
+        RuntimeError: If account ID cannot be determined
+    """
+    # Happy path: account_id present
+    account_id: str = summary.get("account_id", "")
+    if account_id:
+        return account_id
+
+    # Fallback: look up by account name
+    account_name = summary.get("account_name", "")
+    if not account_name:
+        raise RuntimeError(
+            f"Result file {result_file} missing both account_id and account_name in summary"
+        )
+
+    return lookup_account_id_by_name(
+        account_name,
+        organization_hierarchy,
+        str(result_file)
+    )
+
+
+def _parse_single_scp_result_file(
+    result_file: Path,
+    check_name: str,
+    organization_hierarchy: OrganizationHierarchy
+) -> SCPCheckResult:
+    """
+    Parse a single SCP result JSON file into SCPCheckResult object.
+
+    Args:
+        result_file: Path to the JSON result file
+        check_name: Name of the check (from parent directory)
+        organization_hierarchy: Organization structure for account lookups
+
+    Returns:
+        SCPCheckResult object with compliance data
+
+    Raises:
+        RuntimeError: If JSON parsing fails or required fields are missing
+    """
+    data = _load_result_file_json(result_file)
+    summary = data.get("summary", {})
+
+    account_id = _extract_account_id_from_result(
+        summary,
+        organization_hierarchy,
+        result_file
+    )
+
+    return SCPCheckResult(
+        account_id=account_id,
+        account_name=summary.get("account_name", ""),
+        check_name=summary.get("check", check_name),
+        violations=summary.get("violations", 0),
+        exemptions=summary.get("exemptions", 0),
+        compliant=summary.get("compliant", 0),
+        total_instances=summary.get("total_instances"),
+        compliance_percentage=summary.get("compliance_percentage", 0.0)
+    )
+
+
+def parse_scp_result_files(
+    results_dir: str,
+    organization_hierarchy: OrganizationHierarchy
+) -> List[SCPCheckResult]:
     """
     Parse all JSON result files from headroom_results directory.
 
-    Returns list of CheckResult objects.
+    Results are organized as: {results_dir}/scps/{check_name}/*.json
+
+    Args:
+        results_dir: Path to the headroom_results directory
+        organization_hierarchy: Organization structure for account ID lookups
+
+    Returns:
+        List of SCPCheckResult objects.
     """
     results_path = Path(results_dir)
     if not results_path.exists():
-        logger.warning(f"Results directory {results_dir} does not exist")
+        raise RuntimeError(f"Results directory {results_dir} does not exist")
+
+    check_results: List[SCPCheckResult] = []
+
+    # Look in scps/ subdirectory
+    scps_path = results_path / "scps"
+    if not scps_path.exists():
+        logger.warning(f"SCP results directory {scps_path} does not exist")
         return []
 
-    check_results: List[CheckResult] = []
-
-    # Iterate through check directories
-    for check_dir in results_path.iterdir():
+    # Iterate through check directories in scps/ subdirectory
+    for check_dir in scps_path.iterdir():
         if not check_dir.is_dir():
             continue
 
@@ -49,43 +166,18 @@ def parse_result_files(results_dir: str) -> List[CheckResult]:
 
         # Process each account result file
         for result_file in check_dir.glob("*.json"):
-            try:
-                with open(result_file, 'r') as f:
-                    data = json.load(f)
-
-                summary = data.get("summary", {})
-
-                # Extract account_id - try from JSON first, then from filename
-                account_id = summary.get("account_id", "")
-                if not account_id:
-                    # Try to extract from filename (format: name_id.json or name.json)
-                    filename_stem = result_file.stem
-                    if "_" in filename_stem:
-                        # Old format: account_name_account_id
-                        parts = filename_stem.rsplit("_", 1)
-                        if len(parts) == 2 and parts[1].isdigit():
-                            account_id = parts[1]
-
-                check_results.append(CheckResult(
-                    account_id=account_id,
-                    account_name=summary.get("account_name", ""),
-                    check_name=summary.get("check", check_name),
-                    violations=summary.get("violations", 0),
-                    exemptions=summary.get("exemptions", 0),
-                    compliant=summary.get("compliant", 0),
-                    total_instances=summary.get("total_instances", 0),
-                    compliance_percentage=summary.get("compliance_percentage", 0.0)
-                ))
-
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.warning(f"Failed to parse result file {result_file}: {e}")
-                continue
+            check_result = _parse_single_scp_result_file(
+                result_file,
+                check_name,
+                organization_hierarchy
+            )
+            check_results.append(check_result)
 
     return check_results
 
 
 def determine_scp_placement(
-    results_data: List[CheckResult],
+    results_data: List[SCPCheckResult],
     organization_hierarchy: OrganizationHierarchy
 ) -> List[SCPPlacementRecommendations]:
     """
@@ -95,9 +187,9 @@ def determine_scp_placement(
     Ensures safe deployment without breaking existing violations that would cause operational issues.
     """
     recommendations: List[SCPPlacementRecommendations] = []
+    analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
 
-    # Group results by check name
-    check_groups: Dict[str, List[CheckResult]] = {}
+    check_groups: Dict[str, List[SCPCheckResult]] = {}
     for result in results_data:
         if result.check_name not in check_groups:
             check_groups[result.check_name] = []
@@ -106,81 +198,17 @@ def determine_scp_placement(
     for check_name, check_results in check_groups.items():
         logger.info(f"Analyzing placement for check: {check_name}")
 
-        # Check if ALL accounts have zero violations (root level)
-        all_accounts_zero_violations = all(
-            result.violations == 0 for result in check_results
-        )
-
-        if all_accounts_zero_violations:
-            recommendations.append(SCPPlacementRecommendations(
-                check_name=check_name,
-                recommended_level="root",
-                target_ou_id=None,
-                affected_accounts=[result.account_id for result in check_results],
-                compliance_percentage=100.0,
-                reasoning="All accounts in organization have zero violations - safe to deploy at root level"
-            ))
-            continue
-
-        # Check OU level - find OUs where ALL accounts have zero violations
-        ou_violation_status: Dict[str, Dict[str, int]] = {}
-
         for result in check_results:
-            account_info = organization_hierarchy.accounts.get(result.account_id)
-            if not account_info:
-                logger.warning(f"Account {result.account_id} not found in organization hierarchy")
-                continue
+            if not result.account_id:
+                result.account_id = lookup_account_id_by_name(
+                    result.account_name,
+                    organization_hierarchy,
+                    "SCP check result"
+                )
 
-            parent_ou_id = account_info.parent_ou_id
-            if parent_ou_id not in ou_violation_status:
-                ou_violation_status[parent_ou_id] = {"total_accounts": 0, "zero_violation_accounts": 0}
+        safe_check_results = [r for r in check_results if r.violations == 0]
 
-            ou_violation_status[parent_ou_id]["total_accounts"] += 1
-            if result.violations == 0:
-                ou_violation_status[parent_ou_id]["zero_violation_accounts"] += 1
-
-        # Find OUs where all accounts have zero violations
-        safe_ous: List[str] = []
-        for ou_id, status in ou_violation_status.items():
-            if status["zero_violation_accounts"] == status["total_accounts"] and status["total_accounts"] > 0:
-                safe_ous.append(ou_id)
-
-        if safe_ous:
-            # Recommend OU level deployment for the largest safe OU
-            largest_ou = max(safe_ous, key=lambda ou_id: ou_violation_status[ou_id]["total_accounts"])
-            ou_name = organization_hierarchy.organizational_units.get(largest_ou, OrganizationalUnit("", "", None, [], [])).name
-
-            affected_accounts = [
-                result.account_id for result in check_results
-                if organization_hierarchy.accounts.get(result.account_id, AccountOrgPlacement("", "", "", [])).parent_ou_id == largest_ou
-            ]
-
-            recommendations.append(SCPPlacementRecommendations(
-                check_name=check_name,
-                recommended_level="ou",
-                target_ou_id=largest_ou,
-                affected_accounts=affected_accounts,
-                compliance_percentage=100.0,
-                reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level"
-            ))
-            continue
-
-        # Check account level - individual accounts with zero violations
-        safe_accounts = [
-            result for result in check_results if result.violations == 0
-        ]
-
-        if safe_accounts:
-            recommendations.append(SCPPlacementRecommendations(
-                check_name=check_name,
-                recommended_level="account",
-                target_ou_id=None,
-                affected_accounts=[result.account_id for result in safe_accounts],
-                compliance_percentage=len(safe_accounts) / len(check_results) * 100.0,
-                reasoning=f"Only {len(safe_accounts)} out of {len(check_results)} accounts have zero violations - deploy at individual account level"
-            ))
-        else:
-            # No safe deployment possible
+        if not safe_check_results:
             recommendations.append(SCPPlacementRecommendations(
                 check_name=check_name,
                 recommended_level="none",
@@ -189,64 +217,157 @@ def determine_scp_placement(
                 compliance_percentage=0.0,
                 reasoning="No accounts have zero violations - SCP deployment would break existing violations"
             ))
+            continue
+
+        candidates = analyzer.determine_placement(
+            check_results=check_results,
+            is_safe_for_root=lambda results: all(r.violations == 0 for r in results),
+            is_safe_for_ou=lambda ou_id, results: all(r.violations == 0 for r in results),
+            get_account_id=lambda r: r.account_id
+        )
+
+        for candidate in candidates:
+            if candidate.level == "root":
+                recommendations.append(SCPPlacementRecommendations(
+                    check_name=check_name,
+                    recommended_level="root",
+                    target_ou_id=None,
+                    affected_accounts=candidate.affected_accounts,
+                    compliance_percentage=100.0,
+                    reasoning="All accounts in organization have zero violations - safe to deploy at root level"
+                ))
+            elif candidate.level == "ou" and candidate.target_id is not None:
+                ou_name = organization_hierarchy.organizational_units.get(
+                    candidate.target_id,
+                    OrganizationalUnit("", "", None, [], [])
+                ).name
+                recommendations.append(SCPPlacementRecommendations(
+                    check_name=check_name,
+                    recommended_level="ou",
+                    target_ou_id=candidate.target_id,
+                    affected_accounts=candidate.affected_accounts,
+                    compliance_percentage=100.0,
+                    reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level"
+                ))
+            elif candidate.level == "account":
+                recommendations.append(SCPPlacementRecommendations(
+                    check_name=check_name,
+                    recommended_level="account",
+                    target_ou_id=None,
+                    affected_accounts=[r.account_id for r in safe_check_results],
+                    compliance_percentage=len(safe_check_results) / len(check_results) * 100.0,
+                    reasoning=f"Only {len(safe_check_results)} out of {len(check_results)} accounts have zero violations - deploy at individual account level"
+                ))
+                break
 
     return recommendations
 
 
-def parse_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
+def _get_organization_context(config: HeadroomConfig) -> OrganizationHierarchy:
     """
-    Main function to parse results and determine SCP placement recommendations.
+    Get management account session and analyze organization structure.
 
-    Called from main.py after SCP analysis completion.
+    Args:
+        config: Headroom configuration
 
     Returns:
-        List of SCP placement recommendations for each check.
+        Organization hierarchy with OUs and accounts
+
+    Raises:
+        ValueError: If management_account_id is not set
+        RuntimeError: If session creation or organization analysis fails
+    """
+    security_session = get_security_analysis_session(config)
+    mgmt_session = get_management_account_session(config, security_session)
+
+    logger.info("Analyzing organization structure")
+    organization_hierarchy = analyze_organization_structure(mgmt_session)
+    logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs and {len(organization_hierarchy.accounts)} accounts")
+
+    return organization_hierarchy
+
+
+def print_policy_recommendations(
+    recommendations: Sequence[PolicyRecommendation],
+    organization_hierarchy: OrganizationHierarchy,
+    title: str = "SCP/RCP PLACEMENT RECOMMENDATIONS"
+) -> None:
+    """
+    Print SCP or RCP placement recommendations to console with check name grouping.
+
+    Groups recommendations by check name and prints each check as a section.
+    This handles cases where the same check is recommended multiple times
+    (e.g., for an OU and individual accounts).
+
+    Args:
+        recommendations: List of SCP or RCP placement recommendations
+        organization_hierarchy: Organization structure for OU name lookups
+        title: Title for the recommendations section
+    """
+    if not recommendations:
+        return
+
+    OutputHandler.section_header(title)
+
+    # Group recommendations by check name
+    check_groups: Dict[str, List[PolicyRecommendation]] = {}
+    for rec in recommendations:
+        if rec.check_name not in check_groups:
+            check_groups[rec.check_name] = []
+        check_groups[rec.check_name].append(rec)
+
+    # Print each check group
+    for check_name, check_recs in check_groups.items():
+        print(f"\nCheck: {check_name}")
+
+        for rec in check_recs:
+            print(f"\n  Recommended Level: {rec.recommended_level.upper()}")
+            if rec.target_ou_id:
+                ou_name = organization_hierarchy.organizational_units.get(
+                    rec.target_ou_id,
+                    OrganizationalUnit("", "", None, [], [])
+                ).name
+                print(f"  Target OU: {ou_name} ({rec.target_ou_id})")
+            print(f"  Affected Accounts: {len(rec.affected_accounts)}")
+
+            # Print type-specific fields
+            if isinstance(rec, SCPPlacementRecommendations):
+                print(f"  Compliance: {rec.compliance_percentage:.1f}%")
+            elif isinstance(rec, RCPPlacementRecommendations):
+                print(f"  Third-Party Accounts: {len(rec.third_party_account_ids)}")
+
+            print(f"  Reasoning: {rec.reasoning}")
+            print("  " + "-" * 38)
+
+
+def parse_scp_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
+    """
+    Parse SCP results and determine optimal placement recommendations.
+
+    Main orchestration function that coordinates:
+    1. Organization context setup (sessions and structure analysis)
+    2. Result file parsing
+    3. Placement recommendation determination
+    4. Console output of recommendations
+
+    Args:
+        config: Headroom configuration
+
+    Returns:
+        List of SCP placement recommendations for each check
     """
     logger.info("Starting SCP placement analysis")
 
-    # Get security analysis session
-    security_session = get_security_analysis_session(config)
-
-    # Get management account session for Organizations API
-    if not config.management_account_id:
-        logger.error("management_account_id must be set for SCP placement analysis")
-        return []
-
-    role_arn = f"arn:aws:iam::{config.management_account_id}:role/OrgAndAccountInfoReader"
-    sts = security_session.client("sts")
+    # Get organization context (session + structure)
     try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="HeadroomSCPPlacementAnalysisSession"
-        )
-    except ClientError as e:
-        logger.error(f"Failed to assume OrgAndAccountInfoReader role: {e}")
-        return []
-
-    creds = resp["Credentials"]
-    mgmt_session = boto3.Session(
-        aws_access_key_id=creds["AccessKeyId"],
-        aws_secret_access_key=creds["SecretAccessKey"],
-        aws_session_token=creds["SessionToken"]
-    )
-
-    # Generate Terraform organization info file
-    logger.info("Generating Terraform organization info file")
-    generate_terraform_org_info(mgmt_session, f"{config.scps_dir}/grab_org_info.tf")
-
-    # Analyze organization structure
-    logger.info("Analyzing organization structure")
-    try:
-        organization_hierarchy = analyze_organization_structure(mgmt_session)
-        logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs and {len(organization_hierarchy.accounts)} accounts")
-    except RuntimeError as e:
-        logger.error(f"Failed to analyze organization structure: {e}")
+        organization_hierarchy = _get_organization_context(config)
+    except (ValueError, RuntimeError) as e:
+        logger.error(f"Failed to get organization context: {e}")
         return []
 
     # Parse result files
-    results_dir = config.results_dir
-    logger.info(f"Parsing result files from {results_dir}")
-    results_data = parse_result_files(results_dir)
+    logger.info(f"Parsing result files from {config.results_dir}")
+    results_data = parse_scp_result_files(config.results_dir, organization_hierarchy)
 
     if not results_data:
         logger.warning("No result files found to analyze")
@@ -257,22 +378,6 @@ def parse_results(config: HeadroomConfig) -> List[SCPPlacementRecommendations]:
     # Determine SCP placement recommendations
     logger.info("Determining SCP placement recommendations")
     recommendations = determine_scp_placement(results_data, organization_hierarchy)
-
-    # Output recommendations
-    print("\n" + "=" * 80)
-    print("SCP/RCP PLACEMENT RECOMMENDATIONS")
-    print("=" * 80)
-
-    for rec in recommendations:
-        print(f"\nCheck: {rec.check_name}")
-        print(f"Recommended Level: {rec.recommended_level.upper()}")
-        if rec.target_ou_id:
-            ou_name = organization_hierarchy.organizational_units.get(rec.target_ou_id, OrganizationalUnit("", "", None, [], [])).name
-            print(f"Target OU: {ou_name} ({rec.target_ou_id})")
-        print(f"Affected Accounts: {len(rec.affected_accounts)}")
-        print(f"Compliance: {rec.compliance_percentage:.1f}%")
-        print(f"Reasoning: {rec.reasoning}")
-        print("-" * 40)
 
     logger.info("SCP placement analysis completed")
     return recommendations
