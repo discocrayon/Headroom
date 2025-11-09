@@ -1058,6 +1058,8 @@ locals {
 }
 ```
 
+**See:** Test Environment section for complete generated examples in `test_environment/scps/grab_org_info.tf` and `test_environment/rcps/grab_org_info.tf`.
+
 ### SCP Terraform Generation
 
      ```python
@@ -1164,6 +1166,8 @@ locals {
 }
 ```
 
+**See:** Test Environment section for complete module documentation and usage examples in `test_environment/modules/scps/`.
+
 ### RCP Terraform Generation
 
 ```python
@@ -1256,6 +1260,8 @@ Denies `sts:AssumeRole` EXCEPT:
 2. Principals from allowlisted third-party accounts (`aws:PrincipalAccount`)
 3. AWS service principals (`aws:PrincipalType = "Service"`)
 4. Resources tagged with `dp:exclude:identity: true`
+
+**See:** Test Environment section for complete module documentation and usage examples in `test_environment/modules/rcps/`.
 
 ---
 
@@ -1758,6 +1764,1117 @@ mypy headroom/ tests/
 
 ---
 
+## Test Environment & Live Integration
+
+### Overview
+
+The `test_environment/` directory contains a complete, reproducible AWS Organizations environment for live integration testing. Unlike unit tests in `tests/`, this is real infrastructure deployed to AWS that demonstrates Headroom's end-to-end functionality.
+
+**Purpose:**
+- Live integration testing against actual AWS resources
+- Reproducible demo environment deployable by anyone with an AWS Organizations setup
+- Source of truth for example outputs in `test_environment/headroom_results/`
+- Documentation-by-example showing complete workflow: infrastructure → analysis → generated Terraform
+
+**Key Characteristics:**
+- Real AWS Organizations with multiple accounts and OUs
+- Intentionally created violations, exemptions, and compliant resources
+- Test scenarios covering all SCP and RCP checks
+- Generated Terraform demonstrating placement recommendations
+
+### Directory Structure
+
+```
+test_environment/
+├── accounts.tf                          # AWS Organizations accounts
+├── organizational_units.tf              # OU hierarchy
+├── providers.tf                         # Provider configuration with account aliases
+├── data.tf                              # Organization data sources
+├── variables.tf                         # Input variables
+├── terraform.tfvars.example             # Example variable values
+├── org_and_account_info_reader.tf       # Management account IAM role
+├── headroom_roles.tf                    # Headroom roles in all accounts
+├── test_deny_iam_user_creation.tf       # IAM users for testing
+├── test_deny_third_party_assumerole.tf  # IAM roles with trust policies
+├── account_scps.tf                      # Account-level SCP attachments (if any)
+├── modules/
+│   ├── headroom_role/                   # Reusable Headroom role module
+│   ├── scps/                            # Production SCP module
+│   └── rcps/                            # Production RCP module
+├── scps/                                # Generated SCP Terraform
+│   ├── grab_org_info.tf                 # Auto-generated org data sources
+│   ├── root_scps.tf                     # Root-level SCPs
+│   ├── {ou_name}_ou_scps.tf            # OU-level SCPs
+│   └── {account_name}_scps.tf          # Account-level SCPs
+├── rcps/                                # Generated RCP Terraform
+│   ├── grab_org_info.tf                 # Auto-generated org data sources
+│   ├── {ou_name}_ou_rcps.tf            # OU-level RCPs
+│   └── {account_name}_rcps.tf          # Account-level RCPs
+├── headroom_results/                    # JSON analysis results
+│   ├── scps/
+│   │   ├── deny_imds_v1_ec2/
+│   │   │   └── {account_name}.json
+│   │   └── deny_iam_user_creation/
+│   │       └── {account_name}.json
+│   └── rcps/
+│       └── third_party_assumerole/
+│           └── {account_name}.json
+└── test_deny_imds_v1_ec2/               # EC2 instances (expensive, separate directory)
+    ├── README.md                        # Cost warnings and usage
+    ├── providers.tf                     # Cross-account providers
+    ├── data.tf                          # AMI data sources
+    └── ec2_instances.tf                 # Test EC2 instances
+```
+
+### Organization Structure
+
+The test environment creates the following AWS Organizations hierarchy:
+
+```
+AWS Organization (Management Account: 222222222222)
+│
+├── Root OU (r-xxxx)
+│   │
+│   ├── High Value Assets OU (ou-xxxx-xxxxxxxx)
+│   │   ├── fort-knox (Production Account)
+│   │   │   - Environment: production
+│   │   │   - Owner: Cloud Architecture
+│   │   │   - Category: high_value_assets
+│   │   │   - IAM Users: 1 (github-actions with /service/ path)
+│   │   │   - IAM Roles: 1 (WildcardRole - violation)
+│   │   │   - EC2 Instances: 0-1 (test-imdsv1-exempt when testing)
+│   │   │
+│   │   └── security-tooling (Security Analysis Account: 111111111111)
+│   │       - Environment: production
+│   │       - Owner: Security
+│   │       - Category: high_value_assets
+│   │       - IAM Users: 1 (cicd-deployer with /automation/ path)
+│   │       - IAM Roles: 0 (service principals only)
+│   │       - EC2 Instances: 0
+│   │       - Note: This is where Headroom executes from
+│   │
+│   ├── Shared Services OU (ou-xxxx-xxxxxxxx)
+│   │   └── shared-foo-bar (Shared Services Account)
+│   │       - Environment: production
+│   │       - Owner: Traffic
+│   │       - Category: shared_services
+│   │       - IAM Users: 1 (legacy-developer with / path)
+│   │       - IAM Roles: 15 (extensive third-party trust policy testing)
+│   │       - EC2 Instances: 0-1 (test-imdsv1-enabled when testing)
+│   │       - Third-Party Accounts: 11 unique external accounts
+│   │       - Wildcards: 1 role (WildcardRole)
+│   │
+│   └── Acme Acquisition OU (ou-xxxx-xxxxxxxx)
+│       └── acme-co (Acquired Company Account)
+│           - Environment: production
+│           - Owner: SRE
+│           - Category: acme_acquisition
+│           - IAM Users: 2 (terraform-user, temp-contractor with /contractors/ path)
+│           - IAM Roles: 1 (ThirdPartyVendorA)
+│           - EC2 Instances: 0-1 (test-imdsv2-only when testing)
+│           - Third-Party Accounts: 1 (CrowdStrike: 749430749651)
+```
+
+**Account ID Mapping:**
+- Management Account: 222222222222
+- Security Tooling: 111111111111
+- Fort Knox: (dynamically created)
+- Shared Foo Bar: (dynamically created)
+- Acme Co: (dynamically created)
+
+### Infrastructure Components
+
+#### Root-Level Terraform Files
+
+**`accounts.tf`**
+```hcl
+# Creates AWS Organizations accounts with tags
+resource "aws_organizations_account" "fort_knox" {
+  name      = "fort-knox"
+  email     = "user+fort-knox@example.com"
+  parent_id = aws_organizations_organizational_unit.high_value_assets.id
+  
+  tags = {
+    Environment = "production"
+    Owner       = "Cloud Architecture"
+    Category    = "high_value_assets"
+  }
+}
+# ... similar for security_tooling, shared_foo_bar, acme_co
+```
+
+**Purpose:** Creates member accounts and assigns them to OUs. Tags provide metadata for account information extraction.
+
+**`organizational_units.tf`**
+```hcl
+# Creates OUs under organization root
+resource "aws_organizations_organizational_unit" "high_value_assets" {
+  name      = "high_value_assets"
+  parent_id = data.aws_organizations_organization.current.roots[0].id
+}
+# ... similar for shared_services, acme_acquisition
+```
+
+**Purpose:** Establishes OU hierarchy for testing placement recommendations.
+
+**`providers.tf`**
+```hcl
+# Provider aliases for cross-account resource creation
+provider "aws" {
+  alias  = "fort_knox"
+  region = "us-east-1"
+  assume_role {
+    role_arn = "arn:aws:iam::${aws_organizations_account.fort_knox.id}:role/OrganizationAccountAccessRole"
+  }
+}
+# ... similar for security_tooling, shared_foo_bar, acme_co
+```
+
+**Purpose:** Enables Terraform to create resources in member accounts by assuming `OrganizationAccountAccessRole`.
+
+**`data.tf`**
+```hcl
+data "aws_organizations_organization" "current" {}
+data "aws_caller_identity" "current" {}
+```
+
+**Purpose:** Retrieves organization root ID and management account information.
+
+**`variables.tf`**
+```hcl
+variable "base_email" {
+  type        = string
+  description = "Email for AWS accounts"
+}
+```
+
+**Purpose:** Base email for account creation (uses + addressing: `user+account-name@domain.com`).
+
+**`org_and_account_info_reader.tf`**
+
+Role in management account that Headroom uses to query AWS Organizations API.
+
+**Permissions:**
+- `organizations:ListAccounts`
+- `organizations:ListTagsForResource`
+- `organizations:DescribeOrganization`
+- `organizations:ListOrganizationalUnitsForParent`
+- `organizations:ListAccountsForParent`
+
+**Trust Policy:** Trusts security-tooling account (111111111111).
+
+**`headroom_roles.tf`**
+
+Deploys `Headroom` role to all member accounts using the `modules/headroom_role` module.
+
+```hcl
+module "headroom_role_fort_knox" {
+  source = "./modules/headroom_role"
+  providers = {
+    aws = aws.fort_knox
+  }
+  account_id_to_trust = aws_organizations_account.security_tooling.id
+}
+# ... similar for other accounts
+```
+
+### Test Scenario Files
+
+#### IAM User Creation Test (`test_deny_iam_user_creation.tf`)
+
+Creates IAM users across accounts to test `deny_iam_user_creation` SCP check and allowlist generation.
+
+**Test Users:**
+
+| Account | User Name | Path | Purpose |
+|---------|-----------|------|---------|
+| acme-co | terraform-user | `/` | Standard automation user |
+| acme-co | temp-contractor | `/contractors/` | Non-root path testing |
+| fort-knox | github-actions | `/service/` | Service account pattern |
+| shared-foo-bar | legacy-developer | `/` | Human user pattern |
+| security-tooling | cicd-deployer | `/automation/` | CI/CD automation |
+
+**Expected Behavior:**
+- All users discovered by IAM user analysis
+- ARNs collected into allowlist
+- Root-level SCP generated with `allowed_iam_users` parameter
+- ARN transformation: account IDs replaced with `${local.X_account_id}` references
+
+**Example Generated Allowlist:**
+```hcl
+allowed_iam_users = [
+  "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",
+  "arn:aws:iam::${local.acme_co_account_id}:user/terraform-user",
+  "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
+  "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
+  "arn:aws:iam::${local.shared_foo_bar_account_id}:user/legacy-developer",
+]
+```
+
+#### Third-Party AssumeRole Test (`test_deny_third_party_assumerole.tf`)
+
+Creates IAM roles with diverse trust policy patterns to test RCP third-party detection.
+
+**Test Roles (15 total in shared-foo-bar, 1 in acme-co, 1 in fort-knox):**
+
+| Role Name | Account | Trust Policy | Third-Party IDs | Purpose |
+|-----------|---------|--------------|-----------------|---------|
+| ThirdPartyVendorA | acme-co | CrowdStrike | 749430749651 | Simple third-party |
+| ThirdPartyVendorB | shared-foo-bar | Barracuda + Check Point | 758245563457, 517716713836 | Multiple third-parties |
+| WildcardRole | fort-knox | `Principal: "*"` | N/A (wildcard) | Wildcard detection |
+| LambdaExecutionRole | shared-foo-bar | `Service: lambda.amazonaws.com` | N/A (service) | Service principal skip |
+| MultiServiceRole | shared-foo-bar | Multiple services | N/A (services) | Service array handling |
+| MixedPrincipalsRole | shared-foo-bar | CyberArk + EC2 service | 365761988620 | Mixed AWS + Service |
+| SAMLFederationRole | shared-foo-bar | SAML provider | N/A (federated) | Federated SAML |
+| OIDCFederationRole | shared-foo-bar | GitHub OIDC | N/A (federated) | Federated OIDC |
+| OrgAccountCrossAccess | shared-foo-bar | Duckbill Group | 151784055945 | Org-external account |
+| ComplexMultiStatementRole | shared-foo-bar | Forcepoint + Lambda | 062897671886 | Multi-statement |
+| ThirdPartyUserRole | shared-foo-bar | Sophos w/ ExternalId | 978576646331 | ExternalId condition |
+| PlainAccountIdRole | shared-foo-bar | Vectra (plain ID) | 081802104111 | Plain account ID format |
+| MixedFormatsRole | shared-foo-bar | Ermetic + Zesty | 672188301118, 242987662583 | ARN + plain ID mix |
+| ConditionalThirdPartyRole | shared-foo-bar | Duckbill w/ ExternalId | 151784055945 | Conditional trust |
+| UltraComplexRole | shared-foo-bar | Check Point + CrowdStrike + ECS + SAML | 292230061137, 749430749651 | Complex multi-statement |
+
+**Third-Party Account IDs (Real Vendors):**
+- 749430749651: CrowdStrike
+- 758245563457: Barracuda
+- 517716713836: Check Point
+- 365761988620: CyberArk
+- 062897671886: Forcepoint
+- 978576646331: Sophos
+- 081802104111: Vectra
+- 672188301118: Ermetic
+- 242987662583: Zesty
+- 151784055945: Duckbill Group
+- 292230061137: Check Point (additional account)
+
+**All Roles Attached Policy:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Deny",
+    "Action": "*",
+    "Resource": "*"
+  }]
+}
+```
+
+**Rationale:** Roles are intentionally "useless" (deny-all policy) and exist solely for trust policy analysis.
+
+**Expected Behavior:**
+- Wildcard role (fort-knox) flagged as violation
+- Fort-knox account excluded from RCP generation
+- Shared-foo-bar: 11 unique third-party accounts detected
+- Acme-co: 1 third-party account (CrowdStrike)
+- OU-level RCP not possible (fort-knox has wildcard)
+- Account-level RCPs generated for compliant accounts
+
+#### EC2 IMDSv1 Test (`test_deny_imds_v1_ec2/`)
+
+**⚠️ Cost Warning:** This directory is **separate** because EC2 instances incur ongoing costs. Instances should only be created during active testing.
+
+**Cost:** ~$0.0174/hour (~$12.54/month) for 3 t2.nano instances.
+
+**Test Instances:**
+
+| Instance | Account | IMDS Config | Tags | Expected Result |
+|----------|---------|-------------|------|-----------------|
+| test-imdsv1-enabled | shared-foo-bar | `http_tokens = "optional"` | `Name` only | **Violation** |
+| test-imdsv2-only | acme-co | `http_tokens = "required"` | `Name` only | Compliant |
+| test-imdsv1-exempt | fort-knox | `http_tokens = "optional"` | `Name`, `ExemptFromIMDSv2 = "true"` | **Exemption** |
+
+**Separate Directory Structure:**
+```
+test_deny_imds_v1_ec2/
+├── README.md         # Cost warnings and usage instructions
+├── providers.tf      # Cross-account providers (reuses org account IDs)
+├── data.tf          # AMI data source (Amazon Linux 2023)
+└── ec2_instances.tf # Instance definitions
+```
+
+**Usage Pattern:**
+```bash
+# Only when testing
+cd test_deny_imds_v1_ec2/
+terraform init
+terraform apply
+
+# Run Headroom analysis
+cd ..
+python -m headroom --config config.yaml
+
+# Destroy immediately after testing
+cd test_deny_imds_v1_ec2/
+terraform destroy
+```
+
+**AMI Selection:** Uses latest Amazon Linux 2023 (free tier eligible, HVM, EBS).
+
+### Modules
+
+#### `modules/headroom_role/`
+
+Reusable module for deploying Headroom IAM role across accounts.
+
+**Files:**
+- `main.tf`: Role resource and policy attachments
+- `variables.tf`: `account_id_to_trust` input
+- `outputs.tf`: Role ARN and name
+- `versions.tf`: Terraform version constraints
+
+**Permissions:**
+- `ViewOnlyAccess` (AWS managed policy): Read-only access to most services
+- `SecurityAudit` (AWS managed policy): Security-focused read permissions
+
+**Trust Policy:**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Action": "sts:AssumeRole",
+    "Effect": "Allow",
+    "Principal": {
+      "AWS": "arn:aws:iam::{account_id_to_trust}:root"
+    }
+  }]
+}
+```
+
+**Rationale:** Security tooling accounts commonly have broad read access across organization.
+
+#### `modules/scps/`
+
+Production-ready SCP module used by generated Terraform files.
+
+**Files:**
+- `scps.tf`: Policy resource and attachments
+- `locals.tf`: Statement filtering logic
+- `variables.tf`: Boolean flags and allowlists
+- `README.md`: Usage documentation
+
+**Key Variables:**
+```hcl
+variable "target_id" {
+  type        = string
+  description = "OU ID or account ID to attach SCP"
+}
+
+variable "deny_imds_v1_ec2" {
+  type    = bool
+  default = false
+}
+
+variable "deny_iam_user_creation" {
+  type    = bool
+  default = false
+}
+
+variable "allowed_iam_users" {
+  type        = list(string)
+  default     = []
+  description = "IAM user ARNs allowed to be created"
+}
+```
+
+**Statement Filtering Logic:**
+```hcl
+locals {
+  statements = [
+    {
+      include = var.deny_imds_v1_ec2,
+      statement = {
+        Action = "ec2:RunInstances"
+        Condition = {
+          StringNotEquals = {
+            "ec2:MetadataHttpTokens" = "required"
+          }
+        }
+      }
+    },
+    {
+      include = var.deny_iam_user_creation,
+      statement = {
+        Action = "iam:CreateUser"
+        NotResource = var.allowed_iam_users
+      }
+    }
+  ]
+  
+  enabled_statements = [for s in local.statements : s.statement if s.include]
+}
+```
+
+**See:** [modules/scps/README.md](https://github.com/discocrayon/Headroom/tree/main/test_environment/modules/scps#scps-module)
+
+#### `modules/rcps/`
+
+Production-ready RCP module used by generated Terraform files.
+
+**Files:**
+- `rcps.tf`: Policy resource and attachments
+- `locals.tf`: RCP policy document
+- `data.tf`: Organization data source
+- `variables.tf`: Allowlist configuration
+- `README.md`: Usage documentation
+
+**Key Variables:**
+```hcl
+variable "target_id" {
+  type        = string
+  description = "OU ID or account ID to attach RCP"
+}
+
+variable "enforce_assume_role_org_identities" {
+  type    = bool
+  default = false
+}
+
+variable "third_party_assumerole_account_ids_allowlist" {
+  type        = list(string)
+  default     = []
+  description = "Third-party account IDs approved for AssumeRole"
+}
+```
+
+**RCP Policy Logic:**
+
+Denies `sts:AssumeRole` EXCEPT:
+1. Principals from organization (`aws:PrincipalOrgID`)
+2. Principals from allowlisted third-party accounts (`aws:PrincipalAccount`)
+3. AWS service principals (`aws:PrincipalType = "Service"`)
+4. Resources tagged with `dp:exclude:identity: true`
+
+**See:** [modules/rcps/README.md](https://github.com/discocrayon/Headroom/tree/main/test_environment/modules/rcps#rcps-module)
+
+### Generated Outputs
+
+#### `scps/` Directory (Generated by Headroom)
+
+**`grab_org_info.tf`**
+
+Auto-generated Organization data sources with validation logic.
+
+```hcl
+# Auto-generated by Headroom
+
+data "aws_organizations_organization" "org" {}
+
+data "aws_organizations_organizational_units" "root_ou" {
+  parent_id = data.aws_organizations_organization.org.roots[0].id
+}
+
+data "aws_organizations_organizational_unit_child_accounts" "high_value_assets_accounts" {
+  parent_id = [
+    for ou in data.aws_organizations_organizational_units.root_ou.children :
+    ou.id if ou.name == "high_value_assets"
+  ][0]
+}
+
+locals {
+  # Root validation
+  validation_check_root = (length(data.aws_organizations_organization.org.roots) == 1) ? 
+    "All good. This is a no-op." : 
+    error("[Error] Expected exactly 1 root, found ${length(data.aws_organizations_organization.org.roots)}")
+  
+  root_ou_id = data.aws_organizations_organization.org.roots[0].id
+  
+  # OU validation
+  validation_check_high_value_assets_ou = (length([
+    for ou in data.aws_organizations_organizational_units.root_ou.children :
+    ou.id if ou.name == "high_value_assets"
+  ]) == 1) ? "All good." : error("[Error] Expected 1 high_value_assets OU")
+  
+  top_level_high_value_assets_ou_id = [
+    for ou in data.aws_organizations_organizational_units.root_ou.children :
+    ou.id if ou.name == "high_value_assets"
+  ][0]
+  
+  # Account validation
+  validation_check_fort_knox_account = (length([
+    for account in data.aws_organizations_organizational_unit_child_accounts.high_value_assets_accounts.accounts :
+    account.id if account.name == "fort-knox"
+  ]) == 1) ? "All good." : error("[Error] Expected 1 fort-knox account")
+  
+  fort_knox_account_id = [
+    for account in data.aws_organizations_organizational_unit_child_accounts.high_value_assets_accounts.accounts :
+    account.id if account.name == "fort-knox"
+  ][0]
+}
+```
+
+**Purpose:** Provides locals for SCP Terraform files to reference; validates organization structure at plan time.
+
+**`root_scps.tf`**
+
+Example of root-level SCP deployment (generated when all accounts 100% compliant).
+
+```hcl
+# Auto-generated SCP Terraform configuration for Organization Root
+# Generated by Headroom based on compliance analysis
+
+module "scps_root" {
+  source = "../modules/scps"
+  target_id = local.root_ou_id
+
+  # EC2
+  deny_imds_v1_ec2 = false
+
+  # IAM
+  deny_iam_user_creation = true
+  allowed_iam_users = [
+    "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
+    "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
+    "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",
+    "arn:aws:iam::${local.acme_co_account_id}:user/terraform-user",
+    "arn:aws:iam::${local.shared_foo_bar_account_id}:user/legacy-developer",
+  ]
+}
+```
+
+**Note:** `deny_imds_v1_ec2 = false` because EC2 test instances create violations. In real environment with 100% compliance, this would be `true`.
+
+**`{ou_name}_ou_scps.tf`**
+
+Example of OU-level SCP deployment.
+
+```hcl
+# Auto-generated SCP Terraform configuration for high_value_assets OU
+# Generated by Headroom based on compliance analysis
+
+module "scps_high_value_assets_ou" {
+  source = "../modules/scps"
+  target_id = local.top_level_high_value_assets_ou_id
+
+  # EC2
+  deny_imds_v1_ec2 = true
+
+  # IAM
+  deny_iam_user_creation = false
+}
+```
+
+**`{account_name}_scps.tf`**
+
+Example of account-level SCP deployment.
+
+```hcl
+# Auto-generated SCP Terraform configuration for fort-knox
+# Generated by Headroom based on compliance analysis
+
+module "scps_fort_knox" {
+  source = "../modules/scps"
+  target_id = local.fort_knox_account_id
+
+  # EC2
+  deny_imds_v1_ec2 = true
+
+  # IAM
+  deny_iam_user_creation = false
+}
+```
+
+#### `rcps/` Directory (Generated by Headroom)
+
+**`grab_org_info.tf`**
+
+Identical structure to `scps/grab_org_info.tf` (Organization data sources with validation).
+
+**`{ou_name}_ou_rcps.tf`**
+
+Example of OU-level RCP deployment (union of third-party accounts).
+
+```hcl
+# Auto-generated RCP Terraform configuration for acme_acquisition OU
+# Generated by Headroom based on IAM trust policy analysis
+# Union of third-party accounts from all accounts in this OU
+
+module "rcps_acme_acquisition_ou" {
+  source = "../modules/rcps"
+  target_id = local.top_level_acme_acquisition_ou_id
+
+  # third_party_assumerole
+  enforce_assume_role_org_identities = true
+  third_party_assumerole_account_ids_allowlist = [
+    "749430749651",
+  ]
+}
+```
+
+**Note:** Only contains CrowdStrike (749430749651) because acme-co is the only account in this OU and it only trusts CrowdStrike.
+
+**`{account_name}_rcps.tf`**
+
+Example of account-level RCP deployment.
+
+```hcl
+# Auto-generated RCP Terraform configuration for shared-foo-bar
+# Generated by Headroom based on IAM trust policy analysis
+
+module "rcps_shared_foo_bar" {
+  source = "../modules/rcps"
+  target_id = local.shared_foo_bar_account_id
+
+  # third_party_assumerole
+  enforce_assume_role_org_identities = true
+  third_party_assumerole_account_ids_allowlist = [
+    "062897671886",
+    "081802104111",
+    "151784055945",
+    "242987662583",
+    "292230061137",
+    "365761988620",
+    "517716713836",
+    "672188301118",
+    "749430749651",
+    "758245563457",
+    "978576646331",
+  ]
+}
+```
+
+**Note:** Contains all 11 third-party accounts detected in shared-foo-bar's IAM roles.
+
+#### `headroom_results/` Directory (Generated by Headroom)
+
+**Directory Structure:**
+```
+headroom_results/
+├── scps/
+│   ├── deny_imds_v1_ec2/
+│   │   ├── acme-co.json
+│   │   ├── fort-knox.json
+│   │   ├── security-tooling.json
+│   │   └── shared-foo-bar.json
+│   └── deny_iam_user_creation/
+│       ├── acme-co.json
+│       ├── fort-knox.json
+│       ├── security-tooling.json
+│       └── shared-foo-bar.json
+└── rcps/
+    └── third_party_assumerole/
+        ├── acme-co.json
+        ├── fort-knox.json
+        ├── security-tooling.json
+        └── shared-foo-bar.json
+```
+
+**Example: `scps/deny_imds_v1_ec2/acme-co.json`**
+```json
+{
+  "summary": {
+    "account_name": "acme-co",
+    "check": "deny_imds_v1_ec2",
+    "total_instances": 1,
+    "violations": 0,
+    "exemptions": 0,
+    "compliant": 1,
+    "compliance_percentage": 100.0
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "region": "us-east-1",
+      "instance_id": "i-0028862fcc86a6d7c",
+      "imdsv1_allowed": false,
+      "exemption_tag_present": false
+    }
+  ]
+}
+```
+
+**Example: `scps/deny_iam_user_creation/acme-co.json`**
+```json
+{
+  "summary": {
+    "account_name": "acme-co",
+    "check": "deny_iam_user_creation",
+    "total_users": 2,
+    "users": [
+      "arn:aws:iam::REDACTED:user/contractors/temp-contractor",
+      "arn:aws:iam::REDACTED:user/terraform-user"
+    ]
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "user_name": "temp-contractor",
+      "user_arn": "arn:aws:iam::REDACTED:user/contractors/temp-contractor",
+      "path": "/contractors/"
+    },
+    {
+      "user_name": "terraform-user",
+      "user_arn": "arn:aws:iam::REDACTED:user/terraform-user",
+      "path": "/"
+    }
+  ]
+}
+```
+
+**Note:** ARNs show `REDACTED` because example results were generated with `exclude_account_ids: true` in config.
+
+**Example: `rcps/third_party_assumerole/shared-foo-bar.json`**
+```json
+{
+  "summary": {
+    "account_name": "shared-foo-bar",
+    "check": "third_party_assumerole",
+    "total_roles_analyzed": 11,
+    "roles_third_parties_can_access": 10,
+    "roles_with_wildcards": 1,
+    "violations": 1,
+    "unique_third_party_accounts": [
+      "062897671886",
+      "081802104111",
+      "151784055945",
+      "242987662583",
+      "292230061137",
+      "365761988620",
+      "517716713836",
+      "672188301118",
+      "749430749651",
+      "758245563457",
+      "978576646331"
+    ],
+    "third_party_account_count": 11
+  },
+  "roles_third_parties_can_access": [
+    {
+      "role_name": "ThirdPartyVendorA",
+      "role_arn": "arn:aws:iam::REDACTED:role/ThirdPartyVendorA",
+      "third_party_account_ids": ["749430749651"],
+      "has_wildcard_principal": false
+    }
+  ],
+  "roles_with_wildcards": [
+    {
+      "role_name": "WildcardRole",
+      "role_arn": "arn:aws:iam::REDACTED:role/WildcardRole",
+      "third_party_account_ids": [],
+      "has_wildcard_principal": true
+    }
+  ]
+}
+```
+
+### Reproducibility Guide
+
+#### Prerequisites
+
+1. AWS Organizations with management account access
+2. Terraform installed (v1.0+)
+3. AWS CLI configured with management account credentials
+4. Python 3.13+ with requirements installed
+5. Headroom configuration file
+
+#### Initial Setup
+
+**Step 1: Configure Variables**
+
+```bash
+cd test_environment/
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Edit `terraform.tfvars`:
+```hcl
+base_email = "your-email+aws@example.com"
+```
+
+**Note:** Uses email + addressing to create unique emails per account.
+
+**Step 2: Deploy Core Infrastructure**
+
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+This creates:
+- 3 organizational units
+- 4 member accounts
+- OrgAndAccountInfoReader role in management account
+- Headroom roles in all member accounts
+- Test IAM users
+- Test IAM roles with trust policies
+
+**Expected Time:** 10-15 minutes (account creation is slow).
+
+**Step 3: Configure Headroom**
+
+Create `my_config.yaml` in repo root:
+```yaml
+management_account_id: '222222222222'  # Your management account ID
+exclude_account_ids: false
+use_account_name_from_tags: false
+
+account_tag_layout:
+  environment: 'Environment'
+  name: 'Name'
+  owner: 'Owner'
+```
+
+**Note:** Omit `security_analysis_account_id` if running from security-tooling account.
+
+#### Running Headroom Analysis
+
+**Step 1: Execute Headroom**
+
+```bash
+# From repo root
+python -m headroom --config my_config.yaml
+```
+
+**Expected Output:**
+```
+================================================================================
+SCP/RCP PLACEMENT RECOMMENDATIONS
+================================================================================
+
+Check: deny_iam_user_creation
+Recommended Level: ROOT
+Affected Accounts: 4
+Compliance: 100.0%
+Reasoning: All accounts in organization have zero violations - safe to deploy at root level
+----------------------------------------
+
+Check: third_party_assumerole
+Recommended Level: OU
+Affected Target: acme_acquisition (ou-xxxx-xxxxxxxx)
+Affected Accounts: 1
+Third-Party Accounts: 1
+Reasoning: All accounts under this OU allow the same third-party accounts with no violations - safe for OU-level RCP
+----------------------------------------
+```
+
+**Step 2: Verify Generated Files**
+
+Check that files were created:
+```bash
+ls test_environment/scps/
+# grab_org_info.tf
+# root_scps.tf
+# high_value_assets_ou_scps.tf  (if applicable)
+
+ls test_environment/rcps/
+# grab_org_info.tf
+# acme_acquisition_ou_rcps.tf
+# security_tooling_rcps.tf
+
+ls test_environment/headroom_results/scps/deny_iam_user_creation/
+# acme-co.json
+# fort-knox.json
+# security-tooling.json
+# shared-foo-bar.json
+```
+
+**Step 3: Review Results**
+
+Compare generated files with examples in repository:
+- `test_environment/scps/root_scps.tf`
+- `test_environment/rcps/acme_acquisition_ou_rcps.tf`
+- `test_environment/headroom_results/scps/deny_iam_user_creation/acme-co.json`
+
+#### Testing EC2 IMDSv1 Check (Optional)
+
+**⚠️ Warning:** Creates billable EC2 instances (~$12.54/month if left running).
+
+```bash
+cd test_environment/test_deny_imds_v1_ec2/
+terraform init
+terraform apply
+
+# Run Headroom again
+cd ../..
+python -m headroom --config my_config.yaml
+
+# Check updated results
+cat test_environment/headroom_results/scps/deny_imds_v1_ec2/acme-co.json
+
+# Destroy instances immediately
+cd test_environment/test_deny_imds_v1_ec2/
+terraform destroy
+```
+
+**Expected Results:**
+- `acme-co`: 1 compliant instance (IMDSv2 required)
+- `fort-knox`: 1 exemption (IMDSv1 allowed but tagged)
+- `shared-foo-bar`: 1 violation (IMDSv1 allowed, no exemption)
+
+#### Cleanup
+
+**Destroy Member Account Resources:**
+```bash
+cd test_environment/test_deny_imds_v1_ec2/
+terraform destroy  # If EC2 instances exist
+
+cd ..
+terraform destroy -target=aws_iam_user.terraform_user
+terraform destroy -target=aws_iam_user.github_actions
+terraform destroy -target=aws_iam_user.legacy_developer
+terraform destroy -target=aws_iam_user.cicd_deployer
+terraform destroy -target=aws_iam_user.temp_contractor
+terraform destroy -target=aws_iam_role.third_party_vendor_a
+terraform destroy -target=aws_iam_role.wildcard_role
+# ... repeat for all IAM roles
+```
+
+**Note:** AWS Organizations accounts cannot be deleted via Terraform or API. Must be deleted manually via AWS Console:
+1. Remove all resources from accounts
+2. Close accounts via AWS Organizations console
+3. Wait 90 days for account closure to complete
+
+### Expected Test Scenarios & Results
+
+#### Scenario 1: All Accounts Compliant (IAM Users)
+
+**Initial State:** 5 IAM users across 4 accounts, no violations.
+
+**Expected Results:**
+- Root-level SCP recommended
+- All 5 user ARNs in allowlist
+- ARNs transformed with `${local.X_account_id}` references
+- Compliance: 100%
+
+**Generated File:** `scps/root_scps.tf`
+
+#### Scenario 2: Third-Party Access without Wildcards (acme-co)
+
+**Initial State:** 1 role trusting CrowdStrike, no wildcards.
+
+**Expected Results:**
+- OU-level RCP recommended (if other accounts in OU also compliant)
+- Third-party allowlist: `["749430749651"]`
+- Compliance: 100%
+
+**Generated File:** `rcps/acme_acquisition_ou_rcps.tf`
+
+#### Scenario 3: Wildcard Principal Detection (fort-knox)
+
+**Initial State:** 1 role with `Principal: "*"` wildcard.
+
+**Expected Results:**
+- Account excluded from RCP generation
+- Violation flagged in results JSON
+- OU-level RCP not possible if fort-knox in same OU
+- CloudTrail analysis recommended (future feature)
+
+**Generated File:** None (account excluded due to wildcard).
+
+#### Scenario 4: EC2 IMDSv1 with Exemptions (fort-knox)
+
+**Initial State:** 1 EC2 instance with IMDSv1 enabled + `ExemptFromIMDSv2` tag.
+
+**Expected Results:**
+- Instance categorized as "exemption"
+- Account compliance: 100%
+- Compliance calculation: (exemptions + compliant) / total
+- Eligible for OU or root-level SCP
+
+**Generated File:** `scps/high_value_assets_ou_scps.tf` (if all accounts in OU compliant).
+
+#### Scenario 5: Multiple Third-Party Accounts (shared-foo-bar)
+
+**Initial State:** 15 roles trusting 11 unique third-party accounts + 1 wildcard.
+
+**Expected Results:**
+- Account excluded from OU/root RCPs due to wildcard
+- Account-level RCP generated for account (excluding wildcard role)
+- All 11 third-party IDs in allowlist
+- Wildcard violation flagged
+
+**Generated File:** `rcps/shared_foo_bar_rcps.tf` (account-level only).
+
+### Integration with Development Workflow
+
+#### Unit Tests vs Live Integration
+
+| Aspect | Unit Tests (`tests/`) | Live Integration (`test_environment/`) |
+|--------|----------------------|----------------------------------------|
+| Execution | Mocked AWS API calls | Real AWS API calls |
+| Speed | Fast (~10 seconds) | Slow (~5 minutes) |
+| Cost | Free | ~$0 (without EC2) or ~$12/month (with EC2) |
+| Coverage | Function-level | End-to-end workflow |
+| Purpose | Verify code correctness | Verify AWS integration |
+| CI/CD | Runs on every commit | Manual execution |
+
+#### When to Update Test Environment
+
+1. **New Check Added:** Add test scenarios in `test_deny_{check_name}.tf`
+2. **Policy Changes:** Update `modules/scps/` or `modules/rcps/` and regenerate
+3. **Organization Structure Changes:** Modify `organizational_units.tf` and `accounts.tf`
+4. **Breaking Changes:** Rebuild from scratch to verify reproducibility
+5. **Documentation Updates:** Regenerate example outputs for README.md
+
+#### Committing Generated Files
+
+**Philosophy:** Generated files are committed to demonstrate tool output and provide documentation.
+
+**What to Commit:**
+- `scps/*.tf` (generated SCP Terraform)
+- `rcps/*.tf` (generated RCP Terraform)
+- `headroom_results/**/*.json` (JSON analysis results)
+
+**What NOT to Commit:**
+- `terraform.tfstate` (contains sensitive account IDs)
+- `terraform.tfvars` (contains personal email)
+- `test_deny_imds_v1_ec2/terraform.tfstate` (EC2 instance IDs)
+
+**Gitignore Pattern:**
+```
+test_environment/terraform.tfstate*
+test_environment/test_deny_imds_v1_ec2/terraform.tfstate*
+test_environment/terraform.tfvars
+```
+
+#### Documentation-by-Example
+
+The test environment serves as executable documentation:
+
+1. **README.md Examples:** Code blocks reference actual generated files
+2. **Module READMEs:** Point to test environment usage patterns
+3. **Specification:** References test environment for concrete examples
+4. **Onboarding:** New contributors deploy test environment to understand workflow
+
+### Cost Considerations
+
+#### Ongoing Costs (Without EC2)
+
+- **AWS Organizations:** Free
+- **IAM Roles:** Free
+- **IAM Users:** Free
+- **Data Sources:** Free (query costs negligible)
+
+**Total: $0/month**
+
+#### Ongoing Costs (With EC2 Instances)
+
+- **3x t2.nano instances:** ~$12.54/month
+- **Data Transfer:** Negligible (no network traffic)
+- **EBS Volumes:** Included with t2.nano
+
+**Total: ~$12.54/month** (if instances left running)
+
+**Recommendation:** Keep EC2 instances destroyed except during active testing.
+
+#### One-Time Costs
+
+- **AWS Account Creation:** Free
+- **Terraform State Storage:** Free (local state)
+- **API Calls:** Negligible (covered by free tier)
+
+#### Cost Optimization Tips
+
+1. Destroy EC2 instances immediately after testing
+2. Use `terraform.tfstate` locally (no S3 costs)
+3. Run Headroom infrequently (API calls are cheap but not free)
+4. Close unused member accounts after testing (90-day process)
+
+---
+
 ## IAM Role Requirements
 
 ### OrganizationAccountAccessRole
@@ -1778,6 +2895,7 @@ mypy headroom/ tests/
   - `organizations:ListOrganizationalUnitsForParent`
   - `organizations:ListAccountsForParent`
 - **Purpose:** Query Organizations API for account discovery and hierarchy analysis
+- **Reference Implementation:** See `test_environment/org_and_account_info_reader.tf`
 
 ### Headroom
 - **Location:** All accounts (including management, excluding security analysis if running from there)
@@ -1787,6 +2905,7 @@ mypy headroom/ tests/
   - **EC2:** `ec2:DescribeRegions`, `ec2:DescribeInstances`
   - **IAM:** `iam:ListUsers`, `iam:ListRoles`, `iam:GetRole`
 - **Purpose:** Execute compliance checks in each account
+- **Reference Implementation:** See `test_environment/modules/headroom_role/` and `test_environment/headroom_roles.tf`
 
 ---
 
@@ -1826,6 +2945,8 @@ mypy headroom/ tests/
   "compliant_instances": [...]
 }
 ```
+
+**See:** Test Environment section for complete example result files in `test_environment/headroom_results/`.
 
 ---
 
