@@ -1,16 +1,42 @@
 """
 Compliance checks for Headroom security analysis.
 
-Imports all check modules to ensure they register themselves via the
-@register_check decorator.
+Automatically discovers and imports all check modules to ensure they register
+themselves via the @register_check decorator.
 """
 
-# These imports are required to trigger decorator execution and register checks.
-# The @register_check decorator only runs when the module is imported, so without
-# these imports, the checks would never register themselves in _CHECK_REGISTRY.
-from .rcps import deny_third_party_assumerole  # noqa: F401
-from .scps import deny_iam_user_creation  # noqa: F401
-from .scps import deny_imds_v1_ec2  # noqa: F401
+import importlib
+import pkgutil
+from pathlib import Path
+
+
+def _discover_and_register_checks() -> None:
+    """
+    Automatically discover and import all check modules.
+
+    Walks through scps/ and rcps/ directories and imports all Python files
+    (except __init__.py). This triggers the @register_check decorator,
+    which registers checks in the registry.
+
+    This eliminates the need for manual imports when adding new checks.
+    """
+    checks_dir = Path(__file__).parent
+
+    for check_type in ["scps", "rcps"]:
+        check_type_dir = checks_dir / check_type
+
+        if not check_type_dir.exists():
+            continue
+
+        for module_info in pkgutil.iter_modules([str(check_type_dir)]):
+            if module_info.name == "__init__":
+                continue
+
+            module_name = f"headroom.checks.{check_type}.{module_info.name}"
+            importlib.import_module(module_name)
+
+
+_discover_and_register_checks()
 
 # Check classes are accessed via registry, not direct imports
 __all__ = []
