@@ -12737,3 +12737,371 @@ Reorganize the documentation directory by creating a new mermaid_diagrams subdir
 ✅ Moved all 4 mermaid diagram files (class_diagram.md, execution_flow.md, sequences.md, module_dependency.md)
 ✅ Moved the README.md that references these diagrams
 ✅ Documentation folder now better organized with diagrams in their own subdirectory
+
+---
+
+## Sunday, November 9, 2025 - Creating HOW_TO_ADD_A_CHECK.md Guide
+
+**User Request:**
+Create a comprehensive guide documenting all steps from 0 to finished for adding a new SCP or RCP check to Headroom, including Python implementation, Terraform modules, code generation, testing, test environment infrastructure, and documentation. Use RDS encryption as the concrete example instead of S3.
+
+**Analysis Performed:**
+Comprehensive review of existing codebase patterns:
+- Analyzed all existing checks (deny_imds_v1_ec2, deny_iam_user_creation, third_party_assumerole)
+- Examined Terraform module structure (scps, rcps)
+- Reviewed test patterns and infrastructure
+- Studied code generation logic in terraform/generate_scps.py and generate_rcps.py
+- Identified all integration points and common pitfalls
+
+**Guide Structure:**
+1. **Phase 0: Planning & Design** - Check type determination, policy pattern mapping, specification creation
+2. **Phase 1: Python Implementation** - Data models, AWS analysis functions, check classes, registration
+3. **Phase 2: Terraform Module Updates** - Variables, policy statements, module configuration
+4. **Phase 3: Terraform Generation Updates** - Hardcoded category additions, boolean generation, allowlist handling
+5. **Phase 4: Testing** - Unit tests, AWS analysis tests, coverage verification
+6. **Phase 5: Test Environment Infrastructure** - Test resources, cost warnings, cleanup procedures
+7. **Phase 6: End-to-End Testing** - Running Headroom, verifying results, validating Terraform
+8. **Phase 7: Documentation** - POLICY_TAXONOMY.md, Headroom-Specification.md, module READMEs, conversation history
+
+**Example Check: deny_rds_unencrypted**
+- Check Type: SCP
+- Policy Pattern: Pattern 2 (Conditional Deny) + Pattern 4 (Exception Tag Allow)
+- Service: RDS (instances and Aurora clusters)
+- Exemption Tag: ExemptFromEncryption = "true"
+- Complete code examples for:
+  - Data model (DenyRdsUnencrypted dataclass)
+  - Analysis function (multi-region, paginated, with exemption detection)
+  - Check class (analyze, categorize_result, build_summary_fields)
+  - Unit tests (mixed scenarios, edge cases)
+  - Test infrastructure (3 RDS resources: compliant, exempt, violation)
+  - Terraform generation (RDS category in generate_scps.py)
+
+**Complete Checklist:**
+- 80+ checklist items organized by phase
+- Covers planning, implementation, testing, infrastructure, documentation
+- Includes verification steps for each phase
+
+**Quick Reference:**
+- New files to create (7 files for typical check)
+- Files to modify (9 files minimum)
+- Generated files to commit
+
+**Common Pitfalls:**
+15 specific pitfalls documented with symptoms, causes, and fixes:
+1. Forgetting to import check
+2. Not updating Terraform generation
+3. Mismatched check names
+4. Missing from CHECK_TYPE_MAP
+5. Terraform variable defaults
+6. Incorrect categorization logic
+7. Not handling AWS API pagination
+8. Insufficient IAM permissions
+9. Category placement in Terraform generation
+10. Test environment resource naming conflicts
+11. Forgetting multi-region support
+12. Incorrect summary field calculation
+13. Not testing edge cases
+14. Documentation out of sync
+15. Expensive test resources left running
+
+**Files Created:**
+- `HOW_TO_ADD_A_CHECK.md` - 2,089 lines, comprehensive guide with complete code examples
+
+**Key Features:**
+- Complete working code examples (not pseudocode)
+- Multi-region AWS analysis patterns
+- Pagination handling for all list operations
+- Exemption tag detection patterns
+- Comprehensive test coverage examples
+- Cost warnings for expensive resources (RDS: ~$22-37/month)
+- Terraform module conditional inclusion patterns
+- Generated Terraform validation steps
+- Cross-references to existing checks for templates
+
+**Results:**
+✅ Created comprehensive 2,089-line guide with RDS encryption example
+✅ Covers all 7 phases from planning through documentation
+✅ Includes 80+ checklist items for verification
+✅ Documents 15 common pitfalls with specific fixes
+✅ Provides complete working code examples (not pseudocode)
+✅ Includes Quick Reference section for file checklists
+✅ Cost estimates and cleanup instructions for test resources
+✅ Cross-references to existing checks and documentation
+✅ Ready for use when adding future checks to Headroom
+
+---
+
+## Sunday, November 9, 2025 - Added Code Quality Standards to HOW_TO_ADD_A_CHECK.md
+
+**User Request:**
+Add comprehensive code quality requirements to the HOW_TO_ADD_A_CHECK.md guide, ensuring future checks meet production standards.
+
+**Requirements Added:**
+All requirements now explicitly documented and integrated into the guide.
+
+**New Section: "Code Quality Standards"**
+Added comprehensive section after Prerequisites covering:
+
+**Production Code Requirements:**
+- Complete, production-ready implementations (no TODOs or placeholders)
+- Full type annotations for ALL functions, methods, variables
+- All imports at top of file (no dynamic imports)
+- Specific exception handling (never bare except or except Exception)
+- All mypy type checks must pass
+
+**Code Structure Standards:**
+- DRY principles: Extract duplicate code into shared functions
+- Single Responsibility Principle: One function = one purpose
+- Small functions (typically 10-30 lines)
+- Minimize indentation: Use early returns and continue statements
+- Clean Code principles
+
+**Documentation Standards:**
+- Multi-line docstrings for ALL public functions (PEP 257)
+- Include Args, Returns, Raises sections
+- Algorithm sections for complex logic
+- Descriptive, clear naming (no abbreviations)
+
+**Testing Requirements:**
+- 100% test coverage for new code (verified)
+- Test all code paths and edge cases
+- Test scenarios: mixed, all compliant, all violations, empty results, errors
+
+**Code Quality Tools:**
+- Must pass: mypy, flake8, autopep8, autoflake, tox
+- No trailing whitespace
+- Files end with newline
+- No stray blank lines
+
+**Edge Case Handling:**
+- Empty results, missing fields, pagination, API errors
+- Permission errors, network errors, malformed data
+
+**Final Quality Checks:**
+Seven-point checklist before completion:
+1. DRY analysis
+2. Indentation review
+3. Edge case verification
+4. Naming consistency
+5. Type coverage
+6. Documentation (PEP 257)
+7. Tool validation (tox)
+
+**Updated Complete Checklist:**
+Added "Code Quality Verification" section with 40+ detailed sub-checks covering:
+- DRY analysis (duplicate code extraction)
+- Indentation review (early returns, continue usage)
+- Type annotations (complete coverage, no Any)
+- Import organization (top-level only)
+- Exception handling (specific exceptions only)
+- Function design (single responsibility, small functions)
+- Documentation (PEP 257 compliance)
+- Naming conventions (verb_noun, descriptive)
+- Edge cases (all handled and tested)
+- Code quality tools (tox, mypy, flake8, etc.)
+
+**Updated Tips for Success:**
+Expanded from 10 to 15 tips, emphasizing:
+- Quality first (run tox frequently)
+- Type everything (as you write, not afterthought)
+- DRY continuously (refactor immediately)
+- Minimize nesting (early returns, continue)
+- Document as you go (write docstrings with functions)
+- Review your code (use quality checklist)
+
+**Added Final Quality Pass:**
+Five-step review process:
+1. Search for duplicate code → extract to functions
+2. Look for deep nesting → add early returns
+3. Check all edge cases → add tests
+4. Verify all names → ensure clarity
+5. Run tox → confirm all checks pass
+
+**Code Examples:**
+Added examples demonstrating:
+- Good structure with minimal indentation
+- Proper docstring format (PEP 257)
+- Early returns and continue statements
+- Single responsibility functions
+
+**Files Modified:**
+- `HOW_TO_ADD_A_CHECK.md` - Added 156 lines of code quality standards
+  - New "Code Quality Standards" section (156 lines)
+  - Updated Table of Contents
+  - Enhanced Complete Checklist with quality verification
+  - Expanded Tips for Success
+  - Added Final Quality Pass instructions
+
+**Impact:**
+- All future checks will have explicit quality standards to follow
+- Comprehensive checklist ensures nothing is missed
+- Examples demonstrate best practices
+- Clear before-after review process
+- Integrates with existing codebase standards from repo_specific_rule
+
+**Cross-references to Existing Rules:**
+Standards align with repo_specific_rule:
+✅ Type annotations (mypy compliance)
+✅ No dynamic imports (top-level only)
+✅ Specific exception handling (never bare except)
+✅ Multi-line docstrings (PEP 257)
+✅ No imports in functions
+✅ Minimal indentation (early returns, continue)
+✅ Single responsibility (no nested functions)
+✅ Clean Code principles
+✅ Run tox after implementation
+
+---
+
+## Sunday, November 9, 2025 - Changed deny_rds_unencrypted Example to Pattern 2 Only
+
+**User Request:**
+Change the deny_rds_unencrypted example in HOW_TO_ADD_A_CHECK.md from Pattern 2 + 4 (Conditional Deny + Exception Tag Allow) to Pattern 2 only (Conditional Deny).
+
+**Changes Made:**
+Systematically removed all Pattern 4 (Exception Tag) references throughout the guide.
+
+**Updated Sections:**
+
+**1. Phase 0: Planning & Design**
+- Step 0.2: Changed pattern from "Pattern 2 + 4" to "Pattern 2"
+- Step 0.3: Updated check specification:
+  - Removed exemption mechanism (now "None (strict enforcement)")
+  - Removed rds:ListTagsForResource from API calls
+  - Removed "Expected Exemptions" section
+
+**2. Phase 1: Python Implementation**
+- **Data Model:** Removed `exemption_tag_present` field from DenyRdsUnencrypted dataclass
+- **Analysis Function:** Removed exemption tag checking from algorithm
+- **Helper Functions:** Removed `_has_exemption_tag()` function entirely
+- **_analyze_rds_instance:** Removed exemption tag check and field
+- **_analyze_rds_cluster:** Removed exemption tag check and field
+- **Check Class:** Simplified categorization to two categories (violation, compliant) instead of three
+
+**3. Phase 2: Terraform Module Updates**
+- **locals.tf:** Removed `StringNotEquals` condition for exemption tag from policy
+- Policy now only checks `rds:StorageEncrypted` = "false"
+- Updated comments to reflect strict enforcement
+
+**4. Phase 4: Testing**
+- **Test Fixtures:** Removed exemption scenario from sample_rds_results_mixed
+- **Test Assertions:** Updated to expect 2 results (1 violation, 1 compliant) instead of 3
+- **Compliance Percentage:** Changed from 66.67% to 50.0%
+- **Individual Tests:** Removed test_categorize_result_exemption test
+- **AWS Tests:** Removed import of _has_exemption_tag
+- **AWS Tests:** Removed exemption tag test cases
+
+**5. Phase 5: Test Environment Infrastructure**
+- **test_deny_rds_unencrypted.tf:** Removed unencrypted_exempt database resource (Database 2)
+- Now only 2 test databases instead of 3
+- **Cost Estimate:** Updated from $22-37/month to $20-25/month
+- **Test Scenarios Table:** Removed exemption scenario
+- **README:** Updated deploy/destroy commands to exclude unencrypted_exempt
+- **Permissions:** Removed rds:ListTagsForResource from required permissions
+
+**6. Phase 6: End-to-End Testing**
+- **Expected Output:** Removed exemption counts from all account outputs
+- **fort-knox:** Changed from "Exemptions: 1" to "Violations: 0, Compliant: 0"
+- **Placement Recommendation:** Updated from 2 affected accounts to 1
+- **JSON Structure:** Removed "exemptions" field and exemption_tag_present from result objects
+
+**7. Phase 7: Documentation**
+- **POLICY_TAXONOMY.md:** Changed from "Pattern 2 + 4 Example" to "Pattern 2 Example"
+- Removed exemption tag from description
+- Removed exemption tag condition from policy structure
+- **Headroom-Specification.md:** 
+  - Removed exemption_tag_present from data model
+  - Removed tag checking from algorithm
+  - Simplified categorization to two categories
+  - Removed exemptions from summary fields
+  - Removed exemptions array from JSON schema
+- **Module README:** Changed pattern from "Patterns 2 + 4" to "Pattern 2"
+- Changed exemption mechanism from "Tag databases" to "None (strict enforcement)"
+- **Test Environment README:** 
+  - Removed exemption scenario from table
+  - Updated cost estimates
+  - Removed exemption from expected results
+  - Removed rds:ListTagsForResource from troubleshooting
+
+**Summary of Changes:**
+- **Removed:** All references to exemption tags, Pattern 4, ExemptFromEncryption tag
+- **Simplified:** Two-category system (violation/compliant) instead of three
+- **Reduced:** Test resources from 3 to 2 databases
+- **Updated:** All cost estimates, test scenarios, expected outputs
+- **Cleaner:** Simpler policy with only encryption condition
+
+**Files Modified:**
+- `HOW_TO_ADD_A_CHECK.md` - 27 sections updated throughout all 7 phases
+
+**Impact:**
+The example now demonstrates a pure Pattern 2 (Conditional Deny) implementation:
+- Denies RDS creation unless encrypted
+- No exemption mechanism
+- Strict enforcement
+- Simpler code (no tag checking)
+- Fewer test scenarios
+- Lower test environment costs
+
+**Pattern 2 Characteristics Now Shown:**
+✅ Conditional deny based on resource property (StorageEncrypted)
+✅ No exemptions or allowlists
+✅ Strict policy enforcement
+✅ Binary categorization (violation vs compliant)
+✅ Simpler implementation and testing
+
+---
+
+## 2025-11-09 14:00 - Refactored Check Registration to Use Automatic Discovery
+
+**Problem:** Manual import pattern was error-prone and required updating `headroom/checks/__init__.py` every time a new check was added.
+
+**Previous Implementation:**
+- Required manual imports with `# noqa: F401` comments
+- Example: `from .scps import deny_rds_unencrypted  # noqa: F401`
+- Easy to forget when adding new checks
+- Listed as step 1.4 in HOW_TO_ADD_A_CHECK.md
+
+**New Implementation:**
+- Automatic module discovery using `pkgutil.iter_modules()`
+- Walks `scps/` and `rcps/` directories at package import time
+- Imports all Python files (excluding `__init__.py`)
+- Zero maintenance required when adding new checks
+
+**Files Modified:**
+- `headroom/checks/__init__.py` - Replaced manual imports with `_discover_and_register_checks()` function
+- `HOW_TO_ADD_A_CHECK.md` - Updated Step 1.4, checklist, and Common Pitfalls section
+
+**Technical Details:**
+```python
+def _discover_and_register_checks() -> None:
+    """Automatically discover and import all check modules."""
+    checks_dir = Path(__file__).parent
+
+    for check_type in ["scps", "rcps"]:
+        check_type_dir = checks_dir / check_type
+        if not check_type_dir.exists():
+            continue
+
+        for module_info in pkgutil.iter_modules([str(check_type_dir)]):
+            if module_info.name == "__init__":
+                continue
+            module_name = f"headroom.checks.{check_type}.{module_info.name}"
+            importlib.import_module(module_name)
+```
+
+**Benefits:**
+- Zero chance of forgetting to register a check
+- No need to edit `__init__.py` when adding checks
+- Cleaner codebase (no `# noqa` comments)
+- More Pythonic (follows plugin discovery pattern)
+- Reduces cognitive load for developers adding checks
+
+**Testing:**
+- All 371 tests pass
+- Verified all 3 existing checks are still registered
+- No linter errors
+
+**User Experience:**
+- Adding a check now requires one fewer step
+- HOW_TO_ADD_A_CHECK.md simplified
+- Documentation updated to reflect automatic discovery
