@@ -12417,3 +12417,323 @@ wc -l Headroom-Specification.md
 ✅ No "before/after" comparisons or evolution stories
 ✅ No phase tracking or implementation status markers
 ✅ Clean, focused technical specification suitable for reference and reproduction
+
+---
+
+## Sunday, November 9, 2025 - SCP/RCP Pattern Categorization Discussion
+
+**Context:**
+User is working on categorizing different patterns of SCPs (Service Control Policies) and RCPs (Resource Control Policies) in AWS to better understand and document the different control mechanisms available.
+
+**User's Initial Categorization:**
+User proposed 6 categories of SCP/RCP patterns:
+
+| # | Pattern | Description | Notes / Examples |
+|---|---------|-------------|------------------|
+| 1 | **Absolute Deny** | Deny a specific action unconditionally | e.g., Deny `iam:CreateSAMLProvider` globally |
+| 2 | **Conditional Deny** | Deny an action unless a condition is met | e.g., Require S3 objects to be encrypted (`Condition: s3:x-amz-server-side-encryption`) |
+| 3 | **Tag-Based Allow Exception** | Exempt resources/principals based on module tags | e.g., Allow `Module=EKS-Cluster-Creator` to bypass a deny. Uses `aws:RequestTag` |
+| 4 | **Exception Tag Allow** | Exempt resources/principals via a targeted "exception tag" | e.g., Allow IMDSv1 only for workloads tagged `AllowIMDSv1` |
+| 5 | **Allowlist / Principal-Based Allow** | Deny an action except for explicitly approved principals, accounts, or roles | e.g., Only trusted IAM roles or org accounts may assume a role |
+| 6 | **Conditional Deny + Allowlist Composition** | Deny an action unless a condition is met **and** only allow specific principals/resources | e.g., Region allowlists (`Deny * unless aws:RequestedRegion in [us-east-1, us-west-2]`) or environment-scoped resource restrictions. This pattern is a **combination of #2 + #5** |
+
+**Assistant's Analysis:**
+Reviewed existing implementations to validate the categorization:
+- `deny_iam_user_creation`: Maps to Category 5 (Account-level allowlist)
+- `deny_imds_v1_ec2`: Maps to Category 4 (Exception tag allow with `ExemptFromIMDSv2` tag)
+- `deny_third_party_assumerole`: Maps to Category 5 (Principal-level allowlist)
+
+**Key Questions Raised:**
+
+1. **Categories 3 vs 4 - Tag Semantics:**
+   - What's the conceptual difference between "module tags" and "exception tags"?
+   - Hypothesis: Module tags = blessed automation/infrastructure, Exception tags = explicit security exemptions
+
+2. **Allowlist Granularity in Category 5:**
+   - Should we distinguish between account-level allowlists and principal-level allowlists?
+   - Current examples show both patterns exist in the codebase
+
+3. **Missing Patterns:**
+   - Category 1 (Absolute Deny) - no current examples, are there planned use cases?
+   - Category 2 (Conditional Deny) - S3 encryption mentioned, but no implementations yet
+
+4. **Proposed Refinement:**
+   - Split Category 5 into 5a (Account Allowlist) and 5b (Principal Allowlist)
+   - Clarify semantic distinction between Categories 3 and 4
+
+**Status:**
+🔄 In dialogue - awaiting user feedback on:
+- Whether to split Category 5 into subcategories
+- Clarification on module tag vs exception tag semantics
+- Examples of Category 1 (Absolute Deny) use cases
+- Plans for Category 2 (Conditional Deny) implementations
+
+**User Clarifications (Continued):**
+
+1. **Category 3 - Module Tags are NOT Exceptions:**
+   - Module tags represent the "Paved Road" - the proper, blessed way to do things
+   - This is NOT an exception mechanism, it's an indication of using approved automation/infrastructure-as-code
+   - Semantic difference: Category 3 = "this is the right way" vs Category 4 = "we need an exception"
+
+2. **Category 5 needs to be split into 3 subcategories:**
+   - Current categorization conflates different allowlist mechanisms
+   - User proposes based on HOW the allowlist is implemented:
+
+   **5a**: Organization-Level Allowlist (TBD if needed)
+   - Uses `aws:PrincipalOrgID`
+
+   **5b**: Account-Level Principal Allowlist
+   - Uses `aws:PrincipalAccount` condition key
+   - Example: `enforce_assume_role_org_identities` in RCP module
+   - Allows specific third-party account IDs via `var.third_party_assumerole_account_ids_allowlist`
+
+   **5c**: Resource ARN Allowlist
+   - Uses `NotResource` with ARN patterns
+   - Example: `deny_iam_user_creation` in SCP module
+   - Allows specific resource ARNs via `var.allowed_iam_users`
+
+**Code Evidence:**
+- `test_environment/modules/scps/locals.tf`: Shows `deny_iam_user_creation` using `NotResource = var.allowed_iam_users` (5c pattern)
+- `test_environment/modules/rcps/locals.tf`: Shows `enforce_assume_role_org_identities` using `aws:PrincipalAccount = var.third_party_assumerole_account_ids_allowlist` (5b pattern)
+
+**Revised Mapping:**
+- `deny_iam_user_creation` → Category 5c (Resource ARN allowlist, not 5b)
+- `deny_third_party_assumerole` → Category 5b (Account-level principal allowlist)
+- `deny_imds_v1_ec2` → Category 4 (Exception tag allow)
+
+**Status:**
+🔄 Awaiting user confirmation on:
+- Proposed Category 3 rename to emphasize "Paved Road" concept
+- Whether Category 5a (organization-level) is needed or can be folded into 5b
+- Final structure and naming for all 6 categories
+
+**User Decisions:**
+1. Rename Category 3 to "Module Tag / Paved Road Pattern" with description "Allow when proper Terraform module is used"
+2. Remove 5a (Organization-Level Allowlist) from the categorization for now - can be added later if needed
+
+**Revised Pattern Categories:**
+
+| # | Pattern | Description | Implementation Mechanism | AWS Constructs |
+|---|---------|-------------|-------------------------|----------------|
+| 1 | **Absolute Deny** | Deny a specific action unconditionally | Deny statement with no conditions | `Action`, `Resource` |
+| 2 | **Conditional Deny** | Deny an action unless a condition is met | Deny statement with condition keys | `Action`, `Resource`, `Condition` |
+| 3 | **Module Tag / Paved Road Pattern** | Allow when proper Terraform module is used | Deny statement with module tag condition | `aws:RequestTag`, `aws:ResourceTag`, `aws:PrincipalTag` |
+| 4 | **Exception Tag Allow** | Exempt resources/principals via a targeted exception tag | Deny statement with exception tag condition | `aws:RequestTag`, `aws:ResourceTag`, `aws:PrincipalTag` |
+| 5a | **Account-Level Principal Allowlist** | Deny except for explicitly approved AWS account IDs | Deny statement with principal account condition | `aws:PrincipalAccount`, `Condition` |
+| 5b | **Resource ARN Allowlist** | Deny except for explicitly approved resource ARNs | Deny statement with NotResource | `NotResource` |
+| 6 | **Conditional Deny + Allowlist Composition** | Deny unless condition is met AND only allow specific principals/resources | Combination of patterns #2 and #5 | Multiple `Condition` keys, possibly with `NotResource` |
+
+**Implementation Examples:**
+- **Pattern 4**: `deny_imds_v1_ec2` - uses `ExemptFromIMDSv2` tag for explicit security exemptions
+- **Pattern 5a**: `enforce_assume_role_org_identities` - uses `aws:PrincipalAccount` with third-party account allowlist
+- **Pattern 5b**: `deny_iam_user_creation` - uses `NotResource` with IAM user ARN patterns
+
+**Key Semantic Distinctions:**
+- **Pattern 3 (Paved Road)**: Proactive compliance through blessed automation ("you're doing it right")
+- **Pattern 4 (Exception Tag)**: Reactive exemption for specific resources ("you need an exception")
+- **Pattern 5a (Account-Level)**: WHO can perform the action (principal-focused)
+- **Pattern 5b (Resource ARN)**: WHAT can be acted upon (resource-focused)
+
+**Status:**
+🔄 Reviewing revised table with user for final confirmation
+
+**User Request:**
+Create a separate markdown file documenting the policy taxonomy in `documentation/POLICY_TAXONOMY.md`
+
+**Implementation:**
+Created comprehensive `POLICY_TAXONOMY.md` (395 lines) with:
+1. Overview and pattern categories table
+2. Detailed documentation for each of the 6 patterns with examples
+3. Key distinctions section explaining Pattern 3 vs 4 and Pattern 5a vs 5b
+4. Implementation examples from Headroom codebase with file references
+5. Design principles for policy creation
+6. Usage in Headroom workflow
+7. Future patterns consideration
+8. References to AWS documentation
+
+**File Structure:**
+- Pattern details with use cases, policy structures, and characteristics
+- Codebase references to `test_environment/modules/scps/locals.tf` and `test_environment/modules/rcps/locals.tf`
+- Semantic comparison tables for similar patterns
+- Real examples: `deny_imds_v1_ec2`, `enforce_assume_role_org_identities`, `deny_iam_user_creation`
+
+**Results:**
+✅ Comprehensive standalone documentation of policy patterns
+✅ Clear examples and implementation guidance
+✅ References to actual codebase implementations
+✅ Design principles for creating new policies
+✅ Ready for team reference and onboarding
+
+---
+
+## Sunday, November 9, 2025 - Test Environment Documentation in Specification
+
+**User Request:**
+Add comprehensive documentation for `test_environment/` to the Headroom-Specification.md, making it reproducible similar to the `headroom/` and `tests/` directories. The test environment is used for real live integration testing, and Headroom is run against it to reproduce the results found in `test_environment/headroom_results/`. Complete the organization structure diagram that was initially incomplete in the plan.
+
+**Plan Developed:**
+
+1. **New Major Section: "Test Environment & Live Integration"**
+   - Add after "Usage" section (before "IAM Role Requirements")
+   - Document purpose: real AWS infrastructure for live integration testing
+   - Explain difference from unit tests: actual AWS resources vs mocked API calls
+
+2. **Directory Structure Documentation**
+   - Complete file tree showing all components
+   - Root-level Terraform files (accounts.tf, organizational_units.tf, providers.tf, etc.)
+   - Test scenario files (test_deny_iam_user_creation.tf, test_deny_third_party_assumerole.tf, test_deny_imds_v1_ec2/)
+   - Modules (headroom_role/, scps/, rcps/)
+   - Generated outputs (scps/, rcps/, headroom_results/)
+
+3. **Organization Structure**
+   - Complete AWS Organizations hierarchy diagram with all accounts and OUs
+   - **Complete Account Details:**
+     - Management Account: 222222222222
+     - High Value Assets OU:
+       - fort-knox (production, Cloud Architecture, 1 IAM user, 1 IAM role with wildcard)
+       - security-tooling (111111111111, Security, 1 IAM user, where Headroom executes)
+     - Shared Services OU:
+       - shared-foo-bar (Traffic, 1 IAM user, 15 IAM roles, 11 third-party accounts)
+     - Acme Acquisition OU:
+       - acme-co (SRE, 2 IAM users, 1 IAM role, 1 third-party account)
+   - EC2 instances: 0-1 per account (only when testing)
+
+4. **Infrastructure Components**
+   - Root-level Terraform files: purpose and examples
+   - Provider configuration with cross-account aliases
+   - Variables and data sources
+   - IAM role deployments
+
+5. **Test Scenario Files**
+   - IAM User Creation Test: 5 users across 4 accounts with various paths
+   - Third-Party AssumeRole Test: 17 roles total with real vendor account IDs
+   - EC2 IMDSv1 Test: 3 instances with violations, exemptions, compliant states
+   - Cost warnings and usage patterns
+
+6. **Modules Documentation**
+   - headroom_role/: Reusable IAM role module with ViewOnlyAccess + SecurityAudit
+   - scps/: Production SCP module with statement filtering logic
+   - rcps/: Production RCP module with organization identity enforcement
+
+7. **Generated Outputs**
+   - grab_org_info.tf with validation logic
+   - Root, OU, and account-level SCPs/RCPs
+   - JSON result files with examples
+   - ARN transformation examples
+
+8. **Reproducibility Guide**
+   - Prerequisites
+   - Step-by-step setup instructions
+   - Expected outputs and verification
+   - EC2 testing (optional with cost warnings)
+   - Cleanup procedures
+
+9. **Expected Test Scenarios & Results**
+   - 5 concrete scenarios with initial state, expected results, generated files
+   - Scenario 1: All accounts compliant (IAM users)
+   - Scenario 2: Third-party access without wildcards
+   - Scenario 3: Wildcard principal detection
+   - Scenario 4: EC2 IMDSv1 with exemptions
+   - Scenario 5: Multiple third-party accounts
+
+10. **Integration with Development Workflow**
+    - Unit tests vs live integration comparison table
+    - When to update test environment
+    - What to commit vs gitignore
+    - Documentation-by-example philosophy
+
+11. **Cost Considerations**
+    - Ongoing costs: $0/month without EC2, ~$12.54/month with EC2
+    - One-time costs and optimization tips
+
+12. **Cross-References**
+    - Updated IAM Role Requirements section with reference implementations
+    - Updated SCP/RCP module sections with test_environment links
+    - Updated Result Structure section with example file references
+
+**Implementation:**
+
+1. Created comprehensive "Test Environment & Live Integration" section (~1,100 lines)
+2. Documented complete organization structure with all 4 accounts and 3 OUs
+3. Detailed all 17 test IAM roles with real third-party vendor account IDs
+4. Documented 5 test IAM users across different accounts
+5. Included EC2 test instances with cost warnings
+6. Provided step-by-step reproducibility guide
+7. Added comparison tables (unit tests vs live integration)
+8. Documented 5 expected test scenarios with concrete examples
+9. Updated cross-references in 5 existing sections:
+   - IAM Role Requirements (added reference implementations)
+   - SCP Module Structure (linked to test_environment/modules/scps/)
+   - RCP Module Structure (linked to test_environment/modules/rcps/)
+   - Organization Info Generation (linked to grab_org_info.tf examples)
+   - Result Structure (linked to headroom_results/ examples)
+
+**Key Details Documented:**
+
+- **Third-Party Account IDs (Real Vendors):**
+  - 749430749651: CrowdStrike
+  - 758245563457: Barracuda
+  - 517716713836: Check Point
+  - 365761988620: CyberArk
+  - 062897671886: Forcepoint
+  - 978576646331: Sophos
+  - 081802104111: Vectra
+  - 672188301118: Ermetic
+  - 242987662583: Zesty
+  - 151784055945: Duckbill Group
+  - 292230061137: Check Point (additional)
+
+- **Test Users:**
+  - acme-co: terraform-user (/), temp-contractor (/contractors/)
+  - fort-knox: github-actions (/service/)
+  - shared-foo-bar: legacy-developer (/)
+  - security-tooling: cicd-deployer (/automation/)
+
+- **Test Roles:**
+  - 15 roles in shared-foo-bar testing various trust policy patterns
+  - 1 role in acme-co (ThirdPartyVendorA - CrowdStrike)
+  - 1 role in fort-knox (WildcardRole - violation)
+
+- **EC2 Instances:**
+  - shared-foo-bar: test-imdsv1-enabled (violation)
+  - acme-co: test-imdsv2-only (compliant)
+  - fort-knox: test-imdsv1-exempt (exemption)
+
+**File Changes:**
+- Added ~1,120 lines to Headroom-Specification.md
+- Updated 5 cross-references to point to test_environment
+- Version remains 5.0 (additive change, not structural revision)
+- Total lines: 2,964 (up from 1,844)
+
+**Results:**
+✅ Complete test_environment documentation with same level of detail as headroom/ and tests/
+✅ Full organization structure diagram with all 4 accounts across 3 OUs
+✅ Step-by-step reproducibility guide for deploying test environment
+✅ Documentation of all test scenarios with expected results
+✅ Cost analysis ($0/month without EC2, ~$12.54/month with EC2)
+✅ Integration with development workflow explained
+✅ Cross-references added to existing sections
+✅ Documentation-by-example approach emphasized
+
+---
+
+## Sunday, November 9, 2025 - Reorganizing Documentation Structure
+
+**User Request:**
+Move all mermaid diagrams and the corresponding README from documentation/ to a new documentation/mermaid_diagrams/ folder to better organize the documentation.
+
+**Task:**
+Reorganize the documentation directory by creating a new mermaid_diagrams subdirectory and moving relevant files into it.
+
+**Files Moved:**
+- `documentation/class_diagram.md` → `documentation/mermaid_diagrams/class_diagram.md`
+- `documentation/execution_flow.md` → `documentation/mermaid_diagrams/execution_flow.md`
+- `documentation/sequences.md` → `documentation/mermaid_diagrams/sequences.md`
+- `documentation/module_dependency.md` → `documentation/mermaid_diagrams/module_dependency.md`
+- `documentation/README.md` → `documentation/mermaid_diagrams/README.md`
+
+**Results:**
+✅ Created documentation/mermaid_diagrams/ directory
+✅ Moved all 4 mermaid diagram files (class_diagram.md, execution_flow.md, sequences.md, module_dependency.md)
+✅ Moved the README.md that references these diagrams
+✅ Documentation folder now better organized with diagrams in their own subdirectory
