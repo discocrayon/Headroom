@@ -1,0 +1,25 @@
+{
+  "summary": {
+    "account_name": "acme-co",
+    "check": "deny_iam_user_creation",
+    "total_users": 2,
+    "users": [
+      "arn:aws:iam::REDACTED:user/contractors/temp-contractor",
+      "arn:aws:iam::REDACTED:user/terraform-user"
+    ]
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "user_name": "temp-contractor",
+      "user_arn": "arn:aws:iam::REDACTED:user/contractors/temp-contractor",
+      "path": "/contractors/"
+    },
+    {
+      "user_name": "terraform-user",
+      "user_arn": "arn:aws:iam::REDACTED:user/terraform-user",
+      "path": "/"
+    }
+  ]
+}

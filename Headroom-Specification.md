@@ -1,10 +1,10 @@
 # Headroom - AWS Multi-Account Security Analysis Tool
 ## Product Design Requirements (PDR)
 
-**Version:** 4.4
+**Version:** 4.5
 **Created:** 2025-10-26
 **Last Updated:** 2025-11-08
-**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation + RCP Analysis + RCP Auto-Generation + RCP Placement Optimization + RCP Union Strategy + Critical Bug Fixes + Architectural Organization + Framework Abstraction + Registry Pattern + Defensive Programming Elimination + Output Standardization)
+**Status:** Implementation Complete (Foundation + SCP Analysis + Results Processing + Code Quality Optimization + Terraform Generation + SCP Auto-Generation + RCP Analysis + RCP Auto-Generation + RCP Placement Optimization + RCP Union Strategy + Critical Bug Fixes + Architectural Organization + Framework Abstraction + Registry Pattern + Defensive Programming Elimination + Output Standardization + IAM User Creation SCP + IAM Module Refactoring)
 
 ---
 
@@ -118,7 +118,10 @@ class AccountInfo:
 - **`output.py`**: Centralized output handler for consistent user-facing formatting (check completion, errors, success messages, section headers)
 - **`aws/`**: AWS service integration modules
   - **`ec2.py`**: EC2 service integration and analysis functions
-  - **`iam.py`**: IAM trust policy analysis and third-party account detection
+  - **`iam/`**: IAM analysis package with separation of concerns
+    - **`roles.py`**: RCP-focused IAM role trust policy analysis and third-party account detection
+    - **`users.py`**: SCP-focused IAM user enumeration for creation policy enforcement
+    - **`__init__.py`**: Public API exports for clean module interface
   - **`organization.py`**: AWS Organizations API integration, hierarchy analysis, and shared account lookup utilities (`lookup_account_id_by_name`)
   - **`sessions.py`**: AWS session management and role assumption utilities (`assume_role`)
 - **`checks/`**: SCP/RCP compliance check implementations organized by policy type
@@ -126,6 +129,7 @@ class AccountInfo:
   - **`registry.py`**: Check registration system with `@register_check` decorator and discovery functions
   - **`scps/`**: Service Control Policy check implementations
     - **`deny_imds_v1_ec2.py`**: EC2 IMDS v1 compliance check (DenyImdsV1Ec2Check class)
+    - **`deny_iam_user_creation.py`**: IAM user discovery check for creation policy enforcement (DenyIamUserCreationCheck class)
   - **`rcps/`**: Resource Control Policy check implementations
     - **`check_third_party_assumerole.py`**: IAM trust policy third-party AssumeRole access check (ThirdPartyAssumeRoleCheck class)
 - **`terraform/`**: Terraform configuration generation modules
@@ -2657,6 +2661,451 @@ def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
 - Updated test for single-account OUs to verify they now get OU-level recommendations
 - All 329 tests passing with 100% coverage
 
+### PR-021: IAM User Creation SCP
+
+**Requirement:** The system MUST provide an SCP check for discovering IAM users to support enforcement of IAM user creation policies with allowlists defined in Terraform.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Implementation Specifications:**
+
+**Design Philosophy:**
+
+This check follows a **discovery-only** pattern where Python enumerates resources and Terraform handles policy enforcement:
+- **Python Role:** Discover and list all IAM users in each account
+- **Terraform Role:** Use `allowed_iam_users` variable with `NotResource` to deny creation of users not on allowlist
+- **No Allowlist in Python:** Unlike initial design, no allowlist configuration in Python code
+- **Pure Enumeration:** All users categorized as "compliant" since enforcement happens in Terraform
+
+**Key Design Decision:**
+
+Initially implemented with `allowed_iam_user_arns` in Python config and `on_allowlist` field in dataclass. Refactored to remove all allowlist concepts from Python per separation of concerns principle. This ensures Python focuses solely on discovery while Terraform handles enforcement logic.
+
+**Data Model:**
+
+```python
+@dataclass
+class IamUserAnalysis:
+    """
+    Analysis of an IAM user.
+
+    Attributes:
+        user_name: Name of the IAM user
+        user_arn: ARN of the IAM user
+        path: Path of the IAM user (e.g., "/", "/admins/")
+    """
+    user_name: str
+    user_arn: str
+    path: str
+```
+
+**Analysis Function (in `aws/iam/users.py`):**
+
+```python
+def get_iam_users_analysis(session: boto3.Session) -> List[IamUserAnalysis]:
+    """
+    Get all IAM users in an account.
+
+    Uses IAM list_users API with pagination support.
+    Returns list of all users regardless of path or tags.
+    No filtering logic - pure enumeration for discovery.
+
+    Args:
+        session: boto3 Session for the target account
+
+    Returns:
+        List of IamUserAnalysis for all IAM users
+
+    Raises:
+        ClientError: If list_users API call fails
+    """
+```
+
+**Check Implementation:**
+
+```python
+@register_check("scps", DENY_IAM_USER_CREATION)
+class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
+    """
+    Discovery-only check for IAM users.
+
+    Key Differences from Compliance Checks:
+    - No "violations" or "exemptions" categories
+    - All users categorized as "compliant"
+    - No allowlist parameter in __init__
+    - Purpose is discovery, not compliance assessment
+    - Enforcement happens in Terraform SCP, not Python
+
+    Inherits from BaseCheck and implements:
+    - analyze(): Calls get_iam_users_analysis()
+    - categorize_result(): Returns ("compliant", result_dict) for all users
+    - build_summary_fields(): Returns totals and 100% compliance
+    """
+
+    def analyze(self, session: boto3.Session) -> List[IamUserAnalysis]:
+        """Discover all IAM users in the account."""
+        return get_iam_users_analysis(session)
+
+    def categorize_result(self, result: IamUserAnalysis) -> tuple[str, Dict[str, Any]]:
+        """Categorize user as compliant (discovery only)."""
+        result_dict = {
+            "user_name": result.user_name,
+            "user_arn": result.user_arn,
+            "path": result.path,
+        }
+        return ("compliant", result_dict)
+
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+        """Build summary with 100% compliance (all users discovered)."""
+        total = len(check_result.compliant)
+        return {
+            "total_users": total,
+            "violations": 0,
+            "exemptions": 0,
+            "compliant": total,
+            "compliance_percentage": 100.0
+        }
+```
+
+**Result Structure:**
+
+```json
+{
+  "summary": {
+    "account_name": "prod-account",
+    "account_id": "123456789012",
+    "check": "deny_iam_user_creation",
+    "total_users": 5,
+    "violations": 0,
+    "exemptions": 0,
+    "compliant": 5,
+    "compliance_percentage": 100.0
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "user_name": "terraform-user",
+      "user_arn": "arn:aws:iam::123456789012:user/terraform-user",
+      "path": "/"
+    },
+    {
+      "user_name": "github-actions",
+      "user_arn": "arn:aws:iam::123456789012:user/ci/github-actions",
+      "path": "/ci/"
+    }
+  ]
+}
+```
+
+**Terraform Module Integration:**
+
+**Variables (test_environment/modules/scps/variables.tf):**
+
+```hcl
+variable "deny_iam_user_creation" {
+  type        = bool
+  description = "Enable SCP to deny IAM user creation"
+}
+
+variable "allowed_iam_users" {
+  type        = list(string)
+  description = "List of IAM user ARNs allowed to be created. Format: arn:aws:iam::ACCOUNT_ID:user/USERNAME"
+}
+```
+
+**Policy Logic (test_environment/modules/scps/locals.tf):**
+
+```hcl
+# Deny creation of IAM users not on the allowed list
+{
+  include = var.deny_iam_user_creation,
+  statement = {
+    Action      = "iam:CreateUser"
+    NotResource = var.allowed_iam_users
+  }
+}
+```
+
+**Usage Example:**
+
+```hcl
+module "scps" {
+  source = "./modules/scps"
+
+  target_id              = "444444444444"
+  deny_iam_user_creation = true
+  allowed_iam_users = [
+    "arn:aws:iam::444444444444:user/terraform-user",
+    "arn:aws:iam::444444444444:user/github-actions",
+  ]
+}
+```
+
+**Integration Points:**
+
+- **Constants:** `DENY_IAM_USER_CREATION = "deny_iam_user_creation"` in `constants.py`
+- **Registry:** Auto-registers via `@register_check("scps", DENY_IAM_USER_CREATION)`
+- **Check Type Map:** Automatically added to `CHECK_TYPE_MAP` as "scps" type
+- **Results Directory:** Results written to `{results_dir}/scps/deny_iam_user_creation/`
+- **Module Location:** `headroom/checks/scps/deny_iam_user_creation.py`
+
+**Testing Strategy:**
+
+- **User Enumeration:** Test with various user counts (0, 1, multiple)
+- **Pagination:** Verify pagination support for accounts with many users
+- **Path Handling:** Test users in root path (/) and nested paths (/admins/)
+- **Categorization:** Verify all users marked as "compliant"
+- **Result Structure:** Validate JSON output format matches specification
+- **Module Imports:** Test imports from `headroom.aws.iam.users`
+
+**Files Created:**
+
+- `headroom/checks/scps/deny_iam_user_creation.py` (69 lines)
+- `tests/test_checks_deny_iam_user_creation.py` (132 lines)
+
+**Files Modified:**
+
+- `headroom/constants.py`: Added `DENY_IAM_USER_CREATION` constant
+- `headroom/checks/__init__.py`: Added import for auto-registration
+- `test_environment/modules/scps/variables.tf`: Added `deny_iam_user_creation` and `allowed_iam_users` variables
+- `test_environment/modules/scps/locals.tf`: Added SCP statement for IAM user creation
+- `test_environment/modules/scps/README.md`: Documented new variables and policy
+
+**Test Results:**
+
+- All 367 tests passing (increased from 329)
+- 100% code coverage maintained
+- Comprehensive test coverage for user enumeration and categorization
+
+### PR-022: IAM Module Refactoring - Separation of Concerns
+
+**Requirement:** The system MUST organize IAM-related code by purpose (RCP vs SCP) to improve maintainability and separation of concerns.
+
+**Implementation Status:** ✅ COMPLETED
+
+**Problem Statement:**
+
+The monolithic `headroom/aws/iam.py` file contained two distinct responsibilities:
+1. **IAM Role Trust Policy Analysis** (for RCP checks) - 104 lines
+2. **IAM User Enumeration** (for SCP checks) - 27 lines
+
+These serve different purposes:
+- **RCP Focus:** Analyzing trust relationships, detecting third-party accounts, validating principals
+- **SCP Focus:** Discovering IAM users for creation policy enforcement
+
+Mixing these concerns in one file violated the Single Responsibility Principle and made the codebase harder to navigate.
+
+**Solution: Package-Based Separation**
+
+Refactored `headroom/aws/iam.py` into a package structure:
+
+```
+headroom/aws/iam/
+├── __init__.py          # Public API exports
+├── roles.py             # RCP-focused: trust policy analysis (225 lines)
+└── users.py             # SCP-focused: user enumeration (66 lines)
+```
+
+**Module Responsibilities:**
+
+**1. roles.py (RCP-Focused):**
+
+Contains all IAM role trust policy analysis logic:
+
+```python
+"""
+AWS IAM role analysis module.
+
+This module contains functions for analyzing IAM roles and their trust policies.
+"""
+
+# Exports:
+- TrustPolicyAnalysis (dataclass)
+- UnknownPrincipalTypeError (exception)
+- InvalidFederatedPrincipalError (exception)
+- ALLOWED_PRINCIPAL_TYPES (constant)
+- _extract_account_ids_from_principal() (helper)
+- _has_wildcard_principal() (helper)
+- analyze_iam_roles_trust_policies() (main function)
+```
+
+**Key Functions:**
+- `analyze_iam_roles_trust_policies()`: Main analysis function for RCP checks
+- `_extract_account_ids_from_principal()`: Parse AWS account IDs from principal field
+- `_has_wildcard_principal()`: Detect wildcard principals requiring CloudTrail analysis
+- Custom exceptions for principal validation errors
+
+**2. users.py (SCP-Focused):**
+
+Contains all IAM user enumeration logic:
+
+```python
+"""
+AWS IAM user analysis module.
+
+This module contains functions for enumerating IAM users.
+"""
+
+# Exports:
+- IamUserAnalysis (dataclass)
+- get_iam_users_analysis() (main function)
+```
+
+**Key Functions:**
+- `get_iam_users_analysis()`: Enumerate all IAM users with pagination
+- Simple, focused implementation for user discovery
+
+**3. __init__.py (Public API):**
+
+Re-exports public API components for clean imports:
+
+```python
+"""AWS IAM analysis module."""
+
+# Trust policy analysis (RCP checks)
+from .roles import (
+    InvalidFederatedPrincipalError,
+    TrustPolicyAnalysis,
+    UnknownPrincipalTypeError,
+    analyze_iam_roles_trust_policies,
+)
+
+# User enumeration (SCP checks)
+from .users import (
+    IamUserAnalysis,
+    get_iam_users_analysis,
+)
+
+__all__ = [
+    # Roles (RCP)
+    "TrustPolicyAnalysis",
+    "UnknownPrincipalTypeError",
+    "InvalidFederatedPrincipalError",
+    "analyze_iam_roles_trust_policies",
+    # Users (SCP)
+    "IamUserAnalysis",
+    "get_iam_users_analysis",
+]
+```
+
+**Design Decision: No Backward Compatibility**
+
+Following user direction: "I don't care about backward compatibility"
+
+Private helper functions NOT exported in `__init__.py`:
+- `_extract_account_ids_from_principal`
+- `_has_wildcard_principal`
+- `ALLOWED_PRINCIPAL_TYPES`
+
+These must be imported directly from `headroom.aws.iam.roles` if needed (e.g., in tests).
+
+**Import Pattern Updates:**
+
+**Check Modules:**
+
+```python
+# Before
+from ...aws.iam import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
+
+# After
+from ...aws.iam.roles import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
+```
+
+```python
+# Before
+from ...aws.iam import IamUserAnalysis, get_iam_users_analysis
+
+# After
+from ...aws.iam.users import IamUserAnalysis, get_iam_users_analysis
+```
+
+**Test Modules:**
+
+```python
+# Public API imports still work via __init__.py
+from headroom.aws.iam import (
+    InvalidFederatedPrincipalError,
+    UnknownPrincipalTypeError,
+    analyze_iam_roles_trust_policies,
+)
+
+# Private helpers require direct import
+from headroom.aws.iam.roles import (
+    _extract_account_ids_from_principal,
+    _has_wildcard_principal,
+)
+
+# User functions
+from headroom.aws.iam.users import get_iam_users_analysis
+```
+
+**Benefits:**
+
+1. **Separation of Concerns:**
+   - RCP logic isolated in `roles.py`
+   - SCP logic isolated in `users.py`
+   - Clear boundaries between different check types
+
+2. **Improved Maintainability:**
+   - Each file focuses on single responsibility
+   - Easier to locate relevant code
+   - Changes to RCP checks don't touch SCP code
+
+3. **Better Scalability:**
+   - Easy to add new role analysis functions to `roles.py`
+   - Easy to add new user analysis functions to `users.py`
+   - Package structure supports future IAM check types
+
+4. **Cleaner Public API:**
+   - `__init__.py` explicitly defines public interface
+   - Private helpers kept internal (not re-exported)
+   - Clear distinction between public and private functions
+
+5. **Explicit Imports:**
+   - Direct imports from submodules are more readable
+   - Clear indication of which IAM functionality is being used
+   - No ambiguity about data sources
+
+**Files Created:**
+
+- `headroom/aws/iam/__init__.py` (33 lines)
+- `headroom/aws/iam/roles.py` (225 lines, moved from iam.py)
+- `headroom/aws/iam/users.py` (66 lines, moved from iam.py)
+
+**Files Deleted:**
+
+- `headroom/aws/iam.py` (monolithic 150+ line file)
+
+**Files Modified:**
+
+- `headroom/checks/rcps/check_third_party_assumerole.py`: Updated imports to use `.roles`
+- `headroom/checks/scps/deny_iam_user_creation.py`: Updated imports to use `.users`
+- `tests/test_aws_iam.py`: Updated imports to use submodules for private helpers
+- All test files importing IAM functions updated accordingly
+
+**Test Results:**
+
+- All 367 tests passing
+- 100% code coverage maintained (headroom: 1246 lines, tests: 3525 lines)
+- mypy passes with no issues (52 files)
+- All pre-commit hooks passing
+
+**Architectural Improvements:**
+
+**Before:**
+- Single 150+ line file mixing concerns
+- RCP and SCP logic intermingled
+- Hard to navigate and understand purpose
+- Private helpers exposed via single-file import
+
+**After:**
+- Clear package structure with focused modules
+- RCP and SCP logic physically separated
+- Easy to navigate: roles.py for RCP, users.py for SCP
+- Clean public API with explicit exports
+- Private helpers require intentional import
+
 ---
 
 ## Technical Architecture
@@ -2827,7 +3276,21 @@ def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
 - ✅ Zero mypy errors with strict mode
 - ✅ All pre-commit hooks passing
 
-### Phase 10: SCP Expansion (PLANNED)
+### Phase 10: SCP Expansion - IAM User Creation Policy (COMPLETED)
+- ✅ **IAM User Creation SCP (PR-021):** Discovery-only check for IAM users with Terraform-based enforcement
+- ✅ **Discovery-Enforcement Separation:** Python enumerates users, Terraform enforces allowlist via NotResource
+- ✅ **IAM User Enumeration:** `get_iam_users_analysis()` with pagination support for complete user discovery
+- ✅ **Check Implementation:** `DenyIamUserCreationCheck` using BaseCheck framework with all users marked compliant
+- ✅ **Terraform Integration:** SCP module with `deny_iam_user_creation` boolean and `allowed_iam_users` list variables
+- ✅ **IAM Module Refactoring (PR-022):** Split monolithic `iam.py` into package structure
+- ✅ **Separation of Concerns:** RCP logic in `roles.py`, SCP logic in `users.py`
+- ✅ **Clean Public API:** `__init__.py` exports public functions, private helpers require direct import
+- ✅ **No Backward Compatibility:** Direct imports from submodules required per design decision
+- ✅ All 367 tests passing (increased from 329) with 100% coverage (1246 statements in headroom/, 3525 in tests/)
+- ✅ Zero mypy errors with strict mode (52 files)
+- ✅ All pre-commit hooks passing
+
+### Phase 11: Future SCP Expansion (PLANNED)
 - 🔄 Additional SCP checks for other AWS services
 - 🔄 Metrics-based decision making for SCP deployment
 - 🔄 CloudTrail historical analysis integration for actions items such as wildcard resolution
@@ -2951,6 +3414,11 @@ mypy headroom/ tests/
 35. **Fail-Loud Error Handling:** All exceptions are specific, no silent failures or generic catches ✅
 36. **Output Standardization:** Centralized OutputHandler for consistent user-facing output formatting ✅
 37. **Code Quality Excellence:** 329 tests with 100% coverage, zero mypy errors, all pre-commit hooks passing ✅
+38. **IAM User Creation SCP:** Discovery-only check for IAM users with Terraform-based allowlist enforcement ✅
+39. **Discovery-Enforcement Separation:** Python enumerates resources, Terraform handles policy enforcement logic ✅
+40. **IAM Module Organization:** Package structure separating RCP concerns (roles.py) from SCP concerns (users.py) ✅
+41. **Clean Module Interface:** Public API via __init__.py with intentional access to private helpers ✅
+42. **Expanded Test Coverage:** 367 tests (38 new) with 100% coverage maintained across all modules ✅
 
 ---
 

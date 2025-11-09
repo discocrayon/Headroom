@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Set
 
 import boto3
 
-from ...aws.iam import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
+from ...aws.iam.roles import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
 from ...constants import THIRD_PARTY_ASSUMEROLE
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check

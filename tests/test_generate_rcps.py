@@ -19,8 +19,12 @@ from headroom.terraform.generate_rcps import (
     _generate_account_rcp_terraform,
     _generate_ou_rcp_terraform,
     _generate_root_rcp_terraform,
-    _build_rcp_terraform_module
+    _build_rcp_terraform_module,
+    _create_root_level_rcp_recommendation,
+    _create_ou_level_rcp_recommendations,
+    _create_account_level_rcp_recommendations
 )
+from headroom.placement.hierarchy import PlacementCandidate
 from headroom.types import (
     AccountThirdPartyMap,
     OrganizationHierarchy,
@@ -578,6 +582,602 @@ class TestDetermineRcpPlacement:
         assert recommendations[0].recommended_level == "ou"
         assert recommendations[0].target_ou_id == "ou-2222"
         assert recommendations[0].affected_accounts == ["333333333333"]
+
+
+class TestCreateRootLevelRcpRecommendation:
+    """Test _create_root_level_rcp_recommendation helper function."""
+
+    @pytest.fixture
+    def sample_org_hierarchy(self) -> OrganizationHierarchy:
+        """Create sample organization hierarchy."""
+        return OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1111": OrganizationalUnit(
+                    ou_id="ou-1111",
+                    name="Production",
+                    parent_ou_id="r-1234",
+                    child_ous=[],
+                    accounts=["111111111111", "222222222222"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="prod-account-1",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    account_id="222222222222",
+                    account_name="prod-account-2",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                )
+            }
+        )
+
+    def test_creates_root_recommendation_with_single_account(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test creating root recommendation with single account."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"}
+        }
+
+        recommendation = _create_root_level_rcp_recommendation(
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert recommendation.check_name == "third_party_assumerole"
+        assert recommendation.recommended_level == "root"
+        assert recommendation.target_ou_id is None
+        assert set(recommendation.affected_accounts) == {"111111111111", "222222222222"}
+        assert recommendation.third_party_account_ids == ["999999999999"]
+        assert "All 2 accounts can be protected with root-level RCP" in recommendation.reasoning
+        assert "allowlist contains 1 third-party accounts" in recommendation.reasoning
+
+    def test_creates_root_recommendation_with_multiple_accounts(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test creating root recommendation with multiple accounts."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999", "888888888888"},
+            "222222222222": {"777777777777"}
+        }
+
+        recommendation = _create_root_level_rcp_recommendation(
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert recommendation.recommended_level == "root"
+        assert set(recommendation.affected_accounts) == {"111111111111", "222222222222"}
+        assert set(recommendation.third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
+        assert "allowlist contains 3 third-party accounts" in recommendation.reasoning
+
+    def test_creates_root_recommendation_with_empty_third_party_sets(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test creating root recommendation with empty third-party sets."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": set(),
+            "222222222222": set()
+        }
+
+        recommendation = _create_root_level_rcp_recommendation(
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert recommendation.recommended_level == "root"
+        assert recommendation.third_party_account_ids == []
+        assert "allowlist contains 0 third-party accounts" in recommendation.reasoning
+
+    def test_unions_overlapping_third_party_accounts(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that overlapping third-party accounts are properly unioned."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999", "888888888888"},
+            "222222222222": {"999999999999", "777777777777"}
+        }
+
+        recommendation = _create_root_level_rcp_recommendation(
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert set(recommendation.third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
+        assert len(recommendation.third_party_account_ids) == 3
+
+    def test_includes_all_org_accounts_in_affected_accounts(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that affected_accounts includes all accounts in the org, not just those in map."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"}
+        }
+
+        recommendation = _create_root_level_rcp_recommendation(
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert set(recommendation.affected_accounts) == {"111111111111", "222222222222"}
+
+    def test_sorts_third_party_account_ids(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that third-party account IDs are sorted."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999", "111111111111", "555555555555"}
+        }
+
+        recommendation = _create_root_level_rcp_recommendation(
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert recommendation.third_party_account_ids == ["111111111111", "555555555555", "999999999999"]
+
+
+class TestCreateOuLevelRcpRecommendations:
+    """Test _create_ou_level_rcp_recommendations helper function."""
+
+    @pytest.fixture
+    def sample_org_hierarchy(self) -> OrganizationHierarchy:
+        """Create sample organization hierarchy."""
+        return OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1111": OrganizationalUnit(
+                    ou_id="ou-1111",
+                    name="Production",
+                    parent_ou_id="r-1234",
+                    child_ous=[],
+                    accounts=["111111111111", "222222222222"]
+                ),
+                "ou-2222": OrganizationalUnit(
+                    ou_id="ou-2222",
+                    name="Development",
+                    parent_ou_id="r-1234",
+                    child_ous=[],
+                    accounts=["333333333333"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="prod-account-1",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    account_id="222222222222",
+                    account_name="prod-account-2",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                ),
+                "333333333333": AccountOrgPlacement(
+                    account_id="333333333333",
+                    account_name="dev-account-1",
+                    parent_ou_id="ou-2222",
+                    ou_path=["Development"]
+                )
+            }
+        )
+
+    def test_creates_single_ou_recommendation(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test creating single OU-level recommendation."""
+        candidates = [
+            PlacementCandidate(
+                level="ou",
+                target_id="ou-1111",
+                affected_accounts=["111111111111", "222222222222"],
+                reasoning="OU-level deployment safe"
+            )
+        ]
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"999999999999"}
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "ou"
+        assert recommendations[0].target_ou_id == "ou-1111"
+        assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222"}
+        assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert "Production" in recommendations[0].reasoning
+        assert covered_accounts == {"111111111111", "222222222222"}
+
+    def test_creates_multiple_ou_recommendations(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test creating multiple OU-level recommendations."""
+        candidates = [
+            PlacementCandidate(
+                level="ou",
+                target_id="ou-1111",
+                affected_accounts=["111111111111", "222222222222"],
+                reasoning="OU-level deployment safe"
+            ),
+            PlacementCandidate(
+                level="ou",
+                target_id="ou-2222",
+                affected_accounts=["333333333333"],
+                reasoning="OU-level deployment safe"
+            )
+        ]
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"999999999999"},
+            "333333333333": {"888888888888"}
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 2
+        assert covered_accounts == {"111111111111", "222222222222", "333333333333"}
+
+    def test_skips_non_ou_candidates(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that non-OU candidates are skipped."""
+        candidates = [
+            PlacementCandidate(
+                level="root",
+                target_id=None,
+                affected_accounts=["111111111111"],
+                reasoning="Root-level deployment"
+            ),
+            PlacementCandidate(
+                level="account",
+                target_id=None,
+                affected_accounts=["222222222222"],
+                reasoning="Account-level deployment"
+            )
+        ]
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"}
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 0
+        assert len(covered_accounts) == 0
+
+    def test_skips_ou_candidates_with_none_target_id(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that OU candidates with None target_id are skipped."""
+        candidates = [
+            PlacementCandidate(
+                level="ou",
+                target_id=None,
+                affected_accounts=["111111111111"],
+                reasoning="Invalid OU candidate"
+            )
+        ]
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"}
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 0
+        assert len(covered_accounts) == 0
+
+    def test_unions_third_party_accounts_within_ou(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that third-party accounts are unioned within an OU."""
+        candidates = [
+            PlacementCandidate(
+                level="ou",
+                target_id="ou-1111",
+                affected_accounts=["111111111111", "222222222222"],
+                reasoning="OU-level deployment safe"
+            )
+        ]
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999", "888888888888"},
+            "222222222222": {"777777777777", "999999999999"}
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 1
+        assert set(recommendations[0].third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
+
+    def test_handles_accounts_not_in_map(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that accounts not in the third-party map are handled gracefully."""
+        candidates = [
+            PlacementCandidate(
+                level="ou",
+                target_id="ou-1111",
+                affected_accounts=["111111111111", "222222222222"],
+                reasoning="OU-level deployment safe"
+            )
+        ]
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"}
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 1
+        assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert covered_accounts == {"111111111111", "222222222222"}
+
+    def test_handles_empty_third_party_sets(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test handling of empty third-party account sets."""
+        candidates = [
+            PlacementCandidate(
+                level="ou",
+                target_id="ou-1111",
+                affected_accounts=["111111111111"],
+                reasoning="OU-level deployment safe"
+            )
+        ]
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": set()
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 1
+        assert recommendations[0].third_party_account_ids == []
+
+    def test_returns_empty_for_empty_candidates(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that empty candidates list returns empty results."""
+        candidates: List[PlacementCandidate] = []
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"}
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 0
+        assert len(covered_accounts) == 0
+
+    def test_uses_ou_id_as_fallback_name(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Test that OU ID is used as fallback when OU not found in hierarchy."""
+        candidates = [
+            PlacementCandidate(
+                level="ou",
+                target_id="ou-9999",
+                affected_accounts=["111111111111"],
+                reasoning="OU-level deployment safe"
+            )
+        ]
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"}
+        }
+
+        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            candidates,
+            account_third_party_map,
+            sample_org_hierarchy
+        )
+
+        assert len(recommendations) == 1
+        assert "ou-9999" in recommendations[0].reasoning
+
+
+class TestCreateAccountLevelRcpRecommendations:
+    """Test _create_account_level_rcp_recommendations helper function."""
+
+    def test_creates_recommendations_for_uncovered_accounts(self) -> None:
+        """Test creating account-level recommendations for uncovered accounts."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"888888888888"},
+            "333333333333": {"777777777777"}
+        }
+        covered_accounts: Set[str] = {"222222222222"}
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert len(recommendations) == 2
+        account_ids = [r.affected_accounts[0] for r in recommendations]
+        assert "111111111111" in account_ids
+        assert "333333333333" in account_ids
+        assert "222222222222" not in account_ids
+
+    def test_skips_covered_accounts(self) -> None:
+        """Test that covered accounts are not included in recommendations."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"888888888888"}
+        }
+        covered_accounts: Set[str] = {"111111111111", "222222222222"}
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert len(recommendations) == 0
+
+    def test_creates_recommendation_with_correct_structure(self) -> None:
+        """Test that recommendations have correct structure."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999", "888888888888"}
+        }
+        covered_accounts: Set[str] = set()
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert len(recommendations) == 1
+        rec = recommendations[0]
+        assert rec.check_name == "third_party_assumerole"
+        assert rec.recommended_level == "account"
+        assert rec.target_ou_id is None
+        assert rec.affected_accounts == ["111111111111"]
+        assert set(rec.third_party_account_ids) == {"888888888888", "999999999999"}
+        assert "Account has unique third-party account requirements" in rec.reasoning
+        assert "2 accounts" in rec.reasoning
+
+    def test_handles_empty_third_party_sets(self) -> None:
+        """Test handling of empty third-party account sets."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": set()
+        }
+        covered_accounts: Set[str] = set()
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert len(recommendations) == 1
+        assert recommendations[0].third_party_account_ids == []
+        assert "0 accounts" in recommendations[0].reasoning
+
+    def test_returns_empty_for_empty_map(self) -> None:
+        """Test that empty account map returns empty recommendations."""
+        account_third_party_map: AccountThirdPartyMap = {}
+        covered_accounts: Set[str] = set()
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert len(recommendations) == 0
+
+    def test_returns_empty_when_all_accounts_covered(self) -> None:
+        """Test that all covered accounts returns empty recommendations."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"}
+        }
+        covered_accounts: Set[str] = {"111111111111"}
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert len(recommendations) == 0
+
+    def test_sorts_third_party_account_ids(self) -> None:
+        """Test that third-party account IDs are sorted."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999", "111111111111", "555555555555"}
+        }
+        covered_accounts: Set[str] = set()
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert recommendations[0].third_party_account_ids == ["111111111111", "555555555555", "999999999999"]
+
+    def test_multiple_accounts_each_get_own_recommendation(self) -> None:
+        """Test that each account gets its own recommendation."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"888888888888"},
+            "333333333333": {"777777777777"}
+        }
+        covered_accounts: Set[str] = set()
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert len(recommendations) == 3
+        for rec in recommendations:
+            assert len(rec.affected_accounts) == 1
+            assert rec.recommended_level == "account"
+
+    def test_handles_partially_covered_accounts(self) -> None:
+        """Test handling of partially covered account sets."""
+        account_third_party_map: AccountThirdPartyMap = {
+            "111111111111": {"999999999999"},
+            "222222222222": {"888888888888"},
+            "333333333333": {"777777777777"},
+            "444444444444": {"666666666666"}
+        }
+        covered_accounts: Set[str] = {"111111111111", "333333333333"}
+
+        recommendations = _create_account_level_rcp_recommendations(
+            account_third_party_map,
+            covered_accounts
+        )
+
+        assert len(recommendations) == 2
+        account_ids = {r.affected_accounts[0] for r in recommendations}
+        assert account_ids == {"222222222222", "444444444444"}
 
 
 class TestGenerateRcpTerraform:

@@ -79,6 +79,7 @@ class SCPCheckResult(CheckResult):
     compliant: int
     compliance_percentage: float
     total_instances: Optional[int] = None
+    iam_user_arns: Optional[List[str]] = None
 
 
 @dataclass
@@ -90,6 +91,7 @@ class SCPPlacementRecommendations:
     affected_accounts: List[str]
     compliance_percentage: float
     reasoning: str
+    allowed_iam_user_arns: Optional[List[str]] = None
 
 
 @dataclass

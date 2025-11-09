@@ -1,0 +1,19 @@
+{
+  "summary": {
+    "account_name": "security-tooling",
+    "check": "deny_iam_user_creation",
+    "total_users": 1,
+    "users": [
+      "arn:aws:iam::REDACTED:user/automation/cicd-deployer"
+    ]
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "user_name": "cicd-deployer",
+      "user_arn": "arn:aws:iam::REDACTED:user/automation/cicd-deployer",
+      "path": "/automation/"
+    }
+  ]
+}

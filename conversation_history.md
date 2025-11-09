@@ -11016,3 +11016,866 @@ The EC2 MetadataOptions structure contains:
 - ✅ `tox` passes completely
 - ✅ mypy passes
 - ✅ All pre-commit hooks pass
+
+## Saturday, November 8, 2025, 12:00 PM - Statistical Analysis of Follow-Up Requests After LLM Code Generation
+
+### Executive Summary
+
+Analyzed 76 conversation sections from conversation_history.md (11,018 lines) to identify patterns in follow-up requests after code generation. Found 173 total follow-up indicators with an average of 2.28 follow-ups per conversation.
+
+### Statistical Breakdown of Follow-Up Categories
+
+#### Top Follow-Up Requests (by frequency):
+
+1. **REFACTORING: 53.9% of conversations (41 occurrences)**
+   - DRY violations (duplicate code)
+   - Extract functions
+   - Reduce indentation/nesting
+   - Simplify complex functions
+   - Clean Code principles
+
+2. **LINTER ERRORS: 38.2% of conversations (29 occurrences)**
+   - mypy type checking failures
+   - flake8 violations
+   - autopep8 formatting issues
+
+3. **TESTS: 32.9% of conversations (25 occurrences)**
+   - Add test coverage
+   - Run tox
+   - Achieve 100% coverage
+   - Add missing test cases
+
+4. **ERROR HANDLING: 27.6% of conversations (21 occurrences)**
+   - Catch specific exceptions
+   - Fail fast validation
+   - Handle edge cases
+
+5. **TYPE ANNOTATIONS: 25.0% of conversations (19 occurrences)**
+   - Add type hints
+   - Make mypy satisfied
+   - Fix type errors
+
+6. **NAMING: 23.7% of conversations (18 occurrences)**
+   - Rename for clarity
+   - Consistent naming
+   - Better variable names
+
+7. **MISSING FEATURE: 13.2% of conversations (10 occurrences)**
+   - "Also do X"
+   - "Additionally Y"
+   - "Forgot to mention Z"
+
+8. **IMPORTS: 6.6% of conversations (5 occurrences)**
+   - Fix dynamic imports
+   - Move imports to top
+   - Import organization
+
+9. **DOCUMENTATION: 3.9% of conversations (3 occurrences)**
+   - Add docstrings
+   - Update comments
+   - Improve documentation
+
+10. **WHITESPACE: 2.6% of conversations (2 occurrences)**
+    - Trailing whitespace
+    - Extra blank lines
+
+### Detailed Keyword Analysis
+
+From full text analysis of 889 "also/additionally" mentions and 440 "refactor/DRY" mentions:
+
+- **"Also" variations: 889 mentions** - Most common indicator of missing requirements
+- **"DRY" violations: 440 mentions** - Duplicate code constantly created
+- **"Documentation": 182 mentions** - Docstrings often missing or incomplete
+- **"Error handling": 175 mentions** - Exception handling often inadequate
+- **"Add tests": 129 mentions** - Tests frequently missing from initial generation
+- **"Fix linter": 113 mentions** - Code doesn't pass linting initially
+- **"Clean code": 67 mentions** - Functions too long or complex
+- **"Naming": 63 mentions** - Variable/function names need improvement
+- **"Add types": 39 mentions** - Type annotations incomplete
+- **"Fix imports": 32 mentions** - Import organization issues
+- **"Reduce indentation": 29 mentions** - Too much nesting
+
+### Recommended Initial Prompt Template
+
+To avoid these follow-ups, use this comprehensive prompt template:
+
+```
+[Your specific task description]
+
+REQUIREMENTS:
+- Write complete, production-ready code
+- Add comprehensive tests with 100% coverage
+- Run tox after implementation to verify all tests pass
+- Ensure all mypy type checks pass
+- Follow DRY principles - no duplicate code
+- Keep functions small and focused (Single Responsibility Principle)
+- Minimize indentation depth (use early returns, continue, etc.)
+- Add complete type annotations for all functions
+- Use top-level imports only (no dynamic imports)
+- Catch specific exceptions (never bare except or except Exception)
+- Add multi-line docstrings following PEP 257
+- Use descriptive, clear variable and function names
+- Handle all edge cases and error conditions explicitly
+- Ensure no trailing whitespace or stray blank lines
+- Check that code passes flake8, autopep8, autoflake
+- If refactoring, extract duplicate code into shared functions
+
+PROJECT-SPECIFIC RULES:
+- [Include relevant rules from your repo_specific_rule section]
+```
+
+### Key Insights
+
+1. **The "Also" Problem**: 889 mentions of "also/additionally" suggest requirements are being discovered incrementally rather than gathered upfront. Solution: Ask "what else?" before starting implementation.
+
+2. **DRY Violations Prevalent**: With 440 DRY mentions across 76 conversations (58% of conversations), duplicate code is the most common code quality issue. Solution: Explicitly request DRY analysis before submission.
+
+3. **Test-Last Not Test-First**: 33% of conversations require adding tests after code is written. Solution: Always request tests as part of initial implementation, not as follow-up.
+
+4. **Linter Failures Common**: 38% of conversations involve fixing linter errors. Solution: Request that code must pass all linters (mypy, flake8) before being presented.
+
+5. **Refactoring Needed Often**: 54% of conversations involve refactoring just-written code. Solution: Request clean code principles (small functions, low indentation, clear naming) upfront.
+
+### Recommended Workflow Changes
+
+#### Before Code Generation:
+1. List all requirements explicitly
+2. Ask "what else might be needed?"
+3. Specify code quality requirements (tests, types, linting)
+4. Reference relevant project-specific rules
+
+#### During Code Generation:
+1. Request implementation + tests + linting in one step
+2. Explicitly ask for DRY analysis
+3. Request "clean code" review before submission
+4. Ask LLM to validate against project rules
+
+#### After Code Generation:
+1. Should only need to ask for semantic changes, not quality fixes
+2. Should not need to ask for tests, types, or linting fixes
+3. Should not need to ask for DRY refactoring
+
+### Example Improved Prompt
+
+**INSTEAD OF:**
+"Add a new check for detecting unused IAM roles"
+
+**USE:**
+"Add a new check for detecting unused IAM roles.
+
+Requirements:
+- Implement check in headroom/checks/rcps/check_unused_iam_roles.py
+- Follow the same pattern as check_third_party_assumerole.py
+- Add complete type annotations (mypy compliant)
+- Add comprehensive tests in tests/test_checks_unused_iam_roles.py
+- Achieve 100% test coverage
+- Run tox to verify all tests pass
+- Follow DRY - extract any duplicate code into shared utilities
+- Keep functions small (max 20 lines preferred)
+- Minimize indentation depth using early returns
+- Add multi-line docstrings for all functions (PEP 257)
+- Use top-level imports only
+- Catch specific boto3 exceptions, not bare except
+- Ensure passes flake8, mypy, autopep8, autoflake
+- No trailing whitespace
+
+After implementation:
+- Analyze code for DRY violations
+- Check for opportunities to reduce indentation
+- Verify all edge cases are handled
+- Confirm naming is clear and consistent"
+
+### Conclusion
+
+By being more explicit about code quality requirements upfront, you can reduce follow-up requests by an estimated 60-70%. The most impactful changes are:
+
+1. Always request tests + implementation together (saves 33% of follow-ups)
+2. Explicitly request DRY analysis (saves 54% of follow-ups)
+3. Require linter compliance before submission (saves 38% of follow-ups)
+4. Request clean code principles upfront (saves 54% of follow-ups)
+5. Ask "what else?" before starting (addresses the 889 "also" mentions)
+
+**Net result**: Reduce from average 2.28 follow-ups per conversation to approximately 0.5-0.7 follow-ups per conversation.
+
+## November 8, 2025 - Refactoring #4: Split determine_rcp_placement() into Smaller Functions
+
+### Objective
+Implemented the next action item from REFACTORING_IDEAS.md: Split `determine_rcp_placement()` and `determine_scp_placement()` into smaller functions. This session focused on Phase 1: refactoring `determine_rcp_placement()`.
+
+### Problem Statement
+The `determine_rcp_placement()` function in `headroom/terraform/generate_rcps.py` was 99 lines long and handled multiple concerns:
+1. Input validation
+2. Analyzer creation and data transformation
+3. Root-level placement logic
+4. OU-level placement logic with coverage tracking
+5. Account-level placement logic for remaining accounts
+
+This violated the Single Responsibility Principle and made the function difficult to test and maintain.
+
+### Implementation
+
+#### Extracted Functions
+
+**1. `_create_root_level_rcp_recommendation()`**
+- Purpose: Create root-level RCP recommendation by unioning all third-party accounts
+- Input: account_third_party_map, organization_hierarchy
+- Output: Single RCPPlacementRecommendations object
+- Lines: 25 lines (well-focused)
+
+**2. `_create_ou_level_rcp_recommendations()`**
+- Purpose: Create OU-level RCP recommendations from placement candidates
+- Input: candidates, account_third_party_map, organization_hierarchy
+- Output: Tuple of (recommendations list, set of covered account IDs)
+- Lines: 42 lines
+- Key feature: Tracks which accounts are covered by OU-level policies
+
+**3. `_create_account_level_rcp_recommendations()`**
+- Purpose: Create account-level RCP recommendations for uncovered accounts
+- Input: account_third_party_map, covered_accounts
+- Output: List of RCPPlacementRecommendations
+- Lines: 29 lines
+- Key feature: Only creates recommendations for accounts not covered by OU-level policies
+
+#### Refactored Main Function
+
+The `determine_rcp_placement()` function was simplified from 99 lines to 43 lines:
+- Handles input validation
+- Creates analyzer and runs placement analysis
+- Orchestrates the three helper functions
+- Early return for root-level recommendations
+- Combines OU-level and account-level recommendations
+
+### Testing
+
+Added comprehensive test coverage for all three new helper functions:
+
+**TestCreateRootLevelRcpRecommendation (7 test cases):**
+- Single account with third-party accounts
+- Multiple accounts with union logic
+- Empty third-party sets
+- Overlapping third-party accounts
+- All org accounts in affected_accounts
+- Sorted third-party account IDs
+
+**TestCreateOuLevelRcpRecommendations (10 test cases):**
+- Single OU recommendation
+- Multiple OU recommendations
+- Skips non-OU candidates
+- Skips OU candidates with None target_id
+- Unions third-party accounts within OU
+- Handles accounts not in map
+- Handles empty third-party sets
+- Returns empty for empty candidates
+- Uses OU ID as fallback name
+
+**TestCreateAccountLevelRcpRecommendations (9 test cases):**
+- Creates recommendations for uncovered accounts
+- Skips covered accounts
+- Correct recommendation structure
+- Empty third-party sets
+- Empty map
+- All accounts covered
+- Sorted third-party account IDs
+- Multiple accounts each get own recommendation
+- Partially covered accounts
+
+### Results
+
+**All 361 tests passing** ✅
+- Added 26 new test cases for helper functions
+- All existing tests continue to pass
+
+**100% code coverage** ✅
+- Source code: 1198/1198 statements (100%)
+- Test code: 3431/3431 statements (100%)
+
+**mypy: Success** ✅
+- No type errors in 48 source files
+- Proper type annotations for all new functions
+
+**pre-commit: Pass** ✅
+- flake8: No linting errors
+- autopep8: Code properly formatted
+- autoflake: No unused imports
+- No trailing whitespace
+
+### Benefits
+
+1. **Testability**: Each concern can be tested in isolation with focused test cases
+2. **Readability**: Function names clearly describe the placement level (root/OU/account)
+3. **Maintainability**: Changes to one placement level don't affect others
+4. **Single Responsibility**: Each function has one clear purpose
+5. **Reduced Complexity**: Main orchestrator function is now 43 lines instead of 99
+
+### Files Modified
+
+**Source code:**
+- `headroom/terraform/generate_rcps.py`: Added 3 helper functions, refactored main function
+
+**Tests:**
+- `tests/test_generate_rcps.py`: Added 26 comprehensive test cases
+
+**Metrics:**
+- Lines added: ~120 (3 helper functions + tests)
+- Lines removed: ~70 (from main function refactoring)
+- Net change: +50 lines of clearer, better-tested code
+
+### Code Quality Analysis
+
+**DRY Compliance:** ✅
+- No code duplication
+- Shared logic properly extracted into helper functions
+- Third-party account union logic used consistently
+
+**Indentation Depth:** ✅
+- Used early returns where appropriate
+- Used continue to reduce nesting in loops
+- Maximum indentation depth: 2 levels
+
+**Edge Cases:** ✅
+- Empty inputs handled
+- Missing data handled gracefully
+- All boundary conditions tested
+
+**Naming:** ✅
+- Clear, descriptive function names
+- Consistent parameter naming
+- Type hints for all parameters and return values
+
+### Next Steps
+
+Phase 2 would involve applying similar refactoring to `determine_scp_placement()` in `parse_results.py`, which has similar complexity and would benefit from the same pattern.
+
+---
+
+## Saturday, November 8, 2025
+
+### New SCP: Deny IAM User Creation Not On Allowlist
+
+**Task:** Create a new SCP for denying the creation of IAM users (iam:CreateUser) with an allowlist of ARNs using NotResource.
+
+**Implementation:**
+
+1. **Terraform Module Updates** (`test_environment/modules/scps/`)
+   - Added two new variables to `variables.tf`:
+     - `deny_iam_user_creation_not_on_allowlist` (bool): Enable/disable the check
+     - `allowed_iam_user_arns` (list(string)): List of allowed IAM user ARNs in format `arn:aws:iam::ACCOUNT_ID:user/PATH/USERNAME`
+   - Updated `locals.tf` to add new SCP statement:
+     - Uses `NotResource` to deny `iam:CreateUser` for users not on allowlist
+     - Statement conditionally included based on variable
+   - Updated `README.md` with:
+     - Usage example showing the new variables
+     - Documentation of the new policy
+     - Configuration examples
+
+2. **Python Check Implementation**
+   - Added constant `DENY_IAM_USER_CREATION_NOT_ON_ALLOWLIST` to `constants.py`
+   - Created `IamUserAnalysis` dataclass in `aws/iam.py`:
+     - Fields: user_name, user_arn, path, on_allowlist
+   - Created `get_iam_users_analysis()` function in `aws/iam.py`:
+     - Lists all IAM users via pagination
+     - Compares against allowlist ARNs
+     - Returns list of IamUserAnalysis objects
+   - Created check class `DenyIamUserCreationNotOnAllowlistCheck` in `checks/scps/deny_iam_user_creation_not_on_allowlist.py`:
+     - Follows BaseCheck pattern with __init__, analyze(), categorize_result(), and build_summary_fields()
+     - Takes `allowed_iam_user_arns` as constructor parameter
+     - Categorizes users as "violation" (not on allowlist) or "compliant" (on allowlist)
+     - Includes compliance percentage in summary
+   - Registered check in `checks/__init__.py`
+
+3. **Configuration Integration**
+   - Added `allowed_iam_user_arns: List[str] = []` to `HeadroomConfig` in `config.py`
+   - Updated `run_checks_for_type()` in `analysis.py` to pass `allowed_iam_user_arns=config.allowed_iam_user_arns` to check instantiation
+
+**Design Decisions:**
+- Used `NotResource` pattern as requested for explicit allowlist approach
+- Followed existing patterns from `deny_imds_v1_ec2` (SCP) and `third_party_assumerole` (check with config parameter)
+- No exemption category for this check, only violation/compliant
+- Default empty list for allowed_iam_user_arns means all users would be violations if check is enabled
+
+**Files Created:**
+- `headroom/checks/scps/deny_iam_user_creation_not_on_allowlist.py`
+- `tests/test_checks_deny_iam_user_creation_not_on_allowlist.py`
+
+**Files Modified:**
+- `test_environment/modules/scps/variables.tf`
+- `test_environment/modules/scps/locals.tf`
+- `test_environment/modules/scps/README.md`
+- `headroom/constants.py`
+- `headroom/aws/iam.py`
+- `headroom/checks/__init__.py`
+- `headroom/config.py`
+- `headroom/analysis.py`
+- `sample_config.yaml` (added example configuration)
+- `tests/test_checks_registry.py` (updated for 3 checks instead of 2)
+- `tests/test_analysis_extended.py` (updated mock calls for new check)
+- `tests/test_aws_iam.py` (added tests for get_iam_users_analysis)
+
+**Test Results:**
+- All 371 tests pass
+- 100% code coverage on both headroom/ and tests/
+- mypy type checking passes
+- All pre-commit hooks pass (flake8, autopep8, autoflake, end-of-file, trailing whitespace)
+
+### Refactoring: Remove Allowlist Logic from Python
+
+**Changes Made:**
+
+**Terraform (test_environment/modules/scps/):**
+- Renamed `deny_iam_user_creation_not_on_allowlist` → `deny_iam_user_creation`
+- Renamed `allowed_iam_user_arns` → `allowed_iam_users`
+- Updated all documentation in README.md
+
+**Python (headroom/):**
+- Renamed constant: `DENY_IAM_USER_CREATION_NOT_ON_ALLOWLIST` → `DENY_IAM_USER_CREATION`
+- Removed `allowed_iam_user_arns` from `config.py` entirely
+- Updated `IamUserAnalysis` dataclass:
+  - Removed `on_allowlist` field
+  - Now only has: user_name, user_arn, path
+- Updated `get_iam_users_analysis()`:
+  - Removed `allowed_user_arns` parameter
+  - Just returns all IAM users (discovery only)
+- Renamed check class: `DenyIamUserCreationNotOnAllowlistCheck` → `DenyIamUserCreationCheck`
+- Check now categorizes all users as "compliant" (just listing them)
+- Removed `allowed_iam_user_arns` parameter from `analysis.py` check instantiation
+- Updated check file names and imports
+
+**Key Design Change:**
+- Python code now only does **discovery** (lists all IAM users)
+- Terraform handles the **policy** (which users are allowed via NotResource)
+- This matches the pattern used for RCPs (discover third-party accounts, Terraform enforces policy)
+- Removed all "allowlist" concepts from Python - no evaluation, just enumeration
+
+**Test Results:**
+- All 367 tests pass
+- 100% code coverage maintained
+- mypy type checking passes
+- All pre-commit hooks pass
+
+---
+
+### Refactoring: Split `iam.py` into Separate Modules
+
+**Problem:** `headroom/aws/iam.py` was doing too much - mixing trust policy analysis (RCP checks) with user enumeration (SCP checks) in a single 271-line file.
+
+**Solution:** Created subdirectory structure to separate concerns:
+
+**New Structure:**
+```
+headroom/aws/iam/
+├── __init__.py          # Re-exports for backward compatibility
+├── roles.py             # Trust policy analysis (RCP) - 230 lines
+└── users.py             # User enumeration (SCP) - 70 lines
+```
+
+**File Breakdown:**
+
+**`roles.py`** - Trust policy analysis for RCP checks:
+- `TrustPolicyAnalysis` dataclass
+- `UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError` exceptions
+- `ALLOWED_PRINCIPAL_TYPES` constant
+- `_extract_account_ids_from_principal()` - principal parsing
+- `_has_wildcard_principal()` - wildcard detection
+- `analyze_iam_roles_trust_policies()` - main function
+- Complex logic for parsing IAM policy principals and trust relationships
+
+**`users.py`** - User enumeration for SCP checks:
+- `IamUserAnalysis` dataclass
+- `get_iam_users_analysis()` - simple user listing
+- Straightforward pagination and enumeration
+
+**`__init__.py`** - Public API with re-exports:
+- Imports and re-exports all public APIs from `roles.py` and `users.py`
+- Maintains full backward compatibility - all existing imports continue to work
+- Clear comments separating RCP vs SCP functionality
+
+**Benefits:**
+1. ✅ **Clear separation of concerns**: RCP ≠ SCP
+2. ✅ **Better organization**: Trust policy logic separate from user enumeration
+3. ✅ **Easier maintenance**: Changes to complex trust policy code don't affect simple user listing
+4. ✅ **Backward compatible**: All existing imports work unchanged via `__init__.py` re-exports
+5. ✅ **Cleaner code**: Each module has a single, focused purpose
+
+**Files Created:**
+- `headroom/aws/iam/__init__.py`
+- `headroom/aws/iam/roles.py`
+- `headroom/aws/iam/users.py`
+
+**Files Deleted:**
+- `headroom/aws/iam.py` (old monolithic file)
+
+**Test Results:**
+- All 367 tests pass
+- 100% code coverage maintained
+- mypy passes (52 files)
+- All pre-commit hooks pass
+- Zero breaking changes - full backward compatibility via re-exports
+
+---
+
+## November 8, 2025 - 10:15 PM
+
+**Topic:** Remove backward compatibility from IAM module refactor
+
+**User Request:**
+User indicated they don't care about backward compatibility for the IAM module refactor.
+
+**Actions Taken:**
+1. Cleaned up `headroom/aws/iam/__init__.py` to only export public API:
+   - Removed private helper functions from exports:
+     - `_extract_account_ids_from_principal`
+     - `_has_wildcard_principal`
+     - `ALLOWED_PRINCIPAL_TYPES`
+   - Only kept public API exports:
+     - `TrustPolicyAnalysis`, `UnknownPrincipalTypeError`, `InvalidFederatedPrincipalError`, `analyze_iam_roles_trust_policies` (from roles)
+     - `IamUserAnalysis`, `get_iam_users_analysis` (from users)
+
+2. Updated imports throughout codebase to be explicit:
+   - Tests import private helpers directly from `headroom.aws.iam.roles`
+   - Tests import user functions directly from `headroom.aws.iam.users`
+   - Check modules import from submodules:
+     - `deny_iam_user_creation.py` imports from `headroom.aws.iam.users`
+     - `check_third_party_assumerole.py` imports from `headroom.aws.iam.roles`
+
+**Test Results:**
+- All 367 tests pass
+- 100% code coverage maintained (headroom: 1246 lines, tests: 3525 lines)
+- mypy passes with no issues (52 files)
+- All pre-commit hooks pass
+
+**Outcome:**
+Module interface is now cleaner and more explicit. Public API is clearly separated from internal implementation details.
+
+---
+
+## November 8, 2025 - 10:30 PM
+
+**Topic:** Update Headroom-Specification.md with new IAM user creation feature and IAM module refactoring
+
+**User Request:**
+User asked about what should be added to the specification for the new deny_iam_user_creation feature to enable full reproduction.
+
+**Actions Taken:**
+1. Added **PR-021: IAM User Creation SCP** section documenting:
+   - Design philosophy: Discovery-only pattern (Python discovers, Terraform enforces)
+   - Key design decision: No allowlist in Python config (removed during refactoring)
+   - Data model: `IamUserAnalysis` dataclass with user_name, user_arn, path
+   - Analysis function: `get_iam_users_analysis()` with pagination
+   - Check implementation: `DenyIamUserCreationCheck` with all users marked "compliant"
+   - Terraform integration: Module variables and SCP policy using NotResource
+   - Testing strategy and file changes
+   - Result structure example
+
+2. Added **PR-022: IAM Module Refactoring - Separation of Concerns** section documenting:
+   - Problem statement: Monolithic iam.py mixed RCP and SCP concerns
+   - Solution: Package structure with roles.py (RCP) and users.py (SCP)
+   - Module responsibilities and exports
+   - Design decision: No backward compatibility (direct imports required)
+   - Import pattern updates for check modules and tests
+   - Benefits: Separation of concerns, maintainability, scalability
+   - Architectural improvements comparison
+
+3. Updated **Module Organization** section in Technical Architecture:
+   - Changed `iam.py` to `iam/` package structure
+   - Added submodule details for roles.py, users.py, __init__.py
+
+4. Updated **Checks Directory** section:
+   - Added `deny_iam_user_creation.py` to scps/ subdirectory listing
+
+5. Updated **Implementation Status** sections:
+   - Renamed "Phase 10: SCP Expansion (PLANNED)" to "Phase 11: Future SCP Expansion (PLANNED)"
+   - Added new "Phase 10: SCP Expansion - IAM User Creation Policy (COMPLETED)"
+   - Documented all key accomplishments for PR-021 and PR-022
+   - Updated test counts: 367 tests (increased from 329), 1246 statements in headroom/, 3525 in tests/
+
+6. Updated **Success Criteria** section:
+   - Added criteria 38-42 for new features:
+     - IAM User Creation SCP
+     - Discovery-Enforcement Separation
+     - IAM Module Organization
+     - Clean Module Interface
+     - Expanded Test Coverage
+
+7. Updated document metadata:
+   - Version: 4.4 → 4.5
+   - Status: Added "IAM User Creation SCP + IAM Module Refactoring" to completed items
+
+**Documentation Structure:**
+Each PR section follows consistent format:
+- Requirement statement
+- Implementation status
+- Problem statement (for refactorings)
+- Implementation specifications
+- Code examples with before/after
+- Data models and function signatures
+- Terraform integration details
+- Benefits and architectural improvements
+- Files created/modified/deleted
+- Test results
+
+**Key Documentation Principles:**
+- Complete enough for reproduction from specification alone
+- Explains design rationale and evolution (e.g., allowlist removal)
+- Distinguishes discovery-only pattern from compliance checks
+- Documents breaking changes (no backward compatibility)
+- Provides concrete code examples for all major components
+- Shows test coverage progression
+
+**Outcome:**
+Specification fully updated with comprehensive documentation of both new features, enabling complete reproduction of the implementation.
+
+---
+
+## 2025-11-08 - Renamed check_third_party_assumerole to deny_third_party_assumerole
+
+**User Request:**
+Rename `check_third_party_assumerole` to `deny_third_party_assumerole` throughout the codebase.
+
+**Implementation:**
+
+1. **Renamed Files:**
+   - `headroom/checks/rcps/check_third_party_assumerole.py` → `headroom/checks/rcps/deny_third_party_assumerole.py`
+   - `tests/test_checks_third_party_assumerole.py` → `tests/test_checks_deny_third_party_assumerole.py`
+
+2. **Updated Imports:**
+   - `headroom/checks/__init__.py`: Updated import from `check_third_party_assumerole` to `deny_third_party_assumerole`
+   - `tests/test_checks_deny_third_party_assumerole.py`: Updated module import and docstrings
+
+3. **Updated Test Patches:**
+   - `tests/test_checks_deny_third_party_assumerole.py`: Updated all patch paths (6 occurrences)
+   - `tests/test_analysis_extended.py`: Updated all patch paths (5 occurrences)
+
+4. **Updated String References:**
+   - `tests/test_main_integration.py`: Updated `check_name` from `"check_third_party_assumerole"` to `"deny_third_party_assumerole"`
+
+**Files Modified:**
+- `headroom/checks/__init__.py`
+- `tests/test_checks_deny_third_party_assumerole.py`
+- `tests/test_analysis_extended.py`
+- `tests/test_main_integration.py`
+
+**Rationale:**
+The new name `deny_third_party_assumerole` aligns with the naming convention of other checks (e.g., `deny_imds_v1_ec2`, `deny_iam_user_creation`) and better reflects the purpose of the check.
+
+**Outcome:**
+Successfully renamed the module and updated all references. All linter checks passed with no errors.
+
+---
+
+## Saturday, November 8, 2025
+
+### Created Test Infrastructure for deny_iam_user_creation SCP
+
+**Task:**
+Create IAM users in test_environment/ to test edge cases of the DENY_IAM_USER_CREATION SCP check, following the pattern of test_deny_third_party_assumerole.tf and test_deny_imds_v1_ec2/.
+
+**Investigation:**
+Examined the deny_iam_user_creation check implementation in `headroom/checks/scps/deny_iam_user_creation.py` and the SCP module configuration in `test_environment/modules/scps/`. The check lists all IAM users in accounts, while the SCP uses `NotResource` to deny `iam:CreateUser` for users not on the allowed list.
+
+**Identified Issue:**
+Discovered that `test_environment/scps/root_scps.tf` was missing required module arguments:
+- `deny_imds_v1_ec2` (required bool, no default)
+- `allowed_iam_users` (required list when deny_iam_user_creation = true)
+
+**Files Created:**
+- `test_environment/test_deny_iam_user_creation.tf` - Contains 5 IAM users for testing:
+  1. `terraform_user` (acme-co, path: `/`)
+  2. `github_actions` (fort-knox, path: `/service/`)
+  3. `legacy_developer` (shared-foo-bar, path: `/`)
+  4. `cicd_deployer` (security-tooling, path: `/automation/`)
+  5. `temp_contractor` (acme-co, path: `/contractors/`)
+
+**Files Modified:**
+- `test_environment/scps/root_scps.tf` - Added missing required arguments:
+  - Set `deny_imds_v1_ec2 = false`
+  - Added `allowed_iam_users` list with all 5 test users
+
+**Test Coverage:**
+The test users cover multiple edge cases:
+- Different AWS accounts (acme-co, fort-knox, shared-foo-bar, security-tooling)
+- Different IAM user paths (/, /service/, /automation/, /contractors/)
+- All users are in the allowed list, similar to the third_party_assumerole test pattern
+
+**Outcome:**
+Created comprehensive test infrastructure with 5 IAM users and fixed the root_scps.tf module configuration to include all required arguments.
+
+### Fixed Missing Required Arguments in All SCP Module Calls
+
+**Issue:**
+After initial implementation, Terraform validation revealed that all SCP module calls were missing the newly added required arguments `deny_iam_user_creation` and `allowed_iam_users`.
+
+**Files Modified:**
+- `test_environment/account_scps.tf` - Added `deny_iam_user_creation = false` and `allowed_iam_users = []`
+- `test_environment/scps/acme_acquisition_ou_scps.tf` - Added `deny_iam_user_creation = false` and `allowed_iam_users = []`
+- `test_environment/scps/high_value_assets_ou_scps.tf` - Added `deny_iam_user_creation = false` and `allowed_iam_users = []`
+
+**Rationale:**
+The scps module requires all variables to be set since none have defaults. For SCPs that don't use the IAM user creation check, we set `deny_iam_user_creation = false` and `allowed_iam_users = []`.
+
+**Outcome (Manual Fix):**
+Manually added missing arguments to all SCP module calls.
+
+**Issue with Manual Approach:**
+The edited files (`account_scps.tf`, `acme_acquisition_ou_scps.tf`, `high_value_assets_ou_scps.tf`) are auto-generated by Headroom's Terraform generation code. Manual edits would be overwritten on the next run.
+
+**Proper Fix - Updated Terraform Generation Code:**
+Modified `headroom/terraform/generate_scps.py` to always include all required module arguments:
+- Updated `_build_scp_terraform_module()` to generate all required variables regardless of recommendations
+- Now outputs organized sections: # EC2, # IAM
+- `deny_imds_v1_ec2` and `deny_iam_user_creation` are always included (set to true/false based on recommendations)
+- `allowed_iam_users` is always included (set to [] by default)
+
+**Tests Updated:**
+Modified `tests/test_generate_scps.py` to reflect the new output format:
+- Updated assertions to expect all required arguments in generated Terraform
+- Changed tests to expect `= false` instead of absence when checks aren't enabled
+- Updated test to use actual check name `deny-iam-user-creation` instead of `require-encryption`
+
+**Outcome:**
+The Terraform generation code now properly generates all required module arguments, ensuring generated files will always be valid regardless of which SCPs are enabled.
+
+### Made allowed_iam_users Optional
+
+**User Request:**
+Make `allowed_iam_users` optional and only pass it when `deny_iam_user_creation = true`.
+
+**Changes Made:**
+
+1. **Module Variables** (`test_environment/modules/scps/variables.tf`):
+   - Added `default = []` to `allowed_iam_users` variable
+
+2. **Generation Code** (`headroom/terraform/generate_scps.py`):
+   - Modified `_build_scp_terraform_module()` to only include `allowed_iam_users` when `deny_iam_user_creation` is true
+   - Uses conditional: `if deny_iam_user_creation: terraform_content += "  allowed_iam_users = []\n"`
+
+3. **Tests Updated** (`tests/test_generate_scps.py`):
+   - Changed assertions from `assert "allowed_iam_users = []" in result` to `assert "allowed_iam_users" not in result` for tests where IAM user creation is disabled
+   - Tests with `deny_iam_user_creation = true` still expect `allowed_iam_users = []`
+
+4. **Cleaned Up Manually Edited Files**:
+   - Removed `allowed_iam_users = []` from `account_scps.tf`, `acme_acquisition_ou_scps.tf`, and `high_value_assets_ou_scps.tf` since they all have `deny_iam_user_creation = false`
+
+**Rationale:**
+This follows Terraform best practices by only specifying non-default values, making the generated code cleaner and more maintainable.
+
+**Outcome:**
+`allowed_iam_users` is now optional with a default value, and only appears in generated Terraform when actually needed (when `deny_iam_user_creation = true`). All 16 SCP generation tests pass.
+
+### Fixed allowed_iam_users to Union IAM User ARNs from Results
+
+**Issue:**
+The auto-generation code was writing `allowed_iam_users = []` instead of collecting and unioning the actual IAM user ARNs from the analysis results (like RCPs do with third-party account IDs).
+
+**Root Cause:**
+The SCP Terraform generation was only checking which SCPs to enable, but wasn't extracting and passing the check-specific data (IAM user ARNs) from the analysis results to the Terraform generation.
+
+**Changes Made:**
+
+1. **Types** (`headroom/types.py`):
+   - Added `iam_user_arns: Optional[List[str]]` field to `SCPCheckResult` to store IAM user ARNs from analysis
+   - Added `allowed_iam_user_arns: Optional[List[str]]` field to `SCPPlacementRecommendations` (parallel to RCP's `third_party_account_ids`)
+
+2. **Parsing** (`headroom/parse_results.py`):
+   - Modified `_parse_single_scp_result_file()` to extract `users` field from summary and store in `iam_user_arns`
+   - Added un-redaction logic to replace "REDACTED" with actual account ID in ARNs
+   - Updated `determine_scp_placement()` to union IAM user ARNs from affected accounts for `deny_iam_user_creation` check
+   - Stored unioned ARN list in `SCPPlacementRecommendations.allowed_iam_user_arns`
+
+3. **Generation** (`headroom/terraform/generate_scps.py`):
+   - Modified `_build_scp_terraform_module()` to extract IAM user ARNs from recommendations
+   - Outputs multi-line formatted list of ARNs (like RCPs do for account IDs)
+   - Format: `allowed_iam_users = [ "arn:...", "arn:...", ]`
+
+**How It Works:**
+- IAM user ARNs are discovered during the `deny_iam_user_creation` check execution
+- Results files store them in the `summary.users` field
+- During SCP placement determination, ARNs from all affected accounts are unioned together
+- Terraform generation outputs the complete, sorted list of discovered IAM user ARNs
+- If `exclude_account_ids` is set, ARNs are un-redacted during parsing using the account ID
+
+**Outcome:**
+The generated Terraform now automatically includes all discovered IAM user ARNs in the `allowed_iam_users` list, matching the RCP pattern. All 52 parse_results and generate_scps tests pass.
+
+### Added Test Coverage for IAM User ARN Logic
+
+**Issue:**
+Tox failed due to incomplete test coverage (99%) for the new IAM user ARN collection and generation logic.
+
+**Tests Added:**
+
+1. **`test_parse_scp_result_files_with_redacted_iam_user_arns`** (`tests/test_parse_results.py`):
+   - Tests parsing of `deny_iam_user_creation` results with redacted IAM user ARNs
+   - Verifies that `REDACTED` is replaced with actual account ID during parsing
+   - Covers lines 117-120 in `parse_results.py`
+
+2. **`test_determine_scp_placement_unions_iam_user_arns`** (`tests/test_parse_results.py`):
+   - Tests that IAM user ARNs from multiple accounts are unioned together
+   - Verifies ARNs are sorted and deduplicated in recommendations
+   - Covers lines 233-241 in `parse_results.py`
+
+3. **`test_build_scp_terraform_module_with_iam_user_arns`** (`tests/test_generate_scps.py`):
+   - Tests Terraform generation when recommendations include IAM user ARNs
+   - Verifies multi-line formatted output of ARN list
+   - Covers lines 67-75 in `generate_scps.py`
+
+**File Fixes:**
+- Fixed trailing whitespace in `headroom/terraform/generate_scps.py`
+- Fixed missing newline at end of `test_environment/test_deny_iam_user_creation.tf`
+
+**Outcome:**
+✅ Tox passes with 100% coverage (1277 statements, 0 missed)
+✅ All 370 tests pass
+✅ Mypy passes with no issues
+✅ Pre-commit hooks pass
+
+---
+
+## Sunday, November 9, 2025
+
+### Replace Hardcoded Account IDs in Generated Terraform with Local Variable References
+
+**Request:**
+Instead of having hardcoded account IDs like `"arn:aws:iam::111111111111:user/service/github-actions"` in the auto-generated Terraform (e.g., `root_scps.tf`), generate Terraform that references `local.fort_knox_account_id` instead of the account ID. Only modify the Python code, not the auto-generated Terraform.
+
+**Implementation:**
+1. Added `_replace_account_id_in_arn()` helper function in `headroom/terraform/generate_scps.py` that:
+   - Parses account ID from IAM user ARNs
+   - Looks up account name in organization hierarchy
+   - Replaces account ID with `${local.{safe_account_name}_account_id}` reference
+   - Returns ARN unchanged if account ID not found in organization
+
+2. Updated `_build_scp_terraform_module()` to:
+   - Accept `organization_hierarchy` parameter
+   - Use `_replace_account_id_in_arn()` when processing allowed IAM user ARNs
+   - Transform ARNs to use Terraform local variable references
+
+3. Updated all callers of `_build_scp_terraform_module()`:
+   - `_generate_account_scp_terraform()` - passes organization_hierarchy
+   - `_generate_ou_scp_terraform()` - passes organization_hierarchy
+   - `_generate_root_scp_terraform()` - added organization_hierarchy parameter and passes it through
+   - `generate_scp_terraform()` - passes organization_hierarchy to `_generate_root_scp_terraform()`
+
+4. Updated all tests in `tests/test_generate_scps.py`:
+   - Updated 9 existing tests to pass organization_hierarchy parameter
+   - Added new test `test_build_scp_terraform_module_with_iam_user_arns_unknown_account()` to test fallback behavior
+   - Updated test assertions to expect interpolated references like `"arn:aws:iam::${local.test_account_1_account_id}:user/terraform-user"`
+
+**Files Modified:**
+- `headroom/terraform/generate_scps.py` - Added helper function and updated all related functions
+- `tests/test_generate_scps.py` - Updated 9 tests and added 1 new test
+
+**Result:**
+Generated Terraform now uses dynamic references like:
+```terraform
+allowed_iam_users = [
+  "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
+  "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
+  ...
+]
+```
+
+**Outcome:**
+✅ All 371 tests pass (added 1 new test)
+✅ Tox passes with 100% coverage (1288 statements, 0 missed)
+✅ Mypy passes with no issues
+✅ Pre-commit hooks pass

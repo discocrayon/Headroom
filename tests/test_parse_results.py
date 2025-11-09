@@ -414,6 +414,46 @@ class TestResultFileParsing:
             with pytest.raises(RuntimeError, match="Account name 'unknown-account' .* not found in organization hierarchy"):
                 parse_scp_result_files(temp_dir, org_hierarchy)
 
+    def test_parse_scp_result_files_with_redacted_iam_user_arns(self) -> None:
+        """Test un-redaction of IAM user ARNs in deny_iam_user_creation results."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results_path = Path(temp_dir)
+            check_dir = results_path / "scps" / "deny_iam_user_creation"
+            check_dir.mkdir(parents=True)
+
+            test_data = {
+                "summary": {
+                    "account_name": "test-account-1",
+                    "account_id": "111111111111",
+                    "check": "deny_iam_user_creation",
+                    "total_users": 2,
+                    "users": [
+                        "arn:aws:iam::REDACTED:user/terraform-user",
+                        "arn:aws:iam::REDACTED:user/service/github-actions"
+                    ],
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 2,
+                    "compliance_percentage": 100.0
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+
+            with open(check_dir / "test-account-1_111111111111.json", 'w') as f:
+                json.dump(test_data, f)
+
+            org_hierarchy = make_test_org_hierarchy()
+            result = parse_scp_result_files(temp_dir, org_hierarchy)
+
+            assert len(result) == 1
+            assert result[0].iam_user_arns is not None
+            assert len(result[0].iam_user_arns) == 2
+            # Check that REDACTED was replaced with actual account ID
+            assert "arn:aws:iam::111111111111:user/terraform-user" in result[0].iam_user_arns
+            assert "arn:aws:iam::111111111111:user/service/github-actions" in result[0].iam_user_arns
+
 
 class TestSCPPlacementDetermination:
     """Test SCP placement determination logic."""
@@ -527,6 +567,61 @@ class TestSCPPlacementDetermination:
         assert result[0].compliance_percentage == 0.0
         assert "No accounts have zero violations" in result[0].reasoning
         assert result[0].affected_accounts == []
+
+    def test_determine_scp_placement_unions_iam_user_arns(self) -> None:
+        """Test that IAM user ARNs are unioned for deny_iam_user_creation check."""
+        # All accounts have zero violations with different IAM users
+        results_data = [
+            SCPCheckResult(
+                account_id="111111111111",
+                account_name="account-1",
+                check_name="deny_iam_user_creation",
+                violations=0,
+                exemptions=0,
+                compliant=2,
+                compliance_percentage=100.0,
+                total_instances=2,
+                iam_user_arns=[
+                    "arn:aws:iam::111111111111:user/terraform-user",
+                    "arn:aws:iam::111111111111:user/github-actions"
+                ]
+            ),
+            SCPCheckResult(
+                account_id="222222222222",
+                account_name="account-2",
+                check_name="deny_iam_user_creation",
+                violations=0,
+                exemptions=0,
+                compliant=1,
+                compliance_percentage=100.0,
+                total_instances=1,
+                iam_user_arns=[
+                    "arn:aws:iam::222222222222:user/cicd-deployer"
+                ]
+            ),
+        ]
+
+        mock_hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={},
+            accounts={
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "222222222222": AccountOrgPlacement("222222222222", "account-2", "r-1234", ["Root"])
+            }
+        )
+
+        result = determine_scp_placement(results_data, mock_hierarchy)
+
+        assert len(result) == 1
+        assert result[0].recommended_level == "root"
+        assert result[0].allowed_iam_user_arns is not None
+        assert len(result[0].allowed_iam_user_arns) == 3
+        # Check all ARNs are present and sorted
+        assert result[0].allowed_iam_user_arns == [
+            "arn:aws:iam::111111111111:user/github-actions",
+            "arn:aws:iam::111111111111:user/terraform-user",
+            "arn:aws:iam::222222222222:user/cicd-deployer"
+        ]
 
     def test_determine_scp_placement_missing_account_in_hierarchy(self) -> None:
         """Test handling when account is not found in organization hierarchy."""

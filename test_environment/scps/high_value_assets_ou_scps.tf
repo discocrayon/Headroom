@@ -5,6 +5,9 @@ module "scps_high_value_assets_ou" {
   source = "../modules/scps"
   target_id = local.top_level_high_value_assets_ou_id
 
-  # deny_imds_v1_ec2
+  # EC2
   deny_imds_v1_ec2 = true
+
+  # IAM
+  deny_iam_user_creation = false
 }
