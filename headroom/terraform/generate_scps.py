@@ -15,11 +15,38 @@ from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlaceme
 logger = logging.getLogger(__name__)
 
 
+def _replace_account_id_in_arn(
+    arn: str,
+    organization_hierarchy: OrganizationHierarchy
+) -> str:
+    """
+    Replace account ID in ARN with Terraform local variable reference.
+
+    Args:
+        arn: IAM user ARN (e.g., "arn:aws:iam::111111111111:user/path/username")
+        organization_hierarchy: Organization structure for account ID lookups
+
+    Returns:
+        ARN with account ID replaced by local variable reference
+        (e.g., "arn:aws:iam::${local.account_name_account_id}:user/path/username")
+    """
+    parts = arn.split(":")
+    if len(parts) >= 5 and parts[0] == "arn" and parts[2] == "iam":
+        account_id = parts[4]
+        account_info = organization_hierarchy.accounts.get(account_id)
+        if account_info:
+            safe_account_name = make_safe_variable_name(account_info.account_name)
+            parts[4] = f"${{local.{safe_account_name}_account_id}}"
+            return ":".join(parts)
+    return arn
+
+
 def _build_scp_terraform_module(
     module_name: str,
     target_id_reference: str,
     recommendations: List[SCPPlacementRecommendations],
-    comment: str
+    comment: str,
+    organization_hierarchy: OrganizationHierarchy
 ) -> str:
     """
     Build Terraform module call for SCP deployment.
@@ -29,6 +56,7 @@ def _build_scp_terraform_module(
         target_id_reference: Reference to the target ID (e.g., "local.root_ou_id")
         recommendations: List of SCP placement recommendations for this target
         comment: Comment line describing the configuration (e.g., "Organization Root")
+        organization_hierarchy: Organization structure for account ID lookups
 
     Returns:
         Complete Terraform module block as a string
@@ -42,12 +70,40 @@ module "{module_name}" {{
 
 '''
 
-    # Add SCP flags based on recommendations
+    # Collect enabled checks
+    enabled_checks = set()
     for rec in recommendations:
-        if rec.compliance_percentage == 100.0:  # Only enable if 100% compliant
+        if rec.compliance_percentage == 100.0:
             check_name_terraform = rec.check_name.replace("-", "_")
-            terraform_content += f"  # {rec.check_name}\n"
-            terraform_content += f"  {check_name_terraform} = true\n"
+            enabled_checks.add(check_name_terraform)
+
+    # EC2
+    terraform_content += "  # EC2\n"
+    deny_imds_v1_ec2 = "deny_imds_v1_ec2" in enabled_checks
+    terraform_content += f"  deny_imds_v1_ec2 = {str(deny_imds_v1_ec2).lower()}\n"
+    terraform_content += "\n"
+
+    # IAM
+    terraform_content += "  # IAM\n"
+    deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks
+    terraform_content += f"  deny_iam_user_creation = {str(deny_iam_user_creation).lower()}\n"
+
+    if deny_iam_user_creation:
+        # Get IAM user ARNs from recommendations
+        allowed_iam_user_arns = []
+        for rec in recommendations:
+            if rec.check_name.replace("-", "_") == "deny_iam_user_creation" and rec.allowed_iam_user_arns:
+                allowed_iam_user_arns = rec.allowed_iam_user_arns
+                break
+
+        if allowed_iam_user_arns:
+            terraform_content += "  allowed_iam_users = [\n"
+            for arn in allowed_iam_user_arns:
+                transformed_arn = _replace_account_id_in_arn(arn, organization_hierarchy)
+                terraform_content += f'    "{transformed_arn}",\n'
+            terraform_content += "  ]\n"
+        else:
+            terraform_content += "  allowed_iam_users = []\n"
 
     terraform_content += "}\n"
     return terraform_content
@@ -82,7 +138,8 @@ def _generate_account_scp_terraform(
         module_name=f"scps_{account_name}",
         target_id_reference=f"local.{account_name}_account_id",
         recommendations=account_recs,
-        comment=account_info.account_name
+        comment=account_info.account_name,
+        organization_hierarchy=organization_hierarchy
     )
 
     # Write the file
@@ -118,7 +175,8 @@ def _generate_ou_scp_terraform(
         module_name=f"scps_{ou_name}_ou",
         target_id_reference=f"local.top_level_{ou_name}_ou_id",
         recommendations=ou_recs,
-        comment=f"OU {ou_info.name}"
+        comment=f"OU {ou_info.name}",
+        organization_hierarchy=organization_hierarchy
     )
 
     # Write the file
@@ -127,6 +185,7 @@ def _generate_ou_scp_terraform(
 
 def _generate_root_scp_terraform(
     root_recommendations: List[SCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy,
     output_path: Path
 ) -> None:
     """
@@ -134,6 +193,7 @@ def _generate_root_scp_terraform(
 
     Args:
         root_recommendations: List of SCP recommendations for the root level
+        organization_hierarchy: Organization structure information
         output_path: Directory to write Terraform files to
     """
     if not root_recommendations:
@@ -147,7 +207,8 @@ def _generate_root_scp_terraform(
         module_name="scps_root",
         target_id_reference="local.root_ou_id",
         recommendations=root_recommendations,
-        comment="Organization Root"
+        comment="Organization Root",
+        organization_hierarchy=organization_hierarchy
     )
 
     # Write the file
@@ -200,4 +261,4 @@ def generate_scp_terraform(
         _generate_ou_scp_terraform(ou_id, ou_recs, organization_hierarchy, output_path)
 
     # Generate Terraform file for root level
-    _generate_root_scp_terraform(root_recommendations, output_path)
+    _generate_root_scp_terraform(root_recommendations, organization_hierarchy, output_path)

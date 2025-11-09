@@ -114,6 +114,11 @@ def _parse_single_scp_result_file(
         result_file
     )
 
+    # Un-redact IAM user ARNs if they were redacted
+    iam_user_arns = summary.get("users")
+    if iam_user_arns and account_id:
+        iam_user_arns = [arn.replace("REDACTED", account_id) for arn in iam_user_arns]
+
     return SCPCheckResult(
         account_id=account_id,
         account_name=summary.get("account_name", ""),
@@ -122,7 +127,8 @@ def _parse_single_scp_result_file(
         exemptions=summary.get("exemptions", 0),
         compliant=summary.get("compliant", 0),
         total_instances=summary.get("total_instances"),
-        compliance_percentage=summary.get("compliance_percentage", 0.0)
+        compliance_percentage=summary.get("compliance_percentage", 0.0),
+        iam_user_arns=iam_user_arns
     )
 
 
@@ -225,6 +231,15 @@ def determine_scp_placement(
         )
 
         for candidate in candidates:
+            # Union IAM user ARNs from affected accounts if this is deny_iam_user_creation check
+            allowed_iam_user_arns = None
+            if check_name == "deny_iam_user_creation":
+                iam_user_arns_set = set()
+                for result in check_results:
+                    if result.account_id in candidate.affected_accounts and result.iam_user_arns:
+                        iam_user_arns_set.update(result.iam_user_arns)
+                allowed_iam_user_arns = sorted(list(iam_user_arns_set)) if iam_user_arns_set else []
+
             if candidate.level == "root":
                 recommendations.append(SCPPlacementRecommendations(
                     check_name=check_name,
@@ -232,7 +247,8 @@ def determine_scp_placement(
                     target_ou_id=None,
                     affected_accounts=candidate.affected_accounts,
                     compliance_percentage=100.0,
-                    reasoning="All accounts in organization have zero violations - safe to deploy at root level"
+                    reasoning="All accounts in organization have zero violations - safe to deploy at root level",
+                    allowed_iam_user_arns=allowed_iam_user_arns
                 ))
             elif candidate.level == "ou" and candidate.target_id is not None:
                 ou_name = organization_hierarchy.organizational_units.get(
@@ -245,7 +261,8 @@ def determine_scp_placement(
                     target_ou_id=candidate.target_id,
                     affected_accounts=candidate.affected_accounts,
                     compliance_percentage=100.0,
-                    reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level"
+                    reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level",
+                    allowed_iam_user_arns=allowed_iam_user_arns
                 ))
             elif candidate.level == "account":
                 recommendations.append(SCPPlacementRecommendations(
@@ -254,7 +271,8 @@ def determine_scp_placement(
                     target_ou_id=None,
                     affected_accounts=[r.account_id for r in safe_check_results],
                     compliance_percentage=len(safe_check_results) / len(check_results) * 100.0,
-                    reasoning=f"Only {len(safe_check_results)} out of {len(check_results)} accounts have zero violations - deploy at individual account level"
+                    reasoning=f"Only {len(safe_check_results)} out of {len(check_results)} accounts have zero violations - deploy at individual account level",
+                    allowed_iam_user_arns=allowed_iam_user_arns
                 ))
                 break
 

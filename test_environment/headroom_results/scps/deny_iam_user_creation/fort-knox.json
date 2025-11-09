@@ -1,0 +1,19 @@
+{
+  "summary": {
+    "account_name": "fort-knox",
+    "check": "deny_iam_user_creation",
+    "total_users": 1,
+    "users": [
+      "arn:aws:iam::REDACTED:user/service/github-actions"
+    ]
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "user_name": "github-actions",
+      "user_arn": "arn:aws:iam::REDACTED:user/service/github-actions",
+      "path": "/service/"
+    }
+  ]
+}

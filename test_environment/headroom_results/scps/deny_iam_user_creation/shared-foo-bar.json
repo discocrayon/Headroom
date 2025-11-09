@@ -1,0 +1,19 @@
+{
+  "summary": {
+    "account_name": "shared-foo-bar",
+    "check": "deny_iam_user_creation",
+    "total_users": 1,
+    "users": [
+      "arn:aws:iam::REDACTED:user/legacy-developer"
+    ]
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "user_name": "legacy-developer",
+      "user_arn": "arn:aws:iam::REDACTED:user/legacy-developer",
+      "path": "/"
+    }
+  ]
+}

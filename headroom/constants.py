@@ -8,6 +8,7 @@ from typing import Dict
 
 # Check name constants
 DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
+DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
 
 # Terraform file generation constants

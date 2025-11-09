@@ -19,3 +19,15 @@ variable "target_id" {
 variable "deny_imds_v1_ec2" {
   type    = bool
 }
+
+# IAM
+
+variable "deny_iam_user_creation" {
+  type    = bool
+}
+
+variable "allowed_iam_users" {
+  type        = list(string)
+  default     = []
+  description = "List of IAM user ARNs that are allowed to be created. Format: arn:aws:iam::ACCOUNT_ID:user/USERNAME"
+}

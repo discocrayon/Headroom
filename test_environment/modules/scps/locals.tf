@@ -36,6 +36,17 @@ locals {
         }
       }
     },
+    # var.deny_iam_user_creation
+    # -->
+    # Sid: DenyIamUserCreation
+    # Denies creation of IAM users not on the allowed list
+    {
+      include = var.deny_iam_user_creation,
+      statement = {
+        Action = "iam:CreateUser"
+        NotResource = var.allowed_iam_users
+      }
+    },
   ]
   # Included SCP 1 Deny Statements
   included_scp_1_deny_statements = [

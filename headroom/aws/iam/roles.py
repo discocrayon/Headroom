@@ -1,7 +1,8 @@
 """
-AWS IAM analysis module.
+AWS IAM role trust policy analysis.
 
-This module contains functions for analyzing IAM roles and their trust policies.
+This module contains functions for analyzing IAM roles and their trust policies,
+specifically for identifying third-party account access (RCP checks).
 """
 
 import json

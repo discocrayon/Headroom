@@ -11,11 +11,13 @@ from botocore.exceptions import ClientError
 from unittest.mock import MagicMock
 from urllib.parse import quote
 from headroom.aws.iam import (
+    InvalidFederatedPrincipalError,
+    UnknownPrincipalTypeError,
+    analyze_iam_roles_trust_policies,
+)
+from headroom.aws.iam.roles import (
     _extract_account_ids_from_principal,
     _has_wildcard_principal,
-    analyze_iam_roles_trust_policies,
-    UnknownPrincipalTypeError,
-    InvalidFederatedPrincipalError
 )
 
 
@@ -576,3 +578,71 @@ class TestAnalyzeIamRolesTrustPolicies:
         assert len(results) == 1
         assert results[0].role_name == "MyRole"
         assert results[0].third_party_account_ids == {"999999999999"}
+
+
+class TestGetIamUsersAnalysis:
+    """Test get_iam_users_analysis function."""
+
+    def test_get_iam_users(self) -> None:
+        """Test getting all IAM users."""
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Users": [
+                    {
+                        "UserName": "admin",
+                        "Arn": "arn:aws:iam::123456789012:user/admin",
+                        "Path": "/"
+                    },
+                    {
+                        "UserName": "developer",
+                        "Arn": "arn:aws:iam::123456789012:user/developer",
+                        "Path": "/devs/"
+                    }
+                ]
+            }
+        ]
+
+        from headroom.aws.iam.users import get_iam_users_analysis
+        results = get_iam_users_analysis(mock_session)
+
+        assert len(results) == 2
+        assert results[0].user_name == "admin"
+        assert results[0].user_arn == "arn:aws:iam::123456789012:user/admin"
+        assert results[0].path == "/"
+        assert results[1].user_name == "developer"
+        assert results[1].user_arn == "arn:aws:iam::123456789012:user/developer"
+        assert results[1].path == "/devs/"
+
+    def test_get_iam_users_no_users(self) -> None:
+        """Test getting IAM users when there are none."""
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {"Users": []}
+        ]
+
+        from headroom.aws.iam.users import get_iam_users_analysis
+        results = get_iam_users_analysis(mock_session)
+
+        assert len(results) == 0
+
+    def test_get_iam_users_client_error_raises(self) -> None:
+        """Test that AWS API errors during user listing are raised."""
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        mock_iam_client.get_paginator.return_value.paginate.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
+            "ListUsers"
+        )
+
+        from headroom.aws.iam.users import get_iam_users_analysis
+        with pytest.raises(ClientError):
+            get_iam_users_analysis(mock_session)

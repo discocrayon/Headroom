@@ -10,8 +10,13 @@ Intention is to eventually have this Terraform module in the Terraform registry 
 module "scps" {
   source = "./modules/scps"
 
-  target_id         = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
-  deny_imds_v1_ec2  = true
+  target_id               = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
+  deny_imds_v1_ec2        = true
+  deny_iam_user_creation  = true
+  allowed_iam_users       = [
+    "arn:aws:iam::444444444444:user/terraform-user",
+    "arn:aws:iam::444444444444:user/github-actions",
+  ]
 }
 ```
 
@@ -26,6 +31,8 @@ module "scps" {
 ### Security Policy Variables
 
 - **`deny_imds_v1_ec2`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
+- **`deny_iam_user_creation`** (bool): Deny creation of IAM users not on the allowed list
+- **`allowed_iam_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
 
 ## Architecture
 
@@ -63,6 +70,20 @@ When enabled, this policy enforces IMDSv2 (Instance Metadata Service version 2) 
 Resources can be exempted from IMDSv2 enforcement using the tag `ExemptFromIMDSv2: "true"`:
 - IAM roles: Tag the role with `ExemptFromIMDSv2 = "true"` to exempt all instances using that role
 - EC2 instances: Include `ExemptFromIMDSv2 = "true"` in request tags when launching instances
+
+### IAM User Creation Restriction (`deny_iam_user_creation`)
+
+When enabled, this policy denies the creation of IAM users that are not on the allowed list through:
+
+**DenyIamUserCreation**: Denies `iam:CreateUser` action for all IAM user ARNs not specified in `allowed_iam_users`
+
+This policy uses the `NotResource` element to explicitly allow creation of only the IAM users specified in the allowed list. Any attempt to create IAM users not on the allowed list will be denied.
+
+#### Configuration
+
+Specify allowed IAM user ARNs using the format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
+
+Example: `arn:aws:iam::444444444444:user/terraform-user`
 
 ## Resources Created
 

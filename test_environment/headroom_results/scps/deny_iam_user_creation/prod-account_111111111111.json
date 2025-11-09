@@ -1,0 +1,12 @@
+{
+  "summary": {
+    "account_name": "prod-account",
+    "account_id": "111111111111",
+    "check": "deny_iam_user_creation",
+    "total_users": 0,
+    "users": []
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": []
+}
