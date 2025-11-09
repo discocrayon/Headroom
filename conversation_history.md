@@ -11940,3 +11940,480 @@ Review the git commit and update both documentation files to accurately reflect:
 ✅ Headroom-Specification.md updated with comprehensive implementation details
 ✅ Both files accurately reflect commit 76255e30 changes
 ✅ Documentation maintains consistency with actual implementation
+
+---
+
+## 2025-11-09 17:30 - Streamlining Headroom-Specification.md
+
+**Goal:**
+Remove historical cruft from Headroom-Specification.md and create a succinct specification that describes the current product without tracking its evolution over time.
+
+**Analysis of Current Issues:**
+
+The specification has accumulated significant historical documentation:
+1. **Phase Tracking:** Extensive "Implementation Status: COMPLETED" markers throughout
+2. **Evolution Narratives:** "Before/After" code comparisons showing refactoring history
+3. **Bug Fix Documentation:** Detailed descriptions of bugs that were fixed
+4. **PR Numbers:** Product requirement sections labeled PR-001 through PR-022 like a changelog
+5. **Implementation Phases:** Section 4 tracks development in 11 phases with checkmarks
+6. **Success Criteria Checklist:** 47 items with checkmarks tracking completion
+7. **Redundant Information:** Same concepts explained multiple times in different sections
+8. **Migration Guides:** Instructions for updating imports after refactoring
+
+**Proposed Streamlined Structure:**
+
+# Headroom - AWS Multi-Account Security Analysis Tool
+## Product Specification
+
+**Version:** 5.0
+**Last Updated:** 2025-11-09
+
+### Executive Summary
+**Headroom** is a Python CLI tool for AWS multi-account security analysis with Service Control Policy (SCP) and Resource Control Policy (RCP) audit capabilities. The tool provides "audit mode" for SCPs/RCPs, enabling security teams to analyze AWS Organizations environments and auto-generate Terraform configurations for policy deployment.
+
+**Core Value Proposition:** Ever want audit mode for SCPs / RCPs? Well now you can.
+
+**Usage Philosophy:** Bare-bones prevention-focused CLI tool. No more getting flooded with thousands of reactive CSPM findings, stop the bleeding where possible.
+
+**Disclaimer:** Don't run this in production / do so at your own risk! :)
+
+### Product Capabilities
+
+#### 1. Configuration Management
+- Hybrid YAML + CLI configuration with CLI override capability
+- Pydantic-based validation with strict type checking
+- Optional security_analysis_account_id for running from management account vs running directly from security analysis account
+
+#### 2. AWS Multi-Account Integration
+- Secure cross-account access via IAM role assumption
+- AWS Organizations integration for account discovery and metadata
+- Tag-based account information extraction (environment/owner default to "unknown", name defaults to account ID)
+- Session management with proper credential handling
+
+#### 3. SCP Compliance Analysis
+- **EC2 IMDS v1 Check:** Multi-region scanning with exemption tag support
+- **IAM User Creation Check:** Automatic allowlist generation from discovered users
+- Modular check framework with self-registration pattern
+- JSON result generation with detailed compliance metrics
+
+#### 4. RCP Compliance Analysis
+- **Third-Party AssumeRole Check:** IAM trust policy analysis across organization
+- Third-party account detection and wildcard principal identification
+- Principal type validation (AWS, Service, Federated)
+- Organization baseline comparison for external account detection
+
+#### 5. Policy Placement Intelligence
+- Organization structure analysis for optimal policy deployment levels
+- Greatest common denominator logic for safe SCP deployment
+- Union strategy for RCP third-party account allowlists
+- Automatic OU and root-level recommendations when safe
+
+#### 6. Terraform Auto-Generation
+- AWS Organizations data source generation with validation
+- SCP Terraform modules with automatic allowlist integration
+- RCP Terraform modules with third-party account allowlists
+- Multi-level deployment (root, OU, account) based on compliance analysis
+
+### Technical Architecture
+
+#### Module Organization
+```
+headroom/
+├── __init__.py
+├── __main__.py              # Entry point
+├── config.py                # Configuration models
+├── constants.py             # Check names and type mappings
+├── main.py                  # Orchestration
+├── usage.py                 # CLI parsing
+├── analysis.py              # Check execution
+├── parse_results.py         # SCP placement analysis
+├── write_results.py         # Result file management
+├── output.py                # User-facing output
+├── types.py                 # Shared data models
+├── aws/
+│   ├── ec2.py              # EC2 analysis
+│   ├── iam/
+│   │   ├── roles.py        # Trust policy analysis (RCP)
+│   │   └── users.py        # User enumeration (SCP)
+│   ├── organization.py     # Organizations API integration
+│   └── sessions.py         # Session management
+├── checks/
+│   ├── base.py             # BaseCheck abstract class
+│   ├── registry.py         # Check registration system
+│   ├── scps/
+│   │   ├── deny_imds_v1_ec2.py
+│   │   └── deny_iam_user_creation.py
+│   └── rcps/
+│       └── check_third_party_assumerole.py
+├── placement/
+│   └── hierarchy.py        # OU hierarchy analysis
+└── terraform/
+    ├── generate_org_info.py
+    ├── generate_scps.py
+    ├── generate_rcps.py
+    └── utils.py
+```
+
+#### Data Flow
+1. **Configuration:** Load YAML → merge with CLI args → validate
+2. **AWS Setup:** Assume security analysis role → query Organizations API
+3. **Analysis:** For each account, assume Headroom role → run checks → write results
+4. **Placement:** Parse results → analyze org structure → determine policy levels
+5. **Generation:** Generate Terraform for org data + SCPs + RCPs
+
+#### Check Framework
+Checks implement `BaseCheck` abstract class using Template Method pattern:
+```python
+@register_check("scps", DENY_IMDS_V1_EC2)
+class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
+    def analyze(self, session) -> List[DenyImdsV1Ec2]: ...
+    def categorize_result(self, result) -> tuple[str, Dict]: ...
+    def build_summary_fields(self, check_result) -> Dict: ...
+```
+
+New checks auto-register via decorator with zero code changes to other modules.
+
+### Configuration Schema
+
+```yaml
+management_account_id: string                # Required
+security_analysis_account_id: string         # Optional (omit if running from security account)
+exclude_account_ids: boolean                 # Redact account IDs in results
+use_account_name_from_tags: boolean          # Use tag for name vs AWS account name
+results_dir: string                          # Default: test_environment/headroom_results
+scps_dir: string                             # Default: test_environment/scps
+rcps_dir: string                             # Default: test_environment/rcps
+account_tag_layout:
+  environment: string                        # Optional tag, fallback: "unknown"
+  name: string                               # Optional tag, used when use_account_name_from_tags=true
+  owner: string                              # Optional tag, fallback: "unknown"
+```
+
+### SCP Checks
+
+#### Deny IMDSv1 (EC2)
+- Scans all regions for EC2 instances
+- Identifies instances with IMDSv1 enabled
+- Supports exemption via `ExemptFromIMDSv2` tag (case-insensitive)
+- Generates violation/exemption/compliant categorization
+
+#### Deny IAM User Creation
+- Discovers all IAM users in each account
+- Automatically unions user ARNs across accounts/OUs for allowlists
+- Transforms ARNs to use Terraform local variable references
+- Generates SCPs with `NotResource` allowlists to prevent unauthorized user creation
+
+### RCP Checks
+
+#### Third-Party AssumeRole
+- Analyzes IAM role trust policies across organization
+- Extracts account IDs from trust policy principals
+- Identifies third-party (non-org) accounts
+- Detects wildcard principals requiring CloudTrail analysis
+- Uses union strategy to combine third-party accounts at root/OU levels
+- Blocks root/OU deployment if ANY account has wildcards
+
+### Safety Principles
+
+**SCP Deployment:**
+- Only deploys at levels with 100% compliance (zero violations)
+- Ensures policies won't break existing compliant resources
+- Accounts with violations receive account-specific recommendations
+
+**RCP Deployment:**
+- Excludes accounts with wildcard principals from generation
+- Avoids OU-level RCPs if ANY account in OU has wildcards
+- Avoids root-level RCPs if ANY account in organization has wildcards
+- Uses allowlist approach for safe third-party account combination
+
+### Quality Standards
+- **Test Coverage:** 100% (370 tests, 1277 statements)
+- **Type Safety:** Strict mypy with no untyped definitions
+- **Code Standards:** Pre-commit hooks (flake8, autopep8, autoflake)
+- **Python Version:** 3.13
+- **Error Handling:** Specific exceptions only, fail-loud philosophy
+
+### Usage
+
+```bash
+# Install
+pip install -r requirements.txt
+
+# Run analysis
+python -m headroom --config config.yaml
+
+# With custom directories
+python -m headroom --config config.yaml \
+  --results-dir ./my_results \
+  --scps-dir ./my_scps \
+  --rcps-dir ./my_rcps
+
+# Excluding account IDs
+python -m headroom --config config.yaml --exclude-account-ids
+
+# Run tests
+tox
+
+# Type checking
+mypy headroom/ tests/
+```
+
+### IAM Role Requirements
+- **OrganizationAccountAccessRole:** In security analysis account (only if running from management account)
+- **OrgAndAccountInfoReader:** In management account (trusts security analysis account)
+- **Headroom:** In all accounts for analysis execution
+
+### Result Structure
+
+Results organized by policy type and check:
+```
+{results_dir}/
+├── scps/
+│   ├── deny_imds_v1_ec2/
+│   │   ├── account-name_111111111111.json
+│   │   └── ...
+│   └── deny_iam_user_creation/
+│       ├── account-name_111111111111.json
+│       └── ...
+└── rcps/
+    └── third_party_assumerole/
+        ├── account-name_111111111111.json
+        └── ...
+```
+
+### Generated Terraform
+
+**Organization Info (grab_org_info.tf):**
+- Data sources for root, OUs, and accounts
+- Local variables with validation for safe array access
+- References for use in SCP/RCP modules
+
+**SCP Modules (e.g., root_scps.tf):**
+```hcl
+module "scps_root" {
+  source = "../modules/scps"
+  target_id = local.root_ou_id
+
+  # EC2
+  deny_imds_v1_ec2 = true
+
+  # IAM
+  deny_iam_user_creation = true
+  allowed_iam_users = [
+    "arn:aws:iam::${local.account_name_account_id}:user/terraform-user",
+    "arn:aws:iam::${local.other_account_id}:user/cicd-user"
+  ]
+}
+```
+
+**RCP Modules (e.g., root_rcps.tf):**
+```hcl
+module "rcps_root" {
+  source = "../modules/rcps"
+  target_id = local.root_ou_id
+
+  third_party_assumerole_account_ids_allowlist = [
+    "999999999999",
+    "888888888888"
+  ]
+}
+```
+
+### Future Roadmap
+- Additional SCP checks (S3, VPC, etc.)
+- CloudTrail historical analysis for wildcard principal resolution
+- OU-based account filtering
+- Metrics-based decision making
+- GitHub Actions integration for CI/CD
+
+---
+
+**Key Removals from Current Spec:**
+1. All "Implementation Status: COMPLETED" markers
+2. Phase 1-11 tracking sections
+3. PR-001 through PR-022 historical labels
+4. Before/After code comparison blocks
+5. Bug fix narratives (union strategy evolution, missing account ID handling, etc.)
+6. Refactoring journey documentation
+7. Success Criteria checklist (47 items with checkmarks)
+8. "Files Modified" lists after each PR
+9. Test count evolution tracking
+10. Migration guide sections
+
+**What Would Remain:**
+- Executive summary (cleaned up)
+- Product capabilities (consolidated from PR sections)
+- Technical architecture (current state only)
+- Configuration schema
+- Check descriptions (what they do, not how they evolved)
+- Safety principles
+- Quality standards (current state)
+- Usage examples
+- Future roadmap
+
+This would reduce the specification from 3515 lines to approximately 500-700 lines while maintaining all essential product information.
+
+**User Feedback & Refinements:**
+
+1. Changed "Support for both direct and cross-account execution modes" to be more specific about optional security_analysis_account_id
+2. Made fallback values explicit (environment/owner → "unknown", name → account ID)
+3. Column-aligned all comments in Configuration Schema
+4. Changed "Blocks" to "Avoids" for RCP deployment safety principles
+5. Removed "Multi-region deployment strategies" from Future Roadmap (already implemented)
+
+**Implementation:**
+
+Replaced Headroom-Specification.md with streamlined version.
+
+**Results:**
+- **Old version:** 3515 lines with extensive historical documentation
+- **New version:** 264 lines focused on current product capabilities
+- **Line reduction:** 92.5% smaller while maintaining all essential information
+- **No linter errors**
+
+**What Was Removed:**
+- All "Implementation Status: COMPLETED" markers
+- Phase 1-11 development tracking
+- PR-001 through PR-022 historical labels
+- Before/After code comparison blocks
+- Bug fix narratives
+- Refactoring journey documentation
+- 47-item success criteria checklist with checkmarks
+- "Files Modified" lists after each section
+- Test count evolution tracking
+- Migration guide sections
+
+**What Was Retained:**
+- Executive summary with core value proposition
+- Complete product capabilities overview
+- Current technical architecture
+- Configuration schema
+- Check descriptions (functionality only)
+- Safety principles
+- Quality standards
+- Usage examples
+- IAM role requirements
+- Result structure
+- Generated Terraform examples
+- Future roadmap
+
+---
+
+## 2025-11-09 18:00 - Comprehensive Specification v2.0
+
+**Issue:**
+User feedback: "I don't think there is enough detail in the spec now, to reproduce all of the code and tests from it. That is the goal of the spec, to be able to generate all the existing code from it."
+
+The 264-line streamlined version removed too much detail. While it eliminated historical cruft, it also removed technical implementation details needed to reproduce the codebase.
+
+**Solution:**
+Created comprehensive specification that removes historical narrative while retaining all technical details needed for code reproduction.
+
+**Structure:**
+
+1. **Executive Summary** - Core value proposition and philosophy
+2. **Product Capabilities** - High-level feature list (6 categories)
+3. **Technical Architecture** - Module organization and data flow
+4. **Data Models** - Complete dataclass definitions with all fields:
+   - Configuration models (HeadroomConfig, AccountTagLayout)
+   - Organization structure (OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement)
+   - Check results (CheckResult, SCPCheckResult, RCPCheckResult)
+   - Placement recommendations (SCPPlacementRecommendations, RCPPlacementRecommendations)
+   - Check-specific models (DenyImdsV1Ec2, IamUserAnalysis, TrustPolicyAnalysis)
+5. **Configuration System** - Schema, loading logic, CLI arguments, merge precedence
+6. **Check Framework** - BaseCheck abstract class, Template Method pattern, CategorizedCheckResult, Registry pattern with decorator
+7. **SCP Checks** - Detailed specifications:
+   - Deny IMDSv1: Data model, analysis algorithm, categorization logic, summary fields, JSON schema
+   - Deny IAM User Creation: Data model, analysis algorithm, union logic, ARN transformation, JSON schema
+8. **RCP Checks** - Detailed specifications:
+   - Third-Party AssumeRole: Data model, analysis algorithm, principal type handling, wildcard detection, JSON schema
+   - Principal extraction algorithm with AWS/Service/Federated handling
+   - Custom exceptions (UnknownPrincipalTypeError, InvalidFederatedPrincipalError)
+9. **Results Processing**:
+   - Common parsing patterns (shared between SCP/RCP)
+   - SCP parsing algorithm with account ID fallback
+   - RCP parsing algorithm with wildcard filtering
+10. **Placement Logic**:
+    - SCP placement algorithm (zero-violation principle, greatest common denominator)
+    - IAM user ARN un-redaction logic
+    - IAM user ARN union logic for allowlists
+    - RCP placement algorithm (union strategy, wildcard safety rules)
+11. **Terraform Generation**:
+    - Organization info generation with validation patterns
+    - SCP generation with ARN transformation algorithm
+    - RCP generation with allowlist management
+    - Complete generated file examples
+12. **AWS Integration**:
+    - Session management (assume_role function, role assumption patterns)
+    - Organization integration (structure analysis, account info with tags)
+    - EC2 integration (multi-region scanning, pagination)
+    - IAM integration (user enumeration, role trust policy analysis)
+13. **Check Execution Flow**:
+    - Generic check execution via registry
+    - Results skip logic for optimization
+14. **Constants and Registration**:
+    - CHECK_TYPE_MAP
+    - Dynamic registration flow
+15. **Output System** - OutputHandler class methods
+16. **Safety Principles** - SCP and RCP deployment rules
+17. **Quality Standards** - Testing, type safety, code standards, error handling
+18. **Usage** - Installation, running analysis, running tests
+19. **IAM Role Requirements** - Detailed permissions for each role
+20. **Result Structure** - Directory layout and file format
+21. **Future Roadmap**
+
+**Key Additions Over 264-Line Version:**
+
+1. **Complete data models** with all fields and types (not just descriptions)
+2. **Algorithm specifications** with step-by-step logic
+3. **Function signatures** for critical functions with parameters and return types
+4. **JSON schemas** for all result file formats
+5. **Code snippets** showing implementation patterns (not just high-level descriptions)
+6. **Error handling specifications** - what exceptions where, custom exceptions defined
+7. **Validation patterns** for Terraform generation
+8. **Parsing patterns** shared between SCP and RCP
+9. **Union/un-redaction algorithms** with explicit steps
+10. **Principal type handling** with AWS/Service/Federated distinction
+11. **Registry pattern** implementation details
+12. **Template Method pattern** complete specification
+13. **Multi-region scanning** algorithm details
+14. **Pagination handling** specifications
+
+**What Was Removed (Historical Cruft):**
+
+1. All "Implementation Status: COMPLETED" markers
+2. Phase 1-11 development tracking
+3. PR-001 through PR-022 labels and sections
+4. "Before/After" code comparison blocks
+5. Bug fix narratives (e.g., "Problem: X was broken, Root Cause: Y, Solution: Z")
+6. Evolution stories (e.g., "We changed from conservative to union strategy because...")
+7. "Files Modified" lists after sections
+8. Test count evolution (e.g., "increased from 329 to 367 tests")
+9. Refactoring journey documentation
+10. Migration guides for import changes
+11. Success criteria checklist (47 items with checkmarks)
+
+**What Was Retained (Technical Details):**
+
+Every algorithm, data structure, function signature, validation rule, error handling pattern, and integration detail needed to reproduce the codebase from scratch.
+
+**Results:**
+- **Version:** 5.0 (updated from 4.5)
+- **Line count:** 1,843 lines (up from 264, down from 3,515)
+- **Character:** Technical specification (not historical document)
+- **Purpose:** Code reproduction guide (not evolution narrative)
+- **Reduction:** 48% smaller than original while maintaining all technical detail
+- **Focus:** What the system IS and HOW it works (not how it evolved)
+
+**Verification:**
+```bash
+wc -l Headroom-Specification.md
+# Output: 1843 Headroom-Specification.md
+```
+
+**Outcome:**
+✅ Comprehensive specification that removes historical narrative while providing complete technical details for code reproduction
+✅ All data models, algorithms, and patterns documented with sufficient detail
+✅ No "before/after" comparisons or evolution stories
+✅ No phase tracking or implementation status markers
+✅ Clean, focused technical specification suitable for reference and reproduction
