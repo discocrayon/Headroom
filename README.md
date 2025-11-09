@@ -133,8 +133,18 @@ module "scps_root" {
   source = "../modules/scps"
   target_id = local.root_ou_id
 
-  # deny_imds_v1_ec2
-  deny_imds_v1_ec2 = true
+  # EC2
+  deny_imds_v1_ec2 = false
+
+  # IAM
+  deny_iam_user_creation = true
+  allowed_iam_users = [
+    "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
+    "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
+    "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",
+    "arn:aws:iam::${local.acme_co_account_id}:user/terraform-user",
+    "arn:aws:iam::${local.shared_foo_bar_account_id}:user/legacy-developer",
+  ]
 }
 ```
 
@@ -195,6 +205,7 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 
 [Current SCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/scps):
 - **EC2 IMDSv1 Check**: Comprehensive analysis of EC2 instances for IMDSv1 compliance. Supports `ExemptFromIMDSv2` tag for policy flexibility.
+- **IAM User Creation Check**: Enumerates all IAM users across accounts and auto-generates SCPs with allowlists to restrict IAM user creation to approved users only.
 
 ### 🔍 **RCP Compliance Analysis**
 
@@ -294,6 +305,7 @@ mypy headroom/ tests/
 The tool generates:
 - **JSON Results**:
   - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
+  - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
 - **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
@@ -308,14 +320,17 @@ The tool generates:
 headroom/
 ├── aws/           # AWS service integrations
 │   ├── ec2.py     # EC2 analysis functions
-│   ├── iam.py     # IAM trust policy analysis
+│   ├── iam/       # IAM analysis package
+│   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
+│   │   └── users.py   # SCP-focused IAM user enumeration
 │   ├── organization.py  # Organizations API integration
 │   └── sessions.py      # Session management utilities
 ├── checks/        # Compliance checks (extensible framework)
 │   ├── base.py    # BaseCheck abstract class (Template Method pattern)
 │   ├── registry.py      # Check registration and discovery
 │   ├── scps/      # Service Control Policy checks
-│   │   └── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
+│   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
+│   │   └── deny_iam_user_creation.py  # IAM user creation check
 │   └── rcps/      # Resource Control Policy checks
 │       └── check_third_party_assumerole.py  # Third-party access check
 ├── terraform/     # Terraform generation
@@ -350,6 +365,12 @@ headroom/
 - **Purpose**: Identifies EC2 instances with IMDS v1 enabled (security risk)
 - **Exemption Support**: `ExemptFromIMDSv2` tag (case-insensitive)
 - **Output**: Detailed violation/exemption/compliant instance reporting
+
+#### IAM User Creation Analysis
+- **Check Name**: `deny_iam_user_creation`
+- **Purpose**: Enumerates all IAM users in accounts to enforce IAM user creation policies
+- **Allowlist Support**: Auto-generates SCPs with IAM user ARN allowlists to restrict user creation
+- **Output**: Complete list of IAM users with ARNs, paths, and allowlist generation
 
 ### RCP Checks
 
