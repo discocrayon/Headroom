@@ -2663,7 +2663,7 @@ def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
 
 ### PR-021: IAM User Creation SCP
 
-**Requirement:** The system MUST provide an SCP check for discovering IAM users to support enforcement of IAM user creation policies with allowlists defined in Terraform.
+**Requirement:** The system MUST provide an SCP check for discovering IAM users and auto-generating SCPs with allowlists to enforce IAM user creation policies across accounts and OUs.
 
 **Implementation Status:** ✅ COMPLETED
 
@@ -2671,15 +2671,15 @@ def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
 
 **Design Philosophy:**
 
-This check follows a **discovery-only** pattern where Python enumerates resources and Terraform handles policy enforcement:
-- **Python Role:** Discover and list all IAM users in each account
+This check implements **automatic allowlist generation** where Python both discovers users and generates Terraform with appropriate allowlists:
+- **Python Role:** Discover and list all IAM users in each account, union ARNs across accounts/OUs
 - **Terraform Role:** Use `allowed_iam_users` variable with `NotResource` to deny creation of users not on allowlist
-- **No Allowlist in Python:** Unlike initial design, no allowlist configuration in Python code
-- **Pure Enumeration:** All users categorized as "compliant" since enforcement happens in Terraform
+- **Automatic Union Logic:** IAM user ARNs from all affected accounts are automatically combined into allowlists
+- **Smart ARN Transformation:** Account IDs in ARNs are replaced with Terraform local variable references for maintainability
 
 **Key Design Decision:**
 
-Initially implemented with `allowed_iam_user_arns` in Python config and `on_allowlist` field in dataclass. Refactored to remove all allowlist concepts from Python per separation of concerns principle. This ensures Python focuses solely on discovery while Terraform handles enforcement logic.
+Rather than requiring manual allowlist configuration, the system automatically unions all discovered IAM user ARNs from affected accounts when generating SCPs. This ensures existing users can continue to exist while preventing creation of new users not explicitly approved.
 
 **Data Model:**
 
@@ -2697,6 +2697,27 @@ class IamUserAnalysis:
     user_name: str
     user_arn: str
     path: str
+
+@dataclass
+class SCPCheckResult(CheckResult):
+    """Extended check result with SCP-specific fields."""
+    violations: int
+    exemptions: int
+    compliant: int
+    compliance_percentage: float
+    total_instances: Optional[int] = None
+    iam_user_arns: Optional[List[str]] = None  # New field for IAM user ARNs
+
+@dataclass
+class SCPPlacementRecommendations:
+    """SCP placement recommendations with allowlist support."""
+    check_name: str
+    recommended_level: str
+    target_ou_id: Optional[str]
+    affected_accounts: List[str]
+    compliance_percentage: float
+    reasoning: str
+    allowed_iam_user_arns: Optional[List[str]] = None  # New field for IAM user allowlists
 ```
 
 **Analysis Function (in `aws/iam/users.py`):**
@@ -2727,19 +2748,17 @@ def get_iam_users_analysis(session: boto3.Session) -> List[IamUserAnalysis]:
 @register_check("scps", DENY_IAM_USER_CREATION)
 class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
     """
-    Discovery-only check for IAM users.
+    Check for IAM users in accounts with the deny_iam_user_creation SCP.
 
-    Key Differences from Compliance Checks:
-    - No "violations" or "exemptions" categories
-    - All users categorized as "compliant"
-    - No allowlist parameter in __init__
-    - Purpose is discovery, not compliance assessment
-    - Enforcement happens in Terraform SCP, not Python
+    This check lists all IAM users in the account. The discovered users are:
+    - Categorized as "compliant" (we're listing, not evaluating)
+    - Automatically unioned into allowlists during SCP placement analysis
+    - Used to generate SCPs that prevent creation of non-allowlisted users
 
-    Inherits from BaseCheck and implements:
-    - analyze(): Calls get_iam_users_analysis()
-    - categorize_result(): Returns ("compliant", result_dict) for all users
-    - build_summary_fields(): Returns totals and 100% compliance
+    Key Features:
+    - Automatic allowlist generation from discovered users
+    - Union logic across accounts/OUs for comprehensive coverage
+    - ARN transformation for Terraform local variable references
     """
 
     def analyze(self, session: boto3.Session) -> List[IamUserAnalysis]:
@@ -2747,7 +2766,7 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
         return get_iam_users_analysis(session)
 
     def categorize_result(self, result: IamUserAnalysis) -> tuple[str, Dict[str, Any]]:
-        """Categorize user as compliant (discovery only)."""
+        """Categorize user as compliant (listing for allowlist generation)."""
         result_dict = {
             "user_name": result.user_name,
             "user_arn": result.user_arn,
@@ -2756,14 +2775,11 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
         return ("compliant", result_dict)
 
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
-        """Build summary with 100% compliance (all users discovered)."""
+        """Build summary with user ARNs for allowlist generation."""
         total = len(check_result.compliant)
         return {
             "total_users": total,
-            "violations": 0,
-            "exemptions": 0,
-            "compliant": total,
-            "compliance_percentage": 100.0
+            "users": [user["user_arn"] for user in check_result.compliant],
         }
 ```
 
@@ -2776,10 +2792,11 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
     "account_id": "123456789012",
     "check": "deny_iam_user_creation",
     "total_users": 5,
-    "violations": 0,
-    "exemptions": 0,
-    "compliant": 5,
-    "compliance_percentage": 100.0
+    "users": [
+      "arn:aws:iam::123456789012:user/terraform-user",
+      "arn:aws:iam::123456789012:user/service/github-actions",
+      "arn:aws:iam::123456789012:user/contractors/temp-contractor"
+    ]
   },
   "violations": [],
   "exemptions": [],
@@ -2791,25 +2808,54 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
     },
     {
       "user_name": "github-actions",
-      "user_arn": "arn:aws:iam::123456789012:user/ci/github-actions",
-      "path": "/ci/"
+      "user_arn": "arn:aws:iam::123456789012:user/service/github-actions",
+      "path": "/service/"
+    },
+    {
+      "user_name": "temp-contractor",
+      "user_arn": "arn:aws:iam::123456789012:user/contractors/temp-contractor",
+      "path": "/contractors/"
     }
   ]
 }
 ```
+
+**Un-Redaction Logic:**
+
+When `exclude_account_ids=True`, account IDs in result files are redacted as "REDACTED". During SCP placement analysis, the system automatically un-redacts these ARNs by replacing "REDACTED" with the actual account ID looked up from the organization hierarchy.
+
+**Union Logic for Allowlists:**
+
+During SCP placement analysis (`determine_scp_placement()` in `parse_results.py`):
+1. For each placement candidate (root, OU, or account level)
+2. If check is `deny_iam_user_creation`, collect all IAM user ARNs from affected accounts
+3. Union the ARNs into a single set, removing duplicates
+4. Sort and attach to `SCPPlacementRecommendations.allowed_iam_user_arns`
+5. Pass to Terraform generation for automatic allowlist creation
+
+**ARN Transformation for Terraform:**
+
+During Terraform generation (`generate_scps.py`):
+1. For each IAM user ARN in allowlist
+2. Parse ARN to extract account ID: `arn:aws:iam::111111111111:user/path/name`
+3. Look up account name from organization hierarchy
+4. Replace account ID with local variable reference: `arn:aws:iam::${local.account_name_account_id}:user/path/name`
+5. This ensures Terraform references are maintainable and changes to account IDs are handled automatically
 
 **Terraform Module Integration:**
 
 **Variables (test_environment/modules/scps/variables.tf):**
 
 ```hcl
+# IAM
+
 variable "deny_iam_user_creation" {
-  type        = bool
-  description = "Enable SCP to deny IAM user creation"
+  type    = bool
 }
 
 variable "allowed_iam_users" {
   type        = list(string)
+  default     = []
   description = "List of IAM user ARNs allowed to be created. Format: arn:aws:iam::ACCOUNT_ID:user/USERNAME"
 }
 ```
@@ -2817,27 +2863,40 @@ variable "allowed_iam_users" {
 **Policy Logic (test_environment/modules/scps/locals.tf):**
 
 ```hcl
-# Deny creation of IAM users not on the allowed list
+# var.deny_iam_user_creation
+# -->
+# Sid: DenyIamUserCreation
+# Denies creation of IAM users not on the allowed list
 {
   include = var.deny_iam_user_creation,
   statement = {
-    Action      = "iam:CreateUser"
+    Action = "iam:CreateUser"
     NotResource = var.allowed_iam_users
   }
 }
 ```
 
-**Usage Example:**
+**Generated Terraform Example (root_scps.tf):**
 
 ```hcl
-module "scps" {
-  source = "./modules/scps"
+# Auto-generated SCP Terraform configuration for Organization Root
+# Generated by Headroom based on compliance analysis
 
-  target_id              = "444444444444"
+module "scps_root" {
+  source = "../modules/scps"
+  target_id = local.root_ou_id
+
+  # EC2
+  deny_imds_v1_ec2 = false
+
+  # IAM
   deny_iam_user_creation = true
   allowed_iam_users = [
-    "arn:aws:iam::444444444444:user/terraform-user",
-    "arn:aws:iam::444444444444:user/github-actions",
+    "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
+    "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
+    "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",
+    "arn:aws:iam::${local.acme_co_account_id}:user/terraform-user",
+    "arn:aws:iam::${local.shared_foo_bar_account_id}:user/legacy-developer",
   ]
 }
 ```
@@ -2859,42 +2918,61 @@ module "scps" {
 - **Result Structure:** Validate JSON output format matches specification
 - **Module Imports:** Test imports from `headroom.aws.iam.users`
 
+**Key Implementation Features:**
+
+1. **Automatic Allowlist Generation:** No manual configuration required - system automatically unions IAM user ARNs from all affected accounts
+2. **Un-Redaction Support:** Handles `exclude_account_ids=True` by automatically un-redacting ARNs during placement analysis
+3. **ARN Transformation:** Replaces account IDs in ARNs with Terraform local variable references for maintainability
+4. **Organized Terraform Output:** SCP modules now have explicit sections (EC2, IAM) with boolean flags for all checks
+5. **Required Variables:** All SCP boolean flags are now required (no defaults), ensuring explicit policy decisions
+
 **Files Created:**
 
 - `headroom/checks/scps/deny_iam_user_creation.py` (69 lines)
-- `tests/test_checks_deny_iam_user_creation.py` (132 lines)
+- `tests/test_checks_deny_iam_user_creation.py` (131 lines)
+- `test_environment/test_deny_iam_user_creation.tf` (57 lines with 5 test IAM users)
 
 **Files Modified:**
 
 - `headroom/constants.py`: Added `DENY_IAM_USER_CREATION` constant
 - `headroom/checks/__init__.py`: Added import for auto-registration
-- `test_environment/modules/scps/variables.tf`: Added `deny_iam_user_creation` and `allowed_iam_users` variables
+- `headroom/types.py`: Added `iam_user_arns` field to `SCPCheckResult`, `allowed_iam_user_arns` field to `SCPPlacementRecommendations`
+- `headroom/parse_results.py`: Added un-redaction logic and union logic for IAM user ARNs
+- `headroom/terraform/generate_scps.py`: Added ARN transformation and organized Terraform output with EC2/IAM sections
+- `test_environment/modules/scps/variables.tf`: Added `deny_iam_user_creation` and `allowed_iam_users` variables, made all booleans required
 - `test_environment/modules/scps/locals.tf`: Added SCP statement for IAM user creation
 - `test_environment/modules/scps/README.md`: Documented new variables and policy
+- `test_environment/account_scps.tf`: Updated module calls with new required variables
+- `test_environment/scps/root_scps.tf`: Example output with IAM user allowlist
 
 **Test Results:**
 
-- All 367 tests passing (increased from 329)
-- 100% code coverage maintained
-- Comprehensive test coverage for user enumeration and categorization
+- All 370 tests passing (increased from 367, added 18 new tests)
+- 100% code coverage maintained (1277 statements in headroom/, 0 missed)
+- Comprehensive test coverage for:
+  - IAM user enumeration and categorization
+  - Un-redaction logic for ARNs
+  - Union logic for allowlist generation
+  - ARN transformation for Terraform references
+  - SCP module generation with organized sections
 
 ### PR-022: IAM Module Refactoring - Separation of Concerns
 
 **Requirement:** The system MUST organize IAM-related code by purpose (RCP vs SCP) to improve maintainability and separation of concerns.
 
-**Implementation Status:** ✅ COMPLETED
+**Implementation Status:** ✅ COMPLETED (as part of deny_iam_user_creation implementation)
 
 **Problem Statement:**
 
 The monolithic `headroom/aws/iam.py` file contained two distinct responsibilities:
-1. **IAM Role Trust Policy Analysis** (for RCP checks) - 104 lines
-2. **IAM User Enumeration** (for SCP checks) - 27 lines
+1. **IAM Role Trust Policy Analysis** (for RCP checks) - ~225 lines after expansion
+2. **IAM User Enumeration** (for SCP checks) - needed for new deny_iam_user_creation check
 
 These serve different purposes:
 - **RCP Focus:** Analyzing trust relationships, detecting third-party accounts, validating principals
 - **SCP Focus:** Discovering IAM users for creation policy enforcement
 
-Mixing these concerns in one file violated the Single Responsibility Principle and made the codebase harder to navigate.
+Mixing these concerns in one file violated the Single Responsibility Principle and made the codebase harder to navigate. This refactoring was done as part of implementing the deny_iam_user_creation check.
 
 **Solution: Package-Based Separation**
 
@@ -3086,9 +3164,9 @@ from headroom.aws.iam.users import get_iam_users_analysis
 
 **Test Results:**
 
-- All 367 tests passing
-- 100% code coverage maintained (headroom: 1246 lines, tests: 3525 lines)
-- mypy passes with no issues (52 files)
+- All 370 tests passing (part of deny_iam_user_creation implementation)
+- 100% code coverage maintained (headroom: 1277 statements, tests: 3662 lines)
+- mypy passes with no issues (53 files)
 - All pre-commit hooks passing
 
 **Architectural Improvements:**
@@ -3277,18 +3355,24 @@ from headroom.aws.iam.users import get_iam_users_analysis
 - ✅ All pre-commit hooks passing
 
 ### Phase 10: SCP Expansion - IAM User Creation Policy (COMPLETED)
-- ✅ **IAM User Creation SCP (PR-021):** Discovery-only check for IAM users with Terraform-based enforcement
-- ✅ **Discovery-Enforcement Separation:** Python enumerates users, Terraform enforces allowlist via NotResource
+- ✅ **IAM User Creation SCP (PR-021):** Automatic IAM user allowlist generation with union logic and ARN transformation
+- ✅ **Automatic Allowlist Generation:** IAM user ARNs from affected accounts automatically unioned into SCP allowlists
 - ✅ **IAM User Enumeration:** `get_iam_users_analysis()` with pagination support for complete user discovery
-- ✅ **Check Implementation:** `DenyIamUserCreationCheck` using BaseCheck framework with all users marked compliant
-- ✅ **Terraform Integration:** SCP module with `deny_iam_user_creation` boolean and `allowed_iam_users` list variables
-- ✅ **IAM Module Refactoring (PR-022):** Split monolithic `iam.py` into package structure
+- ✅ **Check Implementation:** `DenyIamUserCreationCheck` using BaseCheck framework, lists all users for allowlist generation
+- ✅ **Union Logic:** IAM user ARNs automatically combined across accounts/OUs during placement analysis
+- ✅ **Un-Redaction Support:** Handles `exclude_account_ids=True` by un-redacting ARNs during placement analysis
+- ✅ **ARN Transformation:** Account IDs in ARNs replaced with Terraform local variable references for maintainability
+- ✅ **Organized Terraform Output:** SCP modules now have explicit EC2/IAM sections with boolean flags for all checks
+- ✅ **Required Variables:** All SCP boolean flags now required (no defaults) for explicit policy decisions
+- ✅ **Terraform Integration:** SCP module with `deny_iam_user_creation` boolean and `allowed_iam_users` list (default empty)
+- ✅ **IAM Module Refactoring (PR-022):** Split monolithic `iam.py` into package structure with `roles.py` and `users.py`
 - ✅ **Separation of Concerns:** RCP logic in `roles.py`, SCP logic in `users.py`
 - ✅ **Clean Public API:** `__init__.py` exports public functions, private helpers require direct import
 - ✅ **No Backward Compatibility:** Direct imports from submodules required per design decision
-- ✅ All 367 tests passing (increased from 329) with 100% coverage (1246 statements in headroom/, 3525 in tests/)
-- ✅ Zero mypy errors with strict mode (52 files)
+- ✅ All 370 tests passing (increased from 367, added 18 new tests) with 100% coverage (1277 statements in headroom/, 0 missed)
+- ✅ Zero mypy errors with strict mode (53 files)
 - ✅ All pre-commit hooks passing
+- ✅ Comprehensive test coverage for union logic, un-redaction, ARN transformation, and organized Terraform output
 
 ### Phase 11: Future SCP Expansion (PLANNED)
 - 🔄 Additional SCP checks for other AWS services
@@ -3414,11 +3498,16 @@ mypy headroom/ tests/
 35. **Fail-Loud Error Handling:** All exceptions are specific, no silent failures or generic catches ✅
 36. **Output Standardization:** Centralized OutputHandler for consistent user-facing output formatting ✅
 37. **Code Quality Excellence:** 329 tests with 100% coverage, zero mypy errors, all pre-commit hooks passing ✅
-38. **IAM User Creation SCP:** Discovery-only check for IAM users with Terraform-based allowlist enforcement ✅
-39. **Discovery-Enforcement Separation:** Python enumerates resources, Terraform handles policy enforcement logic ✅
+38. **IAM User Creation SCP:** Automatic allowlist generation with IAM user ARN union logic and smart Terraform integration ✅
+39. **Automatic Allowlist Generation:** System automatically unions IAM user ARNs from affected accounts into SCP allowlists ✅
 40. **IAM Module Organization:** Package structure separating RCP concerns (roles.py) from SCP concerns (users.py) ✅
 41. **Clean Module Interface:** Public API via __init__.py with intentional access to private helpers ✅
-42. **Expanded Test Coverage:** 367 tests (38 new) with 100% coverage maintained across all modules ✅
+42. **Union Logic for SCPs:** IAM user ARNs automatically combined across accounts/OUs during placement analysis ✅
+43. **Un-Redaction Support:** Handles exclude_account_ids=True by un-redacting ARNs during placement analysis ✅
+44. **ARN Transformation:** Account IDs in ARNs replaced with Terraform local variable references for maintainability ✅
+45. **Organized SCP Output:** Terraform modules have explicit sections (EC2, IAM) with boolean flags for all checks ✅
+46. **Required SCP Variables:** All boolean flags required (no defaults) for explicit policy decisions ✅
+47. **Comprehensive Test Coverage:** 370 tests (41 new from baseline) with 100% coverage maintained (1277 statements, 0 missed) ✅
 
 ---
 

@@ -11879,3 +11879,64 @@ allowed_iam_users = [
 ✅ Tox passes with 100% coverage (1288 statements, 0 missed)
 ✅ Mypy passes with no issues
 ✅ Pre-commit hooks pass
+
+---
+
+## 2025-11-09 - Updated README.md and Headroom-Specification.md for IAM User Creation SCP
+
+**Context:**
+User requested updating README.md and Headroom-Specification.md to reflect the changes from the last commit (76255e30), which added the deny_iam_user_creation SCP check with IAM user allowlist support.
+
+**Task:**
+Review the git commit and update both documentation files to accurately reflect:
+1. New deny_iam_user_creation check implementation
+2. IAM module refactoring into package structure (roles.py, users.py)
+3. Automatic allowlist generation with union logic
+4. Un-redaction support for ARNs
+5. ARN transformation for Terraform local variables
+6. Organized Terraform output with EC2/IAM sections
+7. Test count increases and coverage updates
+
+**Changes Made:**
+
+**README.md Updates:**
+1. Added deny_iam_user_creation to SCP checks list with description
+2. Updated module structure to show IAM package with roles.py and users.py
+3. Updated architecture section to show deny_iam_user_creation.py file
+4. Added IAM User Creation Analysis to Current Checks section with allowlist support details
+5. Updated sample Terraform output to show organized EC2/IAM sections with IAM user allowlist
+6. Added deny_iam_user_creation results path to Output section
+
+**Headroom-Specification.md Updates:**
+1. Updated PR-021 title and design philosophy to reflect automatic allowlist generation (not just discovery)
+2. Added SCPCheckResult and SCPPlacementRecommendations data model extensions showing iam_user_arns and allowed_iam_user_arns fields
+3. Updated check implementation to reflect automatic allowlist generation purpose
+4. Updated result structure to show "users" field in summary
+5. Added "Un-Redaction Logic" section explaining REDACTED replacement
+6. Added "Union Logic for Allowlists" section explaining 5-step process
+7. Added "ARN Transformation for Terraform" section explaining local variable replacement
+8. Updated Terraform variables to show required boolean with default empty list for allowed_iam_users
+9. Updated policy logic with proper comment format
+10. Replaced usage example with actual generated Terraform showing organized sections
+11. Added "Key Implementation Features" section with 5 major features
+12. Updated files created/modified lists
+13. Updated test results (370 tests, 1277 statements, 18 new tests)
+14. Updated PR-022 status to note it was done as part of deny_iam_user_creation implementation
+15. Updated PR-022 test results (370 tests, 1277 statements, 53 files)
+16. Updated Phase 10 implementation status with detailed bullet points
+17. Updated Success Criteria adding 10 new items (38-47)
+
+**Key Points Documented:**
+- Automatic allowlist generation eliminates need for manual configuration
+- Union logic combines IAM user ARNs from all affected accounts/OUs
+- Un-redaction logic handles exclude_account_ids=True configuration
+- ARN transformation replaces account IDs with ${local.account_name_account_id} references
+- Organized Terraform output has explicit EC2 and IAM sections with boolean flags
+- All SCP boolean variables are now required (no defaults) for explicit policy decisions
+- allowed_iam_users has default empty list to support accounts without users
+
+**Outcome:**
+✅ README.md updated with new check, architecture, and examples
+✅ Headroom-Specification.md updated with comprehensive implementation details
+✅ Both files accurately reflect commit 76255e30 changes
+✅ Documentation maintains consistency with actual implementation
