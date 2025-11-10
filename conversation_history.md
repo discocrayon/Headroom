@@ -14360,3 +14360,5 @@ Future check implementations can reference these lessons to avoid repeating mist
 
 2025-11-10 04:35:10 UTC USER: Let's follow @HOW_TO_ADD_A_CHECK.md to add a check of pattern 1 from @POLICY_TAXONOMY.md: where we will block `iam:CreateSAMLProvider`  A violation is present if there is more than 1 SAML Provider, and the 1 SAML provider that can be present must be prefixed with "AWSSSO_" as in arn:aws:iam::<ACCOUNT_ID>:saml-provider/AWSSSO_<INSTANCE_ID>_<REGION>
 Walk me through the plan.
+
+2025-11-10 06:04:15 UTC USER: Let’s call it deny_saml_provider_not_aws_sso. proceed
