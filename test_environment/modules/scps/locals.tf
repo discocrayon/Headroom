@@ -47,6 +47,17 @@ locals {
         NotResource = var.allowed_iam_users
       }
     },
+    # var.deny_saml_provider_not_aws_sso
+    # -->
+    # Sid: DenyCreateSamlProvider
+    # Prevents creation of custom IAM SAML providers so only AWS SSO-managed providers remain
+    {
+      include = var.deny_saml_provider_not_aws_sso,
+      statement = {
+        Action   = "iam:CreateSAMLProvider"
+        Resource = "*"
+      }
+    },
     # var.deny_rds_unencrypted
     # -->
     # Sid: DenyRdsUnencrypted

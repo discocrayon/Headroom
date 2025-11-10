@@ -87,6 +87,8 @@ module "{module_name}" {{
     terraform_content += "  # IAM\n"
     deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks
     terraform_content += f"  deny_iam_user_creation = {str(deny_iam_user_creation).lower()}\n"
+    deny_saml_provider_not_aws_sso = "deny_saml_provider_not_aws_sso" in enabled_checks
+    terraform_content += f"  deny_saml_provider_not_aws_sso = {str(deny_saml_provider_not_aws_sso).lower()}\n"
 
     if deny_iam_user_creation:
         # Get IAM user ARNs from recommendations
