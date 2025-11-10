@@ -377,6 +377,7 @@ headroom/
 - **Purpose**: Detects IAM SAML providers and flags accounts that have more than one provider or any provider not managed by AWS IAM Identity Center (AWS SSO)
 - **Enforcement Companion**: Generates Terraform that denies `iam:CreateSAMLProvider`, ensuring only the AWS SSO-managed provider remains
 - **Output**: Per-provider records with ARN, derived name, creation/expiration timestamps, and violation reasons
+- **Why safe to deny everyone?** The `AWSServiceRoleForSSO` service-linked role provisions the official provider during IAM Identity Center onboarding and operates outside SCP evaluation, so blocking `iam:CreateSAMLProvider` affects only custom principals.
 
 ### RCP Checks
 

@@ -94,6 +94,7 @@ When enabled, this absolute deny control removes the ability to create new IAM S
 - Ensures organizations rely solely on AWS IAM Identity Center (AWS SSO) federation (`AWSSSO_` prefixed providers)
 - Prevents shadow SAML integrations that bypass centralized access management
 - Complements detection checks that verify only a single AWS SSO-managed provider exists
+- `AWSServiceRoleForSSO` continues to provision the official provider in new accounts and runs outside SCP evaluation, so denying `iam:CreateSAMLProvider` to all principals blocks only custom provider creation
 
 ## Resources Created
 
