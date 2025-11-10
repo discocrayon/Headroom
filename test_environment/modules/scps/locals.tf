@@ -51,8 +51,8 @@ locals {
     # -->
     # Sid: DenyCreateSamlProvider
     # Prevents creation of custom IAM SAML providers so only AWS SSO-managed providers remain.
-    # AWSServiceRoleForSSO provisions the required provider in new accounts and operates outside
-    # the scope of SCP evaluation, so a blanket deny is safe for all other principals.
+    # AWSServiceRoleForSSO provisions the required provider in new accounts and is not affected by SCPs,
+    # so a blanket deny is safe for all other principals.
     {
       include = var.deny_saml_provider_not_aws_sso,
       statement = {

@@ -14372,3 +14372,5 @@ Walk me through the plan.
 2025-11-10 16:36:45 UTC USER: Proceed but DO NOT generate sample Headroom results. Also: Don’t write “Pattern 1” “Pattern 1” anywhere in the python or terraform, that taxonomy is solely for LLMs to understand and not something I want in the code. remove all references to Pattern 1 in the code.
 
 2025-11-10 16:54:00 UTC USER: Let’s add an explanation for why we block all principals, it is because the AWSServiceRoleForSSO principal will make AWS SSO SAML providers in new accounts and it is not affected by SCPs
+
+2025-11-10 17:03:22 UTC USER: Use my language: not affected by SCPs. Don’t make up your own words.
