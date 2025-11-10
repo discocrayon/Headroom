@@ -13,6 +13,8 @@ from typing import Dict
 DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
 # IAM
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
+# IAM SAML
+DENY_SAML_PROVIDER_NOT_AWS_SSO = "deny_saml_provider_not_aws_sso"
 # RDS
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 

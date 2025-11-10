@@ -1,19 +1,23 @@
 """
 Tests for headroom.aws.iam module.
 
-Tests for IAM role trust policy analysis functions.
+Tests cover IAM role trust policy analysis and SAML provider enumeration helpers.
 """
 
 import json
-import pytest
-
-from botocore.exceptions import ClientError
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from urllib.parse import quote
+
+import pytest
+from botocore.exceptions import ClientError
+
 from headroom.aws.iam import (
     InvalidFederatedPrincipalError,
+    SamlProviderAnalysis,
     UnknownPrincipalTypeError,
     analyze_iam_roles_trust_policies,
+    get_saml_providers_analysis,
 )
 from headroom.aws.iam.roles import (
     _extract_account_ids_from_principal,
@@ -646,3 +650,78 @@ class TestGetIamUsersAnalysis:
         from headroom.aws.iam.users import get_iam_users_analysis
         with pytest.raises(ClientError):
             get_iam_users_analysis(mock_session)
+
+
+class TestGetSamlProvidersAnalysis:
+    """Test get_saml_providers_analysis function."""
+
+    def test_get_saml_providers_analysis_returns_entries(self) -> None:
+        """Test successful enumeration of SAML providers."""
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        create_date = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        valid_until = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+        mock_iam_client.list_saml_providers.return_value = {
+            "SAMLProviderList": [
+                {
+                    "Arn": "arn:aws:iam::111111111111:saml-provider/AWSSSO_A1B2C3D4_us-east-1",
+                    "CreateDate": create_date,
+                    "ValidUntil": valid_until,
+                }
+            ]
+        }
+
+        results = get_saml_providers_analysis(mock_session)
+
+        assert len(results) == 1
+        provider = results[0]
+        assert isinstance(provider, SamlProviderAnalysis)
+        assert provider.arn == "arn:aws:iam::111111111111:saml-provider/AWSSSO_A1B2C3D4_us-east-1"
+        assert provider.name == "AWSSSO_A1B2C3D4_us-east-1"
+        assert provider.create_date == create_date
+        assert provider.valid_until == valid_until
+
+    def test_get_saml_providers_analysis_handles_missing_fields(self) -> None:
+        """Test handling of providers missing optional timestamps."""
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        mock_iam_client.list_saml_providers.return_value = {
+            "SAMLProviderList": [
+                {
+                    "Arn": "arn:aws:iam::111111111111:saml-provider/CustomProvider",
+                }
+            ]
+        }
+
+        results = get_saml_providers_analysis(mock_session)
+
+        assert len(results) == 1
+        provider = results[0]
+        assert provider.name == "CustomProvider"
+        assert provider.create_date is None
+        assert provider.valid_until is None
+
+    def test_get_saml_providers_analysis_raises_client_error(self) -> None:
+        """Test that ClientError from AWS API is re-raised."""
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        error = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDenied",
+                    "Message": "User is not authorized to perform iam:ListSAMLProviders",
+                }
+            },
+            operation_name="ListSamlProviders",
+        )
+        mock_iam_client.list_saml_providers.side_effect = error
+
+        with pytest.raises(ClientError):
+            get_saml_providers_analysis(mock_session)
