@@ -37,8 +37,23 @@
 - **EC2 IMDS v1 Check:** Multi-region scanning with exemption tag support
 - **IAM User Creation Check:** Automatic allowlist generation from discovered users
 - **RDS Encryption Check:** Multi-region RDS instance and Aurora cluster encryption analysis
+- **SAML Provider Guardrail:** Planned Pattern 1 enforcement to restrict IAM SAML providers to a single AWS SSO-managed entry
 - Modular check framework with self-registration pattern
 - JSON result generation with detailed compliance metrics
+
+#### Planned Check: `deny_saml_provider_not_aws_sso`
+
+- **Policy Pattern:** Pattern 1 (Absolute Deny)
+- **Objective:** Eliminate custom IAM SAML providers so the forthcoming SCP can unconditionally deny `iam:CreateSAMLProvider`
+- **Allowed State:** Zero SAML providers or exactly one AWS SSO-managed provider whose ARN matches `arn:aws:iam::<ACCOUNT_ID>:saml-provider/AWSSSO_<INSTANCE_ID>_<REGION>`
+- **Violation States:**
+  - More than one SAML provider exists
+  - Any provider ARN does not begin with the AWS SSO prefix described above
+- **AWS APIs:** `iam:ListSAMLProviders` (read-only; covered by AWS managed `ViewOnlyAccess`)
+- **Analysis Output:** Per-provider findings with `arn`, `name`, `create_date`, `valid_until`, and `violation_reason` derived from the rules above
+- **Summary Metrics:** `total_saml_providers`, `awssso_provider_count`, `non_awssso_provider_count`, `violating_provider_arns`, `allowed_provider_arn`
+- **Terraform Impact:** Generates a Pattern 1 SCP statement that denies `iam:CreateSAMLProvider` with explanatory comments; goal placement is organization root because enforcement is universal
+- **Testing Requirements:** Unit tests for AWS enumeration helper, check categorization covering compliant, excess AWSSSO, and non-AWSSSO cases; generator tests confirming Terraform statement, and integration test ensuring placement logic handles new check
 
 ### 4. RCP Compliance Analysis
 - **Third-Party AssumeRole Check:** IAM trust policy analysis across organization
@@ -1578,6 +1593,37 @@ def analyze_iam_roles_trust_policies(
     Pagination: Handles accounts with many roles
     Exception Handling: Specific exceptions only (ClientError, json.JSONDecodeError)
     Fail-Loud: All exceptions logged with context and re-raised
+    """
+```
+
+### SAML Provider Integration
+
+```python
+# aws/iam/saml_providers.py
+
+@dataclass
+class SamlProviderAnalysis:
+    arn: str
+    name: str
+    create_date: datetime.datetime | None
+    valid_until: datetime.datetime | None
+
+def get_saml_providers_analysis(
+    session: boto3.Session,
+) -> List[SamlProviderAnalysis]:
+    """
+    Enumerate IAM SAML providers.
+
+    Algorithm:
+    1. Create IAM client
+    2. Call list_saml_providers()
+    3. For each entry:
+       - Record ARN
+       - Derive provider name from ARN suffix
+       - Capture CreateDate and ValidUntil if present
+    4. Return List[SamlProviderAnalysis]
+
+    Pagination: API does not paginate (single response)
     """
 ```
 
