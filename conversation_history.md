@@ -14362,3 +14362,5 @@ Future check implementations can reference these lessons to avoid repeating mist
 Walk me through the plan.
 
 2025-11-10 06:04:15 UTC USER: Let’s call it deny_saml_provider_not_aws_sso. proceed
+
+2025-11-10 06:16:48 UTC USER: Why is valid until a field? Does this come standard in AWS?
