@@ -1,0 +1,30 @@
+{
+  "summary": {
+    "account_name": "fort-knox",
+    "check": "deny_rds_unencrypted",
+    "total_databases": 2,
+    "violations": 0,
+    "compliant": 2,
+    "compliance_percentage": 100.0
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "db_identifier": "encrypted-cluster-instance-1",
+      "db_type": "instance",
+      "region": "us-east-1",
+      "engine": "aurora-mysql",
+      "encrypted": true,
+      "db_arn": "arn:aws:rds:us-east-1:093113290897:db:encrypted-cluster-instance-1"
+    },
+    {
+      "db_identifier": "encrypted-cluster",
+      "db_type": "cluster",
+      "region": "us-east-1",
+      "engine": "aurora-mysql",
+      "encrypted": true,
+      "db_arn": "arn:aws:rds:us-east-1:093113290897:cluster:encrypted-cluster"
+    }
+  ]
+}

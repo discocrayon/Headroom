@@ -95,6 +95,7 @@ def test_build_scp_terraform_module_single_check_100_percent_compliant() -> None
     )
     assert "deny_imds_v1_ec2 = true" in result
     assert "deny_iam_user_creation = false" in result
+    assert "deny_rds_unencrypted = false" in result
     assert "allowed_iam_users" not in result
     assert 'module "scps_root"' in result
     assert "target_id = local.root_ou_id" in result
@@ -130,6 +131,7 @@ def test_build_scp_terraform_module_multiple_checks_all_compliant() -> None:
     )
     assert "deny_imds_v1_ec2 = true" in result
     assert "deny_iam_user_creation = true" in result
+    assert "deny_rds_unencrypted = false" in result
     assert "allowed_iam_users = []" in result
 
 
@@ -479,5 +481,30 @@ def test_generate_root_scp_terraform_multiple_checks() -> None:
     content = expected_file.read_text()
     assert "deny_imds_v1_ec2 = true" in content
     assert "deny_iam_user_creation = true" in content
+    assert "deny_rds_unencrypted = false" in content
     assert "allowed_iam_users = []" in content
     expected_file.unlink()
+
+
+def test_build_scp_terraform_module_with_rds_check_enabled() -> None:
+    """Should include deny_rds_unencrypted flag when check is enabled."""
+    org = make_org_empty()
+    rec = SCPPlacementRecommendations(
+        check_name="deny-rds-unencrypted",
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=100.0,
+        reasoning="test",
+    )
+    result = _build_scp_terraform_module(
+        module_name="scps_root",
+        target_id_reference="local.root_ou_id",
+        recommendations=[rec],
+        comment="Organization Root",
+        organization_hierarchy=org
+    )
+    assert "deny_imds_v1_ec2 = false" in result
+    assert "deny_iam_user_creation = false" in result
+    assert "deny_rds_unencrypted = true" in result
+    assert "allowed_iam_users" not in result

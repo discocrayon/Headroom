@@ -29,8 +29,8 @@ resource "aws_organizations_policy" "scp_1" {
 
   name        = "Scp1For-${var.target_id}"
   description = "See Sids for more info"
-  content = local.scp_1_content
-  type = "SERVICE_CONTROL_POLICY"
+  content     = local.scp_1_content
+  type        = "SERVICE_CONTROL_POLICY"
 }
 
 resource "aws_organizations_policy_attachment" "attach_scp_1_to_account" {

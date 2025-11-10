@@ -1,0 +1,22 @@
+{
+  "summary": {
+    "account_name": "shared-foo-bar",
+    "check": "deny_rds_unencrypted",
+    "total_databases": 1,
+    "violations": 1,
+    "compliant": 0,
+    "compliance_percentage": 0.0
+  },
+  "violations": [
+    {
+      "db_identifier": "unencrypted-instance",
+      "db_type": "instance",
+      "region": "us-east-1",
+      "engine": "mysql",
+      "encrypted": false,
+      "db_arn": "arn:aws:rds:us-east-1:754902277551:db:unencrypted-instance"
+    }
+  ],
+  "exemptions": [],
+  "compliant_instances": []
+}

@@ -14,9 +14,9 @@ def _discover_and_register_checks() -> None:
     """
     Automatically discover and import all check modules.
 
-    Walks through scps/ and rcps/ directories and imports all Python files
-    (except __init__.py). This triggers the @register_check decorator,
-    which registers checks in the registry.
+    Walks through scps/ and rcps/ directories and imports all Python files.
+    This triggers the @register_check decorator, which registers checks in
+    the registry.
 
     This eliminates the need for manual imports when adding new checks.
     """
@@ -25,13 +25,7 @@ def _discover_and_register_checks() -> None:
     for check_type in ["scps", "rcps"]:
         check_type_dir = checks_dir / check_type
 
-        if not check_type_dir.exists():
-            continue
-
         for module_info in pkgutil.iter_modules([str(check_type_dir)]):
-            if module_info.name == "__init__":
-                continue
-
             module_name = f"headroom.checks.{check_type}.{module_info.name}"
             importlib.import_module(module_name)
 

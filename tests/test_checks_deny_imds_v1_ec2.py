@@ -343,7 +343,7 @@ class TestCheckDenyImdsV1Ec2:
                 check_name=DENY_IMDS_V1_EC2,
                 account_name=account_name,
                 account_id=account_id,
-                results_dir="test_environment/headroom_results",
+                results_dir=temp_results_dir,
             )
             check.execute(mock_session)
 

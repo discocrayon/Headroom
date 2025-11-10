@@ -6,9 +6,9 @@ variable "target_id" {
 
   validation {
     condition = (
-      length(var.target_id) == 12 ||       # Account ID
-      startswith(var.target_id, "ou-") ||  # OU
-      startswith(var.target_id, "r-")      # Root
+      length(var.target_id) == 12 ||      # Account ID
+      startswith(var.target_id, "ou-") || # OU
+      startswith(var.target_id, "r-")     # Root
     )
     error_message = "target_id must be a 12-digit AWS account ID, an OU ID (ou-xxxx-xxxxxxxx), or the root ID (r-xxxx)."
   }
@@ -17,17 +17,24 @@ variable "target_id" {
 # EC2
 
 variable "deny_imds_v1_ec2" {
-  type    = bool
+  type = bool
 }
 
 # IAM
 
 variable "deny_iam_user_creation" {
-  type    = bool
+  type = bool
 }
 
 variable "allowed_iam_users" {
   type        = list(string)
   default     = []
   description = "List of IAM user ARNs that are allowed to be created. Format: arn:aws:iam::ACCOUNT_ID:user/USERNAME"
+}
+
+# RDS
+
+variable "deny_rds_unencrypted" {
+  type        = bool
+  description = "Deny creation of RDS instances and clusters without encryption at rest"
 }

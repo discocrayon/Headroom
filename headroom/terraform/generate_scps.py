@@ -105,6 +105,13 @@ module "{module_name}" {{
         else:
             terraform_content += "  allowed_iam_users = []\n"
 
+    terraform_content += "\n"
+
+    # RDS
+    terraform_content += "  # RDS\n"
+    deny_rds_unencrypted = "deny_rds_unencrypted" in enabled_checks
+    terraform_content += f"  deny_rds_unencrypted = {str(deny_rds_unencrypted).lower()}\n"
+
     terraform_content += "}\n"
     return terraform_content
 

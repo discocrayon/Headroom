@@ -24,8 +24,9 @@ def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, An
     Recursively redact account IDs from ARNs in data structures.
 
     Replaces 12-digit account IDs in ARNs with "REDACTED".
-    ARN format: arn:aws:service::123456789012:resource
-    Becomes: arn:aws:service::REDACTED:resource
+    ARN formats:
+    - arn:aws:service::111111111111:resource -> arn:aws:service::REDACTED:resource
+    - arn:aws:service:region:111111111111:resource -> arn:aws:service:region:REDACTED:resource
 
     Args:
         data: Data structure to process (dict, list, str, or primitive)
@@ -38,7 +39,7 @@ def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, An
     elif isinstance(data, list):
         return [_redact_account_ids_from_arns(item) for item in data]
     elif isinstance(data, str):
-        return re.sub(r'(arn:aws:[^:]+::)(\d{12})(:)', r'\1REDACTED\3', data)
+        return re.sub(r'(arn:aws:[^:]+:[^:]*:)(\d{12})(:)', r'\1REDACTED\3', data)
     else:
         return data
 
