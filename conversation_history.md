@@ -14358,3 +14358,4 @@ These lessons document critical pitfalls discovered during implementation:
 Future check implementations can reference these lessons to avoid repeating mistakes.
 
 2025-11-10 15:51 UTC - USER: Add a deny to block organizations:LeaveOrganization unconditionally in the SCPs module in the test environment if target id is prefixed with “r-“ meaning the root of the organization
+2025-11-10 16:41 UTC - USER: remove the python tests for this
