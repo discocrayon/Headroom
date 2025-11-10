@@ -37,14 +37,13 @@
 - **EC2 IMDS v1 Check:** Multi-region scanning with exemption tag support
 - **IAM User Creation Check:** Automatic allowlist generation from discovered users
 - **RDS Encryption Check:** Multi-region RDS instance and Aurora cluster encryption analysis
-- **SAML Provider Guardrail:** Planned Pattern 1 enforcement to restrict IAM SAML providers to a single AWS SSO-managed entry
+- **SAML Provider Guardrail:** Blocks custom IAM SAML providers so only a single AWS SSO-managed provider exists per account
 - Modular check framework with self-registration pattern
 - JSON result generation with detailed compliance metrics
 
-#### Planned Check: `deny_saml_provider_not_aws_sso`
+#### Check: `deny_saml_provider_not_aws_sso`
 
-- **Policy Pattern:** Pattern 1 (Absolute Deny)
-- **Objective:** Eliminate custom IAM SAML providers so the forthcoming SCP can unconditionally deny `iam:CreateSAMLProvider`
+- **Objective:** Eliminate custom IAM SAML providers so the companion SCP can unconditionally deny `iam:CreateSAMLProvider`
 - **Allowed State:** Zero SAML providers or exactly one AWS SSO-managed provider whose ARN matches `arn:aws:iam::<ACCOUNT_ID>:saml-provider/AWSSSO_<INSTANCE_ID>_<REGION>`
 - **Violation States:**
   - More than one SAML provider exists
@@ -52,7 +51,7 @@
 - **AWS APIs:** `iam:ListSAMLProviders` (read-only; covered by AWS managed `ViewOnlyAccess`)
 - **Analysis Output:** Per-provider findings with `arn`, `name`, `create_date`, `valid_until`, and `violation_reason` derived from the rules above
 - **Summary Metrics:** `total_saml_providers`, `awssso_provider_count`, `non_awssso_provider_count`, `violating_provider_arns`, `allowed_provider_arn`
-- **Terraform Impact:** Generates a Pattern 1 SCP statement that denies `iam:CreateSAMLProvider` with explanatory comments; goal placement is organization root because enforcement is universal
+- **Terraform Impact:** Generates an SCP statement that denies `iam:CreateSAMLProvider` (no conditions) with explanatory comments; goal placement is organization root because enforcement is universal
 - **Testing Requirements:** Unit tests for AWS enumeration helper, check categorization covering compliant, excess AWSSSO, and non-AWSSSO cases; generator tests confirming Terraform statement, and integration test ensuring placement logic handles new check
 
 ### 4. RCP Compliance Analysis

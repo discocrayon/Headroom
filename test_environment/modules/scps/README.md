@@ -89,7 +89,7 @@ Example: `arn:aws:iam::444444444444:user/terraform-user`
 
 ### AWS SSO SAML Guardrail (`deny_saml_provider_not_aws_sso`)
 
-When enabled, this Pattern 1 (Absolute Deny) control removes the ability to create new IAM SAML providers by denying `iam:CreateSAMLProvider` with no conditions.
+When enabled, this absolute deny control removes the ability to create new IAM SAML providers by denying `iam:CreateSAMLProvider` with no conditions.
 
 - Ensures organizations rely solely on AWS IAM Identity Center (AWS SSO) federation (`AWSSSO_` prefixed providers)
 - Prevents shadow SAML integrations that bypass centralized access management

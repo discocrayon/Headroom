@@ -372,6 +372,12 @@ headroom/
 - **Allowlist Support**: Auto-generates SCPs with IAM user ARN allowlists to restrict user creation
 - **Output**: Complete list of IAM users with ARNs, paths, and allowlist generation
 
+#### SAML Provider Guardrail
+- **Check Name**: `deny_saml_provider_not_aws_sso`
+- **Purpose**: Detects IAM SAML providers and flags accounts that have more than one provider or any provider not managed by AWS IAM Identity Center (AWS SSO)
+- **Enforcement Companion**: Generates Terraform that denies `iam:CreateSAMLProvider`, ensuring only the AWS SSO-managed provider remains
+- **Output**: Per-provider records with ARN, derived name, creation/expiration timestamps, and violation reasons
+
 ### RCP Checks
 
 #### Third-Party AssumeRole Analysis
