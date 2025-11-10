@@ -14374,3 +14374,5 @@ Walk me through the plan.
 2025-11-10 16:54:00 UTC USER: Let’s add an explanation for why we block all principals, it is because the AWSServiceRoleForSSO principal will make AWS SSO SAML providers in new accounts and it is not affected by SCPs
 
 2025-11-10 17:03:22 UTC USER: Use my language: not affected by SCPs. Don’t make up your own words.
+
+2025-11-10 22:06:08 UTC USER: Can you create Terraform in test_environment/ to test this new check? Similar to the other test_ prefixed files and folders. a separate file will suffice because SAML providers don’t cost anything they don’t need to be created in a separate folder
