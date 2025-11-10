@@ -73,12 +73,15 @@ class DenySamlProviderNotAwsSsoCheck(BaseCheck[SamlProviderAnalysis]):
         """
         providers = get_saml_providers_analysis(session)
         self._total_providers = len(providers)
-        self._awssso_provider_arns = [
-            provider.arn for provider in providers if _is_awssso_provider(provider.name)
-        ]
-        self._non_awssso_provider_arns = [
-            provider.arn for provider in providers if not _is_awssso_provider(provider.name)
-        ]
+        self._awssso_provider_arns = []
+        self._non_awssso_provider_arns = []
+
+        for provider in providers:
+            if _is_awssso_provider(provider.name):
+                self._awssso_provider_arns.append(provider.arn)
+                continue
+            self._non_awssso_provider_arns.append(provider.arn)
+
         return providers
 
     def categorize_result(self, result: SamlProviderAnalysis) -> tuple[str, Dict[str, Any]]:

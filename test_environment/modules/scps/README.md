@@ -13,6 +13,7 @@ module "scps" {
   target_id               = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
   deny_imds_v1_ec2        = true
   deny_iam_user_creation  = true
+  deny_saml_provider_not_aws_sso = true
   allowed_iam_users       = [
     "arn:aws:iam::444444444444:user/terraform-user",
     "arn:aws:iam::444444444444:user/github-actions",
@@ -32,6 +33,7 @@ module "scps" {
 
 - **`deny_imds_v1_ec2`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
 - **`deny_iam_user_creation`** (bool): Deny creation of IAM users not on the allowed list
+- **`deny_saml_provider_not_aws_sso`** (bool): Deny creation of IAM SAML providers so only AWS IAM Identity Center (AWS SSO) managed providers remain
 - **`allowed_iam_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
 
 ## Architecture
@@ -84,6 +86,14 @@ This policy uses the `NotResource` element to explicitly allow creation of only 
 Specify allowed IAM user ARNs using the format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
 
 Example: `arn:aws:iam::444444444444:user/terraform-user`
+
+### AWS SSO SAML Guardrail (`deny_saml_provider_not_aws_sso`)
+
+When enabled, this Pattern 1 (Absolute Deny) control removes the ability to create new IAM SAML providers by denying `iam:CreateSAMLProvider` with no conditions.
+
+- Ensures organizations rely solely on AWS IAM Identity Center (AWS SSO) federation (`AWSSSO_` prefixed providers)
+- Prevents shadow SAML integrations that bypass centralized access management
+- Complements detection checks that verify only a single AWS SSO-managed provider exists
 
 ## Resources Created
 
