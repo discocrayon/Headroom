@@ -1,10 +1,10 @@
 """
 Check for IAM SAML providers that violate the deny_saml_provider_not_aws_sso policy.
 
-This SCP check enforces Pattern 1 (Absolute Deny) semantics by identifying accounts
-that contain more than one SAML provider or any provider that is not managed by
-AWS SSO (`AWSSSO_` prefix). The eventual SCP will deny iam:CreateSAMLProvider
-unconditionally once all accounts meet this constraint.
+This SCP check enforces an absolute deny guardrail by identifying accounts that contain
+more than one SAML provider or any provider that is not managed by AWS SSO (`AWSSSO_`
+prefix). The eventual SCP will deny iam:CreateSAMLProvider unconditionally once all
+accounts meet this constraint.
 """
 
 from typing import Any, Dict, List

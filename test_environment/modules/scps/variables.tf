@@ -28,7 +28,7 @@ variable "deny_iam_user_creation" {
 
 variable "deny_saml_provider_not_aws_sso" {
   type        = bool
-  description = "Deny creation of IAM SAML providers (Pattern 1 guardrail for AWS SSO only environments)"
+  description = "Deny creation of IAM SAML providers so environments rely solely on AWS IAM Identity Center (AWS SSO)"
 }
 
 variable "allowed_iam_users" {
