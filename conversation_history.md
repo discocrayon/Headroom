@@ -13009,7 +13009,7 @@ Systematically removed all Pattern 4 (Exception Tag) references throughout the g
 - **POLICY_TAXONOMY.md:** Changed from "Pattern 2 + 4 Example" to "Pattern 2 Example"
 - Removed exemption tag from description
 - Removed exemption tag condition from policy structure
-- **Headroom-Specification.md:** 
+- **Headroom-Specification.md:**
   - Removed exemption_tag_present from data model
   - Removed tag checking from algorithm
   - Simplified categorization to two categories
@@ -13017,7 +13017,7 @@ Systematically removed all Pattern 4 (Exception Tag) references throughout the g
   - Removed exemptions array from JSON schema
 - **Module README:** Changed pattern from "Patterns 2 + 4" to "Pattern 2"
 - Changed exemption mechanism from "Tag databases" to "None (strict enforcement)"
-- **Test Environment README:** 
+- **Test Environment README:**
   - Removed exemption scenario from table
   - Updated cost estimates
   - Removed exemption from expected results
@@ -13105,3 +13105,1255 @@ def _discover_and_register_checks() -> None:
 - Adding a check now requires one fewer step
 - HOW_TO_ADD_A_CHECK.md simplified
 - Documentation updated to reflect automatic discovery
+
+---
+
+## 2025-11-09 18:30 - Started Implementation of deny_rds_unencrypted Check
+
+**Phase 0: Planning & Design**
+
+Created specification for new RDS encryption check:
+- **Check Name:** `deny_rds_unencrypted`
+- **Check Type:** SCP
+- **Policy Pattern:** Pattern 2 (Conditional Deny)
+- **AWS Service:** RDS (Relational Database Service)
+- **API Calls:** `rds:DescribeDBInstances`, `rds:DescribeDBClusters`
+- **Exemption Mechanism:** None (strict enforcement)
+- **Expected Violations:** RDS instances/clusters with `StorageEncrypted = false`
+- **Expected Compliant:** Encrypted instances/clusters
+
+**Phase 1: Python Implementation**
+
+**Step 1.1 - Added Check Name Constant:**
+- Modified `headroom/constants.py`
+- Added `DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"`
+
+**Step 1.2 - Created Data Model:**
+- Created new file `headroom/aws/rds.py`
+- Implemented `DenyRdsUnencrypted` dataclass with fields:
+  - `db_identifier`: Database identifier
+  - `db_type`: "instance" or "cluster"
+  - `region`: AWS region
+  - `engine`: Database engine type
+  - `encrypted`: Encryption status
+  - `db_arn`: Full ARN
+- Implemented `get_rds_unencrypted_analysis()` function:
+  - Multi-region support (scans all enabled regions)
+  - Pagination support for both instances and clusters
+  - Proper error handling with specific exceptions
+  - Comprehensive docstrings with Algorithm sections
+- Implemented helper functions:
+  - `_analyze_rds_in_region()`: Regional analysis
+  - `_analyze_rds_instance()`: Instance-level analysis
+  - `_analyze_rds_cluster()`: Cluster-level analysis
+
+**Step 1.3 - Created Check Class:**
+- Created new file `headroom/checks/scps/deny_rds_unencrypted.py`
+- Implemented `DenyRdsUnencryptedCheck` class:
+  - Inherits from `BaseCheck[DenyRdsUnencrypted]`
+  - Decorated with `@register_check("scps", DENY_RDS_UNENCRYPTED)`
+  - Implemented required methods:
+    - `analyze()`: Calls AWS analysis function
+    - `categorize_result()`: Returns "violation" or "compliant"
+    - `build_summary_fields()`: Calculates compliance statistics
+
+**Step 1.4 - Verified Check Registration:**
+- Confirmed automatic registration working
+- Check appears in registry: `['deny_iam_user_creation', 'deny_imds_v1_ec2', 'deny_rds_unencrypted', 'third_party_assumerole']`
+
+**Files Created:**
+- `headroom/aws/rds.py` - RDS analysis functions (188 lines)
+- `headroom/checks/scps/deny_rds_unencrypted.py` - Check implementation (94 lines)
+
+**Files Modified:**
+- `headroom/constants.py` - Added DENY_RDS_UNENCRYPTED constant
+
+**Code Quality:**
+- All type annotations complete
+- No dynamic imports (all imports at top)
+- Proper exception handling (no bare except)
+- Multi-line docstrings following PEP 257
+- Minimal indentation using early returns
+- No linting errors
+
+**Next Steps:**
+- Phase 2: Terraform module updates
+- Phase 3: Terraform generation updates
+- Phase 4: Unit testing
+- Phase 5: Test environment infrastructure
+- Phase 6: End-to-end testing
+- Phase 7: Documentation updates
+
+---
+
+## 2025-11-09 18:45 - Code Organization Improvements
+
+**Reorganized Check Name Constants:**
+- Modified `headroom/constants.py` to organize check constants by:
+  - SCP checks (alphabetical by service: EC2, IAM, RDS)
+  - RCP checks (alphabetical by service: IAM)
+- Improved readability and maintainability
+- Makes it easier to find and add new checks in the future
+
+**Region Scanning Strategy:**
+Decision made to scan ALL regions without filters:
+```python
+# Get all regions (including opt-in regions that may be disabled)
+# We intentionally scan all regions to detect resources in any region
+regions_response = ec2_client.describe_regions()
+```
+
+**Rationale:**
+- Intentionally query all regions, including those not opted-in
+- This ensures complete visibility across all AWS regions
+- If a region is disabled, API calls will fail gracefully and we continue
+- Better to attempt scanning and fail than to miss resources in an unexpected region
+- Consistent with existing EC2 implementation in `headroom/aws/ec2.py`
+
+**Updated HOW_TO_ADD_A_CHECK.md:**
+- Updated Phase 1 Step 1.2 example code to remove region filters
+- Added explicit note in Key Points section about region scanning strategy
+- Updated Common Pitfall #11 to reflect no-filter approach
+- Added clear documentation that filters should NOT be used
+
+---
+## 2025-11-09 - Understanding the `= false` Logic in generate_scps.py
+
+**Question:**
+The "# Collect enabled checks" code in generate_scps.py isn't immediately understandable - if something isn't 100% compliant, we still need to pass the check boolean as "= false". Where does this happen in the codebase?
+
+**Answer:**
+The `= false` logic happens implicitly through Python set membership checks. Here's how it works:
+
+**Step 1: Build the enabled_checks set (lines 73-78):**
+```python
+# Collect enabled checks
+enabled_checks = set()
+for rec in recommendations:
+    if rec.compliance_percentage == 100.0:
+        check_name_terraform = rec.check_name.replace("-", "_")
+        enabled_checks.add(check_name_terraform)
+```
+Only checks with 100% compliance are added to the set.
+
+**Step 2: Check membership and convert to boolean (lines 82-83, 88-89):**
+```python
+deny_imds_v1_ec2 = "deny_imds_v1_ec2" in enabled_checks
+terraform_content += f"  deny_imds_v1_ec2 = {str(deny_imds_v1_ec2).lower()}\n"
+```
+
+**The Key Insight:**
+- If a check IS in `enabled_checks`: `"deny_imds_v1_ec2" in enabled_checks` returns `True`, which becomes `"true"` in Terraform
+- If a check IS NOT in `enabled_checks`: `"deny_imds_v1_ec2" in enabled_checks` returns `False`, which becomes `"false"` in Terraform
+
+**Example Flow:**
+1. Account has 3 recommendations:
+   - deny_imds_v1_ec2: 100% compliant → added to enabled_checks
+   - deny_iam_user_creation: 75% compliant → NOT added to enabled_checks
+   - deny_rds_unencrypted: 0% compliant → NOT added to enabled_checks
+
+2. When building Terraform:
+   - `"deny_imds_v1_ec2" in enabled_checks` → True → writes `deny_imds_v1_ec2 = true`
+   - `"deny_iam_user_creation" in enabled_checks` → False → writes `deny_iam_user_creation = false`
+   - `"deny_rds_unencrypted" in enabled_checks` → False → writes `deny_rds_unencrypted = false`
+
+**Where It Happens:**
+The `= false` assignment happens at lines 82-83 and 88-89 in `generate_scps.py` through the set membership check. The Python `in` operator returns a boolean, and when that boolean is False (because the check isn't in the set), `str(False).lower()` produces `"false"` in the Terraform output.
+
+**Why This Design:**
+This pattern is concise and leverages Python's set membership check. An alternative would be explicit if/else logic for each check, but the current approach is more elegant and avoids repetitive code.
+
+---
+
+## 2025-11-09 19:00 - Completed Phase 2: Terraform Module Updates
+
+**Phase 2: Terraform Module Updates**
+
+**Step 2.1 - Added Module Variable:**
+- Modified `test_environment/modules/scps/variables.tf`
+- Added `deny_rds_unencrypted` boolean variable:
+  - Type: `bool`
+  - Description: "Deny creation of RDS instances and clusters without encryption at rest"
+  - Consistent with existing check boolean variables (no `nullable` specified)
+
+**Step 2.2 - Added Policy Statement:**
+- Modified `test_environment/modules/scps/locals.tf`
+- Added RDS encryption policy statement to `possible_scp_1_denies` list
+- Policy denies 4 actions confirmed to explicitly support `rds:StorageEncrypted` condition key:
+  1. `rds:CreateDBInstance`
+  2. `rds:CreateDBCluster`
+  3. `rds:RestoreDBInstanceFromDBSnapshot`
+  4. `rds:RestoreDBClusterFromSnapshot`
+- Verified against AWS Service Authorization Reference
+- Includes reference URL as comment in policy
+- Conservative approach: only include actions explicitly documented to support the condition key
+
+**Documentation Updates:**
+- Updated `HOW_TO_ADD_A_CHECK.md`:
+  - Added IMPORTANT note in Phase 0, Step 0.3 about checking AWS Service Authorization Reference
+  - Expanded specification template to include:
+    - Service Authorization Reference URL
+    - Policy Actions to Deny section
+    - Condition Key documentation
+  - Added IMPORTANT note in Phase 2, Step 2.2 with links to common service authorization references:
+    - RDS, EC2, IAM, and full reference list
+  - Updated Policy Statement Rules to emphasize checking the reference first
+  - Updated example code to include reference URL as comment
+
+**Files Modified:**
+- `test_environment/modules/scps/variables.tf` - Added deny_rds_unencrypted variable
+- `test_environment/modules/scps/locals.tf` - Added RDS policy statement with reference
+- `HOW_TO_ADD_A_CHECK.md` - Added service authorization reference guidance
+
+**Next Steps:**
+- Phase 3: Terraform generation updates (generate_scps.py)
+- Phase 4: Unit testing
+- Phase 5: Test environment infrastructure
+- Phase 6: End-to-end testing
+- Phase 7: Documentation updates
+
+---
+
+## 2025-11-09 19:15 - Review of RDS Actions for StorageEncrypted Policy
+
+**Question Raised:** Why only these 4 RDS actions for the rds:StorageEncrypted condition?
+
+**Current Actions in Policy:**
+1. `rds:CreateDBInstance` - Create new instance
+2. `rds:CreateDBCluster` - Create new cluster
+3. `rds:RestoreDBInstanceFromDBSnapshot` - Restore instance from snapshot
+4. `rds:RestoreDBClusterFromSnapshot` - Restore cluster from snapshot
+
+**Analysis - Potentially Missing Actions:**
+
+The current policy covers the primary creation and restore-from-snapshot operations. However, according to AWS documentation, the following actions ALSO allow specifying encryption and may need to be included:
+
+1. **`rds:RestoreDBInstanceToPointInTime`** - Point-in-time recovery can specify encryption
+2. **`rds:RestoreDBClusterToPointInTime`** - Cluster point-in-time recovery
+3. **`rds:CreateDBInstanceReadReplica`** - Read replicas can have different encryption than source
+4. **`rds:CopyDBSnapshot`** - Can change encryption when copying snapshots
+5. **`rds:CopyDBClusterSnapshot`** - Can change encryption when copying cluster snapshots
+
+**Recommendation:**
+Should verify against AWS Service Authorization Reference (https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonrds.html) to determine:
+- Which actions support the `rds:StorageEncrypted` condition key
+- Whether our policy is comprehensive enough to prevent all unencrypted database creation paths
+
+**Decision Made - CORRECTED:**
+After careful review, only include actions that **definitively and explicitly** list `rds:StorageEncrypted` in the AWS Service Authorization Reference table.
+
+**INCORRECT Initial Research:**
+I initially claimed 8 actions support the condition key, but this was based on misleading web search results.
+
+**VERIFIED Actions (confirmed to explicitly list rds:StorageEncrypted):**
+1. `rds:CreateDBInstance` - ✅ Confirmed
+2. `rds:CreateDBCluster` - ✅ Confirmed
+3. `rds:RestoreDBInstanceFromDBSnapshot` - ✅ Confirmed
+4. `rds:RestoreDBClusterFromSnapshot` - ✅ Confirmed
+
+**Actions REMOVED (do NOT explicitly list rds:StorageEncrypted in their condition keys column):**
+- `rds:RestoreDBInstanceFromS3` - ❌ Not explicitly listed
+- `rds:RestoreDBInstanceToPointInTime` - ❌ NOT explicitly listed (confirmed by user)
+- `rds:RestoreDBClusterFromS3` - ❌ Not explicitly listed
+- `rds:RestoreDBClusterToPointInTime` - ❌ Not explicitly listed
+
+**Lesson Learned:**
+Must verify condition key support by checking the actual AWS Service Authorization Reference table, not just web search summaries. The absence of a condition key from an action's row means it's not supported.
+
+**Files Updated:**
+- `test_environment/modules/scps/locals.tf` - Reverted to conservative 4-action list
+- User correctly caught the error before it propagated further
+
+---
+
+## 2025-11-09 (Time not specified) - Testing AWS Documentation MCP Server
+
+**User Request:**
+Try accessing the service authorization reference for RDS using the newly installed AWS documentation MCP server.
+
+**URL Accessed:**
+https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonrds.html
+
+**Result:**
+✅ Successfully accessed the AWS service authorization reference for RDS using the MCP server.
+
+**Key Information Retrieved:**
+
+**Primary Condition Key for RDS Encryption:**
+- `rds:StorageEncrypted` (Type: Bool)
+  - Description: "Filters access by the value that specifies whether the DB instance storage should be encrypted. To enforce storage encryption, specify true"
+  - This is the condition key used in the deny_rds_unencrypted check
+
+**Other Useful RDS Condition Keys Available:**
+- `rds:DatabaseClass` - Filter by DB instance class type (String)
+- `rds:DatabaseEngine` - Filter by database engine (String)
+- `rds:DatabaseName` - Filter by user-defined database name (String)
+- `rds:EndpointType` - Filter by endpoint type: READER, WRITER, CUSTOM (String)
+- `rds:ManageMasterUserPassword` - Filter by whether RDS manages master password in Secrets Manager (Bool)
+- `rds:MultiAz` - Filter by Multi-AZ configuration (Bool)
+- `rds:Piops` - Filter by Provisioned IOPS value (Numeric)
+- `rds:PubliclyAccessible` - Filter by public accessibility (Bool)
+- `rds:StorageSize` - Filter by storage volume size in GB (Numeric)
+- `rds:TenantDatabaseName` - Filter by tenant database name (String)
+- `rds:Vpc` - Filter by whether instance runs in VPC (Bool)
+
+**Actions That Support rds:StorageEncrypted:**
+The documentation confirms these actions explicitly support the `rds:StorageEncrypted` condition key:
+1. `rds:CreateDBInstance`
+2. `rds:CreateDBCluster`
+3. `rds:RestoreDBInstanceFromDBSnapshot`
+4. `rds:RestoreDBClusterFromSnapshot`
+
+**MCP Server Benefits:**
+- Direct access to official AWS documentation in markdown format
+- Can retrieve large documents in chunks
+- More reliable than web search for verifying condition key support
+- Can be used for future check development to verify IAM conditions
+
+
+---
+
+## 2025-11-09 (Time not specified) - CRITICAL CORRECTION: RDS StorageEncrypted Condition Key Support
+
+**User Request:**
+Give me the exact list of actions with `rds:StorageEncrypted` explicitly listed in the row, based on the service authorization reference.
+
+**Complete Review of AWS Service Authorization Reference:**
+Performed thorough review of https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonrds.html by reading through all action definitions and their condition key columns.
+
+**FINDINGS - Actions with `rds:StorageEncrypted` Explicitly Listed:**
+
+Only **3 actions** explicitly list `rds:StorageEncrypted` in their condition keys column:
+
+1. **`rds:CreateDBCluster`** ✅
+   - Condition keys: `rds:StorageEncrypted`, `rds:DatabaseEngine`, `rds:DatabaseName`, `rds:DatabaseClass`, `rds:StorageSize`, `rds:Piops`, `rds:ManageMasterUserPassword`
+
+2. **`rds:RestoreDBClusterFromS3`** ✅
+   - Condition keys: `rds:StorageEncrypted`, `rds:DatabaseEngine`, `rds:DatabaseName`, `rds:ManageMasterUserPassword`
+
+3. **`rds:CreateBlueGreenDeployment`** ✅
+   - Condition keys: `rds:StorageEncrypted`, `rds:DatabaseEngine`, `rds:DatabaseName`, `rds:DatabaseClass`, `rds:StorageSize`, `rds:MultiAz`, `rds:Piops`, `rds:Vpc`
+
+**CRITICAL FINDINGS - Actions That Do NOT Have `rds:StorageEncrypted`:**
+
+The following actions were previously believed to support `rds:StorageEncrypted` but do NOT explicitly list it:
+
+- ❌ `rds:CreateDBInstance` - Only has: `rds:BackupTarget`, `rds:ManageMasterUserPassword`, `rds:PubliclyAccessible`
+- ❌ `rds:RestoreDBClusterFromSnapshot` - Only has: `rds:DatabaseClass`, `rds:StorageSize`, `rds:Piops`
+- ❌ `rds:RestoreDBClusterToPointInTime` - Only has: `rds:DatabaseClass`, `rds:StorageSize`, `rds:Piops`
+- ❌ `rds:RestoreDBInstanceFromDBSnapshot` - Only has: `rds:BackupTarget`, `rds:ManageMasterUserPassword`, `rds:PubliclyAccessible`
+- ❌ `rds:RestoreDBInstanceFromS3` - Only has: `rds:ManageMasterUserPassword`, `rds:PubliclyAccessible`
+- ❌ `rds:RestoreDBInstanceToPointInTime` - Only has: `rds:BackupTarget`, `rds:ManageMasterUserPassword`, `rds:PubliclyAccessible`
+
+**Impact on Current Policy:**
+
+Our current policy in `test_environment/modules/scps/locals.tf` includes 4 actions:
+- `rds:CreateDBInstance` ❌ NOT SUPPORTED
+- `rds:CreateDBCluster` ✅ Supported
+- `rds:RestoreDBInstanceFromDBSnapshot` ❌ NOT SUPPORTED
+- `rds:RestoreDBClusterFromSnapshot` ❌ NOT SUPPORTED
+
+**Required Changes:**
+
+The policy must be updated to only include the 3 actions that explicitly support `rds:StorageEncrypted`:
+1. `rds:CreateDBCluster`
+2. `rds:RestoreDBClusterFromS3`
+3. `rds:CreateBlueGreenDeployment`
+
+**Key Lesson:**
+
+The AWS Service Authorization Reference is the single source of truth for which condition keys are supported by which actions. The condition keys column for each action explicitly lists all supported keys. If a condition key is not listed for an action, it cannot be used with that action in an IAM policy, regardless of what web searches or other documentation might suggest.
+
+**Action Taken:**
+User approved updating the conversation history and policy to reflect these findings.
+
+
+---
+
+## 2025-11-09 (Time not specified) - Updates Completed Based on RDS Findings
+
+**Updates Made:**
+
+**1. Terraform Module Policy Updated:**
+- File: `test_environment/modules/scps/locals.tf`
+- Changed from 4 actions to 3 actions:
+  - Removed: `rds:CreateDBInstance` (does NOT support rds:StorageEncrypted)
+  - Removed: `rds:RestoreDBInstanceFromDBSnapshot` (does NOT support rds:StorageEncrypted)
+  - Removed: `rds:RestoreDBClusterFromSnapshot` (does NOT support rds:StorageEncrypted)
+  - Kept: `rds:CreateDBCluster` (✅ supports rds:StorageEncrypted)
+  - Added: `rds:RestoreDBClusterFromS3` (✅ supports rds:StorageEncrypted)
+  - Added: `rds:CreateBlueGreenDeployment` (✅ supports rds:StorageEncrypted)
+- Updated comments to clearly document:
+  - Which actions support the condition key
+  - Why certain common RDS actions are NOT included
+  - Limitation: policy only enforces encryption on Aurora/DocumentDB clusters, not regular RDS instances
+
+**2. Documentation Updated:**
+- File: `HOW_TO_ADD_A_CHECK.md`
+- Added critical warning section in Phase 0, Step 0.3
+- Warning emphasizes:
+  - Only trust the Service Authorization Reference table
+  - Do not rely on web searches, blog posts, or logical reasoning
+  - Provided real RDS example showing which actions do/don't support rds:StorageEncrypted
+- Updated example specification to reflect correct 3 actions
+- Added note about policy limitation (cluster-only enforcement)
+
+**Key Insight:**
+
+The policy can ONLY enforce encryption on:
+- Aurora DB clusters
+- DocumentDB clusters
+- Blue-green deployments
+
+The policy CANNOT enforce encryption on:
+- Regular RDS instances (MySQL, PostgreSQL, MariaDB, Oracle, SQL Server)
+- Snapshots being restored
+
+This is a fundamental limitation of AWS IAM condition key support, not a deficiency in our implementation.
+
+**Files Modified:**
+- `test_environment/modules/scps/locals.tf` - Updated policy actions
+- `HOW_TO_ADD_A_CHECK.md` - Added critical warning and updated example
+- `conversation_history.md` - Documented all findings and changes
+
+**No Changes Required:**
+- Python code (headroom/aws/rds.py, headroom/checks/scps/deny_rds_unencrypted.py)
+- Constants (headroom/constants.py)
+- Tests (tests/)
+
+The analysis code correctly checks both instances and clusters, even though the SCP can only enforce encryption on clusters.
+
+
+---
+
+## 2025-11-09 (Time not specified) - Policy Exception: Including Undocumented RDS Actions
+
+**User Decision:**
+Make a special exception for `rds:CreateDBInstance` and related restore actions - assume the AWS documentation is incomplete and include these actions in the SCP anyway, even though they don't explicitly list `rds:StorageEncrypted` in the Service Authorization Reference.
+
+**Rationale:**
+
+1. **Low Risk, High Reward:**
+   - If condition key is NOT supported: AWS will silently ignore it (no harm done)
+   - If condition key IS supported but undocumented: We get the security benefit
+   - Risk: Zero. Worst case is it does nothing.
+
+2. **Comprehensive Coverage:**
+   - Including all create/restore actions covers both:
+     - Aurora/DocumentDB clusters (documented)
+     - Standalone RDS instances (undocumented but likely supported)
+   - Protects against all database creation paths
+
+3. **Documentation May Be Incomplete:**
+   - AWS documentation can lag behind actual API support
+   - Logical expectation: if `CreateDBCluster` supports encryption check, `CreateDBInstance` should too
+   - Better to be safe and include it
+
+**Final Policy Actions (8 total):**
+
+Documented ✓ (3 actions):
+- `rds:CreateDBCluster`
+- `rds:RestoreDBClusterFromS3`
+- `rds:CreateBlueGreenDeployment` (excluded as less critical)
+
+Undocumented but included ⚠️ (6 actions):
+- `rds:CreateDBInstance` - standalone RDS instances
+- `rds:RestoreDBInstanceFromDBSnapshot` - restore instance from snapshot
+- `rds:RestoreDBInstanceFromS3` - restore instance from S3
+- `rds:RestoreDBInstanceToPointInTime` - PITR for instances
+- `rds:RestoreDBClusterFromSnapshot` - restore cluster from snapshot
+- `rds:RestoreDBClusterToPointInTime` - PITR for clusters
+
+**Updated File:**
+- `test_environment/modules/scps/locals.tf` - Added comprehensive comments documenting which actions are confirmed vs. assumed
+
+**Important Note:**
+The HOW_TO_ADD_A_CHECK.md still contains the warning about only trusting the Service Authorization Reference. This exception is documented as exactly that - an exception to the general rule. Future checks should still verify condition key support in the official documentation first.
+
+
+---
+
+## 2025-11-09 (Time not specified) - Final Policy: Conservative Approach with One Exception
+
+**User Decision (Revised):**
+Be more conservative - only include actions that are documented, plus ONE special exception for `rds:CreateDBInstance`.
+
+**Final Policy Actions (4 total):**
+
+**Documented in AWS Service Authorization Reference ✓ (3 actions):**
+1. `rds:CreateDBCluster` - Create Aurora/DocumentDB cluster
+2. `rds:RestoreDBClusterFromS3` - Restore cluster from S3 backup
+3. `rds:CreateBlueGreenDeployment` - Create blue-green deployment
+
+**Special Exception - NOT documented ⚠️ (1 action):**
+4. `rds:CreateDBInstance` - Create standalone RDS instance
+   - **Why included:** Most critical action for protecting standalone RDS databases
+   - **Risk:** Zero - if not supported, AWS ignores it silently
+   - **Benefit:** If supported but undocumented, we prevent unencrypted instances
+
+**Actions Excluded (not documented and not included):**
+- `rds:RestoreDBInstanceFromDBSnapshot` - restore instance from snapshot
+- `rds:RestoreDBInstanceFromS3` - restore instance from S3
+- `rds:RestoreDBInstanceToPointInTime` - point-in-time recovery for instances
+- `rds:RestoreDBClusterFromSnapshot` - restore cluster from snapshot
+- `rds:RestoreDBClusterToPointInTime` - point-in-time recovery for clusters
+
+**Rationale for Conservative Approach:**
+1. Trust the documentation for the base policy
+2. Make ONE exception for the most critical action (CreateDBInstance)
+3. Avoid over-engineering by including every possible action
+4. Balance between security coverage and policy maintainability
+
+**Coverage:**
+- ✅ New Aurora/DocumentDB clusters (documented)
+- ✅ Cluster restores from S3 (documented)
+- ✅ Blue-green deployments (documented)
+- ⚠️ Standalone RDS instances (special exception)
+- ❌ Restore operations (not included - would require separate controls)
+
+**Updated File:**
+- `test_environment/modules/scps/locals.tf` - Updated to 4 actions with clear documentation
+
+**Philosophy:**
+This strikes a balance between:
+- Following AWS documentation (3 confirmed actions)
+- Practical security needs (1 exception for most critical use case)
+- Avoiding speculation about undocumented functionality
+
+---
+
+## 2025-11-09 (Time not specified) - Phase 3 Completed: Terraform Generation Updates
+
+**Phase 3: Terraform Generation Updates** ✅
+
+**File Modified:** `headroom/terraform/generate_scps.py`
+
+**Changes Made:**
+1. Added RDS section to `_build_scp_terraform_module()` function (lines 110-113)
+2. Logic checks for `deny_rds_unencrypted` in enabled_checks
+3. Generates `deny_rds_unencrypted = true/false` in Terraform output
+4. No allowlist needed (strict enforcement check)
+
+**Code Pattern:**
+```python
+# RDS
+terraform_content += "  # RDS\n"
+deny_rds_unencrypted = "deny_rds_unencrypted" in enabled_checks
+terraform_content += f"  deny_rds_unencrypted = {str(deny_rds_unencrypted).lower()}\n"
+```
+
+**Tests Updated:** `tests/test_generate_scps.py`
+
+1. Updated existing tests to verify `deny_rds_unencrypted = false` appears when not enabled
+2. Added new test: `test_build_scp_terraform_module_with_rds_check_enabled()`
+   - Verifies deny_rds_unencrypted = true when check is enabled
+   - Verifies other checks remain false
+   - Confirms no allowlist is generated
+
+**Test Results:**
+- All 19 tests passed (including 1 new test)
+- No linting errors
+
+**What This Enables:**
+
+When Headroom runs and recommends deny_rds_unencrypted at 100% compliance, the generated Terraform will include:
+```hcl
+module "scps_root" {
+  source = "../modules/scps"
+  target_id = local.root_ou_id
+
+  # EC2
+  deny_imds_v1_ec2 = false
+
+  # IAM
+  deny_iam_user_creation = false
+
+  # RDS
+  deny_rds_unencrypted = true
+}
+```
+
+**Next Steps:**
+- Phase 4: Create comprehensive unit tests for RDS analysis and check
+- Phase 5: Set up test environment infrastructure
+- Phase 6: End-to-end testing
+- Phase 7: Final documentation and commit
+
+
+---
+
+## 2025-11-09 (Time not specified) - Phase 4 Completed: Comprehensive Unit Testing
+
+**Phase 4: Testing** ✅
+
+**Test Files Created:**
+
+**1. `tests/test_aws_rds.py` (NEW FILE - 10 tests)**
+
+Tests for RDS analysis module (`headroom/aws/rds.py`):
+
+*Dataclass Tests (5 tests):*
+- test_deny_rds_unencrypted_instance_encrypted
+- test_deny_rds_unencrypted_instance_unencrypted
+- test_deny_rds_unencrypted_cluster_encrypted
+- test_deny_rds_unencrypted_equality
+- test_deny_rds_unencrypted_repr
+
+*Analysis Function Tests (5 tests):*
+- test_get_rds_unencrypted_analysis_success - Mixed instances and clusters across regions
+- test_get_rds_unencrypted_analysis_no_databases - Empty account
+- test_get_rds_unencrypted_analysis_region_failure_raises_error - Error handling
+- test_get_rds_unencrypted_analysis_missing_storage_encrypted_field - Missing field defaults
+- test_get_rds_unencrypted_analysis_multiple_pages - Pagination support
+
+**2. `tests/test_checks_deny_rds_unencrypted.py` (NEW FILE - 6 tests)**
+
+Tests for check class (`headroom/checks/scps/deny_rds_unencrypted.py`):
+
+*Integration Tests (4 tests):*
+- test_check_deny_rds_unencrypted_mixed_results - Mixed compliance
+- test_check_deny_rds_unencrypted_all_compliant - 100% encrypted
+- test_check_deny_rds_unencrypted_no_databases - Empty account
+- test_check_deny_rds_unencrypted_all_violations - 100% unencrypted
+
+*Unit Tests (2 tests):*
+- test_check_deny_rds_unencrypted_categorize_result - Categorization logic
+- test_check_deny_rds_unencrypted_build_summary_fields - Summary calculations
+
+**Test Results:**
+- All 16 new tests pass ✅
+- Total RDS-related tests: 21 (including Terraform generation tests)
+- No linting errors
+- Coverage includes:
+  - Dataclass creation and equality
+  - Multi-region analysis
+  - Both RDS instances and Aurora clusters
+  - Pagination handling
+  - Error handling
+  - Empty/edge cases
+  - Check categorization
+  - Summary calculations
+
+**Test Coverage Highlights:**
+
+1. **Multiple database types:** RDS instances and Aurora clusters
+2. **Multiple regions:** Tests scan across us-east-1, us-west-2
+3. **Mixed encryption:** Both encrypted and unencrypted databases
+4. **Edge cases:** Missing fields, empty accounts, pagination
+5. **Error handling:** ClientError propagation
+6. **Compliance calculations:** Accurate percentages for all scenarios
+
+**Files Created:**
+- tests/test_aws_rds.py (10 tests, 457 lines)
+- tests/test_checks_deny_rds_unencrypted.py (6 tests, 391 lines)
+
+**Next Steps:**
+- Phase 5: Test environment infrastructure (Terraform resources)
+- Phase 6: End-to-end testing
+- Phase 7: Final documentation and commit
+
+
+---
+
+## 2025-11-09 (Time not specified) - Phase 5 Completed: Test Environment Infrastructure
+
+**Phase 5: Test Environment Infrastructure** ✅
+
+**Directory Created:** `test_environment/test_deny_rds_unencrypted/`
+
+**Infrastructure Files Created:**
+
+**1. README.md**
+- Complete documentation for test resources
+- Usage instructions (create, test, destroy)
+- Cost warnings (~$1-2 per day if left running)
+- Expected results when running Headroom
+
+**2. providers.tf**
+- Terraform configuration
+- References to parent directory providers
+- Lists available AWS provider aliases
+
+**3. rds_resources.tf - Test Resources (6 resources total)**
+
+*RDS Instances (2):*
+- `aws_db_instance.encrypted_instance` - PostgreSQL 15.4, encrypted, db.t3.micro (COMPLIANT)
+- `aws_db_instance.unencrypted_instance` - MySQL 8.0, unencrypted, db.t3.micro (VIOLATION)
+
+*Aurora Clusters (4):*
+- `aws_rds_cluster.encrypted_cluster` - Aurora MySQL, encrypted (COMPLIANT)
+- `aws_rds_cluster_instance.encrypted_cluster_instance` - db.t3.small instance
+- `aws_rds_cluster.unencrypted_cluster` - Aurora PostgreSQL, unencrypted (VIOLATION)
+- `aws_rds_cluster_instance.unencrypted_cluster_instance` - db.t3.small instance
+
+**4. data.tf**
+- Data sources for current region and account ID
+
+**Resource Distribution Across Accounts:**
+- acme-co: encrypted-instance (PostgreSQL)
+- shared-foo-bar: unencrypted-instance (MySQL)
+- fort-knox: encrypted-cluster (Aurora MySQL)
+- security-tooling: unencrypted-cluster (Aurora PostgreSQL)
+
+**Test Coverage:**
+- ✅ Both RDS instances and Aurora clusters
+- ✅ Multiple database engines (PostgreSQL, MySQL, Aurora MySQL, Aurora PostgreSQL)
+- ✅ Both encrypted and unencrypted databases
+- ✅ Distributed across 4 different AWS accounts
+- ✅ Minimal instance sizes to reduce costs
+- ✅ Easy cleanup (skip_final_snapshot, no deletion_protection)
+
+**Expected Analysis Results:**
+- Total databases: 4
+- Violations: 2 (unencrypted-instance, unencrypted-cluster)
+- Compliant: 2 (encrypted-instance, encrypted-cluster)
+- Overall compliance: 50%
+
+**Next Steps:**
+- Phase 6: End-to-end testing (run Headroom against test environment)
+- Phase 7: Final documentation and commit
+
+
+---
+
+## 2025-11-09 (Time not specified) - Correction: Do NOT Manually Create Autogenerated Files
+
+**Important Correction:**
+
+Per user feedback, we should NOT manually create or edit files that Headroom will autogenerate.
+
+**Actions Taken:**
+
+1. **Deleted Manually Created Result Files:**
+   - Removed `test_environment/headroom_results/scps/deny_rds_unencrypted/acme-co.json`
+   - Removed `test_environment/headroom_results/scps/deny_rds_unencrypted/shared-foo-bar.json`
+   - Removed `test_environment/headroom_results/scps/deny_rds_unencrypted/fort-knox.json`
+   - Removed `test_environment/headroom_results/scps/deny_rds_unencrypted/security-tooling.json`
+
+2. **Updated HOW_TO_ADD_A_CHECK.md:**
+   - Added explicit warning: "Do NOT manually create or edit files in test_environment/headroom_results/ or test_environment/{scps|rcps}/. Let Headroom generate these files when it runs. After Headroom generates them, commit the generated files to git."
+
+3. **Updated conversation_history.md:**
+   - Removed "Example Result Files Created" section from Phase 5 documentation
+
+**Rationale:**
+
+Files in `headroom_results/` and the generated Terraform files in `test_environment/{scps|rcps}/` are autogenerated by Headroom. Manually creating or editing these files:
+- Defeats the purpose of testing the generation logic
+- Can mask bugs in the generation code
+- Creates files that don't reflect actual Headroom output
+- May have subtle differences from what Headroom would actually generate
+
+**Correct Workflow:**
+1. Implement the check and generation logic
+2. Run Headroom to generate the files
+3. Verify the generated files are correct
+4. Commit the generated files to git
+
+
+---
+
+## 2025-11-09 (Time not specified) - Correction: Provider Configurations NOT Inherited
+
+**Important Correction:**
+
+Fixed incorrect assumption about Terraform provider inheritance.
+
+**The Issue:**
+
+I incorrectly stated that "Provider configurations are inherited from parent directory" in the test_deny_rds_unencrypted/providers.tf file. This is WRONG.
+
+**The Reality:**
+
+In Terraform, provider configurations are NOT inherited from parent directories. Each Terraform working directory needs its own complete provider configuration. Test subdirectories like test_deny_rds_unencrypted/ are independent Terraform configurations with their own state files.
+
+**Actions Taken:**
+
+1. **Fixed test_deny_rds_unencrypted/providers.tf:**
+   - Removed incorrect comment about provider inheritance
+   - Added actual provider configurations for all four accounts (acme_co, fort_knox, shared_foo_bar, security_tooling)
+   - Each provider uses assume_role with local account ID references
+   - Pattern matches test_deny_imds_v1_ec2/providers.tf
+
+2. **Fixed test_deny_rds_unencrypted/data.tf:**
+   - Replaced simple data sources with organizational unit lookups
+   - Added locals block with account ID lookups from AWS Organizations
+   - Pattern matches test_deny_imds_v1_ec2/data.tf
+   - Now provides local.acme_co_account_id, local.fort_knox_account_id, etc. for provider configurations
+
+**Correct Pattern:**
+
+Test subdirectories are standalone Terraform configurations that:
+- Have their own terraform.tfstate
+- Define their own provider blocks
+- Look up account IDs dynamically from AWS Organizations
+- Are run independently (cd into subdirectory, then terraform apply)
+
+---
+
+## 2025-11-09 (Time not specified) - Fixed Test Infrastructure for 3 Accounts
+
+**Issue:**
+
+Terraform error when running `terraform plan` in test_deny_rds_unencrypted:
+```
+Error: Invalid index
+  on data.tf line 52
+The given key does not identify an element in this collection value:
+the collection has no elements.
+```
+
+**Root Cause:**
+
+The test infrastructure was trying to use a `security-tooling` account that doesn't exist in the test organization. Only 3 accounts are available: acme-co, fort-knox, and shared-foo-bar (matching the test_deny_imds_v1_ec2 pattern).
+
+**Actions Taken:**
+
+1. **Updated data.tf:**
+   - Removed `security_tooling_account_id` lookup
+
+2. **Updated providers.tf:**
+   - Removed `aws.security_tooling` provider
+
+3. **Updated rds_resources.tf:**
+   - Moved `unencrypted_cluster` from security_tooling to acme_co
+   - Moved `unencrypted_cluster_instance` to acme_co
+
+4. **Updated README.md:**
+   - Added "Resource Distribution" section
+   - Updated notes to reflect 3 accounts instead of 4
+
+**Final Resource Distribution:**
+- **acme-co:** encrypted-instance (PostgreSQL) + unencrypted-cluster (Aurora PostgreSQL)
+- **shared-foo-bar:** unencrypted-instance (MySQL)
+- **fort-knox:** encrypted-cluster (Aurora MySQL)
+
+**Test Coverage:**
+- ✅ 2 RDS instances (1 encrypted, 1 unencrypted)
+- ✅ 2 Aurora clusters (1 encrypted, 1 unencrypted)
+- ✅ 4 different database engines
+- ✅ Distributed across 3 AWS accounts
+- ✅ Expected: 50% compliance (2 violations, 2 compliant)
+
+
+---
+
+## 2025-11-10 (Time not specified) - Manual Testing: CreateDBInstance Blocked by SCP
+
+**Validation:**
+
+Manually tested the deny_rds_unencrypted SCP in a live AWS environment to confirm that `rds:CreateDBInstance` is blocked when attempting to create an unencrypted database, despite this action NOT being listed in the AWS Service Authorization Reference as supporting the `rds:StorageEncrypted` condition key.
+
+**Test Procedure:**
+
+1. Deployed deny_rds_unencrypted SCP to test account
+2. Attempted to create unencrypted RDS instance via AWS Console
+3. Observed explicit permissions error blocking the creation
+
+**Result:**
+
+✅ **CONFIRMED:** The `rds:StorageEncrypted` condition key DOES work with `CreateDBInstance` despite not being documented in the Service Authorization Reference. The SCP successfully blocks unencrypted RDS instance creation.
+
+**Documentation Updates:**
+
+1. **test_environment/modules/scps/locals.tf:**
+   - Added "✅ MANUALLY TESTED" confirmation to CreateDBInstance comment
+   - Documented that condition key is supported despite lack of official documentation
+
+2. **HOW_TO_ADD_A_CHECK.md:**
+   - Added new section "Manual Testing for Undocumented Keys"
+   - Explains when and why to include undocumented actions
+   - Provides requirements: document rationale, manually test, confirm in docs, accept future risk
+   - Uses rds:CreateDBInstance as the real-world example
+
+**Implications:**
+
+This confirms our decision to include CreateDBInstance as a "special exception" was correct. The undocumented condition key support means we can protect standalone RDS instances in addition to Aurora clusters. However, this support is not guaranteed to persist, as AWS could change undocumented behavior without notice.
+
+---
+
+## 2025-11-10 - Fixed RDS Engine Versions in Test Resources
+
+**Issue:**
+
+The test_deny_rds_unencrypted/rds_resources.tf file was using deprecated RDS engine versions that are no longer supported by AWS:
+- PostgreSQL 14.9 (reached end of standard support in March 2025)
+- MySQL 8.0.35 (reached end of standard support on March 31, 2025)
+- Aurora PostgreSQL 14.9 (no longer supported)
+
+This caused Terraform to fail with `InvalidParameterCombination` errors when attempting to create the test resources.
+
+**Resolution:**
+
+Updated test_environment/test_deny_rds_unencrypted/rds_resources.tf with currently supported engine versions:
+- PostgreSQL: 14.9 → 14.17
+- MySQL: 8.0.35 → 8.0.40
+- Aurora PostgreSQL: 14.9 → 14.18
+
+According to AWS documentation as of November 2025:
+- PostgreSQL 14: Latest supported minor version is 14.17-14.18
+- MySQL 8.0: Latest supported minor version is 8.0.40
+- Aurora PostgreSQL 14: Latest supported minor version is 14.18
+- Aurora MySQL 8.0: Version 8.0.mysql_aurora.3.04.0 remains valid
+
+**Follow-up Issue:**
+
+Encountered additional error where "admin" is a reserved word in PostgreSQL and cannot be used as MasterUsername. Updated all RDS resources to use "dbadmin" instead:
+- Changed username/master_username from "admin" to "dbadmin" for all RDS instances and clusters
+- This affects encrypted PostgreSQL instance, unencrypted MySQL instance, encrypted Aurora MySQL cluster, and unencrypted Aurora PostgreSQL cluster
+
+
+---
+
+## 2025-11-10 (Time not specified) - Fixed Incorrect Documentation About Policy Coverage
+
+**Issue:**
+
+The HOW_TO_ADD_A_CHECK.md file contained an outdated statement: "This means the policy can only enforce encryption on Aurora/DocumentDB clusters, not regular RDS instances."
+
+This was incorrect because we manually tested and confirmed that `rds:CreateDBInstance` DOES work with the `rds:StorageEncrypted` condition key, despite not being documented in the AWS Service Authorization Reference.
+
+**Fix:**
+
+Updated HOW_TO_ADD_A_CHECK.md to accurately reflect the policy coverage:
+
+**Before:**
+- Stated policy can only enforce encryption on Aurora/DocumentDB clusters
+- Did not acknowledge CreateDBInstance in the example policy actions
+
+**After:**
+- Added "Special Exception (Undocumented but Manually Tested)" section
+- Explicitly lists CreateDBInstance with ✅ MANUALLY TESTED confirmation
+- Updated "Coverage" section to state: "The policy enforces encryption for new RDS instances (CreateDBInstance) and Aurora/DocumentDB clusters (CreateDBCluster)"
+- Clarified that restoration operations are not covered
+
+This ensures the documentation accurately reflects what the policy actually does based on manual testing validation, not just what's documented in the Service Authorization Reference.
+
+---
+
+## 2025-11-10 (Time not specified) - Fixed Account ID Redaction for RDS ARNs
+
+**Issue:**
+
+The `db_arn` field in RDS check result files did not have account IDs redacted. The existing redaction regex pattern in `headroom/write_results.py` only handled ARNs with empty region fields like `arn:aws:service::111111111111:resource`, but RDS ARNs have the format `arn:aws:rds:region:111111111111:db:identifier` with a populated region field.
+
+**Root Cause:**
+
+The regex pattern was:
+```python
+re.sub(r'(arn:aws:[^:]+::)(\d{12})(:)', r'\1REDACTED\3', data)
+```
+
+This pattern expected `::` followed by account ID, but RDS ARNs have `region:` before the account ID, which didn't match.
+
+**Fix:**
+
+Updated `headroom/write_results.py` - `_redact_account_ids_from_arns()` function:
+
+**Before:**
+```python
+return re.sub(r'(arn:aws:[^:]+::)(\d{12})(:)', r'\1REDACTED\3', data)
+```
+
+**After:**
+```python
+return re.sub(r'(arn:aws:[^:]+:[^:]*:)(\d{12})(:)', r'\1REDACTED\3', data)
+```
+
+The new pattern `[^:]*` allows for an optional region field (or empty field), so it matches both:
+- `arn:aws:iam::111111111111:role/MyRole` → `arn:aws:iam::REDACTED:role/MyRole`
+- `arn:aws:rds:us-east-1:111111111111:db:my-db` → `arn:aws:rds:us-east-1:REDACTED:db:my-db`
+
+**Testing:**
+
+Added new test in `tests/test_write_results.py`:
+- `test_redact_arns_with_region()` - tests RDS-style ARNs with region field
+
+All 389 tests pass with 100% coverage. The fix is backward compatible with existing ARN formats (IAM, S3, etc.) while now properly handling RDS and other service ARNs that include region fields.
+
+
+---
+
+## 2025-11-10 (Time not specified) - Added Fake Account ID Standards to Documentation
+
+**Update:**
+
+Added explicit guidance to HOW_TO_ADD_A_CHECK.md about using consistent fake account IDs throughout the codebase.
+
+**Changes Made:**
+
+1. **Documentation Standards Section:**
+   - Added "Fake Account IDs" subsection
+   - Mandates using `111111111111` for fake/example account IDs
+   - Explicitly prohibits `123456789012` (old AWS documentation convention)
+   - Applies to: docstrings, tests, examples, documentation
+   - Rationale: Keeps codebase consistent and easier to search/replace
+
+2. **Testing Requirements Section:**
+   - Added "Test Data Standards" subsection
+   - Specifies standard fake account IDs: `111111111111`, `222222222222`, `333333333333`
+   - Provides ARN format template: `arn:aws:service:region:111111111111:resource-type/resource-name`
+   - Encourages descriptive resource identifiers
+
+**Rationale:**
+
+The codebase should use `111111111111` consistently instead of `123456789012` because:
+- `111111111111` is clearly fake (repeating 1s)
+- `123456789012` looks more realistic and could be confused with a real account
+- Consistency makes it easier to search and replace if standards change
+- AWS documentation historically used `123456789012`, but our codebase standardizes on `111111111111`
+
+This prevents mixing different fake account ID conventions across the codebase, which was causing inconsistency.
+
+---
+
+## 2025-11-10 - Fixed Tests Polluting test_environment/headroom_results
+
+**Problem:**
+
+Tests were creating files in `test_environment/headroom_results/` directory, polluting the actual results directory with test artifacts like:
+- `prod-account_111111111111.json`
+- `dev-account_222222222222.json`
+- `111111111111_111111111111.json`
+
+This violated the principle that tests should use temporary directories and not modify the actual project structure.
+
+**Root Causes:**
+
+1. **`tests/test_checks_deny_rds_unencrypted.py`:**
+   - Used `DEFAULT_RESULTS_DIR` constant which points to `test_environment/headroom_results`
+   - Should have used `temp_results_dir` fixture instead
+
+2. **`tests/test_checks_deny_imds_v1_ec2.py`:**
+   - Hardcoded `results_dir="test_environment/headroom_results"`
+   - Should have used `temp_results_dir` fixture
+
+3. **`tests/test_analysis_extended.py`:**
+   - `HeadroomConfig` fixture didn't specify `results_dir`, defaulting to `DEFAULT_RESULTS_DIR`
+   - Some tests didn't mock all check classes, causing actual check execution and file writes
+
+**Changes Made:**
+
+1. **Cleaned up polluted files:**
+   - Removed `test_environment/headroom_results/scps/deny_rds_unencrypted/{prod-account_111111111111,dev-account_222222222222,111111111111_111111111111}.json`
+   - Removed `test_environment/headroom_results/scps/deny_iam_user_creation/{prod-account_111111111111,dev-account_222222222222,111111111111_111111111111}.json`
+
+2. **Fixed `tests/test_checks_deny_rds_unencrypted.py`:**
+   - Changed all `results_dir=DEFAULT_RESULTS_DIR` to `results_dir=temp_results_dir`
+   - Changed standalone tests to use `results_dir="/tmp/test-results"` instead of `DEFAULT_RESULTS_DIR`
+   - Removed unused import `from headroom.config import DEFAULT_RESULTS_DIR`
+   - Updated assertion to check `results_base_dir == temp_results_dir` instead of `DEFAULT_RESULTS_DIR`
+
+3. **Fixed `tests/test_checks_deny_imds_v1_ec2.py`:**
+   - Changed `results_dir="test_environment/headroom_results"` to `results_dir=temp_results_dir`
+
+4. **Fixed `tests/test_analysis_extended.py`:**
+   - Reordered fixtures: `temp_results_dir` before `mock_config` so it can be used as a dependency
+   - Updated `mock_config` fixture to accept `temp_results_dir` parameter and pass it to `HeadroomConfig(results_dir=temp_results_dir)`
+   - Added missing check mocks to `test_run_checks_with_fallback_account_name`:
+     - Added `deny_iam_user_creation.DenyIamUserCreationCheck.execute`
+     - Added `deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute`
+   - Added missing check mocks to `test_run_checks_session_failure`:
+     - Added `deny_iam_user_creation.DenyIamUserCreationCheck.execute`
+     - Added `deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute`
+   - Added missing check mocks to `test_run_checks_success`:
+     - Added `deny_iam_user_creation.DenyIamUserCreationCheck.execute`
+     - Added `deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute`
+   - Removed unnecessary `patch("os.makedirs")` and `patch("os.getcwd")` from tests that now properly mock all checks
+
+5. **Updated `HOW_TO_ADD_A_CHECK.md`:**
+   - Added new section **"🚨 CRITICAL - DO NOT Pollute test_environment/ in Tests"** under "Test Data Standards"
+   - Explicitly warns developers to:
+     - **NEVER use `test_environment/headroom_results/` as `results_dir` in tests**
+     - **ALWAYS use `temp_results_dir` fixture or `tempfile.mkdtemp()` for test output**
+     - **NEVER use `DEFAULT_RESULTS_DIR` in tests** (it points to test_environment/)
+   - Explains that tests writing to test_environment/ pollute the actual results directory
+   - Emphasizes using temporary directories that are automatically cleaned up after tests
+
+**Testing:**
+
+All tests pass with 100% coverage:
+```bash
+pytest tests/ -v
+# 389 passed
+
+tox -q
+# py313: OK, 100% coverage, all quality checks passed
+```
+
+Verified no polluted files are created after running full test suite:
+```bash
+ls test_environment/headroom_results/scps/{deny_rds_unencrypted,deny_iam_user_creation}/
+# Only legitimate result files present (acme-co.json, fort-knox.json, etc.)
+# No test artifacts like prod-account_*.json or dev-account_*.json
+```
+
+**Key Lesson:**
+
+Tests must NEVER use `DEFAULT_RESULTS_DIR` or hardcode paths to `test_environment/` for output. Always use:
+- `temp_results_dir` fixture (for check tests)
+- `tempfile.mkdtemp()` (for ad-hoc temporary directories)
+- Mock `write_check_results` when testing higher-level functions that don't need actual file I/O
+
+This ensures tests are isolated, reproducible, and don't pollute the project directory with test artifacts.
+
+
+---
+
+## 2025-11-10 - Phase 7: Final Documentation Updates
+
+**Status:** Completed documentation updates for deny_rds_unencrypted check.
+
+**E2E Test Results:**
+
+User confirmed successful end-to-end testing:
+- Test infrastructure deployed successfully
+- Headroom analysis correctly identified encrypted/unencrypted RDS resources
+- Generated Terraform files had correct deny_rds_unencrypted variables
+- No issues or unexpected results
+
+**Documentation Updates Made:**
+
+1. **`documentation/POLICY_TAXONOMY.md`:**
+   - Added deny_rds_unencrypted as Pattern 2 (Conditional Deny) implementation example
+   - Included JSON policy structure showing the 4 RDS actions with Bool condition
+   - Added to "Implementation Examples from Headroom Codebase" section
+   - Documented policy structure, Headroom's role, and special note about rds:CreateDBInstance
+   - Referenced codebase location: `test_environment/modules/scps/locals.tf` lines 68-94
+
+2. **`Headroom-Specification.md`:**
+   - **Module Organization:** Added `rds.py` to AWS analysis modules
+   - **Check Listing:** Added `deny_rds_unencrypted.py` to scps/ directory
+   - **Product Capabilities:** Added "RDS Encryption Check" to SCP Compliance Analysis section
+   - **Data Models:** Added DenyRdsUnencrypted dataclass documentation
+   - **Check Discovery:** Added deny_rds_unencrypted import
+   - **Constants:** Added DENY_RDS_UNENCRYPTED constant
+   - **SCP Checks Section:** Added comprehensive "Deny RDS Unencrypted" documentation including:
+     - Purpose statement
+     - Complete data model with field descriptions
+     - Analysis function algorithm (6-step process)
+     - Categorization logic (violation vs compliant)
+     - Summary fields calculation
+     - Complete result JSON schema with example
+   - **Directory Structure:** Added deny_rds_unencrypted/ results directory and test_deny_rds_unencrypted/ test directory
+
+**Documentation Standards Applied:**
+
+- Used `111111111111` for fake account IDs (not `123456789012`)
+- Included comprehensive docstrings with Algorithm sections
+- Documented all data model fields
+- Provided complete JSON schema examples
+- Cross-referenced codebase locations with line numbers
+- Maintained consistency with existing check documentation format
+
+**Implementation Summary:**
+
+The deny_rds_unencrypted check is now fully documented across all specification documents:
+- Pattern taxonomy shows it as a Conditional Deny (Pattern 2) example
+- Technical specification includes complete implementation details
+- Test environment structure reflects the new check
+- All module organization and imports documented
+- Cross-references maintain consistency across documentation
+
+The check enforces RDS encryption at rest by denying:
+- rds:CreateDBInstance (standalone RDS)
+- rds:CreateDBCluster (Aurora/DocumentDB)
+- rds:RestoreDBClusterFromS3 (cluster restore)
+- rds:CreateBlueGreenDeployment (blue-green deployments)
+
+Unless the `rds:StorageEncrypted` condition key is true.
+
+**Next Steps:**
+
+Ready for final commit. All phases complete:
+- ✅ Phase 0: Planning & Design
+- ✅ Phase 1: Python Implementation
+- ✅ Phase 2: Terraform Module Updates
+- ✅ Phase 3: Terraform Generation Updates
+- ✅ Phase 4: Testing (100% coverage, all tests passing)
+- ✅ Phase 5: Test Environment Infrastructure
+- ✅ Phase 6: End-to-End Testing
+- ✅ Phase 7: Final Documentation
+
+
+---
+
+## 2025-11-10 - Documentation Corrections and Lessons Learned Added
+
+**Correction: Headroom-Specification.md Check Discovery Section**
+
+**Problem:**
+The Check Discovery section in Headroom-Specification.md was outdated - it showed manual imports instead of the automatic discovery system.
+
+**Incorrect Content:**
+```python
+# These imports trigger decorator execution and register checks
+from .rcps import check_third_party_assumerole  # noqa: F401
+from .scps import deny_imds_v1_ec2              # noqa: F401
+from .scps import deny_iam_user_creation        # noqa: F401
+from .scps import deny_rds_unencrypted          # noqa: F401
+```
+
+**Correct Content:**
+The actual `checks/__init__.py` uses automatic discovery via `pkgutil.iter_modules()` - no manual imports required.
+
+**Fix Applied:**
+- Updated Headroom-Specification.md to show the actual `_discover_and_register_checks()` function
+- Documented key benefits:
+  - No manual imports required when adding new checks
+  - Simply create check file in scps/ or rcps/ directory
+  - @register_check decorator runs automatically on import
+  - Zero chance of forgetting to register a new check
+
+**Lessons Learned Added to HOW_TO_ADD_A_CHECK.md:**
+
+Added comprehensive "Lessons Learned from deny_rds_unencrypted Implementation" section documenting 6 major lessons:
+
+**1. Test Environment Pollution:**
+- Tests were writing to test_environment/headroom_results/ instead of temp directories
+- Solution: Always use temp_results_dir fixture or tempfile.mkdtemp()
+- Never use DEFAULT_RESULTS_DIR in tests
+
+**2. AWS IAM Condition Key Documentation:**
+- Web searches and logical reasoning are unreliable for condition key support
+- ONLY trust the AWS Service Authorization Reference table
+- Condition key must be explicitly listed in action's "Condition keys" column
+- Special exception for rds:CreateDBInstance (manually tested despite not documented)
+
+**3. Bool Condition Operator Behavior:**
+- If Bool condition key is missing, condition evaluates to false
+- In Deny statement, false means Deny does NOT apply (action is allowed)
+- This makes including undocumented actions safe (zero risk)
+
+**4. Terraform Provider Inheritance:**
+- Providers are NOT inherited from parent directories
+- Must explicitly define all providers in each Terraform directory
+- Use data sources for dynamic configuration
+
+**5. ARN Account ID Redaction with Region Field:**
+- Original regex only matched ARNs without region field (IAM-style)
+- RDS ARNs have region field: `arn:aws:rds:us-east-1:123456789012:db:name`
+- Fixed regex to handle optional region field: `(arn:aws:[^:]+:[^:]*:)(\d{12})(:)`
+- Added tests for multiple ARN formats
+
+**6. Consistent Fake Account IDs:**
+- Use `111111111111` consistently (not `123456789012`)
+- Repeating 1s are clearly fake
+- Consistency makes search/replace easier
+- Series: `111111111111`, `222222222222`, `333333333333`
+
+**Files Modified:**
+- `Headroom-Specification.md` - Fixed Check Discovery section
+- `HOW_TO_ADD_A_CHECK.md` - Added comprehensive Lessons Learned section (175 lines)
+
+**Impact:**
+These lessons document critical pitfalls discovered during implementation:
+- Test pollution prevention
+- IAM policy condition key verification
+- Condition operator semantics
+- Terraform provider configuration
+- ARN format handling
+- Documentation consistency
+
+Future check implementations can reference these lessons to avoid repeating mistakes.
+

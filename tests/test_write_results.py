@@ -501,6 +501,18 @@ class TestRedactAccountIdsFromArns:
         assert result["s3_arn"] == "arn:aws:s3::REDACTED:bucket/MyBucket"
         assert result["ec2_arn"] == "arn:aws:ec2::REDACTED:instance/i-1234567890abcdef0"
 
+    def test_redact_arns_with_region(self) -> None:
+        """Test redacting account IDs from ARNs with region field (e.g., RDS)."""
+        data = {
+            "rds_instance": "arn:aws:rds:us-east-1:111111111111:db:my-database",
+            "rds_cluster": "arn:aws:rds:us-west-2:222222222222:cluster:my-cluster",
+            "ec2_instance": "arn:aws:ec2:eu-west-1:333333333333:instance/i-1234567890"
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["rds_instance"] == "arn:aws:rds:us-east-1:REDACTED:db:my-database"
+        assert result["rds_cluster"] == "arn:aws:rds:us-west-2:REDACTED:cluster:my-cluster"
+        assert result["ec2_instance"] == "arn:aws:ec2:eu-west-1:REDACTED:instance/i-1234567890"
+
     def test_redact_does_not_affect_non_arn_numbers(self) -> None:
         """Test that non-ARN 12-digit numbers are not affected."""
         data = {

@@ -1,6 +1,6 @@
 # How to Add a New Check to Headroom
 
-**Version:** 1.0  
+**Version:** 1.0
 **Last Updated:** 2025-11-09
 
 ---
@@ -123,19 +123,19 @@ def process_resources(resources: List[Resource]) -> List[Result]:
     """Process resources with minimal indentation."""
     if not resources:
         return []  # Early return
-    
+
     results = []
     for resource in resources:
         if not resource.is_valid():
             continue  # Skip invalid, reduces nesting
-        
+
         if resource.requires_special_handling():
             result = _handle_special_case(resource)
         else:
             result = _handle_normal_case(resource)
-        
+
         results.append(result)
-    
+
     return results
 ```
 
@@ -155,20 +155,20 @@ def analyze_databases(
 ) -> List[DatabaseResult]:
     """
     Analyze databases in specified region.
-    
+
     Algorithm:
     1. List all databases via paginator
     2. Check encryption status
     3. Check exemption tags
     4. Return analysis results
-    
+
     Args:
         session: boto3 Session for target account
         region: AWS region to analyze
-    
+
     Returns:
         List of DatabaseResult objects
-    
+
     Raises:
         ClientError: If AWS API calls fail
     """
@@ -181,6 +181,12 @@ def analyze_databases(
 - Constants: UPPER_SNAKE_CASE
 - Classes: PascalCase
 - After implementation, verify naming is clear and consistent
+
+**Fake Account IDs:**
+- Always use `111111111111` for fake/example account IDs
+- NEVER use `123456789012` (old AWS documentation convention)
+- This applies to: docstrings, tests, examples, documentation
+- Keeps codebase consistent and easier to search/replace
 
 ### Testing Requirements
 
@@ -198,6 +204,19 @@ def analyze_databases(
 - API errors and exceptions
 - Each categorization path
 - Summary field calculations
+
+**Test Data Standards:**
+- Use `111111111111` for account IDs (not `123456789012`)
+- Use consistent fake account IDs: `111111111111`, `222222222222`, `333333333333`
+- Use descriptive resource identifiers (e.g., `test-db`, `encrypted-instance`)
+- ARN format: `arn:aws:service:region:111111111111:resource-type/resource-name`
+
+**🚨 CRITICAL - DO NOT Pollute test_environment/ in Tests:**
+- **NEVER use `test_environment/headroom_results/` as `results_dir` in tests**
+- **ALWAYS use `temp_results_dir` fixture or `tempfile.mkdtemp()` for test output**
+- **NEVER use `DEFAULT_RESULTS_DIR` in tests** (it points to test_environment/)
+- Tests that write to test_environment/ pollute the actual results directory
+- Use temporary directories that are automatically cleaned up after tests
 
 ### Code Quality Tools
 
@@ -296,6 +315,52 @@ Rationale: Deny RDS creation unless encrypted, enforcing encryption standard
 
 ### Step 0.3: Define Check Characteristics
 
+**IMPORTANT:** Consult the AWS Service Authorization Reference for your service to identify the correct actions, resources, and condition keys:
+- **Service Authorization Reference:** https://docs.aws.amazon.com/service-authorization/latest/reference/reference_policies_actions-resources-contextkeys.html
+- **For RDS:** https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonrds.html
+
+This reference provides:
+- All available API actions for the service
+- Resource types and ARN formats
+- Condition keys specific to the service (e.g., `rds:StorageEncrypted`)
+- **Which condition keys apply to which actions** (the most critical part!)
+
+**🚨 CRITICAL WARNING - Condition Key Support 🚨**
+
+**DO NOT assume a condition key is supported by an action based on:**
+- Web searches
+- Blog posts
+- Stack Overflow answers
+- Logical reasoning ("it should support this key")
+- Other AWS documentation
+
+**ONLY rely on the Service Authorization Reference table.** Each action row has a "Condition keys" column that explicitly lists ALL supported condition keys. If a condition key is not listed for an action, it CANNOT be used with that action in an IAM policy.
+
+**Real Example - RDS StorageEncrypted:**
+- ✅ `rds:CreateDBCluster` - explicitly lists `rds:StorageEncrypted`
+- ✅ `rds:RestoreDBClusterFromS3` - explicitly lists `rds:StorageEncrypted`
+- ✅ `rds:CreateBlueGreenDeployment` - explicitly lists `rds:StorageEncrypted`
+- ❌ `rds:CreateDBInstance` - does NOT list `rds:StorageEncrypted` (only has `rds:ManageMasterUserPassword`, `rds:PubliclyAccessible`)
+- ❌ `rds:RestoreDBInstanceFromDBSnapshot` - does NOT list `rds:StorageEncrypted`
+- ❌ `rds:RestoreDBClusterFromSnapshot` - does NOT list `rds:StorageEncrypted`
+
+This discovery was made by reading the actual reference documentation, not by making assumptions.
+
+**Manual Testing for Undocumented Keys:**
+
+In rare cases, you may want to include an action that doesn't explicitly list the condition key in the reference, especially if it's critical for security coverage. For `deny_rds_unencrypted`, we included `rds:CreateDBInstance` as a "special exception" despite it not being documented, because:
+1. It's critical for protecting standalone RDS instances
+2. Using the `Bool` operator means it fails safe (if unsupported, the Deny won't apply)
+3. Manual testing confirmed it DOES work despite not being documented
+
+**If you include undocumented actions, you MUST:**
+1. Document the rationale in the Terraform policy comments
+2. Manually test that the SCP actually blocks the action when the condition is not met
+3. Update documentation with "✅ MANUALLY TESTED" confirmation
+4. Accept that AWS could remove support in the future without notice
+
+For `rds:CreateDBInstance`, we deployed the SCP to a test account and confirmed that attempting to create an unencrypted RDS instance was blocked with an explicit permissions error. This validation is documented in the policy comments.
+
 Create a specification document for your check:
 
 ```markdown
@@ -306,6 +371,7 @@ Create a specification document for your check:
 **Policy Pattern:** Pattern 2 (Conditional Deny)
 
 **AWS Service:** RDS (Relational Database Service)
+**Service Authorization Reference:** https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonrds.html
 
 **API Calls Required:**
 - rds:DescribeDBInstances (list all RDS instances)
@@ -313,6 +379,27 @@ Create a specification document for your check:
 
 **IAM Permissions:**
 - Covered by ViewOnlyAccess managed policy
+
+**Policy Actions to Deny:**
+Only 3 actions confirmed to explicitly list rds:StorageEncrypted as a supported condition key:
+- rds:CreateDBCluster (create new Aurora/DocumentDB cluster)
+- rds:RestoreDBClusterFromS3 (restore cluster from S3 backup)
+- rds:CreateBlueGreenDeployment (create blue-green deployment)
+
+**Special Exception (Undocumented but Manually Tested):**
+- rds:CreateDBInstance (create standalone RDS instance) - NOT listed in Service Authorization Reference but ✅ MANUALLY TESTED and confirmed to work
+
+**Condition Key:**
+- rds:StorageEncrypted (Boolean) - checked during instance/cluster creation
+
+**CRITICAL:** The following common RDS actions do NOT support rds:StorageEncrypted (not included in policy):
+- rds:RestoreDBInstanceFromDBSnapshot
+- rds:RestoreDBClusterFromSnapshot
+- rds:RestoreDBInstanceToPointInTime
+- rds:RestoreDBClusterToPointInTime
+
+**Coverage:**
+The policy enforces encryption for new RDS instances (CreateDBInstance) and Aurora/DocumentDB clusters (CreateDBCluster). Restoration operations are not covered due to lack of documented condition key support.
 
 **Exemption Mechanism:**
 - None (strict enforcement)
@@ -419,24 +506,21 @@ def get_rds_unencrypted_analysis(
     ec2_client = session.client("ec2")
     all_results = []
 
-    try:
-        # Get all enabled regions
-        regions_response = ec2_client.describe_regions(
-            Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}]
-        )
-        regions = [region["RegionName"] for region in regions_response["Regions"]]
+    # Get all regions (including opt-in regions that may be disabled)
+    # We intentionally scan all regions to detect resources in any region
+    regions_response = ec2_client.describe_regions()
+    regions = [region["RegionName"] for region in regions_response["Regions"]]
 
-        for region in regions:
-            logger.info(f"Analyzing RDS resources in {region}")
-            regional_results = _analyze_rds_in_region(session, region)
-            all_results.extend(regional_results)
+    for region in regions:
+        logger.info(f"Analyzing RDS resources in {region}")
+        regional_results = _analyze_rds_in_region(session, region)
+        all_results.extend(regional_results)
 
-        logger.info(f"Analyzed {len(all_results)} total RDS resources across {len(regions)} regions")
-        return all_results
-
-    except Exception as e:
-        logger.error(f"Failed to analyze RDS resources: {e}")
-        raise
+    logger.info(
+        f"Analyzed {len(all_results)} total RDS resources "
+        f"across {len(regions)} regions"
+    )
+    return all_results
 
 
 def _analyze_rds_in_region(
@@ -544,6 +628,7 @@ def _analyze_rds_cluster(
 - Use `@dataclass` for data models
 - Include comprehensive docstrings with Algorithm sections
 - Handle pagination for AWS API calls
+- **Region Scanning:** Use `describe_regions()` WITHOUT filters - intentionally scan all regions including opt-in regions that may be disabled to ensure complete visibility
 - Log at appropriate levels (info, warning, error)
 - Let exceptions propagate (fail-loud philosophy)
 - Use type hints for all parameters and returns
@@ -698,7 +783,6 @@ Add a boolean variable for your check:
 
 variable "deny_rds_unencrypted" {
   type        = bool
-  nullable    = false
   description = "Deny creation of RDS instances and clusters without encryption at rest"
 }
 ```
@@ -706,8 +790,8 @@ variable "deny_rds_unencrypted" {
 **Variable Naming Rules:**
 - Match check name exactly (underscores, not hyphens)
 - Use `bool` type for enable/disable flags
-- Set `nullable = false` to require explicit value
 - Add descriptive documentation
+- Be consistent with existing check variables (no `nullable` attribute for booleans)
 
 **For Allowlist Variables (Pattern 5b):**
 ```hcl
@@ -722,6 +806,12 @@ variable "allowed_rds_databases" {
 
 **File:** `test_environment/modules/scps/locals.tf`
 
+**IMPORTANT:** Before writing your policy, consult the AWS Service Authorization Reference for your service to ensure you're using the correct actions and condition keys:
+- **RDS:** https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonrds.html
+- **EC2:** https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
+- **IAM:** https://docs.aws.amazon.com/service-authorization/latest/reference/list_identityandaccessmanagement.html
+- **Full list:** https://docs.aws.amazon.com/service-authorization/latest/reference/reference_policies_actions-resources-contextkeys.html
+
 Add your policy statement to the conditional statement list:
 
 ```hcl
@@ -732,7 +822,9 @@ locals {
     # var.deny_rds_unencrypted
     # -->
     # Sid: DenyRdsUnencrypted
-    # Denies creation of unencrypted RDS databases
+    # Denies creation of unencrypted RDS databases and clusters
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonrds.html
+    # Only actions confirmed to explicitly list rds:StorageEncrypted as a supported condition key
     {
       include = var.deny_rds_unencrypted,
       statement = {
@@ -756,6 +848,8 @@ locals {
 ```
 
 **Policy Statement Rules:**
+- **Check the AWS Service Authorization Reference first** to verify actions and condition keys
+- Include the service authorization reference URL as a comment in your policy
 - Use `include` field tied to your variable
 - Put actual policy in `statement` field
 - Don't include `Effect` (added automatically as "Deny")
@@ -1425,16 +1519,16 @@ Add your check as an example of the policy pattern:
 **Check:** `headroom/checks/scps/deny_rds_unencrypted.py`
 **Terraform:** `test_environment/modules/scps/locals.tf` lines X-Y
 
-This check identifies RDS databases (instances and Aurora clusters) without 
-encryption at rest enabled. The SCP denies database creation and restoration 
+This check identifies RDS databases (instances and Aurora clusters) without
+encryption at rest enabled. The SCP denies database creation and restoration
 operations unless encryption is enabled.
 
 **Policy Structure:**
 - Deny `rds:CreateDBInstance`, `rds:CreateDBCluster`, restoration operations
 - Unless `rds:StorageEncrypted` equals "true"
 
-**Headroom's Role:** Scans all accounts and reports existing databases with 
-their encryption status. This informs deployment decisions and identifies 
+**Headroom's Role:** Scans all accounts and reports existing databases with
+their encryption status. This informs deployment decisions and identifies
 resources that would be impacted by the SCP.
 ```
 
@@ -1466,7 +1560,7 @@ class DenyRdsUnencrypted:
 def get_rds_unencrypted_analysis(session: boto3.Session) -> List[DenyRdsUnencrypted]:
     """
     Scan all regions for RDS databases.
-    
+
     Algorithm:
     1. Get all enabled regions via describe_regions()
     2. For each region:
@@ -1493,7 +1587,7 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
     total = len(violations) + len(compliant)
     compliant_count = len(compliant)
     compliance_pct = (compliant_count / total * 100) if total > 0 else 100.0
-    
+
     return {
         "total_databases": total,
         "violations": len(violations),
@@ -1853,9 +1947,8 @@ Use this checklist when adding any new check:
   - [ ] No stray blank lines
 
 ### Final Verification
-- [ ] Clean git status (no untracked files except results)
+- [ ] Clean git status (no untracked files)
 - [ ] All generated Terraform committed
-- [ ] All test results JSON committed (if examples)
 - [ ] Documentation complete and accurate
 - [ ] Test resources destroyed (if expensive)
 - [ ] 100% test coverage verified for new code
@@ -1901,12 +1994,14 @@ Use this checklist when adding any new check:
 
 ### Generated Files (Committed)
 
-**Results:**
-- `test_environment/headroom_results/{scps|rcps}/{check_name}/*.json`
-
 **Terraform:**
 - `test_environment/{scps|rcps}/*_{scps|rcps}.tf` (updated)
 - `test_environment/{scps|rcps}/grab_org_info.tf` (potentially updated)
+
+**Results:**
+- `test_environment/headroom_results/{scps|rcps}/{check_name}/*.json`
+
+**IMPORTANT:** Do NOT manually create or edit files in `test_environment/headroom_results/` or `test_environment/{scps|rcps}/`. Let Headroom generate these files when it runs. After Headroom generates them, commit the generated files to git.
 
 ---
 
@@ -2035,14 +2130,10 @@ identifier = "headroom-test-${var.purpose}-${data.aws_caller_identity.current.ac
 **Issue:** Not iterating through all regions
 **Fix:**
 ```python
-# Get all enabled regions
+# Get all regions (including opt-in regions that may be disabled)
+# We intentionally scan all regions to detect resources in any region
 ec2_client = session.client("ec2")
-regions_response = ec2_client.describe_regions(
-    Filters=[{
-        "Name": "opt-in-status",
-        "Values": ["opt-in-not-required", "opted-in"]
-    }]
-)
+regions_response = ec2_client.describe_regions()
 regions = [r["RegionName"] for r in regions_response["Regions"]]
 
 # Analyze in each region
@@ -2050,6 +2141,8 @@ for region in regions:
     regional_client = session.client("rds", region_name=region)
     # ... analysis ...
 ```
+
+**Note:** Do NOT filter regions by opt-in-status. We intentionally scan all regions to ensure complete visibility, even if some API calls may fail for disabled regions.
 
 ### 12. Incorrect Summary Field Calculation
 
@@ -2098,6 +2191,182 @@ compliance_pct = (compliant_count / total * 100) if total > 0 else 100.0  # Hand
 
 ---
 
+## Lessons Learned from deny_rds_unencrypted Implementation
+
+These lessons were learned during the implementation of the `deny_rds_unencrypted` check (November 2025). Study these to avoid common mistakes.
+
+### Lesson 1: Test Environment Pollution
+
+**Problem:** Tests were writing files to `test_environment/headroom_results/` instead of temporary directories, polluting the actual results directory with test artifacts like `prod-account_111111111111.json`.
+
+**Root Causes:**
+- Used `DEFAULT_RESULTS_DIR` constant in tests (points to test_environment/)
+- Hardcoded `results_dir="test_environment/headroom_results"`
+- `HeadroomConfig` fixture didn't specify temporary `results_dir`
+
+**Solution:**
+- **ALWAYS** use `temp_results_dir` fixture or `tempfile.mkdtemp()` in tests
+- **NEVER** use `DEFAULT_RESULTS_DIR` in test code
+- **NEVER** hardcode paths to `test_environment/` in tests
+- Configure fixtures to use temporary directories
+
+**Prevention:**
+- Run full test suite and check for new files in test_environment/
+- Review all test files to ensure they use temporary directories
+- Added explicit warning in testing standards section
+
+### Lesson 2: AWS IAM Condition Key Documentation
+
+**Problem:** Initially included 8 RDS actions in the SCP based on web searches, but only 3 actions actually support the `rds:StorageEncrypted` condition key according to AWS Service Authorization Reference.
+
+**Incorrect Assumptions:**
+- Web searches suggested `rds:CreateDBInstance` supports `rds:StorageEncrypted` (it doesn't, per documentation)
+- Logical reasoning ("if cluster creation supports it, instance creation should too") was wrong
+- Blog posts and Stack Overflow answers were unreliable
+
+**Verification Process:**
+1. Accessed official AWS Service Authorization Reference using MCP server
+2. Read complete list of RDS actions and their condition key columns
+3. Found only 3 actions explicitly list `rds:StorageEncrypted`:
+   - `rds:CreateDBCluster` ✅
+   - `rds:RestoreDBClusterFromS3` ✅  
+   - `rds:CreateBlueGreenDeployment` ✅
+4. Confirmed `rds:CreateDBInstance` does NOT list it ❌
+
+**Solution:**
+- **ONLY** trust the AWS Service Authorization Reference table
+- Condition key must be explicitly listed in the action's "Condition keys" column
+- If not listed, it is NOT supported (even if it seems logical)
+
+**Special Exception:**
+Included `rds:CreateDBInstance` anyway as a special exception because:
+- It's critical for protecting standalone RDS instances
+- Using `Bool` operator fails safe (if unsupported, Deny won't apply)
+- Manual testing confirmed it DOES work despite not being documented
+- Documented with "✅ MANUALLY TESTED" confirmation in policy comments
+
+**Prevention:**
+- Always verify condition keys in Service Authorization Reference
+- Document any undocumented actions as "special exceptions"
+- Manually test special exceptions and document test results
+- Added critical warning section in Phase 0, Step 0.3
+
+### Lesson 3: Bool Condition Operator Behavior
+
+**Problem:** Initially misunderstood how `Bool` operator behaves when the condition key is missing from the request context.
+
+**Incorrect Understanding:**
+"If the Bool condition key is missing, the condition fails, and the Deny applies."
+
+**Correct Understanding:**
+- The `Bool` operator expects the key to exist in the context
+- If the key is missing, the condition evaluates to `false`
+- In a `Deny` statement, `false` means the Deny does NOT apply
+- The action is allowed (not denied)
+
+**Example:**
+```json
+{
+  "Effect": "Deny",
+  "Action": "rds:CreateDBInstance",
+  "Condition": {
+    "Bool": {
+      "rds:StorageEncrypted": "false"
+    }
+  }
+}
+```
+
+**Behavior:**
+- If `rds:StorageEncrypted` = "false" → Condition is true → Deny applies → Action denied ✅
+- If `rds:StorageEncrypted` = "true" → Condition is false → Deny doesn't apply → Action allowed ✅
+- If `rds:StorageEncrypted` is missing → Condition is false → Deny doesn't apply → Action allowed ⚠️
+
+**Implication for Undocumented Actions:**
+Including `rds:CreateDBInstance` (which doesn't document support for `rds:StorageEncrypted`) is safe:
+- If condition key IS supported: Policy works as intended
+- If condition key is NOT supported: Key will be missing, Deny won't apply, action is allowed
+- Zero risk, potential benefit
+
+**Prevention:**
+- Understand condition operator semantics before writing policies
+- Document condition operator behavior in policy comments
+- Consider fail-safe vs. fail-secure behavior when choosing operators
+
+### Lesson 4: Terraform Provider Inheritance
+
+**Problem:** Test environment Terraform initially had incorrect comment stating "Provider configurations are inherited from parent directory" when they are not.
+
+**Incorrect Assumption:**
+Terraform providers automatically inherit from parent directory configurations.
+
+**Correct Behavior:**
+- Each Terraform working directory needs explicit provider configuration
+- Providers are NOT inherited from parent directories
+- Must define all providers (including aliased ones) in each directory
+
+**Solution:**
+- Explicitly define all AWS providers in `test_environment/test_deny_rds_unencrypted/providers.tf`
+- Use `aws_organizations_*` data sources to dynamically retrieve account IDs
+- Configure aliased providers for cross-account access
+
+**Prevention:**
+- Always explicitly define providers in each Terraform directory
+- Don't assume provider inheritance
+- Use data sources for dynamic configuration
+
+### Lesson 5: ARN Account ID Redaction with Region Field
+
+**Problem:** The `_redact_account_ids_from_arns()` regex pattern only matched ARNs without a region field (e.g., IAM ARNs), so RDS ARNs were not redacted.
+
+**Original Regex:**
+```python
+(arn:aws:[^:]+::)(\d{12})(:)
+```
+This matches: `arn:aws:iam::123456789012:user/name`
+
+**Problem:**
+RDS ARNs have a region field: `arn:aws:rds:us-east-1:123456789012:db:name`
+The pattern expects two colons before the account ID, but RDS has region between them.
+
+**Fixed Regex:**
+```python
+(arn:aws:[^:]+:[^:]*:)(\d{12})(:)
+```
+The `[^:]*:` allows for optional region field (zero or more non-colon characters followed by colon).
+
+**Solution:**
+- Updated regex pattern in `headroom/write_results.py`
+- Added test `test_redact_arns_with_region()` to verify RDS-style ARNs
+- Both IAM-style and RDS-style ARNs now correctly redacted
+
+**Prevention:**
+- Consider all ARN formats when writing regex patterns
+- Test with multiple ARN styles (with/without region, with/without account)
+- Add explicit test cases for each ARN format
+
+### Lesson 6: Consistent Fake Account IDs
+
+**Problem:** Documentation examples sometimes used `123456789012` (old AWS convention) instead of the codebase standard `111111111111`.
+
+**Decision:**
+- Use `111111111111` consistently across all code, tests, and documentation
+- Never use `123456789012` (old AWS documentation convention)
+- Use consistent series: `111111111111`, `222222222222`, `333333333333`
+
+**Rationale:**
+- `111111111111` is clearly fake (repeating 1s)
+- `123456789012` looks realistic and could be confused with real account
+- Consistency makes search/replace easier
+- Easier to identify example vs. real account IDs
+
+**Prevention:**
+- Added explicit guidance in Testing Requirements section
+- Updated all docstring examples to use `111111111111`
+- Added to Test Data Standards section
+
+---
+
 ## Tips for Success
 
 1. **Start Small:** Implement simplest version first, add features incrementally
@@ -2135,4 +2404,3 @@ For questions or issues, refer to:
 - Test files in `tests/` for examples
 
 Good luck! 🚀
-

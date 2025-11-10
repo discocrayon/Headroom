@@ -17,4 +17,7 @@ module "scps_root" {
     "arn:aws:iam::${local.acme_co_account_id}:user/terraform-user",
     "arn:aws:iam::${local.shared_foo_bar_account_id}:user/legacy-developer",
   ]
+
+  # RDS
+  deny_rds_unencrypted = false
 }

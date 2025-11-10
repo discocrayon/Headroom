@@ -10,4 +10,7 @@ module "scps_acme_acquisition_ou" {
 
   # IAM
   deny_iam_user_creation = false
+
+  # RDS
+  deny_rds_unencrypted = false
 }

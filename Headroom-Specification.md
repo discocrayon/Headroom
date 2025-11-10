@@ -36,6 +36,7 @@
 ### 3. SCP Compliance Analysis
 - **EC2 IMDS v1 Check:** Multi-region scanning with exemption tag support
 - **IAM User Creation Check:** Automatic allowlist generation from discovered users
+- **RDS Encryption Check:** Multi-region RDS instance and Aurora cluster encryption analysis
 - Modular check framework with self-registration pattern
 - JSON result generation with detailed compliance metrics
 
@@ -78,6 +79,7 @@ headroom/
 ├── types.py                 # Shared data models
 ├── aws/
 │   ├── ec2.py              # EC2 analysis
+│   ├── rds.py              # RDS analysis
 │   ├── iam/
 │   │   ├── roles.py        # Trust policy analysis (RCP)
 │   │   └── users.py        # User enumeration (SCP)
@@ -88,7 +90,8 @@ headroom/
 │   ├── registry.py         # Check registration system
 │   ├── scps/
 │   │   ├── deny_imds_v1_ec2.py
-│   │   └── deny_iam_user_creation.py
+│   │   ├── deny_iam_user_creation.py
+│   │   └── deny_rds_unencrypted.py
 │   └── rcps/
 │       └── check_third_party_assumerole.py
 ├── placement/
@@ -249,6 +252,16 @@ class IamUserAnalysis:
     user_arn: str
     path: str                           # IAM path (e.g., "/", "/admins/")
 
+# aws/rds.py
+@dataclass
+class DenyRdsUnencrypted:
+    db_identifier: str
+    db_type: str
+    region: str
+    engine: str
+    encrypted: bool
+    db_arn: str
+
 # aws/iam/roles.py
 @dataclass
 class TrustPolicyAnalysis:
@@ -310,14 +323,14 @@ account_tag_layout:
 class BaseCheck(ABC, Generic[T]):
     """
     Template Method pattern for all checks.
-    
+
     Type parameter T: the analysis result type (e.g., DenyImdsV1Ec2)
     """
-    
+
     # Set by @register_check decorator
     CHECK_NAME: str
     CHECK_TYPE: str
-    
+
     def __init__(
         self,
         check_name: str,
@@ -328,31 +341,31 @@ class BaseCheck(ABC, Generic[T]):
         **kwargs: Any,  # RCP checks use org_account_ids
     ) -> None:
         """Initialize check with common parameters."""
-        
+
     @abstractmethod
     def analyze(self, session: boto3.Session) -> List[T]:
         """
         Perform AWS API calls to gather data.
-        
+
         Returns: List of raw analysis results
         """
-        
+
     @abstractmethod
     def categorize_result(self, result: T) -> tuple[str, Dict[str, Any]]:
         """
         Categorize single result into violation/exemption/compliant.
-        
+
         Returns: ("violation"|"exemption"|"compliant", result_dict)
         """
-        
+
     @abstractmethod
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
         """
         Build check-specific summary fields.
-        
+
         Returns: Dict with fields like total_instances, compliance_percentage
         """
-        
+
     def execute(self, session: boto3.Session) -> None:
         """
         Template method orchestrating check execution:
@@ -385,12 +398,12 @@ _CHECK_REGISTRY: Dict[str, Type[BaseCheck]] = {}
 def register_check(check_type: str, check_name: str) -> Callable:
     """
     Decorator to register check class.
-    
+
     Usage:
         @register_check("scps", "deny_imds_v1_ec2")
         class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
             ...
-    
+
     Side effects:
     - Stores class in _CHECK_REGISTRY[check_name]
     - Sets class attributes CHECK_NAME and CHECK_TYPE
@@ -412,13 +425,32 @@ def get_check_names(check_type: str) -> List[str]:
 ```python
 # checks/__init__.py
 
-# These imports trigger decorator execution and register checks
-from .rcps import check_third_party_assumerole  # noqa: F401
-from .scps import deny_imds_v1_ec2              # noqa: F401
-from .scps import deny_iam_user_creation        # noqa: F401
+def _discover_and_register_checks() -> None:
+    """
+    Automatically discover and import all check modules.
+
+    Walks through scps/ and rcps/ directories and imports all Python files.
+    This triggers the @register_check decorator, which registers checks in
+    the registry.
+    """
+    checks_dir = Path(__file__).parent
+
+    for check_type in ["scps", "rcps"]:
+        check_type_dir = checks_dir / check_type
+
+        for module_info in pkgutil.iter_modules([str(check_type_dir)]):
+            module_name = f"headroom.checks.{check_type}.{module_info.name}"
+            importlib.import_module(module_name)
+
+
+_discover_and_register_checks()
 ```
 
-**Critical:** Without these imports, decorators never execute and checks won't register.
+**Key Benefits:**
+- No manual imports required when adding new checks
+- Simply create check file in scps/ or rcps/ directory
+- @register_check decorator runs automatically on import
+- Zero chance of forgetting to register a new check
 
 ---
 
@@ -444,7 +476,7 @@ class DenyImdsV1Ec2:
 def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
     """
     Scan all regions for EC2 instances.
-    
+
     Algorithm:
     1. Describe all regions with describe_regions()
     2. For each region, create EC2 client
@@ -460,7 +492,7 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
 ```python
 def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, Dict[str, Any]]:
     result_dict = asdict(result)
-    
+
     if result.imdsv1_allowed and result.exemption_tag_present:
         return ("exemption", result_dict)
     elif result.imdsv1_allowed:
@@ -475,7 +507,7 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
     total = len(violations) + len(exemptions) + len(compliant)
     compliant_count = len(exemptions) + len(compliant)
     compliance_pct = (compliant_count / total * 100) if total > 0 else 100.0
-    
+
     return {
         "total_instances": total,
         "violations": len(violations),
@@ -525,13 +557,13 @@ class IamUserAnalysis:
 def get_iam_users_analysis(session: boto3.Session) -> List[IamUserAnalysis]:
     """
     List all IAM users in account.
-    
+
     Algorithm:
     1. Create IAM client
     2. Use paginator for list_users() (handles pagination)
     3. Extract UserName, Arn, Path for each user
     4. Return IamUserAnalysis for all users
-    
+
     Note: No filtering - pure enumeration for allowlist generation
     """
 ```
@@ -577,6 +609,109 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
 }
 ```
 
+### Deny RDS Unencrypted
+
+**Purpose:** Identify RDS databases (instances and Aurora clusters) without encryption at rest enabled.
+
+**Data Model:**
+```python
+@dataclass
+class DenyRdsUnencrypted:
+    db_identifier: str       # Database identifier (instance or cluster)
+    db_type: str             # "instance" or "cluster"
+    region: str              # AWS region
+    engine: str              # Database engine (mysql, postgres, aurora, etc.)
+    encrypted: bool          # True if storage encryption enabled
+    db_arn: str              # Full ARN of the database resource
+```
+
+**Analysis Function:**
+```python
+# aws/rds.py
+def get_rds_unencrypted_analysis(session: boto3.Session) -> List[DenyRdsUnencrypted]:
+    """
+    Scan all regions for RDS instances and Aurora clusters.
+
+    Algorithm:
+    1. Get all enabled regions via describe_regions()
+    2. For each region:
+       a. Analyze RDS instances via describe_db_instances() (paginated)
+       b. Analyze Aurora clusters via describe_db_clusters() (paginated)
+       c. Check StorageEncrypted field
+       d. Create DenyRdsUnencrypted result for each database
+    3. Return all results across all regions
+    """
+```
+
+**Categorization Logic:**
+```python
+def categorize_result(self, result: DenyRdsUnencrypted) -> tuple[str, Dict[str, Any]]:
+    result_dict = {
+        "db_identifier": result.db_identifier,
+        "db_type": result.db_type,
+        "region": result.region,
+        "engine": result.engine,
+        "encrypted": result.encrypted,
+        "db_arn": result.db_arn,
+    }
+
+    if not result.encrypted:
+        return ("violation", result_dict)
+    else:
+        return ("compliant", result_dict)
+```
+
+**Summary Fields:**
+```python
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    total = len(check_result.violations) + len(check_result.compliant)
+    compliant_count = len(check_result.compliant)
+    compliance_pct = (compliant_count / total * 100) if total > 0 else 100.0
+
+    return {
+        "total_databases": total,
+        "violations": len(check_result.violations),
+        "compliant": len(check_result.compliant),
+        "compliance_percentage": round(compliance_pct, 2)
+    }
+```
+
+**Result JSON Schema:**
+```json
+{
+  "summary": {
+    "account_name": "string",
+    "account_id": "string",
+    "check": "deny_rds_unencrypted",
+    "total_databases": 2,
+    "violations": 1,
+    "compliant": 1,
+    "compliance_percentage": 50.0
+  },
+  "violations": [
+    {
+      "db_identifier": "unencrypted-db",
+      "db_type": "instance",
+      "region": "us-east-1",
+      "engine": "mysql",
+      "encrypted": false,
+      "db_arn": "arn:aws:rds:us-east-1:111111111111:db:unencrypted-db"
+    }
+  ],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "db_identifier": "encrypted-cluster",
+      "db_type": "cluster",
+      "region": "us-west-2",
+      "engine": "aurora-postgresql",
+      "encrypted": true,
+      "db_arn": "arn:aws:rds:us-west-2:111111111111:cluster:encrypted-cluster"
+    }
+  ]
+}
+```
+
 ---
 
 ## RCP Checks
@@ -607,7 +742,7 @@ def analyze_iam_roles_trust_policies(
 ) -> List[TrustPolicyAnalysis]:
     """
     Analyze all IAM role trust policies for third-party access.
-    
+
     Algorithm:
     1. List all roles with paginator (list_roles)
     2. For each role, get AssumeRolePolicyDocument
@@ -617,7 +752,7 @@ def analyze_iam_roles_trust_policies(
     6. Detect wildcard principals
     7. Filter to third-party accounts (not in org_account_ids)
     8. Return TrustPolicyAnalysis for roles with third-party or wildcards
-    
+
     Raises:
     - UnknownPrincipalTypeError: if principal type not in ALLOWED_PRINCIPAL_TYPES
     - InvalidFederatedPrincipalError: if Federated principal uses sts:AssumeRole
@@ -632,13 +767,13 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     - List: recursively process each item
     - Dict: process AWS/Service/Federated keys
     - Mixed: {"AWS": [...], "Service": "..."}
-    
+
     Principal Type Handling:
     - AWS: Extract account IDs from ARNs or plain IDs
     - Service: Validate but skip (e.g., lambda.amazonaws.com)
     - Federated: Validate action is not sts:AssumeRole, skip
     - Unknown: Raise UnknownPrincipalTypeError
-    
+
     Validation:
     - Federated principals must use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity
     - All principal types must be in ALLOWED_PRINCIPAL_TYPES
@@ -665,10 +800,10 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
     def __init__(self, org_account_ids: Set[str], **kwargs):
         super().__init__(**kwargs)
         self.org_account_ids = org_account_ids
-    
+
     def analyze(self, session):
         return analyze_iam_roles_trust_policies(session, self.org_account_ids)
-    
+
     def categorize_result(self, result):
         # Roles with wildcards are "violations"
         # Roles with third-party access are "compliant" (expected patterns)
@@ -676,7 +811,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             return ("violation", ...)
         else:
             return ("compliant", ...)
-    
+
     def build_summary_fields(self, check_result):
         # Aggregate unique third-party account IDs
         # Count roles with wildcards as violations
@@ -771,7 +906,7 @@ def lookup_account_id_by_name(
 ) -> str:
     """
     Look up account ID by name in organization hierarchy.
-    
+
     Raises: RuntimeError if account not found
     """
     for acc_id, acc_info in organization_hierarchy.accounts.items():
@@ -792,7 +927,7 @@ def parse_scp_result_files(
 ) -> List[SCPCheckResult]:
     """
     Parse all SCP check result files.
-    
+
     Algorithm:
     1. Look for {results_dir}/scps/ subdirectory
     2. Iterate through all check directories in scps/
@@ -804,7 +939,7 @@ def parse_scp_result_files(
        - Handle missing account_id via lookup
        - Create SCPCheckResult
     6. Return flat list of all results
-    
+
     Returns: List[SCPCheckResult]
     """
 ```
@@ -835,7 +970,7 @@ def parse_rcp_result_files(
 ) -> RCPParseResult:
     """
     Parse RCP check result files for third-party AssumeRole check.
-    
+
     Algorithm:
     1. Get check directory using get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
     2. Verify directory exists (raise RuntimeError if not)
@@ -850,9 +985,9 @@ def parse_rcp_result_files(
        - Else:
          - Add account_id -> set(third_party_accounts) to map
     4. Return RCPParseResult
-    
+
     Returns: RCPParseResult(account_third_party_map, accounts_with_wildcards)
-    
+
     Note: Accounts with wildcards are excluded from account_third_party_map
     to prevent unsafe RCP generation
     """
@@ -873,7 +1008,7 @@ def determine_scp_placement(
 ) -> List[SCPPlacementRecommendations]:
     """
     Determine optimal SCP placement levels using zero-violation principle.
-    
+
     Algorithm:
     1. Group results by check_name
     2. For each check:
@@ -891,7 +1026,7 @@ def determine_scp_placement(
           - Un-redact ARNs (replace "REDACTED" with actual account_id)
           - Attach to allowed_iam_user_arns field
     3. Return List[SCPPlacementRecommendations]
-    
+
     Safety Principle: Only deploy at levels with 100% compliance (zero violations)
     """
 ```
@@ -939,14 +1074,14 @@ def determine_rcp_placement(
 ) -> List[RCPPlacementRecommendations]:
     """
     Determine optimal RCP placement levels using union strategy.
-    
+
     Algorithm:
     1. Try root level:
        - Check: NO accounts have wildcards (len(accounts_with_wildcards) == 0)
        - If safe: union ALL third-party IDs from all accounts
        - Affected accounts: ALL accounts in organization
        - Return single root-level recommendation
-    
+
     2. Try OU level (if root not safe):
        - For each OU:
          - Get all accounts in OU
@@ -954,22 +1089,22 @@ def determine_rcp_placement(
          - If safe: union third-party IDs from accounts in OU
          - Affected accounts: accounts in OU (excluding wildcard accounts)
          - Single-account OUs: Still get OU-level recommendations
-    
+
     3. Account level (for accounts with wildcards):
        - Accounts with wildcards are EXCLUDED from all recommendations
        - Static analysis cannot determine safe principals
-    
+
     Union Strategy Rationale:
     - Third-party IDs can be safely combined into single allowlist
     - Account A trusts [111], Account B trusts [222] → allowlist [111, 222]
     - More permissive than requiring identical sets
     - Still safe because RCPs use allowlists (approved principals)
-    
+
     Critical Safety Rules:
     - Root RCP ONLY if NO accounts have wildcards
     - OU RCP ONLY if NO accounts in that OU have wildcards
     - Affected accounts includes ALL accounts at that level (not just eligible ones)
-    
+
     Returns: List[RCPPlacementRecommendations]
     """
 ```
@@ -989,7 +1124,7 @@ def generate_terraform_org_info(
 ) -> None:
     """
     Generate grab_org_info.tf with AWS Organizations data sources.
-    
+
     Algorithm:
     1. Call analyze_organization_structure() to get OrganizationHierarchy
     2. Generate data sources:
@@ -1006,10 +1141,10 @@ def generate_terraform_org_info(
          - validation_check_{account_name}_account: ensure exactly 1 match
          - {account_name}_account_id: filtered account ID
     4. Write to {scps_dir}/grab_org_info.tf
-    
+
     Validation Pattern:
-    validation_check = (length(filter_result) == 1) ? 
-        "All good. This is a no-op." : 
+    validation_check = (length(filter_result) == 1) ?
+        "All good. This is a no-op." :
         error("[Error] Expected exactly 1 X, found ${length(filter_result)}")
     """
 ```
@@ -1033,24 +1168,24 @@ data "aws_organizations_organizational_unit_child_accounts" "production_accounts
 
 locals {
   # Validation
-  validation_check_root = (length(data.aws_organizations_organization.org.roots) == 1) ? 
+  validation_check_root = (length(data.aws_organizations_organization.org.roots) == 1) ?
     "All good." : error("[Error] Expected 1 root, found ${length(...)}")
-  
+
   # Root
   root_ou_id = data.aws_organizations_organization.org.roots[0].id
-  
+
   # OUs
-  validation_check_production_ou = (length([for ou in ... if ou.name == "Production"]) == 1) ? 
+  validation_check_production_ou = (length([for ou in ... if ou.name == "Production"]) == 1) ?
     "All good." : error("[Error] Expected 1 Production OU")
-  
+
   top_level_production_ou_id = [
     for ou in data.aws_organizations_organizational_units.root_ou.children :
     ou.id if ou.name == "Production"
   ][0]
-  
+
   # Accounts
   validation_check_prod_account_account = ...
-  
+
   prod_account_account_id = [
     for account in data...production_accounts.accounts :
     account.id if account.name == "prod-account"
@@ -1072,7 +1207,7 @@ def generate_scp_terraform(
 ) -> None:
     """
     Generate SCP Terraform files based on placement recommendations.
-    
+
     Algorithm:
     1. Filter to 100% compliant recommendations only
     2. Group by recommended_level (root/ou/account)
@@ -1087,7 +1222,7 @@ def generate_scp_terraform(
          - Transform ARNs: replace account IDs with ${local.X_account_id}
          - Add allowed_iam_users list
     5. Write to {scps_dir}/
-    
+
     ARN Transformation Algorithm:
     1. Parse ARN: arn:aws:iam::ACCOUNT_ID:user/PATH/NAME
     2. Look up account by ID in organization_hierarchy
@@ -1160,7 +1295,7 @@ locals {
       }
     }
   ]
-  
+
   # Filter to included statements
   enabled_statements = [for s in local.statements : s.statement if s.include]
 }
@@ -1180,7 +1315,7 @@ def generate_rcp_terraform(
 ) -> None:
     """
     Generate RCP Terraform files based on placement recommendations.
-    
+
     Algorithm:
     1. Group by recommended_level (root/ou/account)
     2. For each group, generate Terraform file:
@@ -1279,14 +1414,14 @@ def assume_role(
 ) -> boto3.Session:
     """
     Assume IAM role and return session with temporary credentials.
-    
+
     Algorithm:
     1. Create STS client from base_session (or new session if None)
     2. Call sts.assume_role(RoleArn, RoleSessionName)
     3. Extract Credentials from response
     4. Create new boto3.Session with temporary credentials
     5. Return new session
-    
+
     Raises: ClientError if role assumption fails
     """
 ```
@@ -1298,7 +1433,7 @@ def assume_role(
 def get_security_analysis_session(config: HeadroomConfig) -> boto3.Session:
     """
     Get session for security analysis account.
-    
+
     If security_analysis_account_id is specified:
         Assume OrganizationAccountAccessRole in that account
     Else:
@@ -1311,7 +1446,7 @@ def get_management_account_session(
 ) -> boto3.Session:
     """
     Assume OrgAndAccountInfoReader in management account.
-    
+
     Role ARN: arn:aws:iam::{management_account_id}:role/OrgAndAccountInfoReader
     Session name: HeadroomManagementAccountSession
     """
@@ -1322,7 +1457,7 @@ def get_headroom_session(
 ) -> boto3.Session:
     """
     Assume Headroom role in target account for analysis.
-    
+
     Role ARN: arn:aws:iam::{account_id}:role/Headroom
     Session name: Headroom-{account_id}
     Base session: security_analysis_session
@@ -1339,7 +1474,7 @@ def analyze_organization_structure(
 ) -> OrganizationHierarchy:
     """
     Analyze complete AWS Organizations structure.
-    
+
     Algorithm:
     1. Get organization via describe_organization()
     2. Extract root_id from roots[0].id
@@ -1360,7 +1495,7 @@ def get_account_info(
 ) -> List[AccountInfo]:
     """
     Get account information with tag-based metadata.
-    
+
     Algorithm:
     1. List all accounts via list_accounts()
     2. Filter out management account
@@ -1392,7 +1527,7 @@ def get_imds_v1_ec2_analysis(
 ) -> List[DenyImdsV1Ec2]:
     """
     Scan all regions for EC2 instances with IMDSv1.
-    
+
     Algorithm:
     1. Get all regions via ec2.describe_regions()
     2. For each region:
@@ -1404,7 +1539,7 @@ def get_imds_v1_ec2_analysis(
           - Check for ExemptFromIMDSv2 tag (case-insensitive)
           - Create DenyImdsV1Ec2 result
     3. Return all results
-    
+
     Pagination: Handles accounts with many instances
     """
 ```
@@ -1419,13 +1554,13 @@ def get_iam_users_analysis(
 ) -> List[IamUserAnalysis]:
     """
     List all IAM users in account.
-    
+
     Algorithm:
     1. Create IAM client
     2. Use paginator for list_users()
     3. For each user, extract UserName, Arn, Path
     4. Return List[IamUserAnalysis]
-    
+
     Pagination: Handles accounts with many users
     """
 
@@ -1437,9 +1572,9 @@ def analyze_iam_roles_trust_policies(
 ) -> List[TrustPolicyAnalysis]:
     """
     Analyze IAM role trust policies for third-party access.
-    
+
     (See detailed algorithm in RCP Checks section above)
-    
+
     Pagination: Handles accounts with many roles
     Exception Handling: Specific exceptions only (ClientError, json.JSONDecodeError)
     Fail-Loud: All exceptions logged with context and re-raised
@@ -1464,7 +1599,7 @@ def run_checks_for_type(
 ) -> None:
     """
     Execute all checks of a given type for single account.
-    
+
     Algorithm:
     1. Get all check classes for type via registry.get_all_check_classes(check_type)
     2. For each check class:
@@ -1473,7 +1608,7 @@ def run_checks_for_type(
        c. If exists: skip
        d. Instantiate check with common parameters + org_account_ids
        e. Call check.execute(headroom_session)
-    
+
     Check instantiation uses **kwargs pattern:
     - SCP checks ignore org_account_ids
     - RCP checks use org_account_ids
@@ -1486,7 +1621,7 @@ def run_checks(
 ) -> None:
     """
     Run all checks across all accounts.
-    
+
     Algorithm:
     1. Get all organization account IDs via get_all_organization_account_ids()
     2. For each account:
@@ -1513,13 +1648,13 @@ def results_exist(
 ) -> bool:
     """
     Check if results file exists for check + account.
-    
+
     Algorithm:
     1. Get expected path via get_results_path()
     2. Check if file exists
     3. Also check alternate format (with/without account_id)
     4. Return True if either format exists
-    
+
     Backward Compatibility: Checks both filename formats
     """
 
@@ -1532,7 +1667,7 @@ def get_results_path(
 ) -> Path:
     """
     Get path for results file.
-    
+
     Format:
     - With IDs: {results_dir}/{check_type}/{check_name}/{account_name}_{account_id}.json
     - Without IDs: {results_dir}/{check_type}/{check_name}/{account_name}.json
@@ -1544,9 +1679,9 @@ def get_results_dir(
 ) -> str:
     """
     Get directory for check results.
-    
+
     Format: {results_base_dir}/{check_type}/{check_name}
-    
+
     check_type determined via CHECK_TYPE_MAP from constants.py
     """
 ```
@@ -1562,6 +1697,7 @@ def get_results_dir(
 
 DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
+DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
 
 _CHECK_TYPE_MAP: Dict[str, str] = {}
@@ -1569,7 +1705,7 @@ _CHECK_TYPE_MAP: Dict[str, str] = {}
 def register_check_type(check_name: str, check_type: str) -> None:
     """
     Register check type in CHECK_TYPE_MAP.
-    
+
     Called by @register_check decorator.
     """
     _CHECK_TYPE_MAP[check_name] = check_type
@@ -1577,7 +1713,7 @@ def register_check_type(check_name: str, check_type: str) -> None:
 def get_check_type_map() -> Dict[str, str]:
     """
     Get CHECK_TYPE_MAP (lazily loads checks if needed).
-    
+
     Ensures all checks are registered before returning map.
     """
     if not _CHECK_TYPE_MAP:
@@ -1814,16 +1950,23 @@ test_environment/
 │   ├── scps/
 │   │   ├── deny_imds_v1_ec2/
 │   │   │   └── {account_name}.json
-│   │   └── deny_iam_user_creation/
+│   │   ├── deny_iam_user_creation/
+│   │   │   └── {account_name}.json
+│   │   └── deny_rds_unencrypted/
 │   │       └── {account_name}.json
 │   └── rcps/
 │       └── third_party_assumerole/
 │           └── {account_name}.json
-└── test_deny_imds_v1_ec2/               # EC2 instances (expensive, separate directory)
+├── test_deny_imds_v1_ec2/               # EC2 instances (expensive, separate directory)
+│   ├── README.md                        # Cost warnings and usage
+│   ├── providers.tf                     # Cross-account providers
+│   ├── data.tf                          # AMI data sources
+│   └── ec2_instances.tf                 # Test EC2 instances
+└── test_deny_rds_unencrypted/           # RDS instances/clusters (expensive, separate directory)
     ├── README.md                        # Cost warnings and usage
     ├── providers.tf                     # Cross-account providers
-    ├── data.tf                          # AMI data sources
-    └── ec2_instances.tf                 # Test EC2 instances
+    ├── data.tf                          # Organization data sources
+    └── rds_resources.tf                 # Test RDS databases
 ```
 
 ### Organization Structure
@@ -1893,7 +2036,7 @@ resource "aws_organizations_account" "fort_knox" {
   name      = "fort-knox"
   email     = "user+fort-knox@example.com"
   parent_id = aws_organizations_organizational_unit.high_value_assets.id
-  
+
   tags = {
     Environment = "production"
     Owner       = "Cloud Architecture"
@@ -2200,7 +2343,7 @@ locals {
       }
     }
   ]
-  
+
   enabled_statements = [for s in local.statements : s.statement if s.include]
 }
 ```
@@ -2273,29 +2416,29 @@ data "aws_organizations_organizational_unit_child_accounts" "high_value_assets_a
 
 locals {
   # Root validation
-  validation_check_root = (length(data.aws_organizations_organization.org.roots) == 1) ? 
-    "All good. This is a no-op." : 
+  validation_check_root = (length(data.aws_organizations_organization.org.roots) == 1) ?
+    "All good. This is a no-op." :
     error("[Error] Expected exactly 1 root, found ${length(data.aws_organizations_organization.org.roots)}")
-  
+
   root_ou_id = data.aws_organizations_organization.org.roots[0].id
-  
+
   # OU validation
   validation_check_high_value_assets_ou = (length([
     for ou in data.aws_organizations_organizational_units.root_ou.children :
     ou.id if ou.name == "high_value_assets"
   ]) == 1) ? "All good." : error("[Error] Expected 1 high_value_assets OU")
-  
+
   top_level_high_value_assets_ou_id = [
     for ou in data.aws_organizations_organizational_units.root_ou.children :
     ou.id if ou.name == "high_value_assets"
   ][0]
-  
+
   # Account validation
   validation_check_fort_knox_account = (length([
     for account in data.aws_organizations_organizational_unit_child_accounts.high_value_assets_accounts.accounts :
     account.id if account.name == "fort-knox"
   ]) == 1) ? "All good." : error("[Error] Expected 1 fort-knox account")
-  
+
   fort_knox_account_id = [
     for account in data.aws_organizations_organizational_unit_child_accounts.high_value_assets_accounts.accounts :
     account.id if account.name == "fort-knox"

@@ -72,6 +72,28 @@ This document categorizes the different patterns of Service Control Policies (SC
 - Enforces organizational standards
 - Can be combined with other patterns (see Pattern 6)
 
+**Implementation Example (from `deny_rds_unencrypted`):**
+
+```json
+{
+  "Effect": "Deny",
+  "Action": [
+    "rds:CreateDBInstance",
+    "rds:CreateDBCluster",
+    "rds:RestoreDBClusterFromS3",
+    "rds:CreateBlueGreenDeployment"
+  ],
+  "Resource": "*",
+  "Condition": {
+    "Bool": {
+      "rds:StorageEncrypted": "false"
+    }
+  }
+}
+```
+
+**Codebase Reference:** `test_environment/modules/scps/locals.tf` lines 68-94
+
 ---
 
 ### Pattern 3: Module Tag / Paved Road Pattern
@@ -289,6 +311,21 @@ Both patterns use allowlists, but they focus on different aspects of the request
 
 ## Implementation Examples from Headroom Codebase
 
+### Pattern 2: `deny_rds_unencrypted`
+
+**Check:** `headroom/checks/scps/deny_rds_unencrypted.py`
+**Terraform:** `test_environment/modules/scps/locals.tf` lines 68-94
+
+This check identifies RDS databases (instances and Aurora clusters) without encryption at rest enabled. The SCP denies database creation operations unless the `rds:StorageEncrypted` condition key is set to "true".
+
+**Policy Structure:**
+- Deny `rds:CreateDBInstance`, `rds:CreateDBCluster`, `rds:RestoreDBClusterFromS3`, `rds:CreateBlueGreenDeployment`
+- Unless `rds:StorageEncrypted` equals "true"
+
+**Headroom's Role:** Scans all accounts and reports existing databases with their encryption status. This informs deployment decisions and identifies resources that would be impacted by the SCP.
+
+**Note:** The policy enforces encryption for new RDS instances and Aurora/DocumentDB clusters. `rds:CreateDBInstance` is included as a special exception despite not being documented in the AWS Service Authorization Reference, as manual testing confirmed it works.
+
 ### Pattern 4: `deny_imds_v1_ec2`
 
 **Check:** `headroom/checks/scps/deny_imds_v1_ec2.py`
@@ -377,4 +414,3 @@ Scan AWS → Identify Resources → Categorize → Generate Allowlists → Gener
 
 **Document Version:** 1.0
 **Last Updated:** November 9, 2025
-

@@ -1,0 +1,39 @@
+{
+  "summary": {
+    "account_name": "acme-co",
+    "check": "deny_rds_unencrypted",
+    "total_databases": 3,
+    "violations": 2,
+    "compliant": 1,
+    "compliance_percentage": 33.33333333333333
+  },
+  "violations": [
+    {
+      "db_identifier": "unencrypted-cluster-instance-1",
+      "db_type": "instance",
+      "region": "us-east-1",
+      "engine": "aurora-postgresql",
+      "encrypted": false,
+      "db_arn": "arn:aws:rds:us-east-1:REDACTED:db:unencrypted-cluster-instance-1"
+    },
+    {
+      "db_identifier": "unencrypted-cluster",
+      "db_type": "cluster",
+      "region": "us-east-1",
+      "engine": "aurora-postgresql",
+      "encrypted": false,
+      "db_arn": "arn:aws:rds:us-east-1:REDACTED:cluster:unencrypted-cluster"
+    }
+  ],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "db_identifier": "encrypted-instance",
+      "db_type": "instance",
+      "region": "us-east-1",
+      "engine": "postgres",
+      "encrypted": true,
+      "db_arn": "arn:aws:rds:us-east-1:REDACTED:db:encrypted-instance"
+    }
+  ]
+}
