@@ -52,6 +52,7 @@
 - **Analysis Output:** Per-provider findings with `arn`, `name`, `create_date`, `valid_until`, and `violation_reason` derived from the rules above
 - **Summary Metrics:** `total_saml_providers`, `awssso_provider_count`, `non_awssso_provider_count`, `violating_provider_arns`, `allowed_provider_arn`
 - **Terraform Impact:** Generates an SCP statement that denies `iam:CreateSAMLProvider` (no conditions) with explanatory comments; goal placement is organization root because enforcement is universal
+- **Why deny everyone?** `AWSServiceRoleForSSO` creates the official provider when accounts join IAM Identity Center, and that service-linked role bypasses SCP enforcement, so a blanket deny only affects custom provider creation attempts
 - **Testing Requirements:** Unit tests for AWS enumeration helper, check categorization covering compliant, excess AWSSSO, and non-AWSSSO cases; generator tests confirming Terraform statement, and integration test ensuring placement logic handles new check
 
 ### 4. RCP Compliance Analysis
