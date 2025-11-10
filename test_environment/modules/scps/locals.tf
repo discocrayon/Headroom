@@ -83,6 +83,17 @@ locals {
         }
       }
     },
+      # Automatic root guardrail
+      # -->
+      # Sid: DenyRootLeaveOrganization
+      # Applies when module target is the root (IDs prefixed with r-)
+      {
+        include = startswith(var.target_id, "r-"),
+        statement = {
+          Action   = "organizations:LeaveOrganization"
+          Resource = "*"
+        }
+      },
   ]
   # Included SCP 1 Deny Statements
   included_scp_1_deny_statements = [
