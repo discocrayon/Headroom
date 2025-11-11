@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 from typing import List, Optional
 
 from botocore.exceptions import ClientError
-from headroom.aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
+from headroom.aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis, DenyEc2PublicIp, get_ec2_public_ip_analysis
 
 
 class TestDenyImdsV1Ec2:
@@ -528,3 +528,338 @@ class TestGetImdsV1Ec2Analysis:
         instance_ids = [r.instance_id for r in results]
         assert "i-main" in instance_ids
         assert "i-fallback" in instance_ids
+
+
+class TestDenyEc2PublicIp:
+    """Test DenyEc2PublicIp dataclass with various configurations."""
+
+    def test_deny_ec2_public_ip_creation(self) -> None:
+        """Test creating DenyEc2PublicIp with valid data."""
+        result = DenyEc2PublicIp(
+            instance_id="i-1234567890abcdef0",
+            region="us-east-1",
+            public_ip_address="54.123.45.67",
+            has_public_ip=True,
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+        )
+
+        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.region == "us-east-1"
+        assert result.public_ip_address == "54.123.45.67"
+        assert result.has_public_ip is True
+        assert result.instance_arn == "arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+
+    def test_deny_ec2_public_ip_without_public_ip(self) -> None:
+        """Test DenyEc2PublicIp without public IP address."""
+        result = DenyEc2PublicIp(
+            instance_id="i-0987654321fedcba0",
+            region="us-west-2",
+            public_ip_address=None,
+            has_public_ip=False,
+            instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-0987654321fedcba0"
+        )
+
+        assert result.instance_id == "i-0987654321fedcba0"
+        assert result.region == "us-west-2"
+        assert result.public_ip_address is None
+        assert result.has_public_ip is False
+
+    def test_deny_ec2_public_ip_equality(self) -> None:
+        """Test DenyEc2PublicIp equality comparison."""
+        result1 = DenyEc2PublicIp(
+            instance_id="i-1234567890abcdef0",
+            region="us-east-1",
+            public_ip_address="54.123.45.67",
+            has_public_ip=True,
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+        )
+
+        result2 = DenyEc2PublicIp(
+            instance_id="i-1234567890abcdef0",
+            region="us-east-1",
+            public_ip_address="54.123.45.67",
+            has_public_ip=True,
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+        )
+
+        result3 = DenyEc2PublicIp(
+            instance_id="i-different",
+            region="us-east-1",
+            public_ip_address=None,
+            has_public_ip=False,
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-different"
+        )
+
+        assert result1 == result2
+        assert result1 != result3
+
+
+class TestGetEc2PublicIpAnalysis:
+    """Test get_ec2_public_ip_analysis function with various scenarios."""
+
+    def create_mock_instance_with_ip(
+        self,
+        instance_id: str,
+        account_id: str = "111111111111",
+        state: str = "running",
+        public_ip: Optional[str] = None
+    ) -> dict:
+        """Helper to create mock EC2 instance data."""
+        instance_dict = {
+            "InstanceId": instance_id,
+            "OwnerId": account_id,
+            "State": {"Name": state},
+        }
+
+        if public_ip is not None:
+            instance_dict["PublicIpAddress"] = public_ip
+
+        return instance_dict
+
+    def test_get_ec2_public_ip_analysis_success(self) -> None:
+        """Test successful EC2 public IP analysis across regions."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [
+                {"RegionName": "us-east-1"},
+                {"RegionName": "us-west-2"}
+            ]
+        }
+
+        mock_regional_ec2_1 = MagicMock()
+        mock_regional_ec2_2 = MagicMock()
+
+        mock_paginator_1 = MagicMock()
+        mock_paginator_2 = MagicMock()
+
+        instances_page_1 = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        self.create_mock_instance_with_ip(
+                            "i-1111111111111111",
+                            public_ip="54.123.45.67"
+                        ),
+                        self.create_mock_instance_with_ip(
+                            "i-2222222222222222",
+                            public_ip=None
+                        )
+                    ]
+                }
+            ]
+        }
+
+        instances_page_2 = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        self.create_mock_instance_with_ip(
+                            "i-3333333333333333",
+                            public_ip="52.98.76.54"
+                        )
+                    ]
+                }
+            ]
+        }
+
+        mock_paginator_1.paginate.return_value = [instances_page_1]
+        mock_paginator_2.paginate.return_value = [instances_page_2]
+
+        mock_regional_ec2_1.get_paginator.return_value = mock_paginator_1
+        mock_regional_ec2_2.get_paginator.return_value = mock_paginator_2
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            elif region_name == "us-east-1":
+                return mock_regional_ec2_1
+            return mock_regional_ec2_2
+
+        mock_session.client.side_effect = client_side_effect
+
+        results = get_ec2_public_ip_analysis(mock_session)
+
+        assert len(results) == 3
+
+        assert results[0].instance_id == "i-1111111111111111"
+        assert results[0].region == "us-east-1"
+        assert results[0].public_ip_address == "54.123.45.67"
+        assert results[0].has_public_ip is True
+
+        assert results[1].instance_id == "i-2222222222222222"
+        assert results[1].region == "us-east-1"
+        assert results[1].public_ip_address is None
+        assert results[1].has_public_ip is False
+
+        assert results[2].instance_id == "i-3333333333333333"
+        assert results[2].region == "us-west-2"
+        assert results[2].public_ip_address == "52.98.76.54"
+        assert results[2].has_public_ip is True
+
+    def test_get_ec2_public_ip_analysis_skips_terminated_instances(self) -> None:
+        """Test that terminated instances are skipped."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+
+        instances_page = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        self.create_mock_instance_with_ip(
+                            "i-running",
+                            state="running",
+                            public_ip="54.123.45.67"
+                        ),
+                        self.create_mock_instance_with_ip(
+                            "i-terminated",
+                            state="terminated",
+                            public_ip="52.98.76.54"
+                        ),
+                        self.create_mock_instance_with_ip(
+                            "i-stopped",
+                            state="stopped",
+                            public_ip=None
+                        )
+                    ]
+                }
+            ]
+        }
+
+        mock_paginator.paginate.return_value = [instances_page]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        results = get_ec2_public_ip_analysis(mock_session)
+
+        assert len(results) == 2
+        instance_ids = [r.instance_id for r in results]
+        assert "i-running" in instance_ids
+        assert "i-stopped" in instance_ids
+        assert "i-terminated" not in instance_ids
+
+    def test_get_ec2_public_ip_analysis_no_instances(self) -> None:
+        """Test function with no instances in any region."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+
+        instances_page: dict = {"Reservations": []}
+
+        mock_paginator.paginate.return_value = [instances_page]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        results = get_ec2_public_ip_analysis(mock_session)
+
+        assert len(results) == 0
+        assert results == []
+
+    def test_get_ec2_public_ip_analysis_regional_client_error(self) -> None:
+        """Test handling of regional client errors."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [
+                {"RegionName": "us-east-1"},
+                {"RegionName": "us-west-2"}
+            ]
+        }
+
+        mock_regional_ec2_1 = MagicMock()
+        mock_paginator_1 = MagicMock()
+        instances_page_1 = {
+            "Reservations": [
+                {"Instances": [self.create_mock_instance_with_ip("i-success", public_ip="54.123.45.67")]}
+            ]
+        }
+        mock_paginator_1.paginate.return_value = [instances_page_1]
+        mock_regional_ec2_1.get_paginator.return_value = mock_paginator_1
+
+        mock_regional_ec2_2 = MagicMock()
+        mock_paginator_2 = MagicMock()
+        mock_paginator_2.paginate.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
+            "DescribeInstances"
+        )
+        mock_regional_ec2_2.get_paginator.return_value = mock_paginator_2
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            elif region_name == "us-east-1":
+                return mock_regional_ec2_1
+            return mock_regional_ec2_2
+
+        mock_session.client.side_effect = client_side_effect
+
+        with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances in region us-west-2"):
+            get_ec2_public_ip_analysis(mock_session)
+
+    def test_get_ec2_public_ip_analysis_constructs_arn_correctly(self) -> None:
+        """Test that ARN is constructed correctly."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "eu-west-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+
+        instances_page = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        self.create_mock_instance_with_ip(
+                            "i-test123456789",
+                            account_id="222222222222",
+                            public_ip="54.123.45.67"
+                        )
+                    ]
+                }
+            ]
+        }
+
+        mock_paginator.paginate.return_value = [instances_page]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        results = get_ec2_public_ip_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].instance_arn == "arn:aws:ec2:eu-west-1:222222222222:instance/i-test123456789"

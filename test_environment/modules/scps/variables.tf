@@ -16,6 +16,11 @@ variable "target_id" {
 
 # EC2
 
+variable "deny_ec2_public_ip" {
+  type        = bool
+  description = "Deny creation of EC2 instances with public IP addresses"
+}
+
 variable "deny_imds_v1_ec2" {
   type = bool
 }

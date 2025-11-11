@@ -311,7 +311,20 @@ Both patterns use allowlists, but they focus on different aspects of the request
 
 ## Implementation Examples from Headroom Codebase
 
-### Pattern 2: `deny_rds_unencrypted`
+### Pattern 2 Example: `deny_ec2_public_ip`
+
+**Check:** `headroom/checks/scps/deny_ec2_public_ip.py`
+**Terraform:** `test_environment/modules/scps/locals.tf` lines 3-19
+
+This check identifies EC2 instances with public IP addresses assigned. The SCP denies instance launches when a public IP address would be assigned.
+
+**Policy Structure:**
+- Deny `ec2:RunInstances` on instance resources
+- When `ec2:AssociatePublicIpAddress` equals "true"
+
+**Headroom's Role:** Scans all accounts and reports existing EC2 instances with their public IP status. This informs deployment decisions and identifies resources that would be impacted by the SCP.
+
+### Pattern 2 Example: `deny_rds_unencrypted`
 
 **Check:** `headroom/checks/scps/deny_rds_unencrypted.py`
 **Terraform:** `test_environment/modules/scps/locals.tf` lines 68-94
