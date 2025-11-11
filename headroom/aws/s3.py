@@ -15,6 +15,8 @@ import boto3
 from botocore.exceptions import ClientError
 from mypy_boto3_s3.client import S3Client
 
+from ..constants import BASE_PRINCIPAL_TYPES
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,18 @@ class UnknownPrincipalTypeError(Exception):
     """Raised when an unknown principal type is encountered in a bucket policy."""
 
 
-ALLOWED_PRINCIPAL_TYPES = {"AWS", "Service", "Federated", "CanonicalUser"}
+class UnsupportedPrincipalTypeError(Exception):
+    """
+    Raised when a bucket policy contains principal types that can't be handled by RCP.
+
+    Federated and CanonicalUser principals don't have account IDs, so the RCP
+    (which uses aws:PrincipalAccount for allowlisting) would break their access.
+    """
+
+
+# S3 bucket policies support CanonicalUser in addition to base types
+# Reference: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-bucket-user-policy-specifying-principal-intro.html
+ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES | {"CanonicalUser"}
 
 
 @dataclass
@@ -35,12 +48,14 @@ class S3BucketPolicyAnalysis:
         bucket_arn: ARN of the S3 bucket
         third_party_account_ids: Set of account IDs not in the organization
         has_wildcard_principal: True if policy contains wildcard principals
+        has_non_account_principals: True if policy has Federated/CanonicalUser principals
         actions_by_account: Dict mapping account IDs to sets of allowed actions
     """
     bucket_name: str
     bucket_arn: str
     third_party_account_ids: Set[str]
     has_wildcard_principal: bool
+    has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
 
 
@@ -108,6 +123,25 @@ def _has_wildcard_principal(principal: Any) -> bool:
                     return True
                 if isinstance(value, list) and any(item == "*" for item in value):
                     return True
+    return False
+
+
+def _has_non_account_principals(principal: Any) -> bool:
+    """
+    Check if principal contains Federated or CanonicalUser types.
+
+    These principal types cannot be represented as account IDs, so an RCP that
+    uses aws:PrincipalAccount for allowlisting would break their access.
+
+    Args:
+        principal: Principal field from S3 policy statement
+
+    Returns:
+        True if principal contains Federated or CanonicalUser types
+    """
+    if isinstance(principal, dict):
+        # Check if any non-account-based principal types are present
+        return "Federated" in principal or "CanonicalUser" in principal
     return False
 
 
@@ -183,6 +217,7 @@ def analyze_s3_bucket_policies(
 
         third_party_accounts: Set[str] = set()
         has_wildcard = False
+        has_non_account_principals = False
         actions_by_account: Dict[str, Set[str]] = {}
 
         for statement in policy.get("Statement", []):
@@ -196,6 +231,9 @@ def analyze_s3_bucket_policies(
             if _has_wildcard_principal(principal):
                 has_wildcard = True
 
+            if _has_non_account_principals(principal):
+                has_non_account_principals = True
+
             account_ids = _extract_account_ids_from_principal(principal)
             actions = _normalize_actions(statement.get("Action", []))
 
@@ -206,12 +244,13 @@ def analyze_s3_bucket_policies(
                         actions_by_account[account_id] = set()
                     actions_by_account[account_id].update(actions)
 
-        if third_party_accounts or has_wildcard:
+        if third_party_accounts or has_wildcard or has_non_account_principals:
             results.append(S3BucketPolicyAnalysis(
                 bucket_name=bucket_name,
                 bucket_arn=bucket_arn,
                 third_party_account_ids=third_party_accounts,
                 has_wildcard_principal=has_wildcard,
+                has_non_account_principals=has_non_account_principals,
                 actions_by_account=actions_by_account
             ))
 

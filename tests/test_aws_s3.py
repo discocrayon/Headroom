@@ -93,6 +93,40 @@ class TestHasWildcardPrincipal:
         assert _has_wildcard_principal({"AWS": "arn:aws:iam::111111111111:root"}) is False
 
 
+class TestHasNonAccountPrincipals:
+    """Test _has_non_account_principals function."""
+
+    def test_detects_federated_principal(self) -> None:
+        """Test detecting Federated principal."""
+        from headroom.aws.s3 import _has_non_account_principals
+        principal = {"Federated": "arn:aws:iam::123456789012:saml-provider/MyProvider"}
+        assert _has_non_account_principals(principal) is True
+
+    def test_detects_canonical_user_principal(self) -> None:
+        """Test detecting CanonicalUser principal."""
+        from headroom.aws.s3 import _has_non_account_principals
+        principal = {"CanonicalUser": "79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be"}
+        assert _has_non_account_principals(principal) is True
+
+    def test_ignores_aws_principal(self) -> None:
+        """Test that AWS principal is not flagged."""
+        from headroom.aws.s3 import _has_non_account_principals
+        principal = {"AWS": "arn:aws:iam::123456789012:root"}
+        assert _has_non_account_principals(principal) is False
+
+    def test_ignores_service_principal(self) -> None:
+        """Test that Service principal is not flagged."""
+        from headroom.aws.s3 import _has_non_account_principals
+        principal = {"Service": "cloudtrail.amazonaws.com"}
+        assert _has_non_account_principals(principal) is False
+
+    def test_mixed_with_federated(self) -> None:
+        """Test mixed principals with Federated."""
+        from headroom.aws.s3 import _has_non_account_principals
+        principal = {"AWS": "arn:aws:iam::123456789012:root", "Federated": "arn:aws:iam::123456789012:saml-provider/MyProvider"}
+        assert _has_non_account_principals(principal) is True
+
+
 class TestNormalizeActions:
     """Test _normalize_actions function."""
 
