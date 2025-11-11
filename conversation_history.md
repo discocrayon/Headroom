@@ -14357,3 +14357,49 @@ These lessons document critical pitfalls discovered during implementation:
 
 Future check implementations can reference these lessons to avoid repeating mistakes.
 
+
+## 2025-11-11 - Added deny_ec2_public_ip Check
+
+**Type:** SCP check
+**Pattern:** Pattern 2 (Conditional Deny)
+
+**Files Created:**
+- `headroom/checks/scps/deny_ec2_public_ip.py` - Check implementation
+- `tests/test_checks_deny_ec2_public_ip.py` - Check tests
+- `test_environment/test_deny_ec2_public_ip/providers.tf` - Test infrastructure providers
+- `test_environment/test_deny_ec2_public_ip/data.tf` - Test infrastructure data sources
+- `test_environment/test_deny_ec2_public_ip/ec2_instances.tf` - Test EC2 instances
+- `test_environment/test_deny_ec2_public_ip/README.md` - Test documentation
+
+**Files Modified:**
+- `headroom/constants.py` - Added DENY_EC2_PUBLIC_IP constant
+- `headroom/aws/ec2.py` - Added DenyEc2PublicIp dataclass and get_ec2_public_ip_analysis function
+- `headroom/terraform/generate_scps.py` - Added EC2 public IP generation logic
+- `test_environment/modules/scps/variables.tf` - Added deny_ec2_public_ip variable
+- `test_environment/modules/scps/locals.tf` - Added EC2 public IP policy statement
+- `tests/test_aws_ec2.py` - Added tests for DenyEc2PublicIp dataclass and get_ec2_public_ip_analysis function
+- `documentation/POLICY_TAXONOMY.md` - Added deny_ec2_public_ip as Pattern 2 example
+
+**Check Details:**
+- **What it checks:** EC2 instances with public IP addresses assigned
+- **Violation:** Instance has a public IP address
+- **Compliant:** Instance does not have a public IP address
+- **Policy action:** Deny `ec2:RunInstances` when `ec2:AssociatePublicIpAddress` equals "true"
+- **No exemption mechanism** (strict enforcement)
+
+**Test Coverage:** All tests written following existing patterns
+- Check tests with mixed, all compliant, all violations, and empty results scenarios
+- AWS function tests with success, skipping terminated instances, empty results, and error handling
+- Categorization and summary field tests
+
+**Test Infrastructure:**
+- 3 EC2 instances across 3 accounts (shared-foo-bar, acme-co, fort-knox)
+- 2 instances with public IPs (violations)
+- 1 instance without public IP (compliant)
+- Cost: ~$4-6/month if left running
+
+**Deployment Notes:**
+- Test instances are t2.nano (free tier eligible)
+- Amazon Linux 2023 AMI
+- Uses default VPC in each account
+- Remember to destroy test resources after testing to avoid charges

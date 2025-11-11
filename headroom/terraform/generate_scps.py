@@ -79,6 +79,8 @@ module "{module_name}" {{
 
     # EC2
     terraform_content += "  # EC2\n"
+    deny_ec2_public_ip = "deny_ec2_public_ip" in enabled_checks
+    terraform_content += f"  deny_ec2_public_ip = {str(deny_ec2_public_ip).lower()}\n"
     deny_imds_v1_ec2 = "deny_imds_v1_ec2" in enabled_checks
     terraform_content += f"  deny_imds_v1_ec2 = {str(deny_imds_v1_ec2).lower()}\n"
     terraform_content += "\n"

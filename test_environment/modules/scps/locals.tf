@@ -1,5 +1,22 @@
 locals {
   possible_scp_1_denies = [
+    # var.deny_ec2_public_ip
+    # -->
+    # Sid: DenyEc2PublicIp
+    # Denies creation of EC2 instances with public IP addresses
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
+    {
+      include = var.deny_ec2_public_ip,
+      statement = {
+        Action   = "ec2:RunInstances"
+        Resource = "arn:aws:ec2:*:*:instance/*"
+        Condition = {
+          "Bool" = {
+            "ec2:AssociatePublicIpAddress" = "true"
+          }
+        }
+      }
+    },
     # var.deny_imds_v1_ec2
     # -->
     # Sid: DenyRoleDeliveryLessThan2
