@@ -78,7 +78,7 @@ class TestDenyS3ThirdPartyAccessCheck:
 
             assert mock_write.called
             call_args = mock_write.call_args
-            results_data = call_args[0][0]
+            results_data = call_args[1]["results_data"]
 
             assert len(results_data["buckets_with_wildcards"]) == 1
             assert len(results_data["buckets_third_parties_can_access"]) == 2
@@ -125,7 +125,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 0
@@ -166,7 +166,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 1
@@ -196,7 +196,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["total_buckets_analyzed"] == 0
@@ -295,7 +295,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert "111111111111" in summary["actions_by_third_party_account"]
@@ -346,7 +346,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert "111111111111" in summary["buckets_by_third_party_account"]
