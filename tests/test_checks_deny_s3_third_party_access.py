@@ -38,6 +38,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 bucket_arn="arn:aws:s3:::compliant-bucket",
                 third_party_account_ids={"111111111111"},
                 has_wildcard_principal=False,
+                has_non_account_principals=False,
                 actions_by_account={"111111111111": {"s3:GetObject", "s3:PutObject"}}
             ),
             S3BucketPolicyAnalysis(
@@ -45,6 +46,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 bucket_arn="arn:aws:s3:::wildcard-bucket",
                 third_party_account_ids={"222222222222"},
                 has_wildcard_principal=True,
+                has_non_account_principals=False,
                 actions_by_account={"222222222222": {"s3:GetObject"}}
             ),
         ]
@@ -105,6 +107,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 bucket_arn="arn:aws:s3:::compliant-bucket-1",
                 third_party_account_ids={"111111111111"},
                 has_wildcard_principal=False,
+                has_non_account_principals=False,
                 actions_by_account={"111111111111": {"s3:GetObject"}}
             ),
         ]
@@ -146,6 +149,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 bucket_arn="arn:aws:s3:::wildcard-bucket-1",
                 third_party_account_ids=set(),
                 has_wildcard_principal=True,
+                has_non_account_principals=False,
                 actions_by_account={}
             ),
         ]
@@ -220,6 +224,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             bucket_arn="arn:aws:s3:::wildcard-bucket",
             third_party_account_ids={"222222222222"},
             has_wildcard_principal=True,
+            has_non_account_principals=False,
             actions_by_account={"222222222222": {"s3:*"}}
         )
 
@@ -246,6 +251,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             bucket_arn="arn:aws:s3:::compliant-bucket",
             third_party_account_ids={"333333333333"},
             has_wildcard_principal=False,
+            has_non_account_principals=False,
             actions_by_account={"333333333333": {"s3:GetObject"}}
         )
 
@@ -268,6 +274,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 bucket_arn="arn:aws:s3:::bucket-1",
                 third_party_account_ids={"111111111111"},
                 has_wildcard_principal=False,
+                has_non_account_principals=False,
                 actions_by_account={"111111111111": {"s3:GetObject", "s3:PutObject"}}
             ),
             S3BucketPolicyAnalysis(
@@ -275,6 +282,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 bucket_arn="arn:aws:s3:::bucket-2",
                 third_party_account_ids={"111111111111"},
                 has_wildcard_principal=False,
+                has_non_account_principals=False,
                 actions_by_account={"111111111111": {"s3:DeleteObject"}}
             ),
         ]
@@ -316,6 +324,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 bucket_arn="arn:aws:s3:::bucket-1",
                 third_party_account_ids={"111111111111"},
                 has_wildcard_principal=False,
+                has_non_account_principals=False,
                 actions_by_account={"111111111111": {"s3:GetObject"}}
             ),
             S3BucketPolicyAnalysis(
@@ -323,6 +332,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 bucket_arn="arn:aws:s3:::bucket-2",
                 third_party_account_ids={"111111111111", "222222222222"},
                 has_wildcard_principal=False,
+                has_non_account_principals=False,
                 actions_by_account={
                     "111111111111": {"s3:PutObject"},
                     "222222222222": {"s3:GetObject"}
@@ -356,3 +366,30 @@ class TestDenyS3ThirdPartyAccessCheck:
             assert "222222222222" in summary["buckets_by_third_party_account"]
             buckets = set(summary["buckets_by_third_party_account"]["222222222222"])
             assert buckets == {"arn:aws:s3:::bucket-2"}
+
+    def test_categorize_result_with_non_account_principals(
+        self,
+        org_account_ids: set[str],
+    ) -> None:
+        """Test categorization of bucket with non-account principals (violation)."""
+        check = DenyS3ThirdPartyAccessCheck(
+            check_name=DENY_S3_THIRD_PARTY_ACCESS,
+            account_name="test",
+            account_id="111111111111",
+            results_dir=DEFAULT_RESULTS_DIR,
+            org_account_ids=org_account_ids,
+        )
+
+        result = S3BucketPolicyAnalysis(
+            bucket_name="federated-bucket",
+            bucket_arn="arn:aws:s3:::federated-bucket",
+            third_party_account_ids=set(),
+            has_wildcard_principal=False,
+            has_non_account_principals=True,
+            actions_by_account={}
+        )
+
+        category, result_dict = check.categorize_result(result)
+
+        assert category == "violation"
+        assert result_dict["has_non_account_principals"] is True

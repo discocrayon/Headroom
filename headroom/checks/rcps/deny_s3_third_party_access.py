@@ -79,7 +79,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         all_results = analyze_s3_bucket_policies(session, self.org_account_ids)
         return [
             result for result in all_results
-            if result.has_wildcard_principal or result.third_party_account_ids
+            if result.has_wildcard_principal or result.has_non_account_principals or result.third_party_account_ids
         ]
 
     def categorize_result(self, result: S3BucketPolicyAnalysis) -> tuple[str, Dict[str, Any]]:
@@ -91,8 +91,8 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
 
         Returns:
             Tuple of (category, result_dict) where category is:
-            - "violation": Bucket has wildcard principal (blocks RCP deployment)
-            - "compliant": Bucket has third-party access but no wildcard
+            - "violation": Bucket has wildcard or non-account principals (blocks RCP deployment)
+            - "compliant": Bucket has third-party account access that can be allowlisted
         """
         actions_by_account_serializable = {
             account_id: sorted(list(actions))
@@ -104,6 +104,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             "bucket_arn": result.bucket_arn,
             "third_party_account_ids": sorted(list(result.third_party_account_ids)),
             "has_wildcard_principal": result.has_wildcard_principal,
+            "has_non_account_principals": result.has_non_account_principals,
             "actions_by_account": actions_by_account_serializable,
         }
 
@@ -118,7 +119,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
                 self.buckets_by_account[account_id] = set()
             self.buckets_by_account[account_id].add(result.bucket_arn)
 
-        if result.has_wildcard_principal:
+        if result.has_wildcard_principal or result.has_non_account_principals:
             return ("violation", result_dict)
         else:
             return ("compliant", result_dict)

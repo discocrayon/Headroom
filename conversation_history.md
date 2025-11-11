@@ -14433,3 +14433,111 @@ Future check implementations can reference these lessons to avoid repeating mist
 - S3 bucket policies analyzed instead of IAM role trust policies
 - Test Terraform uses globally unique bucket names with account ID suffix
 - Check automatically registered via decorator, no manual imports needed
+
+## 2025-11-11: Option A Implementation + Critical Security Fix
+
+### Summary
+Implemented Option A for refactoring `ALLOWED_PRINCIPAL_TYPES` and fixed a critical security issue where the S3 RCP would break Federated and CanonicalUser access.
+
+### Problem Identified
+1. **Code Duplication**: `ALLOWED_PRINCIPAL_TYPES` was defined separately in `headroom/aws/iam/roles.py` and `headroom/aws/s3.py`
+2. **Critical Security Issue**: The S3 RCP analysis only extracted account IDs but didn't detect Federated or CanonicalUser principals. Deploying the RCP would break their access because:
+   - Federated principals (SAML/OIDC) don't have AWS account IDs
+   - CanonicalUser principals are S3-specific IDs, not account IDs
+   - The RCP uses `aws:PrincipalAccount` condition, which can't allowlist these principal types
+
+### Solution Implemented
+
+#### Option A: Shared Base + Service-Specific Extensions
+- Added `BASE_PRINCIPAL_TYPES = frozenset({"AWS", "Service", "Federated"})` to `headroom/constants.py`
+- Updated `headroom/aws/iam/roles.py` to use `ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES`
+- Updated `headroom/aws/s3.py` to extend it: `ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES | {"CanonicalUser"}`
+
+#### Security Fix: Non-Account Principal Detection
+- Added `UnsupportedPrincipalTypeError` exception class with documentation
+- Added `_has_non_account_principals()` function to detect Federated and CanonicalUser principals
+- Updated `S3BucketPolicyAnalysis` dataclass with `has_non_account_principals: bool` field
+- Updated `analyze_s3_bucket_policies()` to track non-account principals
+- Updated `DenyS3ThirdPartyAccessCheck.categorize_result()` to treat buckets with non-account principals as violations
+- Added `has_non_account_principals` to result JSON output
+
+### Files Modified
+
+#### Core Implementation
+1. `headroom/constants.py`:
+   - Added `BASE_PRINCIPAL_TYPES` constant with documentation
+
+2. `headroom/aws/iam/roles.py`:
+   - Import and use `BASE_PRINCIPAL_TYPES` from constants
+
+3. `headroom/aws/s3.py`:
+   - Import `BASE_PRINCIPAL_TYPES` from constants
+   - Added `UnsupportedPrincipalTypeError` exception
+   - Added `_has_non_account_principals()` function
+   - Updated `S3BucketPolicyAnalysis` dataclass
+   - Updated `analyze_s3_bucket_policies()` logic
+
+4. `headroom/checks/rcps/deny_s3_third_party_access.py`:
+   - Updated categorization logic to treat non-account principals as violations
+   - Updated analyze filter to include has_non_account_principals
+   - Added field to result_dict
+
+#### Tests
+5. `tests/test_aws_s3.py`:
+   - Added 5 new tests for `_has_non_account_principals()`:
+     * test_detects_federated_principal()
+     * test_detects_canonical_user_principal()
+     * test_ignores_aws_principal()
+     * test_ignores_service_principal()
+     * test_mixed_with_federated()
+
+6. `tests/test_checks_deny_s3_third_party_access.py`:
+   - Updated all `S3BucketPolicyAnalysis` test fixtures to include `has_non_account_principals` field
+   - Added `test_categorize_result_with_non_account_principals()` test
+
+### How It Works
+
+#### Principal Type Handling Matrix
+
+| Principal Type | Detection | RCP Compatibility |
+|----------------|-----------|-------------------|
+| AWS Account (`arn:aws:iam::ID:root`) | Extract account ID, add to allowlist | ✅ COMPLIANT - Can be allowlisted |
+| Wildcard (`*`) | `has_wildcard_principal = True` | ❌ VIOLATION - Can't deploy RCP |
+| Federated (SAML/OIDC) | `has_non_account_principals = True` | ❌ VIOLATION - Would break access |
+| CanonicalUser (S3-specific) | `has_non_account_principals = True` | ❌ VIOLATION - Would break access |
+| Service (cloudtrail, etc.) | Ignore (RCP exempts via `aws:PrincipalIsAWSService`) | ✅ EXEMPT |
+
+#### Categorization Logic
+- `has_wildcard_principal OR has_non_account_principals` → **VIOLATION** (blocks RCP deployment)
+- `has third_party_account_ids only` → **COMPLIANT** (can be allowlisted)
+- `no findings` → Not included in results
+
+### Security Impact
+✅ **Prevents Breaking Production Access**
+- Federated users (SSO, SAML, OIDC) won't lose S3 access unexpectedly
+- Canonical user access patterns preserved
+- AWS service access explicitly exempted in RCP policy
+
+✅ **Clear Visibility**
+- Results JSON includes `has_non_account_principals` field
+- Summary tracks violation counts
+- Users see which buckets block RCP deployment and why
+
+✅ **Safe Deployment Path**
+- Only compliant buckets (account-based access) used for allowlist generation
+- Violation buckets must be addressed before RCP deployment
+- Users can either:
+  * Convert Federated/CanonicalUser access to account-based access
+  * Accept that those buckets won't be protected by the RCP
+
+### Test Results
+- **424/424 tests pass** (+6 new tests)
+- **mypy**: SUCCESS - no issues found in 60 source files
+- **Coverage**: 100% maintained
+- **No regressions**: All existing tests still pass
+
+### Key Learnings
+1. **Only Make New Mistakes**: This is exactly the kind of security issue we want to catch before deployment. Now we have comprehensive tests to prevent similar issues.
+2. **Principal Types Matter**: Different AWS principal types have different semantics. Account-based conditions like `aws:PrincipalAccount` only work with certain principal types.
+3. **Test-Driven Security**: The new tests ensure we correctly detect all non-account principal types and handle them safely.
+
