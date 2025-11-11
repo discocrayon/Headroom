@@ -32,3 +32,23 @@ variable "enforce_assume_role_org_identities" {
   nullable    = false
   description = "Enforce that role assumptions are restricted to organization identities and specified third-party accounts."
 }
+
+variable "third_party_s3_access_account_ids_allowlist" {
+  type        = list(string)
+  nullable    = false
+  default     = []
+  description = "Allowlist of third-party AWS account IDs that are permitted to access S3 buckets in this target ID."
+
+  validation {
+    condition = alltrue([
+      for account_id in var.third_party_s3_access_account_ids_allowlist : length(account_id) == 12 && can(regex("^[0-9]{12}$", account_id))
+    ])
+    error_message = "All third_party_s3_access_account_ids_allowlist must be valid 12-digit AWS account IDs."
+  }
+}
+
+variable "deny_s3_third_party_access" {
+  type        = bool
+  nullable    = false
+  description = "Deny S3 access from third-party accounts except those in the allowlist."
+}

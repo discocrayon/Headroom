@@ -14357,3 +14357,79 @@ These lessons document critical pitfalls discovered during implementation:
 
 Future check implementations can reference these lessons to avoid repeating mistakes.
 
+
+## 2025-11-11 - Added deny_s3_third_party_access RCP Check
+
+**Type:** RCP check
+**Pattern:** Pattern 5a (Account-Level Principal Allowlist) - not mentioned in code per requirements
+
+**Files Created:**
+- `headroom/aws/s3.py` - S3 bucket policy analysis functions
+- `headroom/checks/rcps/deny_s3_third_party_access.py` - Check implementation
+- `tests/test_aws_s3.py` - AWS S3 analysis tests
+- `tests/test_checks_deny_s3_third_party_access.py` - Check tests
+- `test_environment/test_deny_s3_third_party_access.tf` - Test infrastructure
+
+**Files Modified:**
+- `headroom/constants.py` - Added DENY_S3_THIRD_PARTY_ACCESS constant
+- `headroom/terraform/generate_rcps.py` - Added S3 category to terraform generation
+- `test_environment/modules/rcps/variables.tf` - Added deny_s3_third_party_access and third_party_s3_access_account_ids_allowlist variables
+- `test_environment/modules/rcps/locals.tf` - Added S3 third-party access policy statement
+
+**Implementation Details:**
+- Analyzes S3 bucket policies for third-party account access
+- Identifies buckets with wildcard principals (violations)
+- Tracks which S3 actions each third-party account can perform
+- Tracks which S3 buckets each third-party account can access
+- Unions third-party account IDs across all buckets for allowlist generation
+- RCP denies `s3:*` except for organization accounts and allowlisted third-parties
+
+**Test Coverage:**
+- All Python syntax validated
+- Comprehensive unit tests created for:
+  - S3 bucket policy analysis function
+  - Third-party account extraction from principals
+  - Wildcard principal detection
+  - Action normalization
+  - Check categorization (violations vs compliant)
+  - Actions and buckets tracking aggregation
+  - Empty results handling
+  - Mixed compliance scenarios
+
+**Test Infrastructure:**
+- 6 test S3 buckets created across multiple accounts:
+  1. Single third-party access (CrowdStrike)
+  2. Multiple third-party access (Barracuda + Check Point)
+  3. Wildcard principal (violation)
+  4. No bucket policy (skipped)
+  5. Mixed org + third-party access
+  6. Wildcard action with specific principal
+- Uses real third-party vendor account IDs for realistic testing
+- Low cost (S3 buckets are essentially free unless storing data)
+
+**Terraform Module Structure:**
+- Boolean variable: `deny_s3_third_party_access`
+- Allowlist variable: `third_party_s3_access_account_ids_allowlist`
+- Policy blocks S3 access from non-org accounts except allowlist
+- Uses `aws:PrincipalOrgID` and `aws:PrincipalAccount` conditions
+- Excludes AWS service principals with `aws:PrincipalIsAWSService` check
+
+**Key Features:**
+- Union operation: Combines all third-party account IDs from all S3 buckets
+- Detailed tracking: Records specific S3 actions per account
+- Resource tracking: Records which buckets each account can access
+- Wildcard detection: Identifies buckets with overly permissive policies
+- Summary includes:
+  - Total buckets analyzed
+  - Buckets with third-party access
+  - Buckets with wildcards (violations)
+  - Unique third-party account IDs
+  - Actions by third-party account (detailed breakdown)
+  - Buckets by third-party account (which buckets each account accesses)
+
+**Notes:**
+- Pattern 5a reference kept only in documentation, not in code or Terraform
+- Similar implementation pattern to third_party_assumerole check
+- S3 bucket policies analyzed instead of IAM role trust policies
+- Test Terraform uses globally unique bucket names with account ID suffix
+- Check automatically registered via decorator, no manual imports needed

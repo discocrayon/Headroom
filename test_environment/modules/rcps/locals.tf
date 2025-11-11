@@ -25,6 +25,28 @@ locals {
         }
       }
     },
+    # var.deny_s3_third_party_access
+    # -->
+    # Sid: DenyS3ThirdPartyAccess
+    # Denies S3 access from accounts outside the organization except allowlisted accounts
+    {
+      include   = var.deny_s3_third_party_access,
+      statement = {
+        "Sid"    = "DenyS3ThirdPartyAccess"
+        "Principal" = "*"
+        "Action" = "s3:*"
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount" = var.third_party_s3_access_account_ids_allowlist
+          }
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
   ]
   # Included RCP 1 Deny Statements
   included_rcp_1_deny_statements = [
