@@ -213,7 +213,7 @@ class TestAnalyzeS3BucketPolicies:
         }
 
         error_response = {"Error": {"Code": "NoSuchBucketPolicy"}}
-        mock_s3_client.get_bucket_policy.side_effect = ClientError(error_response, "GetBucketPolicy")
+        mock_s3_client.get_bucket_policy.side_effect = ClientError(error_response, "GetBucketPolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"333333333333"}
         results = analyze_s3_bucket_policies(mock_session, org_account_ids)
@@ -269,7 +269,7 @@ class TestAnalyzeS3BucketPolicies:
         mock_session.client.return_value = mock_s3_client
 
         error_response = {"Error": {"Code": "AccessDenied"}}
-        mock_s3_client.list_buckets.side_effect = ClientError(error_response, "ListBuckets")
+        mock_s3_client.list_buckets.side_effect = ClientError(error_response, "ListBuckets")  # type: ignore[arg-type]
 
         org_account_ids = {"333333333333"}
         with pytest.raises(ClientError):
