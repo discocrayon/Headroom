@@ -1,5 +1,23 @@
 locals {
   possible_scp_1_denies = [
+    # var.deny_ec2_ami_owner
+    # -->
+    # Sid: DenyEc2AmiOwner
+    # Denies launching EC2 instances unless AMI owner is in allowlist
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
+    # Uses ec2:Owner condition key which contains the AMI owner account ID or alias
+    {
+      include = var.deny_ec2_ami_owner,
+      statement = {
+        Action   = "ec2:RunInstances"
+        Resource = "arn:aws:ec2:*:*:instance/*"
+        Condition = {
+          "StringNotEquals" = {
+            "ec2:Owner" = var.allowed_ami_owners
+          }
+        }
+      }
+    },
     # var.deny_imds_v1_ec2
     # -->
     # Sid: DenyRoleDeliveryLessThan2

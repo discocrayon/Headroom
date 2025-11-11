@@ -14357,3 +14357,120 @@ These lessons document critical pitfalls discovered during implementation:
 
 Future check implementations can reference these lessons to avoid repeating mistakes.
 
+
+## 2025-11-11 - Added deny_ec2_ami_owner Check (Pattern 5c)
+
+**Type:** SCP check
+**Pattern:** Pattern 5c (Condition Key Value Allowlist) - NEW PATTERN
+
+### Pattern 5c: Condition Key Value Allowlist
+
+This is a new policy pattern that restricts actions based on specific values of a condition key. Unlike Pattern 5a (principal-focused) or 5b (resource-focused), Pattern 5c focuses on WHICH VALUES of a condition key are allowed.
+
+**Example:** Only allow EC2 instances from trusted AMI owners (amazon, aws-marketplace, specific account IDs)
+
+### Files Created
+
+**Python Implementation:**
+- `headroom/aws/ec2.py` - Added `DenyEc2AmiOwner` dataclass and `get_ec2_ami_owner_analysis()` function
+- `headroom/checks/scps/deny_ec2_ami_owner.py` - Check implementation
+
+**Tests:**
+- `tests/test_checks_deny_ec2_ami_owner.py` - Check tests (100% coverage)
+- `tests/test_aws_ec2.py` - Added tests for new AWS function
+
+**Test Environment:**
+- `test_environment/test_deny_ec2_ami_owner/` - Test infrastructure directory
+  - `providers.tf` - AWS provider configuration
+  - `data.tf` - Data sources for accounts and AMIs
+  - `ec2_instances.tf` - Test EC2 instances
+  - `README.md` - Usage documentation with cost estimates
+
+### Files Modified
+
+**Python:**
+- `headroom/constants.py` - Added `DENY_EC2_AMI_OWNER` constant
+- `headroom/types.py` - Added `allowed_ami_owners` field to `SCPPlacementRecommendations`
+- `headroom/terraform/generate_scps.py` - Added AMI owner allowlist generation logic
+
+**Terraform Modules:**
+- `test_environment/modules/scps/variables.tf` - Added `deny_ec2_ami_owner` and `allowed_ami_owners` variables
+- `test_environment/modules/scps/locals.tf` - Added AMI owner policy statement (lines 3-20)
+
+**Documentation:**
+- `documentation/POLICY_TAXONOMY.md` - Added Pattern 5c throughout:
+  - Pattern table entry
+  - Detailed Pattern 5c section
+  - Implementation example
+  - Updated Pattern 5 variants comparison table
+  - Updated Design Principles and Usage sections
+
+### Implementation Details
+
+**AMI Owner Analysis:**
+- Scans all EC2 instances across all regions
+- For each instance, retrieves AMI owner via `describe_images`
+- Caches AMI information to reduce API calls
+- Handles missing AMIs (marks as "unknown" owner)
+- Generates unique list of AMI owners for allowlist
+
+**Policy Structure:**
+```hcl
+{
+  Action   = "ec2:RunInstances"
+  Resource = "arn:aws:ec2:*:*:instance/*"
+  Condition = {
+    "StringNotEquals" = {
+      "ec2:Owner" = ["amazon", "aws-marketplace", "111111111111"]
+    }
+  }
+}
+```
+
+**Terraform Generation:**
+- Discovers all unique AMI owners from scan results
+- Generates `allowed_ami_owners` list in module call
+- Supports AMI owner aliases (amazon, aws-marketplace) and account IDs
+
+### Test Coverage
+
+**Unit Tests:** 100% coverage for new code
+- Check categorization tests
+- AWS analysis function tests
+- AMI caching tests
+- Missing AMI handling tests
+- Empty results tests
+- Multi-region tests
+
+### Pattern 5 Variants Comparison
+
+| Aspect | Pattern 5a | Pattern 5b | Pattern 5c |
+|--------|-----------|-----------|-----------|
+| **Focus** | WHO (Principal) | WHAT (Resource) | WHICH VALUES (Condition) |
+| **Question** | "Who can perform?" | "What can be acted upon?" | "Which values allowed?" |
+| **Mechanism** | IAM condition keys | Resource matching | Condition value matching |
+| **AWS Construct** | `aws:PrincipalAccount` | `NotResource` | `Condition` with value list |
+| **Example** | Third-party accounts | Allowed IAM users | Allowed AMI owners |
+
+### Test Environment
+
+**Cost:** ~$7.50/month for 2x t2.nano instances if left running
+
+**Test Scenarios:**
+- Amazon-owned AMI (amazon)
+- Ubuntu AMI from Canonical (099720109477)
+- Custom AMI (commented out - requires creating AMI first)
+
+**Test Infrastructure:**
+- Cross-account EC2 instances in different accounts
+- Uses AWS provider aliases for cross-account deployment
+- Data sources for account IDs and AMI lookups
+
+### Notes
+
+- Pattern 5c is the third variant of Pattern 5 (Allowlist)
+- Complements existing patterns 5a (principal) and 5b (resource)
+- Provides attribute-level granularity for access control
+- Useful for restricting to trusted sources or approved configurations
+- AMI owner can be AWS account ID, alias (amazon), or unknown
+

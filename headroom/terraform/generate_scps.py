@@ -79,6 +79,24 @@ module "{module_name}" {{
 
     # EC2
     terraform_content += "  # EC2\n"
+    deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_checks
+    terraform_content += f"  deny_ec2_ami_owner = {str(deny_ec2_ami_owner).lower()}\n"
+
+    if deny_ec2_ami_owner:
+        allowed_ami_owners = []
+        for rec in recommendations:
+            if rec.check_name.replace("-", "_") == "deny_ec2_ami_owner" and rec.allowed_ami_owners:
+                allowed_ami_owners = rec.allowed_ami_owners
+                break
+
+        if allowed_ami_owners:
+            terraform_content += "  allowed_ami_owners = [\n"
+            for owner in allowed_ami_owners:
+                terraform_content += f'    "{owner}",\n'
+            terraform_content += "  ]\n"
+        else:
+            terraform_content += "  allowed_ami_owners = []\n"
+
     deny_imds_v1_ec2 = "deny_imds_v1_ec2" in enabled_checks
     terraform_content += f"  deny_imds_v1_ec2 = {str(deny_imds_v1_ec2).lower()}\n"
     terraform_content += "\n"
