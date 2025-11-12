@@ -14659,3 +14659,60 @@ Clean, direct import pattern matching the established codebase patterns. All qua
 - ✅ 100% code coverage for tests/ (4238 statements)
 - ✅ mypy: Success - no issues found in 60 source files
 - ✅ pre-commit: All hooks passed
+
+---
+
+## 2025-11-12: Type Safety Improvement - Replaced Dict[str, Any] with JsonDict
+
+**User Request:**
+Asked to improve the type annotation `tuple[str, Dict[str, Any]]` in check methods to avoid using `Any`.
+
+**Analysis:**
+The `Dict[str, Any]` type was used throughout check implementations for JSON-serializable data structures. Per the repo rule "Do not use the type of Any, if you change the existing code to Any, you are making it worse," this needed improvement.
+
+**Solution:**
+Created a `JsonDict` type alias for better semantic meaning and type safety:
+- Added `JsonDict = Dict[str, object]` to `headroom/types.py`
+- The `object` type is Python's standard approach for runtime-typed values
+- More specific than `Any` (which disables type checking entirely)
+- Still flexible enough for JSON-serializable dictionaries
+
+**Changes Made:**
+
+1. headroom/types.py:
+   - Added `JsonDict = Dict[str, object]` type alias
+   - Documented as "Type for JSON-serializable dictionaries with runtime-typed values"
+
+2. headroom/checks/base.py:
+   - Imported `JsonDict` from `types`
+   - Updated `CategorizedCheckResult` dataclass fields to use `JsonDict`
+   - Updated `categorize_result()` return type: `tuple[str, JsonDict]`
+   - Updated `build_summary_fields()` return type: `JsonDict`
+   - Updated `_build_results_data()` return type: `JsonDict`
+   - Kept `Any` import for `**kwargs` parameter (valid use case)
+
+3. All check implementations updated:
+   - headroom/checks/scps/deny_eks_create_cluster_without_tag.py
+   - headroom/checks/scps/deny_iam_user_creation.py (added type annotation to result_dict)
+   - headroom/checks/scps/deny_imds_v1_ec2.py
+   - headroom/checks/scps/deny_rds_unencrypted.py
+   - headroom/checks/rcps/deny_third_party_assumerole.py
+   - All now import `JsonDict` and use it in method signatures
+
+4. tests/test_checks_deny_eks_create_cluster_without_tag.py:
+   - Added `cast()` calls for accessing nested dict values in tests
+   - Required to satisfy mypy when accessing `result_dict["tags"]["PavedRoad"]`
+
+**Benefits:**
+1. More expressive type hints - `JsonDict` clearly indicates JSON data
+2. Better than `Any` - preserves type checking at dictionary level
+3. Consistent across codebase - single source of truth for JSON dict types
+4. No runtime overhead - type aliases are compile-time only
+
+**Result:**
+All quality checks pass:
+- ✅ 410 tests PASSED (0.72s)
+- ✅ 100% code coverage for headroom/ (1444 statements)
+- ✅ 100% code coverage for tests/ (4238 statements)
+- ✅ mypy: Success - no issues found in 60 source files
+- ✅ pre-commit: All hooks passed

@@ -8,7 +8,7 @@ import pytest
 import tempfile
 import shutil
 from unittest.mock import MagicMock, patch
-from typing import List, Generator
+from typing import Dict, List, Generator, cast
 
 from headroom.checks.scps.deny_eks_create_cluster_without_tag import (
     DenyEksCreateClusterWithoutTagCheck,
@@ -306,7 +306,7 @@ class TestCheckDenyEksCreateClusterWithoutTag:
         assert category == "compliant"
         assert result_dict["cluster_name"] == "compliant-cluster"
         assert result_dict["has_paved_road_tag"] is True
-        assert result_dict["tags"]["PavedRoad"] == "true"
+        assert cast(Dict[str, str], result_dict["tags"])["PavedRoad"] == "true"
 
     def test_categorize_result_violation(
         self,
@@ -333,7 +333,7 @@ class TestCheckDenyEksCreateClusterWithoutTag:
         assert category == "violation"
         assert result_dict["cluster_name"] == "violation-cluster"
         assert result_dict["has_paved_road_tag"] is False
-        assert "PavedRoad" not in result_dict["tags"]
+        assert "PavedRoad" not in cast(Dict[str, str], result_dict["tags"])
 
     def test_categorize_result_case_sensitivity(
         self,
