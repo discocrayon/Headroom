@@ -14357,3 +14357,58 @@ These lessons document critical pitfalls discovered during implementation:
 
 Future check implementations can reference these lessons to avoid repeating mistakes.
 
+
+## 2025-11-12 02:08 - Added deny_ecr_third_party_access RCP Check
+
+**Type:** RCP check
+**Focus:** Analyze ECR repository resource policies for third-party account access
+
+**Files Created:**
+- `headroom/aws/ecr.py` - ECR repository policy analysis functions
+- `headroom/checks/rcps/deny_ecr_third_party_access.py` - RCP check implementation
+- `tests/test_aws_ecr.py` - AWS ECR analysis tests
+- `tests/test_checks_deny_ecr_third_party_access.py` - Check tests
+- `test_environment/test_deny_ecr_third_party_access.tf` - Test infrastructure
+
+**Files Modified:**
+- `headroom/constants.py` - Added DENY_ECR_THIRD_PARTY_ACCESS constant
+- `test_environment/modules/rcps/variables.tf` - Added ECR allowlist and boolean variables
+- `test_environment/modules/rcps/locals.tf` - Added ECR RCP policy statement
+- `headroom/terraform/generate_rcps.py` - Updated to support multiple RCP checks, refactored to group recommendations by target
+- `documentation/POLICY_TAXONOMY.md` - Added deny_ecr_third_party_access documentation
+
+**Key Features:**
+- Analyzes ECR repository resource policies across all regions
+- Identifies third-party AWS account access patterns
+- Tracks specific ECR actions allowed per third-party account
+- Detects wildcard principals that would block RCP deployment
+- **Fail-fast validation:** Immediately fails if Federated or unsupported principal types are detected
+- Unions third-party accounts across repositories for allowlist generation
+
+**Implementation Details:**
+- Similar pattern to third_party_assumerole but for ECR resource policies
+- Validates principal types and fails fast on Federated principals (which would break RCP)
+- Refactored RCP Terraform generation to support multiple RCP checks per target
+- Groups recommendations by target (account/OU/root) for consolidated Terraform generation
+
+**Test Coverage:**
+- Comprehensive unit tests for ECR analysis functions
+- Check class tests covering all scenarios
+- Edge cases: wildcards, no policies, mixed org/third-party accounts, Federated principal detection
+
+**Test Scenarios (Terraform):**
+- Repository with DataDog third-party access (compliant)
+- Repository with multiple third-party accounts (Snyk + Docker Hub) - compliant
+- Repository with wildcard principal (violation - blocks RCP)
+- Repository with org-only access (not relevant)
+- Repository with no policy (not relevant)
+
+**RCP Policy:**
+- Denies `ecr:*` actions
+- Unless `aws:PrincipalOrgID` matches organization OR `aws:PrincipalAccount` in allowlist
+- Excludes AWS service principals
+
+**Next Steps:**
+- User needs to run `tox` to verify 100% test coverage in proper environment
+- Deploy test ECR repositories and run Headroom to validate end-to-end
+- Update Headroom-Specification.md with detailed check documentation
