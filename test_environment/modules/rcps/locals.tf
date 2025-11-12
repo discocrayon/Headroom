@@ -1,5 +1,29 @@
 locals {
   possible_rcp_1_statements = [
+    # var.deny_ecr_third_party_access
+    # -->
+    # Sid: DenyECRThirdPartyAccess
+    # Restricts ECR access to organization accounts and allowlisted third parties
+    {
+      include   = var.deny_ecr_third_party_access,
+      statement = {
+        "Sid"    = "DenyECRThirdPartyAccess"
+        "Principal" = "*"
+        "Action" = [
+          "ecr:*",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount" = var.deny_ecr_third_party_access_account_ids_allowlist
+          }
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
     # var.enforce_assume_role_org_identities
     # -->
     # Sid: EnforceOrgIdentities
