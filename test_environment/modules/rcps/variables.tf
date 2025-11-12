@@ -15,7 +15,6 @@ variable "target_id" {
 
 variable "deny_ecr_third_party_access_account_ids_allowlist" {
   type        = list(string)
-  nullable    = false
   default     = []
   description = "Allowlist of third-party AWS account IDs permitted to access ECR repositories in this target ID."
 
@@ -29,13 +28,11 @@ variable "deny_ecr_third_party_access_account_ids_allowlist" {
 
 variable "deny_ecr_third_party_access" {
   type        = bool
-  nullable    = false
   description = "Deny ECR access to accounts outside the organization unless explicitly allowed."
 }
 
 variable "third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
-  nullable    = false
   default     = []
   description = "Allowlist of third-party AWS account IDs that are permitted to assume roles in this target ID."
 
@@ -49,6 +46,5 @@ variable "third_party_assumerole_account_ids_allowlist" {
 
 variable "enforce_assume_role_org_identities" {
   type        = bool
-  nullable    = false
   description = "Enforce that role assumptions are restricted to organization identities and specified third-party accounts."
 }
