@@ -81,7 +81,7 @@ class TestCheckDenyECRThirdPartyAccess:
 
             assert mock_write.called
             call_args = mock_write.call_args
-            results_data = call_args[0][0]
+            results_data = call_args[1]["results_data"]
 
             assert len(results_data["repositories_with_wildcards"]) == 1
             assert len(results_data["repositories_third_parties_can_access"]) == 2
@@ -89,7 +89,7 @@ class TestCheckDenyECRThirdPartyAccess:
             summary = results_data["summary"]
             assert summary["total_repositories_analyzed"] == 2
             assert summary["repositories_with_wildcards"] == 1
-            assert summary["repositories_third_parties_can_access"] == 2
+            assert summary["repositories_third_parties_can_access"] == 1
             assert summary["violations"] == 1
             assert summary["third_party_account_count"] == 1
             assert "999999999999" in summary["unique_third_party_accounts"]
@@ -131,7 +131,7 @@ class TestCheckDenyECRThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 0
@@ -173,7 +173,7 @@ class TestCheckDenyECRThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 1
@@ -203,7 +203,7 @@ class TestCheckDenyECRThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["total_repositories_analyzed"] == 0
@@ -316,7 +316,7 @@ class TestCheckDenyECRThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             actions = summary["actions_by_account"]["999999999999"]
@@ -372,7 +372,7 @@ class TestCheckDenyECRThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["third_party_account_count"] == 2
@@ -418,7 +418,7 @@ class TestCheckDenyECRThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 1

@@ -7,7 +7,7 @@ Generates Terraform files for RCP deployment based on third-party account analys
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Set
 
 from .utils import make_safe_variable_name, write_terraform_file
 from ..types import (
