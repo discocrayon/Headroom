@@ -322,6 +322,7 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.scps.deny_eks_create_cluster_without_tag.DenyEksCreateClusterWithoutTagCheck.execute") as mock_check_eks,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute") as mock_check2,
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute") as mock_check3,
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
@@ -329,25 +330,28 @@ class TestRunChecks:
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
             # Mock that results exist for first account but not second
-            # Call pattern now (with 3 SCP checks and 1 RCP check):
-            # Account 1: all_scp_results_exist (3 calls for 3 SCP checks) → all True, all_rcp_results_exist (1 call) → True, skip
-            # Account 2: all_scp_results_exist (3 calls) → any False, all_rcp_results_exist (1 call) → False
-            #   Then run_scp_checks calls results_exist per check (3 calls) → False, runs checks
+            # Call pattern now (with 4 SCP checks and 1 RCP check):
+            # Account 1: all_scp_results_exist (4 calls for 4 SCP checks) → all True, all_rcp_results_exist (1 call) → True, skip
+            # Account 2: all_scp_results_exist (4 calls) → any False, all_rcp_results_exist (1 call) → False
+            #   Then run_scp_checks calls results_exist per check (4 calls) → False, runs checks
             #   Then run_rcp_checks calls results_exist per check (1 call) → False, runs check
-            # Total: 4 + 8 = 12 calls
+            # Total: 5 + 5 + 4 + 1 = 15 calls
             mock_check_results.return_value = True  # Default
             mock_check_results.side_effect = [
                 True,   # Account 1 - SCP check 1 exists
                 True,   # Account 1 - SCP check 2 exists
                 True,   # Account 1 - SCP check 3 exists
+                True,   # Account 1 - SCP check 4 exists
                 True,   # Account 1 - RCP exists
                 False,  # Account 2 - SCP check 1 exists check
                 False,  # Account 2 - SCP check 2 exists check
                 False,  # Account 2 - SCP check 3 exists check
+                False,  # Account 2 - SCP check 4 exists check
                 False,  # Account 2 - RCP exists check
                 False,  # Account 2 - run_scp_checks internal check for check 1
                 False,  # Account 2 - run_scp_checks internal check for check 2
                 False,  # Account 2 - run_scp_checks internal check for check 3
+                False,  # Account 2 - run_scp_checks internal check for check 4
                 False   # Account 2 - run_rcp_checks internal check
             ]
 
@@ -365,6 +369,8 @@ class TestRunChecks:
             # (check parameters are passed to constructor, not execute)
             assert mock_check.call_count == 1
             mock_check.assert_called_with(mock_headroom_session)
+            assert mock_check_eks.call_count == 1
+            mock_check_eks.assert_called_with(mock_headroom_session)
             assert mock_check2.call_count == 1
             mock_check2.assert_called_with(mock_headroom_session)
             assert mock_check3.call_count == 1

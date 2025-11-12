@@ -206,6 +206,7 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 [Current SCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/scps):
 - **EC2 IMDSv1 Check**: Comprehensive analysis of EC2 instances for IMDSv1 compliance. Supports `ExemptFromIMDSv2` tag for policy flexibility.
 - **IAM User Creation Check**: Enumerates all IAM users across accounts and auto-generates SCPs with allowlists to restrict IAM user creation to approved users only.
+- **RDS Unencrypted Check**: Multi-region analysis of RDS instances and Aurora clusters for encryption at rest compliance. Identifies unencrypted databases that would be blocked by the SCP.
 
 ### 🔍 **RCP Compliance Analysis**
 
@@ -306,6 +307,7 @@ The tool generates:
 - **JSON Results**:
   - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
+  - SCPs: `test_environment/headroom_results/scps/deny_rds_unencrypted/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
 - **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
@@ -371,6 +373,13 @@ headroom/
 - **Purpose**: Enumerates all IAM users in accounts to enforce IAM user creation policies
 - **Allowlist Support**: Auto-generates SCPs with IAM user ARN allowlists to restrict user creation
 - **Output**: Complete list of IAM users with ARNs, paths, and allowlist generation
+
+#### RDS Unencrypted Database Analysis
+- **Check Name**: `deny_rds_unencrypted`
+- **Purpose**: Identifies RDS instances and Aurora clusters without encryption at rest enabled (security risk)
+- **Multi-Region Support**: Scans all AWS regions for RDS databases
+- **Policy Coverage**: Denies `rds:CreateDBCluster`, `rds:RestoreDBClusterFromS3`, `rds:CreateBlueGreenDeployment`, and `rds:CreateDBInstance` operations unless `rds:StorageEncrypted` condition key is true
+- **Output**: Detailed violation/compliant reporting with database identifiers, types, engines, and encryption status
 
 ### RCP Checks
 
