@@ -1545,6 +1545,35 @@ class TestBuildRcpTerraformModule:
 
         assert "# Auto-generated RCP Terraform configuration for Organization Root" in result
 
+    def test_build_module_with_s3_third_party_accounts(self) -> None:
+        """Should generate module with S3 third-party account allowlist."""
+        result = _build_rcp_terraform_module(
+            module_name="rcps_test_account",
+            target_id_reference="local.test_account_account_id",
+            third_party_account_ids=["111111111111"],
+            comment="Test Account",
+            s3_third_party_account_ids=["333333333333", "444444444444"]
+        )
+
+        assert 'module "rcps_test_account"' in result
+        assert "third_party_s3_access_account_ids_allowlist" in result
+        assert '"333333333333"' in result
+        assert '"444444444444"' in result
+        assert "deny_s3_third_party_access = true" in result
+
+    def test_build_module_without_s3_third_party_accounts(self) -> None:
+        """Should generate module with deny_s3_third_party_access = false when no S3 accounts."""
+        result = _build_rcp_terraform_module(
+            module_name="rcps_test",
+            target_id_reference="local.test_id",
+            third_party_account_ids=["111111111111"],
+            comment="Test"
+        )
+
+        assert 'module "rcps_test"' in result
+        assert "third_party_s3_access_account_ids_allowlist" not in result
+        assert "deny_s3_third_party_access = false" in result
+
 
 class TestGenerateAccountRcpTerraform:
     """Test _generate_account_rcp_terraform helper function."""

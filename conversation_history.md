@@ -14541,3 +14541,52 @@ Implemented Option A for refactoring `ALLOWED_PRINCIPAL_TYPES` and fixed a criti
 2. **Principal Types Matter**: Different AWS principal types have different semantics. Account-based conditions like `aws:PrincipalAccount` only work with certain principal types.
 3. **Test-Driven Security**: The new tests ensure we correctly detect all non-account principal types and handle them safely.
 
+### Tox Execution
+
+After implementing Option A and the security fix, ran `tox` to validate all changes:
+
+**Tox Configuration Updated:**
+- Added `s3` to `boto3-stubs` dependencies in `tox.ini`
+
+**Coverage Gaps Addressed:**
+
+1. **headroom/aws/s3.py** (was 95%, now 100%):
+   - Added test for GetBucketPolicy error handling (non-NoSuchBucketPolicy errors)
+   - Added test for Deny statements (should be ignored)
+   - Added test for missing Principal fields
+   - Added test for Federated principal detection in full analysis flow
+   - Added test for wildcard in list of principals
+
+2. **headroom/terraform/generate_rcps.py** (was 98%, now 100%):
+   - Added test for S3 third-party account allowlist generation
+   - Added test for module without S3 third-party accounts
+
+3. **tests/test_aws_s3.py** (was 99%, now 100%):
+   - Refactored mock function to use lambda and dictionary for cleaner implementation
+   - Eliminated unreachable code branch
+
+**Final Tox Results:**
+```
+✅ 431 tests passed (100%)
+✅ 100% coverage on headroom/ (1543 statements)
+✅ 100% coverage on tests/ (4253 statements)
+✅ mypy: Success - no issues found in 60 source files
+✅ pre-commit hooks: All passed
+   - fix end of files
+   - trim trailing whitespace
+   - autoflake
+   - flake8
+   - autopep8
+```
+
+**Total Time:** 4.33 seconds
+
+### Final Status
+
+✅ **Option A Implemented** - Code deduplication complete
+✅ **Security Fix Complete** - Non-account principals safely handled
+✅ **100% Test Coverage** - Both source and tests fully covered
+✅ **All Quality Checks Pass** - Ready for production deployment
+
+The implementation is complete, tested, and ready for use.
+

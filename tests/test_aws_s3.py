@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
 from headroom.aws.s3 import (
-    S3BucketPolicyAnalysis,
     analyze_s3_bucket_policies,
     _extract_account_ids_from_principal,
     _has_wildcard_principal,
@@ -162,38 +161,35 @@ class TestAnalyzeS3BucketPolicies:
             ]
         }
 
-        def mock_get_bucket_policy(Bucket: str) -> dict:
-            if Bucket == "test-bucket-1":
-                return {
-                    "Policy": json.dumps({
-                        "Version": "2012-10-17",
-                        "Statement": [
-                            {
-                                "Effect": "Allow",
-                                "Principal": {"AWS": "arn:aws:iam::111111111111:root"},
-                                "Action": ["s3:GetObject", "s3:PutObject"],
-                                "Resource": f"arn:aws:s3:::{Bucket}/*"
-                            }
-                        ]
-                    })
-                }
-            elif Bucket == "test-bucket-2":
-                return {
-                    "Policy": json.dumps({
-                        "Version": "2012-10-17",
-                        "Statement": [
-                            {
-                                "Effect": "Allow",
-                                "Principal": {"AWS": "arn:aws:iam::222222222222:root"},
-                                "Action": "s3:GetObject",
-                                "Resource": f"arn:aws:s3:::{Bucket}/*"
-                            }
-                        ]
-                    })
-                }
-            return {}
-
-        mock_s3_client.get_bucket_policy.side_effect = mock_get_bucket_policy
+        policies = {
+            "test-bucket-1": {
+                "Policy": json.dumps({
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"AWS": "arn:aws:iam::111111111111:root"},
+                            "Action": ["s3:GetObject", "s3:PutObject"],
+                            "Resource": "arn:aws:s3:::test-bucket-1/*"
+                        }
+                    ]
+                })
+            },
+            "test-bucket-2": {
+                "Policy": json.dumps({
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"AWS": "arn:aws:iam::222222222222:root"},
+                            "Action": "s3:GetObject",
+                            "Resource": "arn:aws:s3:::test-bucket-2/*"
+                        }
+                    ]
+                })
+            }
+        }
+        mock_s3_client.get_bucket_policy.side_effect = lambda Bucket: policies[Bucket]
 
         org_account_ids = {"333333333333", "444444444444"}
         results = analyze_s3_bucket_policies(mock_session, org_account_ids)
@@ -308,3 +304,110 @@ class TestAnalyzeS3BucketPolicies:
         org_account_ids = {"333333333333"}
         with pytest.raises(ClientError):
             analyze_s3_bucket_policies(mock_session, org_account_ids)
+
+    def test_analyze_bucket_policy_get_error(self) -> None:
+        """Test handling of GetBucketPolicy API errors other than NoSuchBucketPolicy."""
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+
+        mock_s3_client.list_buckets.return_value = {
+            "Buckets": [{"Name": "error-bucket"}]
+        }
+
+        error_response = {"Error": {"Code": "AccessDenied", "Message": "Access denied"}}
+        mock_s3_client.get_bucket_policy.side_effect = ClientError(error_response, "GetBucketPolicy")  # type: ignore[arg-type]
+
+        org_account_ids = {"999999999999"}
+        with pytest.raises(ClientError):
+            analyze_s3_bucket_policies(mock_session, org_account_ids)
+
+    def test_analyze_bucket_with_deny_statement(self) -> None:
+        """Test bucket with Deny statement (should be ignored)."""
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+
+        mock_s3_client.list_buckets.return_value = {
+            "Buckets": [{"Name": "deny-bucket"}]
+        }
+
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Deny",
+                    "Principal": {"AWS": "arn:aws:iam::111111111111:root"},
+                    "Action": "s3:*"
+                }
+            ]
+        }
+        mock_s3_client.get_bucket_policy.return_value = {
+            "Policy": json.dumps(policy)
+        }
+
+        org_account_ids = {"999999999999"}
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        assert len(results) == 0
+
+    def test_analyze_bucket_with_no_principal(self) -> None:
+        """Test bucket with statement that has no Principal field."""
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+
+        mock_s3_client.list_buckets.return_value = {
+            "Buckets": [{"Name": "no-principal-bucket"}]
+        }
+
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": "s3:GetObject"
+                }
+            ]
+        }
+        mock_s3_client.get_bucket_policy.return_value = {
+            "Policy": json.dumps(policy)
+        }
+
+        org_account_ids = {"999999999999"}
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        assert len(results) == 0
+
+    def test_analyze_bucket_with_federated_principal(self) -> None:
+        """Test bucket with Federated principal is detected."""
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+
+        mock_s3_client.list_buckets.return_value = {
+            "Buckets": [{"Name": "federated-bucket"}]
+        }
+
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Federated": "arn:aws:iam::123456789012:saml-provider/MyProvider"
+                    },
+                    "Action": "s3:GetObject"
+                }
+            ]
+        }
+        mock_s3_client.get_bucket_policy.return_value = {
+            "Policy": json.dumps(policy)
+        }
+
+        org_account_ids = {"999999999999"}
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        assert len(results) == 1
+        assert results[0].has_non_account_principals is True
+        assert results[0].bucket_name == "federated-bucket"
+
+    def test_has_wildcard_principal_list_with_wildcard(self) -> None:
+        """Test detection of wildcard in list of principals."""
+        from headroom.aws.s3 import _has_wildcard_principal
+        principal = {"AWS": ["arn:aws:iam::111111111111:root", "*"]}
+        assert _has_wildcard_principal(principal) is True
