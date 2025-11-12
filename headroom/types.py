@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union
 
 
+# Type aliases for JSON-serializable data
+JsonDict = Dict[str, object]
+"""Type for JSON-serializable dictionaries with runtime-typed values."""
+
 # Type aliases for commonly-used complex types
 AccountThirdPartyMap = Dict[str, Set[str]]
 """Mapping of account IDs to sets of third-party account IDs they grant access to."""

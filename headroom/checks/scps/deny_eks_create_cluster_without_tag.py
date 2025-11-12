@@ -1,6 +1,6 @@
 """Check for EKS clusters that violate the deny_eks_create_cluster_without_tag SCP."""
 
-from typing import Any, Dict, List
+from typing import List
 
 import boto3
 
@@ -9,6 +9,7 @@ from ...aws.eks import (
     get_eks_cluster_tag_analysis,
 )
 from ...constants import DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -42,7 +43,7 @@ class DenyEksCreateClusterWithoutTagCheck(BaseCheck[DenyEksCreateClusterWithoutT
     def categorize_result(
         self,
         result: DenyEksCreateClusterWithoutTag
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[str, JsonDict]:
         """
         Categorize a single EKS cluster tag result.
 
@@ -70,7 +71,7 @@ class DenyEksCreateClusterWithoutTagCheck(BaseCheck[DenyEksCreateClusterWithoutT
     def build_summary_fields(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build EKS cluster tag check-specific summary fields.
 
