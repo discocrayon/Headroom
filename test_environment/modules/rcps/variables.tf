@@ -1,6 +1,5 @@
 variable "target_id" {
   type        = string
-  nullable    = false
   description = "Organization account, root, or unit."
 
   validation {

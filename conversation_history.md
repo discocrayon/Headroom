@@ -14442,3 +14442,10 @@ Removed `nullable = false` from all RCP module variables except `target_id`:
 
 Now consistent with SCP module pattern where only `target_id` has `nullable = false`.
 All boolean and list variables follow the standard Terraform pattern without explicit nullable specification.
+## 2025-11-12 - Removed all nullable = false from Terraform Variables
+
+Removed `nullable = false` from ALL Terraform module variables:
+- Removed from `target_id` in test_environment/modules/rcps/variables.tf
+- Removed from `target_id` in test_environment/modules/scps/variables.tf
+
+All Terraform variables now follow standard Terraform conventions without explicit nullable specifications.
