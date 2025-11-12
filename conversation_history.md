@@ -14432,3 +14432,13 @@ Key fixes during testing:
 - Added comprehensive tests for ECR RCP Terraform generation including both standalone and combined ECR+IAM scenarios
 
 All implementation tasks complete and verified.
+## 2025-11-12 - Removed nullable = false from Terraform Variables
+
+Removed `nullable = false` from all RCP module variables except `target_id`:
+- Removed from `deny_ecr_third_party_access_account_ids_allowlist`
+- Removed from `deny_ecr_third_party_access`
+- Removed from `third_party_assumerole_account_ids_allowlist` (pre-existing)
+- Removed from `enforce_assume_role_org_identities` (pre-existing)
+
+Now consistent with SCP module pattern where only `target_id` has `nullable = false`.
+All boolean and list variables follow the standard Terraform pattern without explicit nullable specification.
