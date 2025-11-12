@@ -3,11 +3,11 @@ Tests for headroom.aws.ecr module.
 """
 
 import pytest
+from typing import Any
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
 from headroom.aws.ecr import (
-    ECRRepositoryPolicyAnalysis,
     analyze_ecr_repository_policies,
     _extract_account_ids_from_principal,
     _has_wildcard_principal,
@@ -229,7 +229,8 @@ class TestAnalyzeECRRepositoryPolicies:
 
         mock_ecr_client.get_paginator.return_value = repository_paginator
 
-        error_response = {"Error": {"Code": "RepositoryPolicyNotFoundException"}}
+        from botocore.exceptions import ClientError
+        error_response: Any = {"Error": {"Code": "RepositoryPolicyNotFoundException"}}
         mock_ecr_client.get_repository_policy.side_effect = ClientError(
             error_response, "GetRepositoryPolicy"
         )
@@ -392,15 +393,12 @@ class TestAnalyzeECRRepositoryPolicies:
             }
             ecr_clients[region] = mock_ecr_client
 
-        def client_side_effect(service: str, **kwargs: Any) -> Any:
+        def client_side_effect(service: str, **kwargs: Any) -> object:
             if service == "ec2":
                 return mock_ec2_client
-            elif service == "ecr":
-                region = kwargs.get("region_name")
-                return ecr_clients.get(region)
-            return MagicMock()
+            region = kwargs.get("region_name", "us-east-1")
+            return ecr_clients.get(region)
 
-        from typing import Any
         mock_session.client.side_effect = client_side_effect
 
         org_account_ids = {"111111111111"}
@@ -520,6 +518,123 @@ class TestAnalyzeECRRepositoryPolicies:
         results = analyze_ecr_repository_policies(mock_session, org_account_ids)
 
         assert len(results) == 0
+
+    def test_policy_with_no_principal(self) -> None:
+        """Test that statements without principals are skipped."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {
+                "repositories": [
+                    {
+                        "repositoryName": "test-repo",
+                        "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/test-repo"
+                    }
+                ]
+            }
+        ]
+
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": "ecr:*"
+                }
+            ]
+        }
+
+        import json
+        mock_ecr_client.get_repository_policy.return_value = {
+            "policyText": json.dumps(policy)
+        }
+
+        org_account_ids = {"111111111111"}
+
+        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+
+        assert len(results) == 0
+
+    def test_get_repository_policy_error(self) -> None:
+        """Test that non-RepositoryPolicyNotFoundException errors are raised."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {
+                "repositories": [
+                    {
+                        "repositoryName": "test-repo",
+                        "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/test-repo"
+                    }
+                ]
+            }
+        ]
+
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+
+        error_response: Any = {"Error": {"Code": "AccessDeniedException"}}
+        mock_ecr_client.get_repository_policy.side_effect = ClientError(
+            error_response, "GetRepositoryPolicy"
+        )
+
+        org_account_ids = {"111111111111"}
+
+        with pytest.raises(ClientError):
+            analyze_ecr_repository_policies(mock_session, org_account_ids)
+
+    def test_ecr_client_error(self) -> None:
+        """Test that ECR client errors during describe_repositories are raised."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        error_response: Any = {"Error": {"Code": "AccessDeniedException"}}
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.side_effect = ClientError(
+            error_response, "DescribeRepositories"
+        )
+
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+
+        org_account_ids = {"111111111111"}
+
+        with pytest.raises(ClientError):
+            analyze_ecr_repository_policies(mock_session, org_account_ids)
 
     def test_federated_principal_fails_fast(self) -> None:
         """Test that Federated principal causes immediate failure."""

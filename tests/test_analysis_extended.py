@@ -325,30 +325,34 @@ class TestRunChecks:
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute") as mock_check2,
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute") as mock_check3,
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
+            patch("headroom.checks.rcps.deny_ecr_third_party_access.DenyECRThirdPartyAccessCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
             # Mock that results exist for first account but not second
-            # Call pattern now (with 3 SCP checks and 1 RCP check):
-            # Account 1: all_scp_results_exist (3 calls for 3 SCP checks) → all True, all_rcp_results_exist (1 call) → True, skip
-            # Account 2: all_scp_results_exist (3 calls) → any False, all_rcp_results_exist (1 call) → False
+            # Call pattern now (with 3 SCP checks and 2 RCP checks):
+            # Account 1: all_scp_results_exist (3 calls for 3 SCP checks) → all True, all_rcp_results_exist (2 calls) → all True, skip
+            # Account 2: all_scp_results_exist (3 calls) → any False, all_rcp_results_exist (2 calls) → any False
             #   Then run_scp_checks calls results_exist per check (3 calls) → False, runs checks
-            #   Then run_rcp_checks calls results_exist per check (1 call) → False, runs check
-            # Total: 4 + 8 = 12 calls
+            #   Then run_rcp_checks calls results_exist per check (2 calls) → False, runs checks
+            # Total: 5 + 10 = 15 calls
             mock_check_results.return_value = True  # Default
             mock_check_results.side_effect = [
                 True,   # Account 1 - SCP check 1 exists
                 True,   # Account 1 - SCP check 2 exists
                 True,   # Account 1 - SCP check 3 exists
-                True,   # Account 1 - RCP exists
+                True,   # Account 1 - RCP check 1 exists (deny_ecr_third_party_access)
+                True,   # Account 1 - RCP check 2 exists (deny_third_party_assumerole)
                 False,  # Account 2 - SCP check 1 exists check
                 False,  # Account 2 - SCP check 2 exists check
                 False,  # Account 2 - SCP check 3 exists check
-                False,  # Account 2 - RCP exists check
+                False,  # Account 2 - RCP check 1 exists check (deny_ecr_third_party_access)
+                False,  # Account 2 - RCP check 2 exists check (deny_third_party_assumerole)
                 False,  # Account 2 - run_scp_checks internal check for check 1
                 False,  # Account 2 - run_scp_checks internal check for check 2
                 False,  # Account 2 - run_scp_checks internal check for check 3
-                False   # Account 2 - run_rcp_checks internal check
+                False,  # Account 2 - run_rcp_checks internal check for check 1 (deny_ecr_third_party_access)
+                False   # Account 2 - run_rcp_checks internal check for check 2 (deny_third_party_assumerole)
             ]
 
             mock_headroom_session = MagicMock()

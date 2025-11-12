@@ -132,11 +132,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
         Returns:
             Dictionary with check-specific summary fields
         """
-        total_repositories = (
-            len(check_result.violations) +
-            len(check_result.exemptions) +
-            len(check_result.compliant)
-        )
+        total_repositories = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
 
         repositories_with_wildcards_and_third_party = sum(
             1 for repo in check_result.violations
