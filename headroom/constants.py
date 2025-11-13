@@ -19,6 +19,8 @@ DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 # RCP Checks (alphabetical by service)
 # IAM
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+# OpenSearch Serverless
+DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 
 # Terraform file generation constants
 ORG_INFO_FILENAME = "grab_org_info.tf"

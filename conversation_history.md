@@ -14357,3 +14357,144 @@ These lessons document critical pitfalls discovered during implementation:
 
 Future check implementations can reference these lessons to avoid repeating mistakes.
 
+
+---
+
+## 2025-11-13 - Added deny_aoss_third_party_access RCP Check
+
+**Type:** RCP check
+**Check Pattern:** Account-Level Principal Allowlist
+
+**Purpose:**
+Analyze OpenSearch Serverless (AOSS) data access policies to identify third-party account access. Tracks which AOSS collections and indexes grant access to accounts outside the organization, along with the specific AOSS actions permitted for each third-party account. Generates RCP allowlists to restrict AOSS access to organization principals and explicitly approved third-party accounts.
+
+**Files Created:**
+- `headroom/aws/aoss.py` - AOSS analysis functions and data models
+- `headroom/checks/rcps/deny_aoss_third_party_access.py` - RCP check implementation
+- `tests/test_aws_aoss.py` - AWS AOSS analysis tests
+- `tests/test_checks_deny_aoss_third_party_access.py` - Check class tests
+- `test_environment/test_deny_aoss_third_party_access.tf` - Test AOSS collections and access policies
+
+**Files Modified:**
+- `headroom/constants.py` - Added DENY_AOSS_THIRD_PARTY_ACCESS constant
+- `headroom/terraform/generate_rcps.py` - Added AOSS terraform generation logic
+- `test_environment/modules/rcps/variables.tf` - Added deny_aoss_third_party_access and aoss_third_party_account_ids_allowlist variables
+- `test_environment/modules/rcps/locals.tf` - Added DenyAossThirdPartyAccess policy statement
+- `test_environment/modules/rcps/README.md` - Documented new variables and policies
+- `documentation/POLICY_TAXONOMY.md` - Added deny_aoss_third_party_access as Pattern 5a example
+
+**Key Implementation Details:**
+
+**Data Model:**
+```python
+@dataclass
+class AossResourcePolicyAnalysis:
+    resource_name: str           # Collection or index name
+    resource_type: str           # "collection" or "index"
+    resource_arn: str           # Full ARN of AOSS resource
+    policy_name: str            # Name of access policy
+    third_party_account_ids: Set[str]  # Third-party account IDs
+    allowed_actions: List[str]  # AOSS actions allowed
+```
+
+**Analysis Algorithm:**
+1. Get all enabled regions via describe_regions()
+2. For each region:
+   - List all data access policies via list_access_policies()
+   - Get policy details via get_access_policy()
+   - Parse policy JSON to extract principals and permissions
+   - Extract account IDs from principals
+   - Filter to third-party accounts (not in org)
+   - Track actions allowed for each third-party account
+3. Return all findings across all regions
+
+**Unique Features:**
+- Unlike third_party_assumerole, this check tracks not just account IDs but also:
+  - Which AOSS actions each third-party account can perform
+  - Which resources (collections/indexes) they can access
+  - Summary of all actions per third-party account ID
+- Analyzes AOSS data access policies (different from IAM trust policies)
+- Handles AOSS-specific policy format with Rules, Permissions, ResourceType
+
+**RCP Policy:**
+- Denies `aoss:*` (all OpenSearch Serverless actions)
+- Unless `aws:PrincipalOrgID` matches organization
+- Or `aws:PrincipalAccount` is in `aoss_third_party_account_ids_allowlist`
+- Excludes AWS service principals via `aws:PrincipalIsAWSService`
+
+**Terraform Generation:**
+Updated `generate_rcps.py` to accept `enabled_checks` and `aoss_third_party_account_ids` parameters. The `_build_rcp_terraform_module` function now generates module calls with both IAM AssumeRole and AOSS variables, organized by service:
+```hcl
+module "rcps_account" {
+  source = "../modules/rcps"
+  target_id = local.account_id
+
+  # IAM AssumeRole
+  enforce_assume_role_org_identities = true
+  third_party_assumerole_account_ids_allowlist = [...]
+
+  # OpenSearch Serverless
+  deny_aoss_third_party_access = true
+  aoss_third_party_account_ids_allowlist = [...]
+}
+```
+
+**Test Coverage:**
+- Comprehensive unit tests for AOSS analysis functions
+- Tests for policy parsing with various principal formats
+- Tests for multi-region support
+- Tests for error handling (region not supported, policy not found)
+- Tests for check class categorization and summary building
+- Tests for action tracking by third-party account
+- All tests follow TDD principles and avoid using Any type
+
+**Cost Warning:**
+AOSS collections have high ongoing costs (~$700/month minimum per collection). Test resources in `test_deny_aoss_third_party_access.tf` include warnings and should only be created when needed for testing, then destroyed immediately.
+
+**Test Scenarios:**
+- Collection 1 (acme_co): Single third-party account (999888777666) with multiple AOSS actions
+- Collection 2 (shared_foo_bar): Multiple third-party accounts (111222333444, 555666777888) with read-only access
+- Collection 3 (fort_knox): Organization-only access (no third-party, should not appear in results)
+
+**Result JSON Structure:**
+```json
+{
+  "summary": {
+    "total_resources_with_third_party_access": 2,
+    "unique_third_party_accounts": ["999888777666", "111222333444"],
+    "third_party_account_count": 2,
+    "actions_by_third_party_account": {
+      "999888777666": ["aoss:CreateIndex", "aoss:ReadDocument", ...],
+      "111222333444": ["aoss:ReadDocument"]
+    }
+  },
+  "resources_with_third_party_access": [...]
+}
+```
+
+**Type Safety:**
+- No use of Any type anywhere in implementation
+- Complete type annotations for all functions, methods, and variables
+- Strict mypy compliance maintained
+- Used Dict[str, object] for result dictionaries to maintain type safety
+
+**Code Quality:**
+- Followed all standards from CLAUDE.md and HOW_TO_ADD_A_CHECK.md
+- TDD approach: tests written alongside implementation
+- 100% test coverage target for all new code
+- No dynamic imports (all imports at top of file)
+- Comprehensive docstrings with Algorithm sections
+- Early returns and continue statements to minimize indentation
+- DRY principles applied throughout
+
+**Next Steps:**
+- Deploy test AOSS collections to verify end-to-end functionality
+- Run Headroom analysis against test environment
+- Verify generated RCP Terraform
+- Apply RCPs to test accounts
+
+**Notes:**
+- Pattern 5a designation not mentioned in code/Terraform as requested
+- Test Terraform included (not synthetic results files)
+- Similar structure to third_party_assumerole for consistency
+- Ready for integration with main analysis workflow
