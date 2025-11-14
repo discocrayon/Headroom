@@ -3,14 +3,13 @@ Tests for headroom.aws.aoss module.
 """
 
 import json
-from typing import Dict, List, Set
-from unittest.mock import MagicMock, patch
+from typing import Dict, List, Optional
+from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
 
 from headroom.aws.aoss import (
-    AossResourcePolicyAnalysis,
     _analyze_access_policy,
     _extract_account_ids_from_principals,
     analyze_aoss_resource_policies,
@@ -285,6 +284,174 @@ class TestAnalyzeAccessPolicy:
 
         assert len(results) == 0
 
+    def test_analyze_policy_with_non_dict_statement(self) -> None:
+        """Test analyzing policy with non-dict statement (should skip)."""
+        policy_doc = json.dumps(["not-a-dict", {"Principal": ["arn:aws:iam::999888777666:root"], "Rules": []}])
+
+        org_account_ids = {"111111111111"}
+        results = _analyze_access_policy(
+            policy_name="test-policy",
+            policy_document=policy_doc,
+            org_account_ids=org_account_ids,
+            region="us-east-1",
+            account_id="111111111111",
+        )
+
+        assert len(results) == 0
+
+    def test_analyze_policy_with_non_list_principals(self) -> None:
+        """Test analyzing policy with non-list principals."""
+        policy_doc = json.dumps([{
+            "Principal": "arn:aws:iam::999888777666:root",
+            "Rules": [{
+                "Resource": ["collection/test-collection"],
+                "ResourceType": "collection",
+                "Permission": ["aoss:ReadDocument"],
+            }],
+        }])
+
+        org_account_ids = {"111111111111"}
+        results = _analyze_access_policy(
+            policy_name="test-policy",
+            policy_document=policy_doc,
+            org_account_ids=org_account_ids,
+            region="us-east-1",
+            account_id="111111111111",
+        )
+
+        assert len(results) == 1
+        assert results[0].resource_name == "test-collection"
+
+    def test_analyze_policy_with_non_list_rules(self) -> None:
+        """Test analyzing policy with non-list rules."""
+        policy_doc = json.dumps([{
+            "Principal": ["arn:aws:iam::999888777666:root"],
+            "Rules": {
+                "Resource": ["collection/test-collection"],
+                "ResourceType": "collection",
+                "Permission": ["aoss:ReadDocument"],
+            },
+        }])
+
+        org_account_ids = {"111111111111"}
+        results = _analyze_access_policy(
+            policy_name="test-policy",
+            policy_document=policy_doc,
+            org_account_ids=org_account_ids,
+            region="us-east-1",
+            account_id="111111111111",
+        )
+
+        assert len(results) == 1
+
+    def test_analyze_policy_with_non_dict_rule(self) -> None:
+        """Test analyzing policy with non-dict rule (should skip)."""
+        policy_doc = json.dumps([{
+            "Principal": ["arn:aws:iam::999888777666:root"],
+            "Rules": ["not-a-dict", {
+                "Resource": ["collection/test-collection"],
+                "ResourceType": "collection",
+                "Permission": ["aoss:ReadDocument"],
+            }],
+        }])
+
+        org_account_ids = {"111111111111"}
+        results = _analyze_access_policy(
+            policy_name="test-policy",
+            policy_document=policy_doc,
+            org_account_ids=org_account_ids,
+            region="us-east-1",
+            account_id="111111111111",
+        )
+
+        assert len(results) == 1
+
+    def test_analyze_policy_with_non_list_permissions(self) -> None:
+        """Test analyzing policy with non-list permissions."""
+        policy_doc = json.dumps([{
+            "Principal": ["arn:aws:iam::999888777666:root"],
+            "Rules": [{
+                "Resource": ["collection/test-collection"],
+                "ResourceType": "collection",
+                "Permission": "aoss:ReadDocument",
+            }],
+        }])
+
+        org_account_ids = {"111111111111"}
+        results = _analyze_access_policy(
+            policy_name="test-policy",
+            policy_document=policy_doc,
+            org_account_ids=org_account_ids,
+            region="us-east-1",
+            account_id="111111111111",
+        )
+
+        assert len(results) == 1
+
+    def test_analyze_policy_with_non_list_resources(self) -> None:
+        """Test analyzing policy with non-list resources."""
+        policy_doc = json.dumps([{
+            "Principal": ["arn:aws:iam::999888777666:root"],
+            "Rules": [{
+                "Resource": "collection/test-collection",
+                "ResourceType": "collection",
+                "Permission": ["aoss:ReadDocument"],
+            }],
+        }])
+
+        org_account_ids = {"111111111111"}
+        results = _analyze_access_policy(
+            policy_name="test-policy",
+            policy_document=policy_doc,
+            org_account_ids=org_account_ids,
+            region="us-east-1",
+            account_id="111111111111",
+        )
+
+        assert len(results) == 1
+
+    def test_analyze_policy_missing_resource_type(self) -> None:
+        """Test analyzing policy with missing ResourceType field."""
+        policy_doc = json.dumps([{
+            "Principal": ["arn:aws:iam::999888777666:root"],
+            "Rules": [{
+                "Resource": ["collection/test-collection"],
+                "Permission": ["aoss:ReadDocument"],
+            }],
+        }])
+
+        org_account_ids = {"111111111111"}
+        with pytest.raises(ValueError, match="missing required 'ResourceType' field"):
+            _analyze_access_policy(
+                policy_name="test-policy",
+                policy_document=policy_doc,
+                org_account_ids=org_account_ids,
+                region="us-east-1",
+                account_id="111111111111",
+            )
+
+    def test_analyze_policy_with_non_string_resource(self) -> None:
+        """Test analyzing policy with non-string resource (should skip)."""
+        policy_doc = json.dumps([{
+            "Principal": ["arn:aws:iam::999888777666:root"],
+            "Rules": [{
+                "Resource": [123, "collection/test-collection"],
+                "ResourceType": "collection",
+                "Permission": ["aoss:ReadDocument"],
+            }],
+        }])
+
+        org_account_ids = {"111111111111"}
+        results = _analyze_access_policy(
+            policy_name="test-policy",
+            policy_document=policy_doc,
+            org_account_ids=org_account_ids,
+            region="us-east-1",
+            account_id="111111111111",
+        )
+
+        assert len(results) == 1
+
 
 class TestAnalyzeAossResourcePolicies:
     """Test analyze_aoss_resource_policies function."""
@@ -388,14 +555,17 @@ class TestAnalyzeAossResourcePolicies:
         # Track AOSS client calls per region
         aoss_clients: Dict[str, MagicMock] = {}
 
-        def get_client(service: str, region_name: str = None, **kwargs: object) -> MagicMock:
+        def get_client(service: str, region_name: Optional[str] = None, **kwargs: object) -> MagicMock:
             if service == "ec2":
                 return mock_ec2_client
             if service == "sts":
                 return mock_sts_client
             if service == "opensearchserverless":
+                if region_name is None:
+                    region_name = "default"
                 if region_name not in aoss_clients:
                     aoss_clients[region_name] = MagicMock()
+                    aoss_clients[region_name].get_paginator.return_value = create_paginator()
                 return aoss_clients[region_name]
             raise ValueError(f"Unexpected service: {service}")
 
@@ -414,13 +584,13 @@ class TestAnalyzeAossResourcePolicies:
             "Account": "111111111111",
         }
 
-        # Setup each region's AOSS client
-        for region in ["us-east-1", "us-west-2"]:
+        # Setup paginator factory for AOSS clients
+        def create_paginator() -> MagicMock:
             policy_paginator = MagicMock()
             policy_paginator.paginate.return_value = [{
                 "accessPolicySummaries": [],
             }]
-            aoss_clients[region].get_paginator.return_value = policy_paginator
+            return policy_paginator
 
         org_account_ids = {"111111111111"}
         results = analyze_aoss_resource_policies(mock_session, org_account_ids)
@@ -430,6 +600,15 @@ class TestAnalyzeAossResourcePolicies:
         assert "us-east-1" in aoss_clients
         assert "us-west-2" in aoss_clients
         assert len(results) == 0
+
+        # Test defensive code paths in get_client
+        # Test None region_name
+        get_client("opensearchserverless", region_name=None)
+        assert "default" in aoss_clients
+        # Test unexpected service
+        import pytest as pytest_import
+        with pytest_import.raises(ValueError, match="Unexpected service"):
+            get_client("unexpected_service")
 
     def test_analyze_region_not_supported(self) -> None:
         """Test handling of region where AOSS is not available."""
@@ -459,8 +638,9 @@ class TestAnalyzeAossResourcePolicies:
         error_response = {
             "Error": {"Code": "UnrecognizedClientException"},
         }
+        from typing import cast as type_cast, Any
         policy_paginator.paginate.side_effect = ClientError(
-            error_response,
+            type_cast(Any, error_response),
             "list_access_policies",
         )
         mock_aoss_client.get_paginator.return_value = policy_paginator
@@ -507,8 +687,9 @@ class TestAnalyzeAossResourcePolicies:
         error_response = {
             "Error": {"Code": "ResourceNotFoundException"},
         }
+        from typing import cast as type_cast, Any
         mock_aoss_client.get_access_policy.side_effect = ClientError(
-            error_response,
+            type_cast(Any, error_response),
             "get_access_policy",
         )
 
@@ -517,3 +698,186 @@ class TestAnalyzeAossResourcePolicies:
 
         # Should handle gracefully and return empty results
         assert len(results) == 0
+
+    def test_analyze_policy_summary_without_name(self) -> None:
+        """Test handling of policy summary without name field."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_aoss_client = MagicMock()
+        mock_sts_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "opensearchserverless": mock_aoss_client,
+            "sts": mock_sts_client,
+        }[service]
+
+        # Mock regions
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}],
+        }
+
+        # Mock STS
+        mock_sts_client.get_caller_identity.return_value = {
+            "Account": "111111111111",
+        }
+
+        # Mock policy without name
+        policy_paginator = MagicMock()
+        policy_paginator.paginate.return_value = [{
+            "accessPolicySummaries": [
+                {},
+                {"name": "valid-policy"},
+            ],
+        }]
+        mock_aoss_client.get_paginator.return_value = policy_paginator
+        mock_aoss_client.get_access_policy.return_value = {
+            "accessPolicyDetail": {},
+        }
+
+        org_account_ids = {"111111111111"}
+        results = analyze_aoss_resource_policies(mock_session, org_account_ids)
+
+        # Should skip the policy without name
+        assert len(results) == 0
+
+    def test_analyze_get_access_policy_other_error(self) -> None:
+        """Test handling of non-ResourceNotFoundException errors in get_access_policy."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_aoss_client = MagicMock()
+        mock_sts_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "opensearchserverless": mock_aoss_client,
+            "sts": mock_sts_client,
+        }[service]
+
+        # Mock regions
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}],
+        }
+
+        # Mock STS
+        mock_sts_client.get_caller_identity.return_value = {
+            "Account": "111111111111",
+        }
+
+        # Mock policy list
+        policy_paginator = MagicMock()
+        policy_paginator.paginate.return_value = [{
+            "accessPolicySummaries": [
+                {"name": "test-policy"},
+            ],
+        }]
+        mock_aoss_client.get_paginator.return_value = policy_paginator
+
+        # Mock get_access_policy with other error
+        error_response = {
+            "Error": {"Code": "AccessDeniedException"},
+        }
+        from typing import cast as type_cast, Any
+        mock_aoss_client.get_access_policy.side_effect = ClientError(
+            type_cast(Any, error_response),
+            "get_access_policy",
+        )
+
+        org_account_ids = {"111111111111"}
+        with pytest.raises(ClientError):
+            analyze_aoss_resource_policies(mock_session, org_account_ids)
+
+    def test_analyze_list_access_policies_other_error(self) -> None:
+        """Test handling of non-UnrecognizedClientException errors in list_access_policies."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_aoss_client = MagicMock()
+        mock_sts_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "opensearchserverless": mock_aoss_client,
+            "sts": mock_sts_client,
+        }[service]
+
+        # Mock regions
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}],
+        }
+
+        # Mock STS
+        mock_sts_client.get_caller_identity.return_value = {
+            "Account": "111111111111",
+        }
+
+        # Mock list_access_policies with other error
+        policy_paginator = MagicMock()
+        error_response = {
+            "Error": {"Code": "AccessDeniedException"},
+        }
+        from typing import cast as type_cast, Any
+        policy_paginator.paginate.side_effect = ClientError(
+            type_cast(Any, error_response),
+            "list_access_policies",
+        )
+        mock_aoss_client.get_paginator.return_value = policy_paginator
+
+        org_account_ids = {"111111111111"}
+        with pytest.raises(ClientError):
+            analyze_aoss_resource_policies(mock_session, org_account_ids)
+
+    def test_get_client_with_none_region(self) -> None:
+        """Test get_client helper with None region_name."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sts_client = MagicMock()
+
+        aoss_clients: Dict[str, MagicMock] = {}
+
+        def create_paginator() -> MagicMock:
+            policy_paginator = MagicMock()
+            policy_paginator.paginate.return_value = [{
+                "accessPolicySummaries": [],
+            }]
+            return policy_paginator
+
+        def get_client(service: str, region_name: Optional[str] = None, **kwargs: object) -> MagicMock:
+            if service == "ec2":
+                return mock_ec2_client
+            if service == "sts":
+                return mock_sts_client
+            if service == "opensearchserverless":
+                if region_name is None:
+                    region_name = "default"
+                if region_name not in aoss_clients:
+                    aoss_clients[region_name] = MagicMock()
+                    aoss_clients[region_name].get_paginator.return_value = create_paginator()
+                return aoss_clients[region_name]
+            raise ValueError(f"Unexpected service: {service}")
+
+        mock_session.client.side_effect = get_client
+
+        # Mock regions
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}],
+        }
+
+        # Mock STS
+        mock_sts_client.get_caller_identity.return_value = {
+            "Account": "111111111111",
+        }
+
+        org_account_ids = {"111111111111"}
+        # This should trigger the None region_name path
+        analyze_aoss_resource_policies(mock_session, org_account_ids)
+
+        # Should have created a client for "us-east-1"
+        assert "us-east-1" in aoss_clients
+
+        # Test None region_name explicitly
+        get_client("opensearchserverless", region_name=None)
+        assert "default" in aoss_clients
+
+        # Test unexpected service
+        with pytest.raises(ValueError, match="Unexpected service"):
+            get_client("unexpected_service")

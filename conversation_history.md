@@ -14580,3 +14580,88 @@ resource_type = rule["ResourceType"]
 ```
 
 This allows resources tagged with `dp:exclude:identity = true` to bypass the RCP restriction.
+
+---
+
+## 2025-11-14 00:14 - Making Tox Pass: Test Fixes, Type Safety, and 100% Coverage
+
+### Summary
+
+All code quality checks now pass successfully:
+- ✅ 432 tests passing
+- ✅ 100% test coverage (5938 statements)
+- ✅ mypy type checking with no errors
+- ✅ pre-commit hooks (flake8, autoflake, autopep8, trailing whitespace)
+
+### Changes Made
+
+1. **Fixed Circular Import Issue in write_results.py**
+   - Added lazy import of `checks` module inside `get_results_dir()` function
+   - Prevents circular dependency: write_results → checks → base → write_results
+
+2. **Updated Test for New RCP Check Count**
+   - Updated `test_analysis_extended.py` to account for 2 RCP checks (was 1)
+   - Added patch for `DenyAossThirdPartyAccessCheck.execute`
+   - Updated mock side_effect to provide 15 values instead of 12
+
+3. **Fixed test_aws_aoss.py Test Setup**
+   - Pre-created AOSS client mocks for multiple regions
+   - Fixed type annotations: `region_name: Optional[str] = None`
+   - Added `Any` casts for ClientError test cases to satisfy mypy
+
+4. **Updated test_checks_deny_aoss_third_party_access.py**
+   - Changed from `call_args[0][0]` to `call_args.kwargs["results_data"]`
+   - Fixed to match keyword argument calling convention
+
+5. **Updated test_checks_registry.py for New Check Count**
+   - Updated expected check count from 4 to 5
+   - Added assertion for `deny_aoss_third_party_access` check
+
+6. **Removed Unreachable Code from aoss.py**
+   - Removed `if not isinstance(principal, str)` check
+   - Type annotation already guarantees principals are strings
+
+7. **Added Comprehensive Edge Case Tests**
+   - Added 8 new tests for policy parsing edge cases:
+     - Non-dict policy statements
+     - Non-list principals, rules, permissions, resources
+     - Missing ResourceType field
+     - Non-string resources
+   - Added 3 new tests for error handling:
+     - Policy summary without name
+     - Non-ResourceNotFoundException errors
+     - Non-UnrecognizedClientException errors
+
+8. **Achieved 100% Test Coverage**
+   - Added test for AOSS third-party account IDs in RCP Terraform generation
+   - Added explicit tests for defensive code paths in mock get_client functions
+   - Added test for None region_name handling
+   - Added test for unexpected service errors
+
+### Test Statistics
+
+- **Total Test Count**: 432 tests
+- **Total Code Coverage**: 100% (5938/5938 statements)
+- **Test File Coverage**: 100% (all test files)
+- **Source File Coverage**: 100% (all source files)
+
+### Quality Checks Passing
+
+1. **pytest**: All 432 tests pass with 100% coverage
+2. **mypy**: No type errors in 60 source files
+3. **pre-commit hooks**:
+   - fix end of files: ✓
+   - trim trailing whitespace: ✓
+   - autoflake: ✓
+   - flake8: ✓
+   - autopep8: ✓
+
+### Files Modified
+
+- `headroom/write_results.py` - Added lazy import to fix circular dependency
+- `headroom/aws/aoss.py` - Removed unreachable isinstance check
+- `tests/test_analysis_extended.py` - Updated for 2 RCP checks
+- `tests/test_aws_aoss.py` - Fixed test setup, added edge case tests
+- `tests/test_checks_deny_aoss_third_party_access.py` - Fixed call_args access
+- `tests/test_checks_registry.py` - Updated for 5 checks
+- `tests/test_generate_rcps.py` - Added test for AOSS allowlist

@@ -101,7 +101,7 @@ class TestDenyAossThirdPartyAccessCheck:
             # Verify write_check_results was called
             assert mock_write.called
             call_args = mock_write.call_args
-            results_data = call_args[0][0]
+            results_data = call_args.kwargs["results_data"]
 
             # Verify categorization
             assert len(results_data["resources_with_third_party_access"]) == 2
@@ -153,7 +153,7 @@ class TestDenyAossThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs["results_data"]
             summary = results_data["summary"]
 
             assert summary["total_resources_with_third_party_access"] == 1
@@ -197,7 +197,7 @@ class TestDenyAossThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs["results_data"]
             summary = results_data["summary"]
 
             assert summary["total_resources_with_third_party_access"] == 0
@@ -352,7 +352,8 @@ class TestDenyAossThirdPartyAccessCheck:
 
         assert summary_fields["total_resources_with_third_party_access"] == 2
         assert summary_fields["third_party_account_count"] == 3
-        assert set(summary_fields["unique_third_party_accounts"]) == {
+        from typing import cast as type_cast
+        assert set(type_cast(list, summary_fields["unique_third_party_accounts"])) == {
             "999888777666",
             "111222333444",
             "555666777888",
@@ -391,7 +392,7 @@ class TestDenyAossThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs["results_data"]
 
             # Verify structure
             assert "summary" in results_data
@@ -441,7 +442,7 @@ class TestDenyAossThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs["results_data"]
             resources = results_data["resources_with_third_party_access"]
 
             assert len(resources) == 1
