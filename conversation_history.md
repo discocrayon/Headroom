@@ -14590,3 +14590,68 @@ After implementing Option A and the security fix, ran `tox` to validate all chan
 
 The implementation is complete, tested, and ready for use.
 
+## 2025-11-11: Added ResourceTag Condition and Removed nullable = false
+
+### Summary
+Added `aws:ResourceTag/dp:exclude:identity` condition to the S3 RCP policy to match the AssumeRole RCP pattern. Removed all `nullable = false` declarations from Terraform variable definitions across the codebase.
+
+### Changes Made
+
+#### 1. Added ResourceTag Condition to S3 RCP
+**File:** `test_environment/modules/rcps/locals.tf`
+
+Added the resource tag exclusion condition to the S3 RCP policy:
+```hcl
+"Condition" = {
+  "StringNotEqualsIfExists" = {
+    "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+    "aws:PrincipalAccount" = var.third_party_s3_access_account_ids_allowlist
+    "aws:ResourceTag/dp:exclude:identity" = "true"  # ADDED
+  }
+  "BoolIfExists" = {
+    "aws:PrincipalIsAWSService" = "false"
+  }
+}
+```
+
+**Purpose:** S3 buckets tagged with `dp:exclude:identity=true` will be exempt from the RCP, matching the pattern used for IAM roles in the AssumeRole RCP.
+
+#### 2. Exterminated nullable = false
+
+**Files Modified:**
+1. `test_environment/modules/rcps/variables.tf` - Removed from 5 variables:
+   - `target_id`
+   - `third_party_assumerole_account_ids_allowlist`
+   - `enforce_assume_role_org_identities`
+   - `third_party_s3_access_account_ids_allowlist`
+   - `deny_s3_third_party_access`
+
+2. `test_environment/modules/scps/variables.tf` - Removed from 1 variable:
+   - `target_id`
+
+3. `HOW_TO_ADD_A_CHECK.md` - Removed from documentation:
+   - Terraform Modules checklist
+   - Common Issues section example
+
+**Rationale:**
+- `nullable = false` is redundant for required variables
+- Type constraints already enforce non-null for variables without defaults
+- Cleaner code without unnecessary declarations
+- Consistent with Terraform best practices
+
+### Test Results
+```
+✅ 431 tests passed (100%)
+✅ 100% coverage on headroom/ (1543 statements)
+✅ 100% coverage on tests/ (4253 statements)
+✅ mypy: Success - no issues found
+✅ pre-commit hooks: All passed
+```
+
+### Total Impact
+- **Files Modified:** 4
+- **nullable = false Removed:** 8 instances
+- **New RCP Condition:** 1 (aws:ResourceTag exclusion)
+- **Test Status:** All passing
+- **Code Quality:** Maintained 100% standards
+
