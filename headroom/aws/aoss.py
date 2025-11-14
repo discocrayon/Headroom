@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Set
+from typing import List, Set
 
 import boto3
 from botocore.exceptions import ClientError
@@ -58,9 +58,6 @@ def _extract_account_ids_from_principals(principals: List[str]) -> Set[str]:
     account_ids: Set[str] = set()
 
     for principal in principals:
-        if not isinstance(principal, str):
-            continue
-
         # Extract account ID from ARN format: arn:aws:iam::123456789012:*
         arn_match = re.match(r'^arn:aws:iam::(\d{12}):', principal)
         if arn_match:

@@ -17,7 +17,7 @@ from ..types import (
     RCPParseResult,
     RCPPlacementRecommendations,
 )
-from ..constants import THIRD_PARTY_ASSUMEROLE, DENY_AOSS_THIRD_PARTY_ACCESS
+from ..constants import THIRD_PARTY_ASSUMEROLE
 from ..write_results import get_results_dir
 from ..parse_results import _load_result_file_json, _extract_account_id_from_result
 from ..placement import HierarchyPlacementAnalyzer
