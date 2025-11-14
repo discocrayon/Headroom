@@ -43,6 +43,7 @@ locals {
           "StringNotEqualsIfExists" = {
             "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
             "aws:PrincipalAccount" = var.aoss_third_party_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
