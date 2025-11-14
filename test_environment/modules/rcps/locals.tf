@@ -17,6 +17,7 @@ locals {
           "StringNotEqualsIfExists" = {
             "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
             "aws:PrincipalAccount" = var.deny_ecr_third_party_access_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
