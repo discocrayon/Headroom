@@ -14449,3 +14449,8 @@ Removed `nullable = false` from ALL Terraform module variables:
 - Removed from `target_id` in test_environment/modules/scps/variables.tf
 
 All Terraform variables now follow standard Terraform conventions without explicit nullable specifications.
+## 2025-11-12 - Added Resource Tag Exclusion to ECR RCP Policy
+
+Added `aws:ResourceTag/dp:exclude:identity = true` condition to the ECR third-party access policy in test_environment/modules/rcps/locals.tf.
+
+This allows ECR repositories tagged with `dp:exclude:identity = true` to be exempt from the RCP restriction, consistent with the IAM third-party assumerole policy pattern.
