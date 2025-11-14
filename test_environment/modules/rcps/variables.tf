@@ -1,6 +1,5 @@
 variable "target_id" {
   type        = string
-  nullable    = false
   description = "Organization account, root, or unit."
 
   validation {
@@ -15,7 +14,6 @@ variable "target_id" {
 
 variable "third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
-  nullable    = false
   default     = []
   description = "Allowlist of third-party AWS account IDs that are permitted to assume roles in this target ID."
 
@@ -29,13 +27,11 @@ variable "third_party_assumerole_account_ids_allowlist" {
 
 variable "enforce_assume_role_org_identities" {
   type        = bool
-  nullable    = false
   description = "Enforce that role assumptions are restricted to organization identities and specified third-party accounts."
 }
 
 variable "third_party_s3_access_account_ids_allowlist" {
   type        = list(string)
-  nullable    = false
   default     = []
   description = "Allowlist of third-party AWS account IDs that are permitted to access S3 buckets in this target ID."
 
@@ -49,6 +45,5 @@ variable "third_party_s3_access_account_ids_allowlist" {
 
 variable "deny_s3_third_party_access" {
   type        = bool
-  nullable    = false
   description = "Deny S3 access from third-party accounts except those in the allowlist."
 }
