@@ -160,7 +160,11 @@ def _analyze_access_policy(
             if not isinstance(resources, list):
                 resources = [resources]
 
-            resource_type = rule.get("ResourceType", "unknown")
+            if "ResourceType" not in rule:
+                raise ValueError(
+                    f"Policy '{policy_name}' is missing required 'ResourceType' field in rule"
+                )
+            resource_type = rule["ResourceType"]
 
             # Create result for each resource
             for resource in resources:
@@ -168,11 +172,13 @@ def _analyze_access_policy(
                     continue
 
                 # Parse resource to determine name and type
-                # Format: "collection/my-collection" or "index/my-collection/*"
+                # e.g. collection/my-collection --> my-collection
+                # e.g. index/my-collection/* --> my-collection
                 resource_name = resource
                 if "/" in resource:
+                    # Split on first '/' to separate type from name
                     resource_name = resource.split("/", 1)[1]
-                    # Remove wildcards from index paths
+                    # Remove trailing wildcards from index paths
                     resource_name = resource_name.rstrip("/*")
 
                 # Build ARN

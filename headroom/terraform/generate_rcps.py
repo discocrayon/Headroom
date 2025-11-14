@@ -334,7 +334,6 @@ def _build_rcp_terraform_module(
     target_id_reference: str,
     third_party_account_ids: List[str],
     comment: str,
-    enabled_checks: Set[str],
     aoss_third_party_account_ids: Optional[List[str]] = None,
 ) -> str:
     """
@@ -345,7 +344,6 @@ def _build_rcp_terraform_module(
         target_id_reference: Reference to the target ID (e.g., "local.root_ou_id")
         third_party_account_ids: List of third-party AWS account IDs for AssumeRole
         comment: Comment line describing the configuration (e.g., "Organization Root")
-        enabled_checks: Set of enabled RCP check names
         aoss_third_party_account_ids: List of third-party AWS account IDs for AOSS access
 
     Returns:
@@ -376,10 +374,9 @@ module "{module_name}" {{
 
     # OpenSearch Serverless
     terraform_content += '  # OpenSearch Serverless\n'
-    deny_aoss = DENY_AOSS_THIRD_PARTY_ACCESS in enabled_checks
-    terraform_content += f'  deny_aoss_third_party_access = {str(deny_aoss).lower()}\n'
+    terraform_content += '  deny_aoss_third_party_access = true\n'
 
-    if deny_aoss and aoss_third_party_account_ids:
+    if aoss_third_party_account_ids:
         terraform_content += '  aoss_third_party_account_ids_allowlist = [\n'
         for account_id in aoss_third_party_account_ids:
             terraform_content += f'    "{account_id}",\n'
@@ -394,7 +391,6 @@ def _generate_account_rcp_terraform(
     rec: RCPPlacementRecommendations,
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path,
-    enabled_checks: Set[str],
     aoss_third_party_account_ids: Optional[List[str]] = None,
 ) -> None:
     """
@@ -405,7 +401,6 @@ def _generate_account_rcp_terraform(
         rec: RCP recommendation for this account
         organization_hierarchy: Organization structure information
         output_path: Directory to write Terraform files to
-        enabled_checks: Set of enabled RCP check names
         aoss_third_party_account_ids: Optional list of AOSS third-party account IDs
     """
     account_info = organization_hierarchy.accounts.get(account_id)
@@ -421,7 +416,6 @@ def _generate_account_rcp_terraform(
         target_id_reference=f"local.{account_name}_account_id",
         third_party_account_ids=rec.third_party_account_ids,
         comment=account_info.account_name,
-        enabled_checks=enabled_checks,
         aoss_third_party_account_ids=aoss_third_party_account_ids,
     )
     write_terraform_file(filepath, terraform_content, "RCP")
@@ -432,7 +426,6 @@ def _generate_ou_rcp_terraform(
     rec: RCPPlacementRecommendations,
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path,
-    enabled_checks: Set[str],
     aoss_third_party_account_ids: Optional[List[str]] = None,
 ) -> None:
     """
@@ -443,7 +436,6 @@ def _generate_ou_rcp_terraform(
         rec: RCP recommendation for this OU
         organization_hierarchy: Organization structure information
         output_path: Directory to write Terraform files to
-        enabled_checks: Set of enabled RCP check names
         aoss_third_party_account_ids: Optional list of AOSS third-party account IDs
     """
     ou_info = organization_hierarchy.organizational_units.get(ou_id)
@@ -459,7 +451,6 @@ def _generate_ou_rcp_terraform(
         target_id_reference=f"local.top_level_{ou_name}_ou_id",
         third_party_account_ids=rec.third_party_account_ids,
         comment=f"OU {ou_info.name}",
-        enabled_checks=enabled_checks,
         aoss_third_party_account_ids=aoss_third_party_account_ids,
     )
     write_terraform_file(filepath, terraform_content, "RCP")
@@ -468,7 +459,6 @@ def _generate_ou_rcp_terraform(
 def _generate_root_rcp_terraform(
     rec: RCPPlacementRecommendations,
     output_path: Path,
-    enabled_checks: Set[str],
     aoss_third_party_account_ids: Optional[List[str]] = None,
 ) -> None:
     """
@@ -477,7 +467,6 @@ def _generate_root_rcp_terraform(
     Args:
         rec: RCP recommendation for root level
         output_path: Directory to write Terraform files to
-        enabled_checks: Set of enabled RCP check names
         aoss_third_party_account_ids: Optional list of AOSS third-party account IDs
     """
     filename = "root_rcps.tf"
@@ -488,7 +477,6 @@ def _generate_root_rcp_terraform(
         target_id_reference="local.root_ou_id",
         third_party_account_ids=rec.third_party_account_ids,
         comment="Organization Root",
-        enabled_checks=enabled_checks,
         aoss_third_party_account_ids=aoss_third_party_account_ids,
     )
     write_terraform_file(filepath, terraform_content, "RCP")
@@ -526,7 +514,6 @@ def generate_rcp_terraform(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_dir: str = "test_environment/rcps",
-    enabled_checks: Optional[Set[str]] = None,
     aoss_third_party_account_ids: Optional[List[str]] = None,
 ) -> None:
     """
@@ -536,15 +523,11 @@ def generate_rcp_terraform(
         recommendations: List of RCP placement recommendations
         organization_hierarchy: Organization structure information
         output_dir: Directory to write Terraform files to
-        enabled_checks: Optional set of enabled RCP check names
         aoss_third_party_account_ids: Optional list of AOSS third-party account IDs
     """
     if not recommendations:
         logger.info("No RCP recommendations to generate Terraform for")
         return
-
-    if enabled_checks is None:
-        enabled_checks = {THIRD_PARTY_ASSUMEROLE}
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -570,7 +553,6 @@ def generate_rcp_terraform(
             rec,
             organization_hierarchy,
             output_path,
-            enabled_checks,
             aoss_third_party_account_ids,
         )
 
@@ -581,7 +563,6 @@ def generate_rcp_terraform(
             rec,
             organization_hierarchy,
             output_path,
-            enabled_checks,
             aoss_third_party_account_ids,
         )
 
@@ -590,6 +571,5 @@ def generate_rcp_terraform(
         _generate_root_rcp_terraform(
             root_recommendation,
             output_path,
-            enabled_checks,
             aoss_third_party_account_ids,
         )

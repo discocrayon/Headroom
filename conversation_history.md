@@ -14498,3 +14498,85 @@ AOSS collections have high ongoing costs (~$700/month minimum per collection). T
 - Test Terraform included (not synthetic results files)
 - Similar structure to third_party_assumerole for consistency
 - Ready for integration with main analysis workflow
+
+---
+
+## 2025-11-14 00:13 - Code Quality Improvements and Policy Refinements
+
+### Changes Made
+
+1. **Removed `enabled_checks` Variable from RCP Generation**
+   - All RCP checks are now always enabled, simplifying the Terraform generation logic
+   - Removed `enabled_checks` parameter from all RCP generation functions:
+     - `_build_rcp_terraform_module()`
+     - `_generate_account_rcp_terraform()`
+     - `_generate_ou_rcp_terraform()`
+     - `_generate_root_rcp_terraform()`
+     - `generate_rcp_terraform()`
+   - AOSS check is now always set to `deny_aoss_third_party_access = true` in generated Terraform
+
+2. **Improved Resource Name Parsing in `headroom/aws/aoss.py`**
+   - Added clear before/after example comments:
+     - `# e.g. collection/my-collection --> my-collection`
+     - `# e.g. index/my-collection/* --> my-collection`
+   - Enhanced inline comments to explain parsing logic more clearly
+
+3. **Changed ResourceType Handling to Fail Loudly**
+   - Replaced `rule.get("ResourceType", "unknown")` with explicit validation
+   - Now raises `ValueError` if `ResourceType` field is missing from policy rule
+   - Error message: `"Policy '{policy_name}' is missing required 'ResourceType' field in rule"`
+
+4. **Added Resource Tag Exclusion to AOSS Policy**
+   - Added `"aws:ResourceTag/dp:exclude:identity" = "true"` condition to AOSS RCP policy
+   - Maintains consistency with the AssumeRole RCP policy pattern
+   - Updated in `test_environment/modules/rcps/locals.tf`
+
+5. **Removed `nullable = false` from All Terraform Variables**
+   - Removed from `test_environment/modules/rcps/variables.tf` (5 occurrences):
+     - `target_id`
+     - `third_party_assumerole_account_ids_allowlist`
+     - `enforce_assume_role_org_identities`
+     - `deny_aoss_third_party_access`
+     - `aoss_third_party_account_ids_allowlist`
+   - Removed from `test_environment/modules/scps/variables.tf` (1 occurrence):
+     - `target_id`
+
+### Files Modified
+
+- `headroom/terraform/generate_rcps.py` - Removed enabled_checks logic, simplified generation
+- `headroom/aws/aoss.py` - Improved comments, added ResourceType validation
+- `test_environment/modules/rcps/locals.tf` - Added resource tag exclusion condition
+- `test_environment/modules/rcps/variables.tf` - Removed nullable attributes
+- `test_environment/modules/scps/variables.tf` - Removed nullable attributes
+
+### Technical Details
+
+**RCP Terraform Generation Simplification:**
+- Eliminates conditional logic for check enablement
+- All checks are always included in generated Terraform
+- Reduces complexity and potential for misconfiguration
+
+**Fail-Loud ResourceType Validation:**
+```python
+if "ResourceType" not in rule:
+    raise ValueError(
+        f"Policy '{policy_name}' is missing required 'ResourceType' field in rule"
+    )
+resource_type = rule["ResourceType"]
+```
+
+**Enhanced Resource Tag Condition in AOSS Policy:**
+```hcl
+"Condition" = {
+  "StringNotEqualsIfExists" = {
+    "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+    "aws:PrincipalAccount" = var.aoss_third_party_account_ids_allowlist
+    "aws:ResourceTag/dp:exclude:identity" = "true"
+  }
+  "BoolIfExists" = {
+    "aws:PrincipalIsAWSService" = "false"
+  }
+}
+```
+
+This allows resources tagged with `dp:exclude:identity = true` to bypass the RCP restriction.
