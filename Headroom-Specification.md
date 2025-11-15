@@ -42,10 +42,13 @@
 
 ### 4. RCP Compliance Analysis
 - **Third-Party AssumeRole Check:** IAM trust policy analysis across organization
+- **AOSS Third-Party Access Check:** OpenSearch Serverless data access policy analysis
 - **ECR Third-Party Access Check:** ECR repository resource policy analysis across organization
 - Third-party account detection and wildcard principal identification
-- Principal type validation (AWS, Service, Federated)
+- Principal type validation (AWS, Service, Federated) for IAM trust policies
 - Organization baseline comparison for external account detection
+- Multi-region scanning for AOSS collections and indexes
+- Action-level tracking for third-party AOSS permissions
 - Multi-region ECR repository scanning with pagination support
 - ECR actions tracking per third-party account
 
@@ -81,6 +84,7 @@ headroom/
 ├── output.py                # User-facing output
 ├── types.py                 # Shared data models
 ├── aws/
+│   ├── aoss.py             # OpenSearch Serverless analysis
 │   ├── ec2.py              # EC2 analysis
 │   ├── ecr.py              # ECR repository policy analysis
 │   ├── rds.py              # RDS analysis
@@ -97,6 +101,8 @@ headroom/
 │   │   ├── deny_iam_user_creation.py
 │   │   └── deny_rds_unencrypted.py
 │   └── rcps/
+│       ├── deny_third_party_assumerole.py
+│       └── deny_aoss_third_party_access.py
 │       ├── deny_ecr_third_party_access.py
 │       └── deny_third_party_assumerole.py
 ├── placement/
@@ -275,6 +281,15 @@ class TrustPolicyAnalysis:
     third_party_account_ids: Set[str]   # Non-org account IDs
     has_wildcard_principal: bool        # True if Principal: "*"
 
+# aws/aoss.py
+@dataclass
+class AossResourcePolicyAnalysis:
+    resource_name: str                  # Collection or index name
+    resource_type: str                  # "collection" or "index"
+    resource_arn: str                   # Full ARN of AOSS resource
+    policy_name: str                    # Name of the access policy
+    third_party_account_ids: Set[str]   # Non-org account IDs
+    allowed_actions: List[str]          # AOSS actions allowed for third-parties
 # aws/ecr.py
 @dataclass
 class ECRRepositoryPolicyAnalysis:
@@ -1034,6 +1049,162 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
   ]
 }
 ```
+
+### AOSS Third-Party Access
+
+**Purpose:** Analyze OpenSearch Serverless data access policies to identify third-party (non-org) account access to collections and indexes.
+
+**Data Model:**
+```python
+@dataclass
+class AossResourcePolicyAnalysis:
+    resource_name: str                  # Collection or index name
+    resource_type: str                  # \"collection\" or \"index\"
+    resource_arn: str                   # Full ARN of AOSS resource
+    policy_name: str                    # Name of the access policy
+    third_party_account_ids: Set[str]   # External to organization
+    allowed_actions: List[str]          # AOSS actions allowed for third-parties
+```
+
+**Analysis Function:**
+```python
+# aws/aoss.py
+
+def analyze_aoss_resource_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str]
+) -> List[AossResourcePolicyAnalysis]:
+    \"\"\"
+    Analyze AOSS data access policies for third-party access.
+
+    Algorithm:
+    1. Get all enabled regions via describe_regions()
+    2. For each region:
+       a. List all data access policies via list_access_policies()
+       b. Get each policy's details via get_access_policy()
+       c. Parse policy JSON to extract principals and permissions
+       d. Extract account IDs from principals
+       e. Filter to third-party accounts (not in org)
+       f. Track which actions are allowed for each third-party account
+       g. Create AossResourcePolicyAnalysis for each resource
+    3. Return all findings across all regions
+
+    Raises:
+    - ClientError: If AWS API calls fail
+    - ValueError: If ResourceType field is missing from policy rule
+    \"\"\"
+
+def _extract_account_ids_from_principals(principals: List[str]) -> Set[str]:
+    \"\"\"
+    Extract AWS account IDs from AOSS policy principals.
+
+    Handles:
+    - ARN format: arn:aws:iam::123456789012:root
+    - Plain format: 123456789012
+
+    Returns: Set of 12-digit account IDs
+    \"\"\"
+
+def _analyze_access_policy(
+    policy_name: str,
+    policy_document: str,
+    org_account_ids: Set[str],
+    region: str,
+    account_id: str,
+) -> List[AossResourcePolicyAnalysis]:
+    \"\"\"
+    Analyze a single AOSS access policy for third-party access.
+
+    AOSS Policy Structure:
+    - List of policy statements
+    - Each statement has Principal list and Rules list
+    - Each rule has Resource, ResourceType, and Permission fields
+
+    Resource Parsing:
+    - e.g. collection/my-collection --> my-collection
+    - e.g. index/my-collection/* --> my-collection
+
+    Fail-Loud: Raises ValueError if ResourceType field is missing
+    \"\"\"
+```
+
+**Check Implementation:**
+```python
+# checks/rcps/deny_aoss_third_party_access.py
+
+class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
+    def __init__(self, org_account_ids: Set[str], **kwargs):
+        super().__init__(**kwargs)
+        self.org_account_ids = org_account_ids
+        self.all_third_party_accounts: Set[str] = set()
+        self.actions_by_account: Dict[str, Set[str]] = {}
+
+    def analyze(self, session):
+        return analyze_aoss_resource_policies(session, self.org_account_ids)
+
+    def categorize_result(self, result):
+        # All third-party access categorized as \"compliant\" (allowlisting pattern)
+        # Track accounts and actions for summary aggregation
+        self.all_third_party_accounts.update(result.third_party_account_ids)
+        for account_id in result.third_party_account_ids:
+            if account_id not in self.actions_by_account:
+                self.actions_by_account[account_id] = set()
+            self.actions_by_account[account_id].update(result.allowed_actions)
+        return (\"compliant\", ...)
+
+    def build_summary_fields(self, check_result):
+        # Convert actions sets to sorted lists for JSON serialization
+        return {
+            \"total_resources_with_third_party_access\": total,
+            \"third_party_account_count\": len(self.all_third_party_accounts),
+            \"unique_third_party_accounts\": sorted(self.all_third_party_accounts),
+            \"actions_by_third_party_account\": {
+                account: sorted(actions)
+                for account, actions in self.actions_by_account.items()
+            }
+        }
+```
+
+**Result JSON Schema:**
+```json
+{
+  \"summary\": {
+    \"account_name\": \"string\",
+    \"account_id\": \"string\",
+    \"check\": \"deny_aoss_third_party_access\",
+    \"total_resources_with_third_party_access\": 2,
+    \"third_party_account_count\": 2,
+    \"unique_third_party_accounts\": [\"999888777666\", \"111222333444\"],
+    \"actions_by_third_party_account\": {
+      \"999888777666\": [\"aoss:ReadDocument\", \"aoss:WriteDocument\"],
+      \"111222333444\": [\"aoss:ReadDocument\"]
+    }
+  },
+  \"violations\": [],
+  \"exemptions\": [],
+  \"resources_with_third_party_access\": [
+    {
+      \"resource_name\": \"analytics-collection\",
+      \"resource_type\": \"collection\",
+      \"resource_arn\": \"arn:aws:aoss:us-east-1:111111111111:collection/analytics-collection\",
+      \"policy_name\": \"vendor-access-policy\",
+      \"third_party_account_ids\": [\"999888777666\"],
+      \"allowed_actions\": [\"aoss:ReadDocument\", \"aoss:WriteDocument\"]
+    },
+    {
+      \"resource_name\": \"logs-index\",
+      \"resource_type\": \"index\",
+      \"resource_arn\": \"arn:aws:aoss:us-west-2:111111111111:index/logs-index\",
+      \"policy_name\": \"partner-access-policy\",
+      \"third_party_account_ids\": [\"111222333444\"],
+      \"allowed_actions\": [\"aoss:ReadDocument\"]
+    }
+  ]
+}
+```
+
+**Custom Result Structure:**
+The AOSS check uses a custom `_build_results_data()` method to rename \"compliant_instances\" to \"resources_with_third_party_access\" for better clarity.
 
 ---
 
@@ -1884,6 +2055,7 @@ DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 
 _CHECK_TYPE_MAP: Dict[str, str] = {}
 
@@ -1907,6 +2079,7 @@ def get_check_type_map() -> Dict[str, str]:
 
 # Derived sets
 SCP_CHECK_NAMES = {DENY_IMDS_V1_EC2, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
+RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_AOSS_THIRD_PARTY_ACCESS}
 RCP_CHECK_NAMES = {DENY_ECR_THIRD_PARTY_ACCESS, THIRD_PARTY_ASSUMEROLE}
 ```
 
@@ -2006,7 +2179,7 @@ class OutputHandler:
 ## Quality Standards
 
 ### Testing Requirements
-- **Coverage:** 100% (370 tests, 1277 statements in headroom/)
+- **Coverage:** 100% (432 tests covering all code paths)
 - **Test Categories:**
   - Unit tests for individual functions
   - Integration tests for end-to-end workflows
@@ -2140,6 +2313,8 @@ test_environment/
 │   │   └── deny_rds_unencrypted/
 │   │       └── {account_name}.json
 │   └── rcps/
+│       ├── deny_aoss_third_party_access/
+│       │   └── {account_name}.json
 │       └── third_party_assumerole/
 │           └── {account_name}.json
 ├── test_deny_imds_v1_ec2/               # EC2 instances (expensive, separate directory)

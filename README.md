@@ -213,6 +213,7 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 
 [Current RCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/rcps):
 - **Third-Party AssumeRole Check**: Analyzes IAM role trust policies to identify third-party account access. Detects wildcard principals that require CloudTrail analysis.
+- **AOSS Third-Party Access Check**: Analyzes OpenSearch Serverless data access policies to identify third-party account access to collections and indexes.
 - **ECR Third-Party Access Check**: Analyzes ECR repository resource policies to identify third-party account access. Tracks specific ECR actions allowed per third-party account. Includes fail-fast validation for unsupported principal types.
 
 All checks have:
@@ -309,6 +310,8 @@ The tool generates:
 - **JSON Results**:
   - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_aoss_third_party_access/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_eks_create_cluster_without_tag/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_rds_unencrypted/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/deny_ecr_third_party_access/{account_name}_{account_id}.json`
@@ -343,6 +346,8 @@ headroom/
 │   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
 │   │   └── deny_rds_unencrypted.py  # RDS encryption check
 │   └── rcps/      # Resource Control Policy checks
+│       ├── deny_third_party_assumerole.py  # Third-party IAM AssumeRole check
+│       └── deny_aoss_third_party_access.py  # Third-party AOSS access check
 │       ├── deny_ecr_third_party_access.py  # ECR third-party access check
 │       └── deny_third_party_assumerole.py  # IAM third-party access check
 ├── terraform/     # Terraform generation
