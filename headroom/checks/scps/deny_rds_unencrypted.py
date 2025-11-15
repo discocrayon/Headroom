@@ -1,11 +1,12 @@
 """Check for RDS databases that violate the deny_rds_unencrypted SCP."""
 
-from typing import Any, Dict, List
+from typing import List
 
 import boto3
 
 from ...aws.rds import DenyRdsUnencrypted, get_rds_unencrypted_analysis
 from ...constants import DENY_RDS_UNENCRYPTED
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -36,7 +37,7 @@ class DenyRdsUnencryptedCheck(BaseCheck[DenyRdsUnencrypted]):
     def categorize_result(
         self,
         result: DenyRdsUnencrypted
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[str, JsonDict]:
         """
         Categorize a single RDS encryption result.
 
@@ -65,7 +66,7 @@ class DenyRdsUnencryptedCheck(BaseCheck[DenyRdsUnencrypted]):
     def build_summary_fields(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build RDS encryption check-specific summary fields.
 

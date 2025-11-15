@@ -8,6 +8,9 @@ module "scps_acme_acquisition_ou" {
   # EC2
   deny_imds_v1_ec2 = true
 
+  # EKS
+  deny_eks_create_cluster_without_tag = false
+
   # IAM
   deny_iam_user_creation = false
 

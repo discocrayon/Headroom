@@ -1,11 +1,12 @@
 """Check for IAM users that exist in accounts with the deny_iam_user_creation SCP."""
 
-from typing import Any, Dict, List
+from typing import List
 
 import boto3
 
 from ...aws.iam.users import IamUserAnalysis, get_iam_users_analysis
 from ...constants import DENY_IAM_USER_CREATION
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -31,7 +32,7 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
         """
         return get_iam_users_analysis(session)
 
-    def categorize_result(self, result: IamUserAnalysis) -> tuple[str, Dict[str, Any]]:
+    def categorize_result(self, result: IamUserAnalysis) -> tuple[str, JsonDict]:
         """
         Categorize a single IAM user analysis result.
 
@@ -42,7 +43,7 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
             Tuple of (category, result_dict) where category is "compliant"
             (we're just listing users, not evaluating them)
         """
-        result_dict = {
+        result_dict: JsonDict = {
             "user_name": result.user_name,
             "user_arn": result.user_arn,
             "path": result.path,
@@ -50,7 +51,7 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
 
         return ("compliant", result_dict)
 
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build IAM user check-specific summary fields.
 
