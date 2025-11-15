@@ -20,6 +20,8 @@ DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 
 # RCP Checks (alphabetical by service)
+# ECR
+DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 # IAM
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
 

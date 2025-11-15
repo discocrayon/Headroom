@@ -382,9 +382,28 @@ This check identifies EC2 instances with IMDSv1 enabled. The SCP denies IMDSv1 c
 1. Deny modification of IAM role delivery to less than version 2.0 (unless principal has exemption tag)
 2. Deny launching instances with `MetadataHttpTokens != "required"` (unless request has exemption tag)
 
+### Pattern 5a: `deny_ecr_third_party_access`
+
+**Check:** `headroom/checks/rcps/deny_ecr_third_party_access.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf` lines 3-26
+**Variable:** `deny_ecr_third_party_access_account_ids_allowlist`
+
+This RCP restricts ECR repository access to organization principals and explicitly allowlisted third-party account IDs. It analyzes ECR repository resource policies to identify external account access patterns.
+
+**Policy Structure:**
+- Deny `ecr:*` actions
+- Unless `aws:PrincipalOrgID` matches the organization OR `aws:PrincipalAccount` is in the allowlist
+- Excludes AWS service principals
+
+**Headroom's Role:** Scans all accounts and analyzes ECR repository policies, identifying which third-party accounts have access and which ECR actions they can perform. This informs the allowlist configuration for RCP deployment. The check also detects wildcard principals that would block RCP deployment.
+
+**Key Feature:** Tracks which specific ECR actions (e.g., `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`) each third-party account is granted, enabling precise understanding of access patterns.
+
+**Fail-Fast Validation:** If any ECR repository policy contains a Federated principal (or other unsupported principal types), the check immediately fails with a clear error message, as these would break when the RCP is deployed.
+
 ### Pattern 5a: `enforce_assume_role_org_identities`
 
-**Terraform:** `test_environment/modules/rcps/locals.tf` lines 3-27
+**Terraform:** `test_environment/modules/rcps/locals.tf` lines 27-51
 **Variable:** `third_party_assumerole_account_ids_allowlist`
 
 This RCP restricts role assumptions to organization principals and explicitly allowlisted third-party account IDs. It uses `aws:PrincipalOrgID` and `aws:PrincipalAccount` conditions.

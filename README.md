@@ -213,6 +213,7 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 
 [Current RCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/rcps):
 - **Third-Party AssumeRole Check**: Analyzes IAM role trust policies to identify third-party account access. Detects wildcard principals that require CloudTrail analysis.
+- **ECR Third-Party Access Check**: Analyzes ECR repository resource policies to identify third-party account access. Tracks specific ECR actions allowed per third-party account. Includes fail-fast validation for unsupported principal types.
 
 All checks have:
 - **Current State Checking**: Scans all AWS regions (SCPs) or analyzes IAM policies (RCPs) with pagination support to check the current state against the intended policy.
@@ -406,6 +407,16 @@ headroom/
 - **Detection**: Identifies third-party account IDs and wildcard principals
 - **Output**: Detailed role trust policy analysis with third-party account lists
 - **Allowlisting**: Generates allowlists for RCP modules to permit known third-party access
+
+#### ECR Third-Party Access Analysis
+- **Check Name**: `deny_ecr_third_party_access`
+- **Purpose**: Identifies ECR repositories with resource policies allowing external account access
+- **Detection**: Extracts third-party account IDs from ECR repository policies, detects wildcard principals
+- **Multi-Region Support**: Scans all enabled AWS regions for ECR repositories
+- **Actions Tracking**: Tracks specific ECR actions (e.g., `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`) allowed per third-party account
+- **Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected in ECR policies
+- **Output**: Detailed repository policy analysis with third-party accounts and allowed actions
+- **Allowlisting**: Generates allowlists for RCP modules to permit known third-party ECR access
 
 ### Execution Flow
 
