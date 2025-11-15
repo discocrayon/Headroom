@@ -130,6 +130,10 @@ Specify allowed IAM user ARNs using the format: `arn:aws:iam::ACCOUNT_ID:user/US
 
 Example: `arn:aws:iam::444444444444:user/terraform-user`
 
+### Root LeaveOrganization Protection
+
+When the module target is the organization root (values such as `r-root`), a guardrail statement is always included that denies `organizations:LeaveOrganization` for all principals. This prevents detaching the root from the organization, even when no optional checks are enabled.
+
 ## Resources Created
 
 When at least one policy is enabled:
