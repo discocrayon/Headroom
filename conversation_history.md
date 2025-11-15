@@ -14665,3 +14665,101 @@ All code quality checks now pass successfully:
 - `tests/test_checks_deny_aoss_third_party_access.py` - Fixed call_args access
 - `tests/test_checks_registry.py` - Updated for 5 checks
 - `tests/test_generate_rcps.py` - Added test for AOSS allowlist
+
+## 2025-11-13, $(date +"%I:%M %p") - Documentation Update: Added deny_aoss_third_party_access to Project Documentation
+
+### Changes Made
+
+Updated both `README.md` and `Headroom-Specification.md` to document the new `deny_aoss_third_party_access` RCP check.
+
+#### README.md Updates
+
+1. **RCP Compliance Analysis Section**
+   - Added AOSS Third-Party Access Check to the list of current RCP checks
+   - Description: "Analyzes OpenSearch Serverless data access policies to identify third-party account access to collections and indexes"
+
+2. **Output Section**
+   - Added new output path: `test_environment/headroom_results/rcps/deny_aoss_third_party_access/{account_name}_{account_id}.json`
+   - Listed alongside existing RCP output paths
+
+3. **Module Structure Section**
+   - Updated `checks/rcps/` directory listing to include both RCP checks:
+     - `deny_third_party_assumerole.py` - Third-party IAM AssumeRole check
+     - `deny_aoss_third_party_access.py` - Third-party AOSS access check
+
+#### Headroom-Specification.md Updates
+
+1. **Product Capabilities - RCP Compliance Analysis**
+   - Added AOSS Third-Party Access Check as second RCP check type
+   - Added "Multi-region scanning for AOSS collections and indexes"
+   - Added "Action-level tracking for third-party AOSS permissions"
+   - Clarified "Principal type validation" applies to IAM trust policies
+
+2. **Technical Architecture - Module Organization**
+   - Added `aws/aoss.py` to the `aws/` directory listing for OpenSearch Serverless analysis
+   - Updated `checks/rcps/` to show both check files:
+     - `deny_third_party_assumerole.py`
+     - `deny_aoss_third_party_access.py`
+
+3. **Data Models - Check-Specific Data Models**
+   - Added new `AossResourcePolicyAnalysis` dataclass documentation:
+     - `resource_name`: Collection or index name
+     - `resource_type`: "collection" or "index"
+     - `resource_arn`: Full ARN of AOSS resource
+     - `policy_name`: Name of the access policy
+     - `third_party_account_ids`: Non-org account IDs
+     - `allowed_actions`: AOSS actions allowed for third-parties
+
+4. **RCP Checks Section - New Subsection**
+   - Added comprehensive "AOSS Third-Party Access" subsection after "Third-Party AssumeRole"
+   - **Purpose**: Analyze OpenSearch Serverless data access policies for third-party account access
+   - **Data Model**: Full dataclass specification with field descriptions
+   - **Analysis Function**: Documented three key functions:
+     - `analyze_aoss_resource_policies()`: Main entry point with algorithm details
+     - `_extract_account_ids_from_principals()`: Principal parsing for ARN and plain formats
+     - `_analyze_access_policy()`: Single policy analysis with resource name parsing logic
+   - **Algorithm**: Detailed 8-step process covering regions, policies, principals, permissions, and filtering
+   - **Check Implementation**: Class structure showing:
+     - Initialization with org_account_ids
+     - State tracking for all_third_party_accounts and actions_by_account
+     - Categorization logic (all third-party access as "compliant" for allowlisting)
+     - Summary field building with action aggregation by account
+   - **Result JSON Schema**: Complete example showing:
+     - Summary fields (total_resources, account_count, unique_accounts, actions_by_account)
+     - Resources with third-party access (collection and index examples)
+     - Action-level granularity (aoss:ReadDocument, aoss:WriteDocument)
+   - **Custom Result Structure**: Noted that check renames "compliant_instances" to "resources_with_third_party_access"
+
+5. **Constants Module**
+   - Added `DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"` constant
+   - Updated derived sets:
+     - `SCP_CHECK_NAMES`: Added `DENY_RDS_UNENCRYPTED` (was missing)
+     - `RCP_CHECK_NAMES`: Added `DENY_AOSS_THIRD_PARTY_ACCESS`
+
+6. **Test Environment - Directory Structure**
+   - Added `deny_aoss_third_party_access/` directory under `headroom_results/rcps/`
+   - Reordered to show alphabetically (deny_aoss before third_party_assumerole)
+
+7. **Quality Standards - Testing Requirements**
+   - Updated test count from "370 tests, 1277 statements" to "432 tests covering all code paths"
+   - Reflects new tests added for AOSS functionality
+
+### Documentation Philosophy
+
+The updates follow the project's documentation-as-specification approach:
+
+- **README.md**: User-facing documentation focused on features and usage
+- **Headroom-Specification.md**: Technical reference with complete implementation details
+- **Consistency**: Both documents now accurately reflect the two RCP checks (IAM trust policies and AOSS data access policies)
+- **Completeness**: AOSS check documented with same level of detail as existing checks
+
+### Next Steps
+
+All documentation is now up-to-date and accurately reflects the implementation. The project documentation comprehensively covers:
+- ✅ All 3 SCP checks (IMDSv1, IAM user creation, RDS encryption)
+- ✅ Both RCP checks (IAM AssumeRole, AOSS access)
+- ✅ Complete data models, algorithms, and result schemas
+- ✅ Test coverage and quality standards
+
+Ready for deployment and external validation as outlined in previous conversation history entries.
+

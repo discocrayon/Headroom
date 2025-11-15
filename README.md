@@ -211,6 +211,7 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 
 [Current RCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/rcps):
 - **Third-Party AssumeRole Check**: Analyzes IAM role trust policies to identify third-party account access. Detects wildcard principals that require CloudTrail analysis.
+- **AOSS Third-Party Access Check**: Analyzes OpenSearch Serverless data access policies to identify third-party account access to collections and indexes.
 
 All checks have:
 - **Current State Checking**: Scans all AWS regions (SCPs) or analyzes IAM policies (RCPs) with pagination support to check the current state against the intended policy.
@@ -307,6 +308,7 @@ The tool generates:
   - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_aoss_third_party_access/{account_name}_{account_id}.json`
 - **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
   - `test_environment/rcps/grab_org_info.tf`
@@ -332,7 +334,8 @@ headroom/
 │   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
 │   │   └── deny_iam_user_creation.py  # IAM user creation check
 │   └── rcps/      # Resource Control Policy checks
-│       └── check_third_party_assumerole.py  # Third-party access check
+│       ├── deny_third_party_assumerole.py  # Third-party IAM AssumeRole check
+│       └── deny_aoss_third_party_access.py  # Third-party AOSS access check
 ├── terraform/     # Terraform generation
 │   ├── generate_org_info.py  # Organization data sources
 │   ├── generate_scps.py      # SCP configurations
