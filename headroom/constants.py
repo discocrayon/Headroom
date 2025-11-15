@@ -10,13 +10,18 @@ from typing import Dict
 
 # SCP Checks (alphabetical by service)
 # EC2
+DENY_EC2_AMI_OWNER = "deny_ec2_ami_owner"
 DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
+# EKS
+DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG = "deny_eks_create_cluster_without_tag"
 # IAM
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 # RDS
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 
 # RCP Checks (alphabetical by service)
+# ECR
+DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 # IAM
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
 # OpenSearch Serverless

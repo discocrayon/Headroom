@@ -5595,7 +5595,6 @@ The refactored `generate_scp_terraform()` is now a simple orchestrator (47 lines
 ### Test Results
 
 ```
-============================= 284 passed in 0.75s ==============================
 ```
 
 - **Total tests**: 284 (16 new tests added)
@@ -5740,7 +5739,6 @@ Removed `# type: ignore` from ClientError imports in:
 ### Test Results
 
 ```
-============================= 284 passed in 0.80s ==============================
 ```
 
 - **All 284 tests passing** ✅
@@ -5924,7 +5922,6 @@ _extract_account_id_from_result()  <-- SHARED: Unified account ID extraction
 ### Test Results
 
 ```
-============================= 284 passed in 0.98s ==============================
 ```
 
 - **All 284 tests passing** ✅
@@ -6513,9 +6510,7 @@ Implement Option 3 (unified printing function for both SCP and RCP recommendatio
 
 **Output Format:**
 ```
-================================================================================
 RCP PLACEMENT RECOMMENDATIONS
-================================================================================
 
 Check: third_party_assumerole
 
@@ -8375,7 +8370,6 @@ def get_security_analysis_session(config: HeadroomConfig) -> boto3.Session:
 
 All 317 tests pass:
 ```
-============================= 317 passed in 1.00s ==============================
 ```
 
 Coverage maintained at 99%+ (session management module has 100% coverage).
@@ -9326,7 +9320,6 @@ All tests now expect `ClientError` to propagate naturally instead of being wrapp
 
 All 313 tests pass:
 ```
-============================= 313 passed in 0.51s ==============================
 ```
 
 ### Files Modified
@@ -9429,7 +9422,6 @@ Updated `tests/test_aws_ec2.py`:
 
 All 313 tests pass:
 ```
-============================= 313 passed in 0.45s ==============================
 ```
 
 ### Final Status
@@ -9478,7 +9470,6 @@ Added `# type: ignore[attr-defined]` comments to suppress mypy warnings about dy
 ✅ **100% code coverage** for `tests/` (3139 statements, 0 missed)
 
 ```
-============================= 321 passed in 0.73s ==============================
 ------------------------------------------------------------------------------------
 TOTAL                                                   1165      0   100%
 ------------------------------------------------------------------------------------
@@ -9763,7 +9754,6 @@ elif candidate.level == "ou" and candidate.target_id is not None:
 All 321 tests pass with 100% code coverage:
 
 ```bash
-============================= 321 passed in 0.75s ======================
 headroom/*: 1163 statements, 100% coverage
 tests/*: 3138 statements, 100% coverage
 mypy headroom/ tests/: Success: no issues found in 46 source files
@@ -9837,7 +9827,6 @@ The `# noqa: F401` comment tells flake8 to ignore "imported but unused" warnings
 All tests pass with 100% coverage:
 
 ```bash
-============================= 321 passed in 0.70s ==============================
 
 headroom/*: 1165 statements, 100% coverage
 tests/*: 3138 statements, 100% coverage
