@@ -96,6 +96,7 @@ class SCPPlacementRecommendations:
     compliance_percentage: float
     reasoning: str
     allowed_iam_user_arns: Optional[List[str]] = None
+    allowed_ami_owners: Optional[List[str]] = None
 
 
 @dataclass
