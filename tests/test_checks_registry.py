@@ -37,9 +37,10 @@ class TestGetAllCheckClasses:
     def test_get_all_check_classes_no_filter(self) -> None:
         """Test getting all check classes without filter."""
         all_checks = get_all_check_classes()
-        assert len(all_checks) == 4
+        assert len(all_checks) == 5
         check_names = {cls.CHECK_NAME for cls in all_checks}
         assert "deny_imds_v1_ec2" in check_names
+        assert "deny_eks_create_cluster_without_tag" in check_names
         assert "deny_iam_user_creation" in check_names
         assert "deny_rds_unencrypted" in check_names
         assert "third_party_assumerole" in check_names
@@ -47,9 +48,10 @@ class TestGetAllCheckClasses:
     def test_get_all_check_classes_filter_by_scps(self) -> None:
         """Test getting check classes filtered by scps."""
         scp_checks = get_all_check_classes("scps")
-        assert len(scp_checks) == 3
+        assert len(scp_checks) == 4
         check_names = {cls.CHECK_NAME for cls in scp_checks}
         assert "deny_imds_v1_ec2" in check_names
+        assert "deny_eks_create_cluster_without_tag" in check_names
         assert "deny_iam_user_creation" in check_names
         assert "deny_rds_unencrypted" in check_names
         for check in scp_checks:
@@ -71,7 +73,8 @@ class TestGetCheckTypeMap:
         type_map = get_check_type_map()
         assert isinstance(type_map, dict)
         assert type_map["deny_imds_v1_ec2"] == "scps"
+        assert type_map["deny_eks_create_cluster_without_tag"] == "scps"
         assert type_map["deny_iam_user_creation"] == "scps"
         assert type_map["deny_rds_unencrypted"] == "scps"
         assert type_map["third_party_assumerole"] == "rcps"
-        assert len(type_map) == 4
+        assert len(type_map) == 5

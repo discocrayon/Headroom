@@ -54,6 +54,24 @@ locals {
         }
       }
     },
+    # var.deny_eks_create_cluster_without_tag
+    # -->
+    # Sid: DenyEksCreateClusterWithoutTag
+    # Denies EKS cluster creation unless PavedRoad=true tag is present
+    # Encourages use of approved automation (paved road approach)
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonelastickubernetesservice.html
+    {
+      include = var.deny_eks_create_cluster_without_tag,
+      statement = {
+        Action   = "eks:CreateCluster"
+        Resource = "*"
+        Condition = {
+          "StringNotEquals" = {
+            "aws:RequestTag/PavedRoad" = "true"
+          }
+        }
+      }
+    },
     # var.deny_iam_user_creation
     # -->
     # Sid: DenyIamUserCreation
@@ -101,6 +119,17 @@ locals {
         }
       }
     },
+      # Automatic root guardrail
+      # -->
+      # Sid: DenyRootLeaveOrganization
+      # Applies when module target is the root (IDs prefixed with r-)
+      {
+        include = startswith(var.target_id, "r-"),
+        statement = {
+          Action   = "organizations:LeaveOrganization"
+          Resource = "*"
+        }
+      },
   ]
   # Included SCP 1 Deny Statements
   included_scp_1_deny_statements = [

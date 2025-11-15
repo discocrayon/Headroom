@@ -2229,7 +2229,7 @@ These lessons were learned during the implementation of the `deny_rds_unencrypte
 2. Read complete list of RDS actions and their condition key columns
 3. Found only 3 actions explicitly list `rds:StorageEncrypted`:
    - `rds:CreateDBCluster` ✅
-   - `rds:RestoreDBClusterFromS3` ✅  
+   - `rds:RestoreDBClusterFromS3` ✅
    - `rds:CreateBlueGreenDeployment` ✅
 4. Confirmed `rds:CreateDBInstance` does NOT list it ❌
 
