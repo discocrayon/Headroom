@@ -20,6 +20,13 @@ variable "deny_imds_v1_ec2" {
   type = bool
 }
 
+# EKS
+
+variable "deny_eks_create_cluster_without_tag" {
+  type        = bool
+  description = "Deny EKS cluster creation unless PavedRoad=true tag is present"
+}
+
 # IAM
 
 variable "deny_iam_user_creation" {
