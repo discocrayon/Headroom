@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import List
 
+from .models import TerraformModule, TerraformParameter, TerraformComment, TerraformElement
 from .utils import make_safe_variable_name, write_terraform_file
 from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlacementRecommendations
 
@@ -78,78 +79,90 @@ def _get_allowed_iam_user_arns(
     return []
 
 
-def _build_ec2_terraform_section(
+def _build_ec2_terraform_parameters(
     enabled_checks: set[str],
     recommendations: List[SCPPlacementRecommendations]
-) -> str:
-    """Build EC2 section of Terraform configuration."""
-    lines = ["  # EC2\n"]
+) -> List[TerraformElement]:
+    """
+    Build EC2 parameters for Terraform configuration.
 
+    Returns:
+        List of TerraformElement objects for EC2 checks
+    """
+    parameters: List[TerraformElement] = []
+
+    parameters.append(TerraformComment("EC2"))
     deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_checks
-    lines.append(f"  deny_ec2_ami_owner = {str(deny_ec2_ami_owner).lower()}\n")
+    parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
 
     if deny_ec2_ami_owner:
         allowed_ami_owners = _get_allowed_ami_owners(recommendations)
-        if allowed_ami_owners:
-            lines.append("  allowed_ami_owners = [\n")
-            for owner in allowed_ami_owners:
-                lines.append(f'    "{owner}",\n')
-            lines.append("  ]\n")
-        else:
-            lines.append("  allowed_ami_owners = []\n")
+        parameters.append(TerraformParameter("allowed_ami_owners", allowed_ami_owners))
 
     deny_imds_v1_ec2 = "deny_imds_v1_ec2" in enabled_checks
-    lines.append(f"  deny_imds_v1_ec2 = {str(deny_imds_v1_ec2).lower()}\n")
-    lines.append("\n")
+    parameters.append(TerraformParameter("deny_imds_v1_ec2", deny_imds_v1_ec2))
 
-    return "".join(lines)
+    return parameters
 
 
-def _build_eks_terraform_section(enabled_checks: set[str]) -> str:
-    """Build EKS section of Terraform configuration."""
-    lines = ["  # EKS\n"]
+def _build_eks_terraform_parameters(enabled_checks: set[str]) -> List[TerraformElement]:
+    """
+    Build EKS parameters for Terraform configuration.
 
+    Returns:
+        List of TerraformElement objects for EKS checks
+    """
+    parameters: List[TerraformElement] = []
+
+    parameters.append(TerraformComment("EKS"))
     deny_eks_create_cluster_without_tag = "deny_eks_create_cluster_without_tag" in enabled_checks
-    lines.append(f"  deny_eks_create_cluster_without_tag = {str(deny_eks_create_cluster_without_tag).lower()}\n")
-    lines.append("\n")
+    parameters.append(TerraformParameter("deny_eks_create_cluster_without_tag", deny_eks_create_cluster_without_tag))
 
-    return "".join(lines)
+    return parameters
 
 
-def _build_iam_terraform_section(
+def _build_iam_terraform_parameters(
     enabled_checks: set[str],
     recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy
-) -> str:
-    """Build IAM section of Terraform configuration."""
-    lines = ["  # IAM\n"]
+) -> List[TerraformElement]:
+    """
+    Build IAM parameters for Terraform configuration.
 
+    Returns:
+        List of TerraformElement objects for IAM checks
+    """
+    parameters: List[TerraformElement] = []
+
+    parameters.append(TerraformComment("IAM"))
     deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks
-    lines.append(f"  deny_iam_user_creation = {str(deny_iam_user_creation).lower()}\n")
+    parameters.append(TerraformParameter("deny_iam_user_creation", deny_iam_user_creation))
 
     if deny_iam_user_creation:
         allowed_iam_user_arns = _get_allowed_iam_user_arns(recommendations)
-        if allowed_iam_user_arns:
-            lines.append("  allowed_iam_users = [\n")
-            for arn in allowed_iam_user_arns:
-                transformed_arn = _replace_account_id_in_arn(arn, organization_hierarchy)
-                lines.append(f'    "{transformed_arn}",\n')
-            lines.append("  ]\n")
-        else:
-            lines.append("  allowed_iam_users = []\n")
+        transformed_arns = [
+            _replace_account_id_in_arn(arn, organization_hierarchy)
+            for arn in allowed_iam_user_arns
+        ]
+        parameters.append(TerraformParameter("allowed_iam_users", transformed_arns))
 
-    lines.append("\n")
-    return "".join(lines)
+    return parameters
 
 
-def _build_rds_terraform_section(enabled_checks: set[str]) -> str:
-    """Build RDS section of Terraform configuration."""
-    lines = ["  # RDS\n"]
+def _build_rds_terraform_parameters(enabled_checks: set[str]) -> List[TerraformElement]:
+    """
+    Build RDS parameters for Terraform configuration.
 
+    Returns:
+        List of TerraformElement objects for RDS checks
+    """
+    parameters: List[TerraformElement] = []
+
+    parameters.append(TerraformComment("RDS"))
     deny_rds_unencrypted = "deny_rds_unencrypted" in enabled_checks
-    lines.append(f"  deny_rds_unencrypted = {str(deny_rds_unencrypted).lower()}\n")
+    parameters.append(TerraformParameter("deny_rds_unencrypted", deny_rds_unencrypted))
 
-    return "".join(lines)
+    return parameters
 
 
 def _build_scp_terraform_module(
@@ -174,22 +187,24 @@ def _build_scp_terraform_module(
     """
     enabled_checks = _get_safe_to_enable_checks(recommendations)
 
-    terraform_content = f'''# Auto-generated SCP Terraform configuration for {comment}
-# Generated by Headroom based on compliance analysis
+    parameters: List[TerraformElement] = []
+    parameters.extend(_build_ec2_terraform_parameters(enabled_checks, recommendations))
+    parameters.append(TerraformComment(""))
+    parameters.extend(_build_eks_terraform_parameters(enabled_checks))
+    parameters.append(TerraformComment(""))
+    parameters.extend(_build_iam_terraform_parameters(enabled_checks, recommendations, organization_hierarchy))
+    parameters.append(TerraformComment(""))
+    parameters.extend(_build_rds_terraform_parameters(enabled_checks))
 
-module "{module_name}" {{
-  source = "../modules/scps"
-  target_id = {target_id_reference}
+    module = TerraformModule(
+        name=module_name,
+        source="../modules/scps",
+        target_id=target_id_reference,
+        parameters=parameters,
+        comment=comment
+    )
 
-'''
-
-    terraform_content += _build_ec2_terraform_section(enabled_checks, recommendations)
-    terraform_content += _build_eks_terraform_section(enabled_checks)
-    terraform_content += _build_iam_terraform_section(enabled_checks, recommendations, organization_hierarchy)
-    terraform_content += _build_rds_terraform_section(enabled_checks)
-
-    terraform_content += "}\n"
-    return terraform_content
+    return module.render()
 
 
 def _generate_account_scp_terraform(

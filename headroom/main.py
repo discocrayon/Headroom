@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import HeadroomConfig
 from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session
-from .parse_results import parse_scp_results, print_policy_recommendations
+from .parse_results import analyze_scp_compliance, print_policy_recommendations
 from .terraform.generate_scps import generate_scp_terraform
 from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform, _create_org_info_symlink
 from .terraform.generate_org_info import generate_terraform_org_info
@@ -118,7 +118,7 @@ def handle_scp_workflow(final_config: HeadroomConfig, org_hierarchy: Organizatio
         final_config: Validated Headroom configuration
         org_hierarchy: Organization hierarchy structure
     """
-    scp_recommendations = parse_scp_results(final_config, org_hierarchy)
+    scp_recommendations = analyze_scp_compliance(final_config, org_hierarchy)
 
     if not scp_recommendations:
         return

@@ -502,12 +502,12 @@ def print_policy_recommendations(
             print("  " + "-" * 38)
 
 
-def parse_scp_results(
+def analyze_scp_compliance(
     config: HeadroomConfig,
     organization_hierarchy: OrganizationHierarchy
 ) -> List[SCPPlacementRecommendations]:
     """
-    Parse SCP results and determine optimal placement recommendations.
+    Analyze SCP compliance results and determine optimal placement recommendations.
 
     Main orchestration function that coordinates:
     1. Result file parsing
