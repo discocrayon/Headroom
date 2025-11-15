@@ -1,11 +1,12 @@
 """Check for EC2 instances that violate the deny_imds_v1_ec2 SCP."""
 
-from typing import Any, Dict, List
+from typing import List
 
 import boto3
 
 from ...aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
 from ...constants import DENY_IMDS_V1_EC2
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -33,7 +34,7 @@ class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
         """
         return get_imds_v1_ec2_analysis(session)
 
-    def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, Dict[str, Any]]:
+    def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, JsonDict]:
         """
         Categorize a single IMDS v1 analysis result.
 
@@ -61,7 +62,7 @@ class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
         else:
             return ("compliant", result_dict)
 
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build IMDS v1 check-specific summary fields.
 

@@ -8,6 +8,9 @@ module "scps_root" {
   # EC2
   deny_imds_v1_ec2 = false
 
+  # EKS
+  deny_eks_create_cluster_without_tag = true
+
   # IAM
   deny_iam_user_creation = true
   allowed_iam_users = [

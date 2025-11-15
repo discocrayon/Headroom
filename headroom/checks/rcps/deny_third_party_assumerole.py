@@ -5,12 +5,13 @@ This check identifies IAM roles with trust policies that allow principals
 from accounts outside the organization to assume them.
 """
 
-from typing import Any, Dict, List, Set
+from typing import Any, List, Set
 
 import boto3
 
 from ...aws.iam.roles import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
 from ...constants import THIRD_PARTY_ASSUMEROLE
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -78,7 +79,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             if result.has_wildcard_principal or result.third_party_account_ids
         ]
 
-    def categorize_result(self, result: TrustPolicyAnalysis) -> tuple[str, Dict[str, Any]]:
+    def categorize_result(self, result: TrustPolicyAnalysis) -> tuple[str, JsonDict]:
         """
         Categorize a single trust policy analysis result.
 
@@ -104,7 +105,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
         else:
             return ("compliant", result_dict)
 
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build third-party AssumeRole check-specific summary fields.
 
@@ -140,7 +141,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
         """
         super().execute(session)
 
-    def _build_results_data(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def _build_results_data(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build results data in the format expected by this check.
 
