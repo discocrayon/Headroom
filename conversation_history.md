@@ -14716,3 +14716,34 @@ All quality checks pass:
 - ✅ 100% code coverage for tests/ (4238 statements)
 - ✅ mypy: Success - no issues found in 60 source files
 - ✅ pre-commit: All hooks passed
+
+---
+
+## 2025-11-12: Documentation Update - Added EKS Check to README and Module Docs
+
+**User Request:**
+Add the new EKS check to documentation, specifically the README.
+
+**Changes Made:**
+
+1. README.md:
+   - Added "EKS Cluster Tag Check" to the SCP checks summary (line 208)
+   - Added result file path for deny_eks_create_cluster_without_tag (line 311)
+   - Added detailed "EKS Cluster Tag Analysis" section in Current Checks (lines 379-385)
+   - Updated Module Structure diagram to include eks.py and all 4 SCP checks (lines 327, 338-341)
+
+2. test_environment/modules/scps/README.md:
+   - Added deny_eks_create_cluster_without_tag to usage example (line 15)
+   - Added variable description in Security Policy Variables section (line 35)
+   - Added comprehensive "EKS Paved Road Enforcement" documentation section (lines 76-117) covering:
+     - Policy purpose and pattern
+     - Configuration examples (AWS CLI and Terraform)
+     - Tag matching requirements (case-sensitive, exact match)
+     - Usage guidelines for approved automation
+
+**Documentation Content:**
+- Described the check as enforcing "paved road approach" for EKS clusters
+- Explained requirement for PavedRoad=true tag to encourage blessed automation
+- Provided practical code examples for AWS CLI and Terraform
+- Noted case-sensitive, exact string matching requirements
+- Positioned as "Module Tag / Paved Road Pattern" implementation
