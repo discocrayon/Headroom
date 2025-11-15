@@ -310,7 +310,8 @@ The tool generates:
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_eks_create_cluster_without_tag/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_rds_unencrypted/{account_name}_{account_id}.json`
-  - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_ecr_third_party_access/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_third_party_assumerole/{account_name}_{account_id}.json`
 - **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
   - `test_environment/rcps/grab_org_info.tf`
@@ -324,6 +325,7 @@ The tool generates:
 headroom/
 ├── aws/           # AWS service integrations
 │   ├── ec2.py     # EC2 analysis functions
+│   ├── ecr.py     # ECR repository policy analysis
 │   ├── eks.py     # EKS analysis functions
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
@@ -340,7 +342,8 @@ headroom/
 │   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
 │   │   └── deny_rds_unencrypted.py  # RDS encryption check
 │   └── rcps/      # Resource Control Policy checks
-│       └── deny_third_party_assumerole.py  # Third-party access check
+│       ├── deny_ecr_third_party_access.py  # ECR third-party access check
+│       └── deny_third_party_assumerole.py  # IAM third-party access check
 ├── terraform/     # Terraform generation
 │   ├── generate_org_info.py  # Organization data sources
 │   ├── generate_scps.py      # SCP configurations
