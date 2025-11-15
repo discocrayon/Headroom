@@ -47,7 +47,15 @@
 - Principal type validation (AWS, Service, Federated, CanonicalUser)
 - Federated and CanonicalUser principal detection to prevent breaking SSO/SAML access
 - Action and resource tracking for third-party S3 access patterns
+- **AOSS Third-Party Access Check:** OpenSearch Serverless data access policy analysis
+- **ECR Third-Party Access Check:** ECR repository resource policy analysis across organization
+- Third-party account detection and wildcard principal identification
+- Principal type validation (AWS, Service, Federated) for IAM trust policies
 - Organization baseline comparison for external account detection
+- Multi-region scanning for AOSS collections and indexes
+- Action-level tracking for third-party AOSS permissions
+- Multi-region ECR repository scanning with pagination support
+- ECR actions tracking per third-party account
 
 ### 5. Policy Placement Intelligence
 - Organization structure analysis for optimal policy deployment levels
@@ -81,7 +89,9 @@ headroom/
 ├── output.py                # User-facing output
 ├── types.py                 # Shared data models
 ├── aws/
+│   ├── aoss.py             # OpenSearch Serverless analysis
 │   ├── ec2.py              # EC2 analysis
+│   ├── ecr.py              # ECR repository policy analysis
 │   ├── rds.py              # RDS analysis
 │   ├── s3.py               # S3 bucket policy analysis
 │   ├── iam/
@@ -99,6 +109,9 @@ headroom/
 │   └── rcps/
 │       ├── deny_third_party_assumerole.py
 │       └── deny_s3_third_party_access.py
+│       └── deny_aoss_third_party_access.py
+│       ├── deny_ecr_third_party_access.py
+│       └── deny_third_party_assumerole.py
 ├── placement/
 │   └── hierarchy.py        # OU hierarchy analysis
 └── terraform/
@@ -273,6 +286,25 @@ class TrustPolicyAnalysis:
     role_name: str
     role_arn: str
     third_party_account_ids: Set[str]   # Non-org account IDs
+    has_wildcard_principal: bool        # True if Principal: "*"
+
+# aws/aoss.py
+@dataclass
+class AossResourcePolicyAnalysis:
+    resource_name: str                  # Collection or index name
+    resource_type: str                  # "collection" or "index"
+    resource_arn: str                   # Full ARN of AOSS resource
+    policy_name: str                    # Name of the access policy
+    third_party_account_ids: Set[str]   # Non-org account IDs
+    allowed_actions: List[str]          # AOSS actions allowed for third-parties
+# aws/ecr.py
+@dataclass
+class ECRRepositoryPolicyAnalysis:
+    repository_name: str
+    repository_arn: str
+    region: str
+    third_party_account_ids: Set[str]   # Non-org account IDs
+    actions_by_account: Dict[str, List[str]]  # Account ID -> allowed actions
     has_wildcard_principal: bool        # True if Principal: "*"
 ```
 
@@ -721,6 +753,175 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
 
 ## RCP Checks
 
+### ECR Third-Party Access
+
+**Purpose:** Analyze ECR repository resource policies to identify third-party (non-org) account access and wildcard principals.
+
+**Data Model:**
+```python
+@dataclass
+class ECRRepositoryPolicyAnalysis:
+    repository_name: str
+    repository_arn: str
+    region: str
+    third_party_account_ids: Set[str]         # External to organization
+    actions_by_account: Dict[str, List[str]]  # Account ID -> allowed ECR actions
+    has_wildcard_principal: bool              # True if Principal: "*"
+```
+
+**Analysis Function:**
+```python
+# aws/ecr.py
+
+FAIL_FAST_PRINCIPAL_TYPES = {"Federated"}
+
+def analyze_ecr_repository_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str]
+) -> List[ECRRepositoryPolicyAnalysis]:
+    """
+    Analyze all ECR repository policies for third-party access.
+
+    Algorithm:
+    1. Get all enabled regions via ec2.describe_regions()
+    2. For each region:
+       a. Create regional ECR client
+       b. Use paginator for describe_repositories
+       c. For each repository, call get_repository_policy
+       d. Parse JSON policy document
+       e. For each Statement, check if Action contains ecr:*
+       f. Extract account IDs from Principal field
+       g. Track specific ECR actions allowed per account
+       h. Detect wildcard principals
+       i. Filter to third-party accounts (not in org_account_ids)
+    3. Return ECRRepositoryPolicyAnalysis for repos with third-party or wildcards
+
+    Multi-Region: Scans all enabled AWS regions
+    Pagination: Handles accounts with many ECR repositories
+
+    Raises:
+    - UnsupportedPrincipalTypeError: if Federated principal encountered (fail-fast)
+    - ClientError: if non-RepositoryPolicyNotFoundException error occurs
+    """
+
+def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
+    """
+    Extract AWS account IDs from principal field.
+
+    Handles:
+    - String: "arn:aws:iam::123456789012:..." or "123456789012"
+    - List: recursively process each item
+    - Dict: process AWS/Service/Federated keys
+    - Mixed: {"AWS": [...], "Service": "..."}
+
+    Principal Type Handling:
+    - AWS: Extract account IDs from ARNs or plain IDs
+    - Service: Skip (e.g., ecr.amazonaws.com)
+    - Federated: Raise UnsupportedPrincipalTypeError (fail-fast)
+
+    Fail-Fast Validation:
+    - Federated principals are unsupported in ECR resource policies
+    - Immediately raises exception to prevent unsafe RCP generation
+    """
+
+def _has_wildcard_principal(principal: Any) -> bool:
+    """Check if principal contains "*" (wildcard)."""
+
+def _normalize_actions(actions: Any) -> List[str]:
+    """Normalize actions to list format."""
+```
+
+**Custom Exceptions:**
+```python
+class UnsupportedPrincipalTypeError(Exception):
+    """Raised when Federated or other unsupported principal type encountered."""
+```
+
+**Check Implementation:**
+```python
+# checks/rcps/deny_ecr_third_party_access.py
+
+class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
+    def __init__(self, org_account_ids: Set[str], **kwargs):
+        super().__init__(**kwargs)
+        self.org_account_ids = org_account_ids
+        self.all_third_party_accounts: Set[str] = set()
+        self.all_actions_by_account: Dict[str, List[str]] = {}
+
+    def analyze(self, session):
+        return analyze_ecr_repository_policies(session, self.org_account_ids)
+
+    def categorize_result(self, result):
+        # Repositories with wildcards are "violations"
+        # Repositories with third-party access are "compliant" (expected patterns)
+        if result.has_wildcard_principal:
+            return ("violation", ...)
+        else:
+            # Track third-party accounts and actions globally
+            self.all_third_party_accounts.update(result.third_party_account_ids)
+            for account_id, actions in result.actions_by_account.items():
+                if account_id not in self.all_actions_by_account:
+                    self.all_actions_by_account[account_id] = []
+                self.all_actions_by_account[account_id].extend(actions)
+            return ("compliant", ...)
+
+    def build_summary_fields(self, check_result):
+        # Aggregate unique third-party account IDs and actions
+        # Count repositories with wildcards as violations
+        actions_by_account_sorted = {
+            account_id: sorted(list(set(actions)))
+            for account_id, actions in self.all_actions_by_account.items()
+        }
+        return {
+            "total_repositories_analyzed": total,
+            "repositories_third_parties_can_access": len(compliant),
+            "repositories_with_wildcards": len(violations),
+            "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
+            "third_party_account_count": len(self.all_third_party_accounts),
+            "actions_by_account": actions_by_account_sorted,
+            "violations": len(violations)
+        }
+```
+
+**Result JSON Schema:**
+```json
+{
+  "summary": {
+    "account_name": "string",
+    "account_id": "string",
+    "check": "deny_ecr_third_party_access",
+    "total_repositories_analyzed": 0,
+    "repositories_third_parties_can_access": 0,
+    "repositories_with_wildcards": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_account": {
+      "464622532012": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+    },
+    "violations": 0
+  },
+  "violations": [
+    {
+      "repository_name": "WildcardRepo",
+      "repository_arn": "arn:...",
+      "region": "us-east-1"
+    }
+  ],
+  "exemptions": [],
+  "repositories_third_parties_can_access": [
+    {
+      "repository_name": "DatadogRepo",
+      "repository_arn": "arn:...",
+      "region": "us-east-1",
+      "third_party_account_ids": ["464622532012"],
+      "actions_by_account": {
+        "464622532012": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      }
+    }
+  ]
+}
+```
+
 ### Third-Party AssumeRole
 
 **Purpose:** Analyze IAM role trust policies to identify third-party (non-org) account access and wildcard principals.
@@ -859,6 +1060,9 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
 ### S3 Third-Party Access
 
 **Purpose:** Analyze S3 bucket policies to identify third-party (non-org) account access, Federated/CanonicalUser principals, and wildcard principals.
+### AOSS Third-Party Access
+
+**Purpose:** Analyze OpenSearch Serverless data access policies to identify third-party (non-org) account access to collections and indexes.
 
 **Data Model:**
 ```python
@@ -870,6 +1074,13 @@ class S3BucketPolicyAnalysis:
     has_wildcard_principal: bool               # True if Principal: "*"
     has_non_account_principals: bool           # True if Federated or CanonicalUser
     actions_by_account: Dict[str, Set[str]]    # account_id -> allowed S3 actions
+class AossResourcePolicyAnalysis:
+    resource_name: str                  # Collection or index name
+    resource_type: str                  # \"collection\" or \"index\"
+    resource_arn: str                   # Full ARN of AOSS resource
+    policy_name: str                    # Name of the access policy
+    third_party_account_ids: Set[str]   # External to organization
+    allowed_actions: List[str]          # AOSS actions allowed for third-parties
 ```
 
 **Analysis Function:**
@@ -949,6 +1160,64 @@ class UnsupportedPrincipalTypeError(Exception):
     Federated and CanonicalUser principals don't have account IDs, so the RCP
     (which uses aws:PrincipalAccount for allowlisting) would break their access.
     """
+# aws/aoss.py
+
+def analyze_aoss_resource_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str]
+) -> List[AossResourcePolicyAnalysis]:
+    \"\"\"
+    Analyze AOSS data access policies for third-party access.
+
+    Algorithm:
+    1. Get all enabled regions via describe_regions()
+    2. For each region:
+       a. List all data access policies via list_access_policies()
+       b. Get each policy's details via get_access_policy()
+       c. Parse policy JSON to extract principals and permissions
+       d. Extract account IDs from principals
+       e. Filter to third-party accounts (not in org)
+       f. Track which actions are allowed for each third-party account
+       g. Create AossResourcePolicyAnalysis for each resource
+    3. Return all findings across all regions
+
+    Raises:
+    - ClientError: If AWS API calls fail
+    - ValueError: If ResourceType field is missing from policy rule
+    \"\"\"
+
+def _extract_account_ids_from_principals(principals: List[str]) -> Set[str]:
+    \"\"\"
+    Extract AWS account IDs from AOSS policy principals.
+
+    Handles:
+    - ARN format: arn:aws:iam::123456789012:root
+    - Plain format: 123456789012
+
+    Returns: Set of 12-digit account IDs
+    \"\"\"
+
+def _analyze_access_policy(
+    policy_name: str,
+    policy_document: str,
+    org_account_ids: Set[str],
+    region: str,
+    account_id: str,
+) -> List[AossResourcePolicyAnalysis]:
+    \"\"\"
+    Analyze a single AOSS access policy for third-party access.
+
+    AOSS Policy Structure:
+    - List of policy statements
+    - Each statement has Principal list and Rules list
+    - Each rule has Resource, ResourceType, and Permission fields
+
+    Resource Parsing:
+    - e.g. collection/my-collection --> my-collection
+    - e.g. index/my-collection/* --> my-collection
+
+    Fail-Loud: Raises ValueError if ResourceType field is missing
+    \"\"\"
 ```
 
 **Check Implementation:**
@@ -956,6 +1225,9 @@ class UnsupportedPrincipalTypeError(Exception):
 # checks/rcps/deny_s3_third_party_access.py
 
 class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
+# checks/rcps/deny_aoss_third_party_access.py
+
+class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
     def __init__(self, org_account_ids: Set[str], **kwargs):
         super().__init__(**kwargs)
         self.org_account_ids = org_account_ids
@@ -1000,6 +1272,30 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
                 for account_id, buckets in buckets_by_account.items()
             },
             "violations": len(violations)
+
+    def analyze(self, session):
+        return analyze_aoss_resource_policies(session, self.org_account_ids)
+
+    def categorize_result(self, result):
+        # All third-party access categorized as \"compliant\" (allowlisting pattern)
+        # Track accounts and actions for summary aggregation
+        self.all_third_party_accounts.update(result.third_party_account_ids)
+        for account_id in result.third_party_account_ids:
+            if account_id not in self.actions_by_account:
+                self.actions_by_account[account_id] = set()
+            self.actions_by_account[account_id].update(result.allowed_actions)
+        return (\"compliant\", ...)
+
+    def build_summary_fields(self, check_result):
+        # Convert actions sets to sorted lists for JSON serialization
+        return {
+            \"total_resources_with_third_party_access\": total,
+            \"third_party_account_count\": len(self.all_third_party_accounts),
+            \"unique_third_party_accounts\": sorted(self.all_third_party_accounts),
+            \"actions_by_third_party_account\": {
+                account: sorted(actions)
+                for account, actions in self.actions_by_account.items()
+            }
         }
 ```
 
@@ -1076,6 +1372,43 @@ The RCP uses `aws:PrincipalAccount` condition for allowlisting. This only works 
 - Buckets with Federated/CanonicalUser principals → marked as violations
 - Only buckets with account-based third-party access → used for allowlist generation
 - RCP policy includes `aws:ResourceTag/dp:exclude:identity = "true"` condition to exempt tagged buckets
+  \"summary\": {
+    \"account_name\": \"string\",
+    \"account_id\": \"string\",
+    \"check\": \"deny_aoss_third_party_access\",
+    \"total_resources_with_third_party_access\": 2,
+    \"third_party_account_count\": 2,
+    \"unique_third_party_accounts\": [\"999888777666\", \"111222333444\"],
+    \"actions_by_third_party_account\": {
+      \"999888777666\": [\"aoss:ReadDocument\", \"aoss:WriteDocument\"],
+      \"111222333444\": [\"aoss:ReadDocument\"]
+    }
+  },
+  \"violations\": [],
+  \"exemptions\": [],
+  \"resources_with_third_party_access\": [
+    {
+      \"resource_name\": \"analytics-collection\",
+      \"resource_type\": \"collection\",
+      \"resource_arn\": \"arn:aws:aoss:us-east-1:111111111111:collection/analytics-collection\",
+      \"policy_name\": \"vendor-access-policy\",
+      \"third_party_account_ids\": [\"999888777666\"],
+      \"allowed_actions\": [\"aoss:ReadDocument\", \"aoss:WriteDocument\"]
+    },
+    {
+      \"resource_name\": \"logs-index\",
+      \"resource_type\": \"index\",
+      \"resource_arn\": \"arn:aws:aoss:us-west-2:111111111111:index/logs-index\",
+      \"policy_name\": \"partner-access-policy\",
+      \"third_party_account_ids\": [\"111222333444\"],
+      \"allowed_actions\": [\"aoss:ReadDocument\"]
+    }
+  ]
+}
+```
+
+**Custom Result Structure:**
+The AOSS check uses a custom `_build_results_data()` method to rename \"compliant_instances\" to \"resources_with_third_party_access\" for better clarity.
 
 ---
 
@@ -1924,8 +2257,10 @@ def get_results_dir(
 DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
+DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
+DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 
 _CHECK_TYPE_MAP: Dict[str, str] = {}
 
@@ -1950,6 +2285,8 @@ def get_check_type_map() -> Dict[str, str]:
 # Derived sets
 SCP_CHECK_NAMES = {DENY_IMDS_V1_EC2, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
 RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_S3_THIRD_PARTY_ACCESS}
+RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_AOSS_THIRD_PARTY_ACCESS}
+RCP_CHECK_NAMES = {DENY_ECR_THIRD_PARTY_ACCESS, THIRD_PARTY_ASSUMEROLE}
 ```
 
 ### Dynamic Registration Flow
@@ -2048,7 +2385,7 @@ class OutputHandler:
 ## Quality Standards
 
 ### Testing Requirements
-- **Coverage:** 100% (370 tests, 1277 statements in headroom/)
+- **Coverage:** 100% (432 tests covering all code paths)
 - **Test Categories:**
   - Unit tests for individual functions
   - Integration tests for end-to-end workflows
@@ -2182,6 +2519,8 @@ test_environment/
 │   │   └── deny_rds_unencrypted/
 │   │       └── {account_name}.json
 │   └── rcps/
+│       ├── deny_aoss_third_party_access/
+│       │   └── {account_name}.json
 │       └── third_party_assumerole/
 │           └── {account_name}.json
 ├── test_deny_imds_v1_ec2/               # EC2 instances (expensive, separate directory)

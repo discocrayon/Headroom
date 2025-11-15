@@ -1,0 +1,15 @@
+{
+  "summary": {
+    "account_name": "shared-foo-bar",
+    "check": "deny_ecr_third_party_access",
+    "total_repositories_analyzed": 0,
+    "repositories_third_parties_can_access": 0,
+    "repositories_with_wildcards": 0,
+    "violations": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_account": {}
+  },
+  "repositories_third_parties_can_access": [],
+  "repositories_with_wildcards": []
+}
