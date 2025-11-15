@@ -211,6 +211,7 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 
 [Current RCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/rcps):
 - **Third-Party AssumeRole Check**: Analyzes IAM role trust policies to identify third-party account access. Detects wildcard principals that require CloudTrail analysis.
+- **S3 Third-Party Access Check**: Analyzes S3 bucket policies to identify third-party account access and Federated/CanonicalUser principals. Tracks which S3 actions are allowed and on which buckets. Prevents deployment of RCPs that would break legitimate access patterns.
 
 All checks have:
 - **Current State Checking**: Scans all AWS regions (SCPs) or analyzes IAM policies (RCPs) with pagination support to check the current state against the intended policy.
@@ -307,6 +308,7 @@ The tool generates:
   - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_s3_third_party_access/{account_name}_{account_id}.json`
 - **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
   - `test_environment/rcps/grab_org_info.tf`
@@ -323,6 +325,7 @@ headroom/
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
 │   │   └── users.py   # SCP-focused IAM user enumeration
+│   ├── s3.py      # S3 bucket policy analysis
 │   ├── organization.py  # Organizations API integration
 │   └── sessions.py      # Session management utilities
 ├── checks/        # Compliance checks (extensible framework)
@@ -332,7 +335,8 @@ headroom/
 │   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
 │   │   └── deny_iam_user_creation.py  # IAM user creation check
 │   └── rcps/      # Resource Control Policy checks
-│       └── check_third_party_assumerole.py  # Third-party access check
+│       ├── deny_third_party_assumerole.py  # Third-party IAM role access check
+│       └── deny_s3_third_party_access.py  # Third-party S3 bucket access check
 ├── terraform/     # Terraform generation
 │   ├── generate_org_info.py  # Organization data sources
 │   ├── generate_scps.py      # SCP configurations
@@ -380,6 +384,15 @@ headroom/
 - **Detection**: Identifies third-party account IDs and wildcard principals
 - **Output**: Detailed role trust policy analysis with third-party account lists
 - **Allowlisting**: Generates allowlists for RCP modules to permit known third-party access
+
+#### S3 Third-Party Access Analysis
+- **Check Name**: `deny_s3_third_party_access`
+- **Purpose**: Identifies S3 buckets with policies allowing third-party account access or non-account-based principals
+- **Detection**: Extracts third-party account IDs, detects Federated/CanonicalUser principals and wildcard principals
+- **Safety**: Prevents RCP deployment for buckets with Federated or CanonicalUser principals that would break access
+- **Tracking**: Records which S3 actions are allowed per third-party account and which buckets are involved
+- **Allowlisting**: Generates allowlists for RCP modules to permit known third-party S3 access
+- **Exemption Support**: S3 buckets tagged with `dp:exclude:identity=true` are exempt from RCP enforcement
 
 ### Execution Flow
 
