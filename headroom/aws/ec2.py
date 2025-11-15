@@ -3,7 +3,7 @@
 import logging
 import boto3
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from botocore.exceptions import ClientError
 from mypy_boto3_ec2.client import EC2Client
@@ -18,6 +18,27 @@ class DenyImdsV1Ec2:
     instance_id: str
     imdsv1_allowed: bool  # Compliance status
     exemption_tag_present: bool  # Exemption via `ExemptFromIMDSv2` tag
+
+
+@dataclass
+class DenyEc2AmiOwner:
+    """
+    Data model for EC2 AMI owner analysis.
+
+    Attributes:
+        instance_id: EC2 instance identifier
+        region: AWS region where instance exists
+        ami_id: AMI identifier used to launch instance
+        ami_owner: AMI owner account ID or alias
+        ami_name: AMI name (may be None if AMI no longer exists)
+        instance_arn: Full ARN of the EC2 instance
+    """
+    instance_id: str
+    region: str
+    ami_id: str
+    ami_owner: str
+    ami_name: Optional[str]
+    instance_arn: str
 
 
 def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
@@ -81,4 +102,114 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
         except ClientError as e:
             raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
 
+    return results
+
+
+def get_ec2_ami_owner_analysis(session: boto3.Session) -> List[DenyEc2AmiOwner]:
+    """
+    Analyze EC2 instances to determine AMI owner for each instance.
+
+    Algorithm:
+    1. Get all enabled regions from EC2
+    2. For each region:
+       a. Describe all EC2 instances via paginator
+       b. For each instance, extract AMI ID
+       c. Describe the AMI to get owner information
+       d. Create DenyEc2AmiOwner result with instance and AMI details
+    3. Return all results across all regions
+
+    Args:
+        session: boto3.Session for the target account
+
+    Returns:
+        List of DenyEc2AmiOwner analysis results
+
+    Raises:
+        RuntimeError: If AWS API calls fail
+    """
+    results = []
+    ec2_client: EC2Client = session.client('ec2')
+
+    regions_response = ec2_client.describe_regions()
+    regions = [region['RegionName'] for region in regions_response['Regions']]
+
+    for region in regions:
+        try:
+            regional_ec2: EC2Client = session.client('ec2', region_name=region)
+            logger.info(f"Analyzing EC2 AMI owners in {region}")
+
+            ami_cache = {}
+
+            paginator = regional_ec2.get_paginator('describe_instances')
+            for page in paginator.paginate():
+                for reservation in page['Reservations']:
+                    for instance in reservation['Instances']:
+                        if instance['State']['Name'] == 'terminated':
+                            continue
+
+                        instance_id = instance['InstanceId']
+                        ami_id = instance.get('ImageId')
+
+                        if not ami_id:
+                            logger.warning(
+                                f"Instance {instance_id} in {region} has no AMI ID, skipping"
+                            )
+                            continue
+
+                        if ami_id not in ami_cache:
+                            try:
+                                ami_response = regional_ec2.describe_images(ImageIds=[ami_id])
+                                if ami_response['Images']:
+                                    ami_info = ami_response['Images'][0]
+                                    ami_cache[ami_id] = {
+                                        'owner': ami_info.get('OwnerId', 'unknown'),
+                                        'name': ami_info.get('Name')
+                                    }
+                                else:
+                                    logger.warning(
+                                        f"AMI {ami_id} not found in {region}, "
+                                        f"marking as unknown owner"
+                                    )
+                                    ami_cache[ami_id] = {
+                                        'owner': 'unknown',
+                                        'name': None
+                                    }
+                            except ClientError as e:
+                                if e.response['Error']['Code'] == 'InvalidAMIID.NotFound':
+                                    logger.warning(
+                                        f"AMI {ami_id} no longer exists in {region}, "
+                                        f"marking as unknown owner"
+                                    )
+                                    ami_cache[ami_id] = {
+                                        'owner': 'unknown',
+                                        'name': None
+                                    }
+                                else:
+                                    raise
+
+                        ami_owner = ami_cache[ami_id]['owner']
+                        ami_name = ami_cache[ami_id]['name']
+
+                        account_id = instance['OwnerId']
+                        instance_arn = (
+                            f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
+                        )
+
+                        results.append(DenyEc2AmiOwner(
+                            instance_id=instance_id,
+                            region=region,
+                            ami_id=ami_id,
+                            ami_owner=ami_owner,
+                            ami_name=ami_name,
+                            instance_arn=instance_arn
+                        ))
+
+        except ClientError as e:
+            raise RuntimeError(
+                f"Failed to analyze EC2 AMI owners in region {region}: {e}"
+            )
+
+    logger.info(
+        f"Analyzed {len(results)} EC2 instances across {len(regions)} regions"
+    )
     return results
