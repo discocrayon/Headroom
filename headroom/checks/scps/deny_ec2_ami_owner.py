@@ -54,7 +54,6 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
             "ami_id": result.ami_id,
             "ami_owner": result.ami_owner,
             "ami_name": result.ami_name,
-            "instance_arn": result.instance_arn,
         }
 
         return ("compliant", result_dict)

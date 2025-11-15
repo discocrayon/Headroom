@@ -6,6 +6,7 @@ module "scps_acme_acquisition_ou" {
   target_id = local.top_level_acme_acquisition_ou_id
 
   # EC2
+  deny_ec2_ami_owner = false
   deny_imds_v1_ec2 = true
 
   # EKS

@@ -35,7 +35,6 @@ class TestCheckDenyEc2AmiOwner:
                 ami_id="ami-12345678",
                 ami_owner="amazon",
                 ami_name="Amazon Linux 2",
-                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-amazon-ami"
             ),
             DenyEc2AmiOwner(
                 instance_id="i-marketplace-ami",
@@ -43,7 +42,6 @@ class TestCheckDenyEc2AmiOwner:
                 ami_id="ami-87654321",
                 ami_owner="aws-marketplace",
                 ami_name="Marketplace AMI",
-                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-marketplace-ami"
             ),
             DenyEc2AmiOwner(
                 instance_id="i-custom-ami",
@@ -51,7 +49,6 @@ class TestCheckDenyEc2AmiOwner:
                 ami_id="ami-abcdef12",
                 ami_owner="222222222222",
                 ami_name="Custom AMI",
-                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-custom-ami"
             ),
             DenyEc2AmiOwner(
                 instance_id="i-unknown-ami",
@@ -59,7 +56,6 @@ class TestCheckDenyEc2AmiOwner:
                 ami_id="ami-unknown",
                 ami_owner="unknown",
                 ami_name=None,
-                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-unknown-ami"
             ),
         ]
 
@@ -73,7 +69,6 @@ class TestCheckDenyEc2AmiOwner:
                 ami_id="ami-12345678",
                 ami_owner="amazon",
                 ami_name="Amazon Linux 2",
-                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-amazon-1"
             ),
             DenyEc2AmiOwner(
                 instance_id="i-amazon-2",
@@ -81,7 +76,6 @@ class TestCheckDenyEc2AmiOwner:
                 ami_id="ami-87654321",
                 ami_owner="amazon",
                 ami_name="Amazon Linux 2023",
-                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-amazon-2"
             ),
         ]
 
@@ -112,7 +106,7 @@ class TestCheckDenyEc2AmiOwner:
 
             assert mock_write.called
             call_args = mock_write.call_args
-            results_data = call_args[0][0]
+            results_data = call_args.kwargs['results_data']
 
             assert len(results_data["violations"]) == 0
             assert len(results_data["compliant_instances"]) == 4
@@ -147,7 +141,7 @@ class TestCheckDenyEc2AmiOwner:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs['results_data']
             summary = results_data["summary"]
 
             assert summary["compliance_percentage"] == 100.0
@@ -177,7 +171,7 @@ class TestCheckDenyEc2AmiOwner:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs['results_data']
             summary = results_data["summary"]
 
             assert summary["total_instances"] == 0
@@ -200,8 +194,7 @@ class TestCheckDenyEc2AmiOwner:
             region="us-east-1",
             ami_id="ami-12345678",
             ami_owner="amazon",
-            ami_name="Amazon Linux 2",
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-test"
+            ami_name="Amazon Linux 2"
         )
 
         category, result_dict = check.categorize_result(result)
@@ -224,8 +217,7 @@ class TestCheckDenyEc2AmiOwner:
             region="us-east-1",
             ami_id="ami-unknown",
             ami_owner="unknown",
-            ami_name=None,
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-test"
+            ami_name=None
         )
 
         category, result_dict = check.categorize_result(result)
@@ -236,39 +228,38 @@ class TestCheckDenyEc2AmiOwner:
     def test_build_summary_fields(self, temp_results_dir: str) -> None:
         """Test summary fields calculation."""
         from headroom.checks.base import CategorizedCheckResult
+        from headroom.types import JsonDict
 
-        violations = []
-        compliant = [
+        violations: list[JsonDict] = []
+        compliant: list[JsonDict] = [
             {
                 "instance_id": "i-1",
                 "ami_owner": "amazon",
                 "region": "us-east-1",
                 "ami_id": "ami-1",
-                "ami_name": "AL2",
-                "instance_arn": "arn:aws:ec2:us-east-1:111111111111:instance/i-1"
+                "ami_name": "AL2"
             },
             {
                 "instance_id": "i-2",
                 "ami_owner": "aws-marketplace",
                 "region": "us-west-2",
                 "ami_id": "ami-2",
-                "ami_name": "Marketplace",
-                "instance_arn": "arn:aws:ec2:us-west-2:111111111111:instance/i-2"
+                "ami_name": "Marketplace"
             },
             {
                 "instance_id": "i-3",
                 "ami_owner": "amazon",
                 "region": "eu-west-1",
                 "ami_id": "ami-3",
-                "ami_name": "AL2023",
-                "instance_arn": "arn:aws:ec2:eu-west-1:111111111111:instance/i-3"
+                "ami_name": "AL2023"
             },
         ]
 
         check_result = CategorizedCheckResult(
             violations=violations,
             exemptions=[],
-            compliant=compliant
+            compliant=compliant,
+            summary={}
         )
 
         check = DenyEc2AmiOwnerCheck(

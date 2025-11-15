@@ -3,7 +3,7 @@
 import logging
 import boto3
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from botocore.exceptions import ClientError
 from mypy_boto3_ec2.client import EC2Client
@@ -31,14 +31,12 @@ class DenyEc2AmiOwner:
         ami_id: AMI identifier used to launch instance
         ami_owner: AMI owner account ID or alias
         ami_name: AMI name (may be None if AMI no longer exists)
-        instance_arn: Full ARN of the EC2 instance
     """
     instance_id: str
     region: str
     ami_id: str
     ami_owner: str
     ami_name: Optional[str]
-    instance_arn: str
 
 
 def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
@@ -138,7 +136,7 @@ def get_ec2_ami_owner_analysis(session: boto3.Session) -> List[DenyEc2AmiOwner]:
             regional_ec2: EC2Client = session.client('ec2', region_name=region)
             logger.info(f"Analyzing EC2 AMI owners in {region}")
 
-            ami_cache = {}
+            ami_cache: Dict[str, Dict[str, Optional[str]]] = {}
 
             paginator = regional_ec2.get_paginator('describe_instances')
             for page in paginator.paginate():
@@ -161,47 +159,43 @@ def get_ec2_ami_owner_analysis(session: boto3.Session) -> List[DenyEc2AmiOwner]:
                                 ami_response = regional_ec2.describe_images(ImageIds=[ami_id])
                                 if ami_response['Images']:
                                     ami_info = ami_response['Images'][0]
+                                    owner_id = ami_info.get('OwnerId')
+                                    if not owner_id:
+                                        raise RuntimeError(
+                                            f"AMI {ami_id} in {region} has no OwnerId - "
+                                            f"cannot determine owner for instance {instance_id}. "
+                                            f"This is a critical security check failure."
+                                        )
                                     ami_cache[ami_id] = {
-                                        'owner': ami_info.get('OwnerId', 'unknown'),
+                                        'owner': owner_id,
                                         'name': ami_info.get('Name')
                                     }
                                 else:
-                                    logger.warning(
-                                        f"AMI {ami_id} not found in {region}, "
-                                        f"marking as unknown owner"
+                                    raise RuntimeError(
+                                        f"AMI {ami_id} not found in {region} for instance {instance_id}. "
+                                        f"Cannot determine AMI owner. This is a critical security check failure."
                                     )
-                                    ami_cache[ami_id] = {
-                                        'owner': 'unknown',
-                                        'name': None
-                                    }
                             except ClientError as e:
                                 if e.response['Error']['Code'] == 'InvalidAMIID.NotFound':
-                                    logger.warning(
-                                        f"AMI {ami_id} no longer exists in {region}, "
-                                        f"marking as unknown owner"
-                                    )
-                                    ami_cache[ami_id] = {
-                                        'owner': 'unknown',
-                                        'name': None
-                                    }
+                                    raise RuntimeError(
+                                        f"AMI {ami_id} no longer exists in {region} for instance {instance_id}. "
+                                        f"Cannot determine AMI owner. This is a critical security check failure."
+                                    ) from e
                                 else:
                                     raise
 
                         ami_owner = ami_cache[ami_id]['owner']
                         ami_name = ami_cache[ami_id]['name']
 
-                        account_id = instance['OwnerId']
-                        instance_arn = (
-                            f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
-                        )
+                        # ami_owner is always a string in cache (never None)
+                        assert ami_owner is not None
 
                         results.append(DenyEc2AmiOwner(
                             instance_id=instance_id,
                             region=region,
                             ami_id=ami_id,
                             ami_owner=ami_owner,
-                            ami_name=ami_name,
-                            instance_arn=instance_arn
+                            ami_name=ami_name
                         ))
 
         except ClientError as e:

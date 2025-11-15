@@ -545,8 +545,7 @@ class TestDenyEc2AmiOwner:
             region="us-east-1",
             ami_id="ami-12345678",
             ami_owner="amazon",
-            ami_name="Amazon Linux 2",
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+            ami_name="Amazon Linux 2"
         )
 
         assert result.instance_id == "i-1234567890abcdef0"
@@ -554,7 +553,6 @@ class TestDenyEc2AmiOwner:
         assert result.ami_id == "ami-12345678"
         assert result.ami_owner == "amazon"
         assert result.ami_name == "Amazon Linux 2"
-        assert result.instance_arn == "arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
 
     def test_deny_ec2_ami_owner_with_none_ami_name(self) -> None:
         """Test DenyEc2AmiOwner when AMI no longer exists."""
@@ -563,8 +561,7 @@ class TestDenyEc2AmiOwner:
             region="us-west-2",
             ami_id="ami-unknown",
             ami_owner="unknown",
-            ami_name=None,
-            instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-test"
+            ami_name=None
         )
 
         assert result.ami_owner == "unknown"
@@ -577,8 +574,7 @@ class TestDenyEc2AmiOwner:
             region="us-east-1",
             ami_id="ami-12345678",
             ami_owner="amazon",
-            ami_name="AL2",
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-test"
+            ami_name="AL2"
         )
 
         result2 = DenyEc2AmiOwner(
@@ -586,8 +582,7 @@ class TestDenyEc2AmiOwner:
             region="us-east-1",
             ami_id="ami-12345678",
             ami_owner="amazon",
-            ami_name="AL2",
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-test"
+            ami_name="AL2"
         )
 
         result3 = DenyEc2AmiOwner(
@@ -595,8 +590,7 @@ class TestDenyEc2AmiOwner:
             region="us-east-1",
             ami_id="ami-87654321",
             ami_owner="aws-marketplace",
-            ami_name="Marketplace",
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-different"
+            ami_name="Marketplace"
         )
 
         assert result1 == result2
@@ -705,7 +699,7 @@ class TestGetEc2AmiOwnerAnalysis:
         assert results[2].region == "us-west-2"
 
     def test_get_ec2_ami_owner_analysis_ami_not_found(self) -> None:
-        """Test handling when AMI no longer exists."""
+        """Test handling when AMI no longer exists - must fail fast."""
         mock_session = MagicMock()
 
         mock_ec2 = MagicMock()
@@ -741,12 +735,49 @@ class TestGetEc2AmiOwnerAnalysis:
 
         mock_session.client.side_effect = client_side_effect
 
-        results = get_ec2_ami_owner_analysis(mock_session)
+        # Must fail fast - cannot determine AMI owner
+        with pytest.raises(RuntimeError, match="AMI ami-nonexistent no longer exists.*critical security check failure"):
+            get_ec2_ami_owner_analysis(mock_session)
 
-        assert len(results) == 1
-        assert results[0].instance_id == "i-test"
-        assert results[0].ami_owner == "unknown"
-        assert results[0].ami_name is None
+    def test_get_ec2_ami_owner_analysis_ami_access_denied(self) -> None:
+        """Test handling when describe_images raises AccessDenied error."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+
+        instances_page = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        self.create_mock_instance("i-test", "ami-accessdenied")
+                    ]
+                }
+            ]
+        }
+
+        mock_paginator.paginate.return_value = [instances_page]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        mock_regional_ec2.describe_images.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
+            "DescribeImages"
+        )
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        with pytest.raises(RuntimeError, match="Failed to analyze EC2 AMI owners in region us-east-1"):
+            get_ec2_ami_owner_analysis(mock_session)
 
     def test_get_ec2_ami_owner_analysis_ami_caching(self) -> None:
         """Test that AMI information is cached to reduce API calls."""
@@ -878,7 +909,7 @@ class TestGetEc2AmiOwnerAnalysis:
         assert len(results) == 0
 
     def test_get_ec2_ami_owner_analysis_empty_ami_response(self) -> None:
-        """Test handling when describe_images returns empty list."""
+        """Test handling when describe_images returns empty list - must fail fast."""
         mock_session = MagicMock()
 
         mock_ec2 = MagicMock()
@@ -911,11 +942,52 @@ class TestGetEc2AmiOwnerAnalysis:
 
         mock_session.client.side_effect = client_side_effect
 
-        results = get_ec2_ami_owner_analysis(mock_session)
+        # Must fail fast - cannot determine AMI owner
+        with pytest.raises(RuntimeError, match="AMI ami-missing not found.*critical security check failure"):
+            get_ec2_ami_owner_analysis(mock_session)
 
-        assert len(results) == 1
-        assert results[0].ami_owner == "unknown"
-        assert results[0].ami_name is None
+    def test_get_ec2_ami_owner_analysis_ami_without_owner_id(self) -> None:
+        """Test handling when AMI has no OwnerId field - must fail fast."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+
+        instances_page = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        self.create_mock_instance("i-test", "ami-no-owner")
+                    ]
+                }
+            ]
+        }
+
+        mock_paginator.paginate.return_value = [instances_page]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        mock_regional_ec2.describe_images.return_value = {
+            "Images": [{
+                "ImageId": "ami-no-owner",
+                "Name": "Test AMI"
+            }]
+        }
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        # Must fail fast - cannot determine AMI owner
+        with pytest.raises(RuntimeError, match="AMI ami-no-owner.*has no OwnerId.*critical security check failure"):
+            get_ec2_ami_owner_analysis(mock_session)
 
     def test_get_ec2_ami_owner_analysis_no_instances(self) -> None:
         """Test function with no instances in any region."""
