@@ -6,6 +6,7 @@ import boto3
 
 from ...aws.ec2 import DenyEc2AmiOwner, get_ec2_ami_owner_analysis
 from ...constants import DENY_EC2_AMI_OWNER
+from ...enums import CheckCategory
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -36,7 +37,7 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
     def categorize_result(
         self,
         result: DenyEc2AmiOwner
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, Dict[str, Any]]:
         """
         Categorize a single EC2 AMI owner result.
 
@@ -44,9 +45,7 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
             result: Single DenyEc2AmiOwner analysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is:
-            - "violation": AMI owner not in allowlist
-            - "compliant": AMI owner in allowlist
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
         result_dict = {
             "instance_id": result.instance_id,
@@ -56,7 +55,7 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
             "ami_name": result.ami_name,
         }
 
-        return ("compliant", result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,

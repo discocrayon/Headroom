@@ -12,9 +12,11 @@ from typing import Any, Generic, List, TypeVar
 
 import boto3
 
+from ..enums import CheckCategory
 from ..types import JsonDict
 from ..write_results import write_check_results
 from ..output import OutputHandler
+from ..utils import format_account_identifier
 
 T = TypeVar('T')
 
@@ -87,7 +89,7 @@ class BaseCheck(ABC, Generic[T]):
         """
 
     @abstractmethod
-    def categorize_result(self, result: T) -> tuple[str, JsonDict]:
+    def categorize_result(self, result: T) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single result.
 
@@ -95,10 +97,7 @@ class BaseCheck(ABC, Generic[T]):
             result: Single analysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is one of:
-            - "violation"
-            - "exemption"
-            - "compliant"
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
 
     @abstractmethod
@@ -154,11 +153,11 @@ class BaseCheck(ABC, Generic[T]):
 
         for result in raw_results:
             category, result_dict = self.categorize_result(result)
-            if category == "violation":
+            if category == CheckCategory.VIOLATION:
                 violations.append(result_dict)
-            elif category == "exemption":
+            elif category == CheckCategory.EXEMPTION:
                 exemptions.append(result_dict)
-            elif category == "compliant":
+            elif category == CheckCategory.COMPLIANT:
                 compliant.append(result_dict)
 
         check_result = CategorizedCheckResult(
@@ -187,7 +186,7 @@ class BaseCheck(ABC, Generic[T]):
             exclude_account_ids=self.exclude_account_ids,
         )
 
-        account_identifier = f"{self.account_name}_{self.account_id}"
+        account_identifier = format_account_identifier(self.account_name, self.account_id)
         OutputHandler.check_completed(
             self.check_name,
             account_identifier,

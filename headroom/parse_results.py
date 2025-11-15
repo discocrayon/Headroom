@@ -180,6 +180,25 @@ def parse_scp_result_files(
     return check_results
 
 
+def _group_results_by_check_name(
+    results_data: List[SCPCheckResult]
+) -> Dict[str, List[SCPCheckResult]]:
+    """Group check results by check name."""
+    check_groups: Dict[str, List[SCPCheckResult]] = {}
+    for result in results_data:
+        if result.check_name not in check_groups:
+            check_groups[result.check_name] = []
+        check_groups[result.check_name].append(result)
+    return check_groups
+
+
+def _get_safe_results(
+    check_results: List[SCPCheckResult]
+) -> List[SCPCheckResult]:
+    """Filter results to only those with zero violations."""
+    return [r for r in check_results if r.violations == 0]
+
+
 def determine_scp_placement(
     results_data: List[SCPCheckResult],
     organization_hierarchy: OrganizationHierarchy
@@ -193,11 +212,7 @@ def determine_scp_placement(
     recommendations: List[SCPPlacementRecommendations] = []
     analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
 
-    check_groups: Dict[str, List[SCPCheckResult]] = {}
-    for result in results_data:
-        if result.check_name not in check_groups:
-            check_groups[result.check_name] = []
-        check_groups[result.check_name].append(result)
+    check_groups = _group_results_by_check_name(results_data)
 
     for check_name, check_results in check_groups.items():
         logger.info(f"Analyzing placement for check: {check_name}")
@@ -210,7 +225,7 @@ def determine_scp_placement(
                     "SCP check result"
                 )
 
-        safe_check_results = [r for r in check_results if r.violations == 0]
+        safe_check_results = _get_safe_results(check_results)
 
         if not safe_check_results:
             recommendations.append(SCPPlacementRecommendations(

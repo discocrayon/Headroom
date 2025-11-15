@@ -13,6 +13,7 @@ import boto3
 
 from ...aws.aoss import AossResourcePolicyAnalysis, analyze_aoss_resource_policies
 from ...constants import DENY_AOSS_THIRD_PARTY_ACCESS
+from ...enums import CheckCategory
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -74,19 +75,18 @@ class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
     def categorize_result(
         self,
         result: AossResourcePolicyAnalysis,
-    ) -> tuple[str, Dict[str, object]]:
+    ) -> tuple[CheckCategory, Dict[str, object]]:
         """
         Categorize a single AOSS resource policy result.
 
-        All third-party access is considered "compliant" because it will
+        All third-party access is considered compliant because it will
         be captured in the allowlist for the RCP.
 
         Args:
             result: Single AossResourcePolicyAnalysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is:
-            - "compliant": Resource has third-party access (to be allowlisted)
+            Tuple of (category, result_dict) where category is CheckCategory.COMPLIANT
         """
         result_dict: Dict[str, object] = {
             "resource_name": result.resource_name,
@@ -102,7 +102,7 @@ class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
         for account_id in result.third_party_account_ids:
             self.actions_by_account[account_id].update(result.allowed_actions)
 
-        return ("compliant", result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,

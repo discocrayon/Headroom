@@ -670,7 +670,7 @@ class TestMainIntegration:
 
         mock_get_sess.assert_called_once()
         printed = [c.args[0] for c in mocks['print'].call_args_list]
-        assert any("Terraform Generation Error" in msg for msg in printed)
+        assert any("Configuration Error" in msg for msg in printed)
 
     def test_main_client_error_in_generation_is_handled(
         self,
@@ -704,7 +704,42 @@ class TestMainIntegration:
             assert exc_info.value.code == 1
 
         printed = [c.args[0] for c in mocks['print'].call_args_list]
-        assert any("Terraform Generation Error" in msg for msg in printed)
+        assert any("AWS API Error" in msg for msg in printed)
+
+    def test_main_runtime_error_in_generation_is_handled(
+        self,
+        mock_cli_args: MagicMock,
+        valid_yaml_config: Dict[str, Any],
+        mock_dependencies: Dict[str, MagicMock]
+    ) -> None:
+        """Covers the RuntimeError exception handler branch."""
+        mocks = mock_dependencies
+        mocks['parse'].return_value = mock_cli_args
+        mocks['load'].return_value = valid_yaml_config
+        mock_final_config = MagicMock()
+        mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
+        mock_final_config.management_account_id = "111111111111"
+        mocks['merge'].return_value = mock_final_config
+
+        with patch('headroom.main.parse_scp_results', return_value=[MagicMock()]), \
+             patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.setup_organization_context') as mock_setup_org, \
+             patch('headroom.main.ensure_org_info_symlink'), \
+             patch('headroom.main.generate_terraform_org_info') as mock_generate_org:
+            # Set up setup_organization_context to return mocks
+            mock_session = MagicMock()
+            mock_hierarchy = MagicMock()
+            mock_setup_org.return_value = (mock_session, mock_hierarchy)
+            # Cause generate_terraform_org_info to raise RuntimeError
+            mock_generate_org.side_effect = RuntimeError("Failed to generate Terraform")
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+        printed = [c.args[0] for c in mocks['print'].call_args_list]
+        assert any("Runtime Error" in msg for msg in printed)
 
     def test_main_with_rcp_recommendations_display(
         self,

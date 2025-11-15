@@ -10,6 +10,7 @@ from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
 from .write_results import results_exist
 from .aws.sessions import assume_role
+from .utils import format_account_identifier
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -72,7 +73,17 @@ def _fetch_account_tags(org_client: OrganizationsClient, account_id: str, accoun
         tags_resp = org_client.list_tags_for_resource(ResourceId=account_id)
         return {tag["Key"]: tag["Value"] for tag in tags_resp.get("Tags", [])}
     except ClientError as e:
-        logger.warning(f"Could not fetch tags for account {account_name} ({account_id}): {e}")
+        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        if error_code == 'AccessDenied':
+            logger.warning(
+                f"Access denied fetching tags for account {account_name} ({account_id}). "
+                f"Account will use default values."
+            )
+        else:
+            logger.error(
+                f"Unexpected error fetching tags for account {account_name} ({account_id}): {e}",
+                exc_info=True
+            )
         return {}
 
 
@@ -284,6 +295,22 @@ def run_checks_for_type(
         check.execute(headroom_session)
 
 
+def _get_account_identifier(account_info: AccountInfo) -> str:
+    """Get display identifier for an account."""
+    return format_account_identifier(account_info.name, account_info.account_id)
+
+
+def _all_checks_complete(
+    account_info: AccountInfo,
+    config: HeadroomConfig
+) -> bool:
+    """Check if all checks are complete for an account."""
+    return (
+        all_check_results_exist("scps", account_info, config) and
+        all_check_results_exist("rcps", account_info, config)
+    )
+
+
 def run_checks(
     security_session: boto3.Session,
     relevant_account_infos: List[AccountInfo],
@@ -306,12 +333,9 @@ def run_checks(
         org_account_ids: Set of all account IDs in the organization
     """
     for account_info in relevant_account_infos:
-        account_identifier = f"{account_info.name}_{account_info.account_id}"
+        account_identifier = _get_account_identifier(account_info)
 
-        scp_exist = all_check_results_exist("scps", account_info, config)
-        rcp_exist = all_check_results_exist("rcps", account_info, config)
-
-        if scp_exist and rcp_exist:
+        if _all_checks_complete(account_info, config):
             logger.info(f"All results already exist for account {account_identifier}, skipping checks")
             continue
 
@@ -319,9 +343,11 @@ def run_checks(
 
         headroom_session = get_headroom_session(config, security_session, account_info.account_id)
 
+        scp_exist = all_check_results_exist("scps", account_info, config)
         if not scp_exist:
             run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
 
+        rcp_exist = all_check_results_exist("rcps", account_info, config)
         if not rcp_exist:
             run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
 

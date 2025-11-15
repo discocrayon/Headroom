@@ -11,6 +11,7 @@ import boto3
 
 from ...aws.s3 import S3BucketPolicyAnalysis, analyze_s3_bucket_policies
 from ...constants import DENY_S3_THIRD_PARTY_ACCESS
+from ...enums import CheckCategory
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -82,7 +83,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             if result.has_wildcard_principal or result.has_non_account_principals or result.third_party_account_ids
         ]
 
-    def categorize_result(self, result: S3BucketPolicyAnalysis) -> tuple[str, Dict[str, Any]]:
+    def categorize_result(self, result: S3BucketPolicyAnalysis) -> tuple[CheckCategory, Dict[str, Any]]:
         """
         Categorize a single bucket policy analysis result.
 
@@ -90,9 +91,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             result: Single S3BucketPolicyAnalysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is:
-            - "violation": Bucket has wildcard or non-account principals (blocks RCP deployment)
-            - "compliant": Bucket has third-party account access that can be allowlisted
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
         actions_by_account_serializable = {
             account_id: sorted(list(actions))
@@ -120,9 +119,8 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             self.buckets_by_account[account_id].add(result.bucket_arn)
 
         if result.has_wildcard_principal or result.has_non_account_principals:
-            return ("violation", result_dict)
-        else:
-            return ("compliant", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
         """
