@@ -51,11 +51,10 @@ resource "aws_ecr_repository_policy" "multiple_third_parties" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowSnykAndDocker"
+        Sid    = "AllowDocker"
         Effect = "Allow"
         Principal = {
           AWS = [
-            "arn:aws:iam::198449067068:root",
             "arn:aws:iam::709825985650:root"
           ]
         }

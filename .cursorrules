@@ -4,7 +4,6 @@ Try and search online first rather than try to use the AWS CLI to figure somethi
 Always add type annotations, ensuring mypy will be satisfied
 Always add tests, and then run tox
 Split docstrings over multiple lines for readability and PEP 257 compliance.
-Write everything I tell you to a file called conversation_history.md, with the date and time included. Make sure the date is today's date. I want posterity for all of our conversations. I don't want you to overwrite what is already there. Do not leave trailing whitespace in the file.
 Wrap with statements in parentheses to avoid the backslash-newline continuation. Make sure to make sure to not put the patch right after the open parenthesis but instead make a newline, and dedent all the lines inside the parenthesis, add a trailing comma as well.
 Never do dynamic imports, always try to import at the top of the file. If it is absolutely impossible to get away without a dynamic import, add a comment above the line of the import with justification.
 Do not define functions inside of functions. Prioritize keeping indentation to a minimum.

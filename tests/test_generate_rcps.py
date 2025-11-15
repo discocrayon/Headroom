@@ -1572,12 +1572,19 @@ class TestBuildRcpTerraformModule:
 
     def test_build_module_with_s3_third_party_accounts(self) -> None:
         """Should generate module with S3 third-party account allowlist."""
+        s3_rec = RCPPlacementRecommendations(
+            check_name="deny_s3_third_party_access",
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["333333333333", "444444444444"],
+            reasoning="Test S3 access"
+        )
         result = _build_rcp_terraform_module(
             module_name="rcps_test_account",
             target_id_reference="local.test_account_account_id",
-            third_party_account_ids=["111111111111"],
-            comment="Test Account",
-            s3_third_party_account_ids=["333333333333", "444444444444"]
+            recommendations=[s3_rec],
+            comment="Test Account"
         )
 
         assert 'module "rcps_test_account"' in result
@@ -1591,13 +1598,14 @@ class TestBuildRcpTerraformModule:
         result = _build_rcp_terraform_module(
             module_name="rcps_test",
             target_id_reference="local.test_id",
-            third_party_account_ids=["111111111111"],
+            recommendations=[],
             comment="Test"
         )
 
         assert 'module "rcps_test"' in result
         assert "third_party_s3_access_account_ids_allowlist" not in result
         assert "deny_s3_third_party_access = false" in result
+
     def test_build_module_with_ecr_recommendations(self) -> None:
         """Should generate module with ECR recommendations."""
         ecr_rec = RCPPlacementRecommendations(
@@ -1717,6 +1725,20 @@ class TestGenerateAccountRcpTerraform:
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
             _generate_account_rcp_terraform("999999999999", [sample_rcp_rec], empty_org, output_path)
 
+    def test_empty_recommendations_returns_early(
+        self,
+        sample_org: OrganizationHierarchy
+    ) -> None:
+        """Should return early when recommendations list is empty."""
+        output_path = Path("/tmp/test_rcps")
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        _generate_account_rcp_terraform("123456789012", [], sample_org, output_path)
+
+        expected_file = output_path / "test_account_rcps.tf"
+        assert not expected_file.exists()
+        output_path.rmdir()
+
 
 class TestGenerateOuRcpTerraform:
     """Test _generate_ou_rcp_terraform helper function."""
@@ -1788,6 +1810,20 @@ class TestGenerateOuRcpTerraform:
         with pytest.raises(RuntimeError, match="OU ou-unknown not found in organization hierarchy"):
             _generate_ou_rcp_terraform("ou-unknown", [sample_ou_rec], empty_org, output_path)
 
+    def test_empty_recommendations_returns_early(
+        self,
+        sample_org: OrganizationHierarchy
+    ) -> None:
+        """Should return early when recommendations list is empty."""
+        output_path = Path("/tmp/test_rcps")
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        _generate_ou_rcp_terraform("ou-12345", [], sample_org, output_path)
+
+        expected_file = output_path / "test_ou_ou_rcps.tf"
+        assert not expected_file.exists()
+        output_path.rmdir()
+
 
 class TestGenerateRootRcpTerraform:
     """Test _generate_root_rcp_terraform helper function."""
@@ -1827,12 +1863,27 @@ class TestGenerateRootRcpTerraform:
 
     def test_build_module_with_aoss_third_party_accounts(self) -> None:
         """Test building Terraform module with AOSS third-party accounts."""
+        iam_rec = RCPPlacementRecommendations(
+            check_name=THIRD_PARTY_ASSUMEROLE,
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["111111111111"],
+            reasoning="Test IAM"
+        )
+        aoss_rec = RCPPlacementRecommendations(
+            check_name="deny_aoss_third_party_access",
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["222222222222", "333333333333"],
+            reasoning="Test AOSS"
+        )
         terraform = _build_rcp_terraform_module(
             module_name="test_module",
             target_id_reference="local.account_id",
-            third_party_account_ids=["111111111111"],
-            comment="Test Account",
-            aoss_third_party_account_ids=["222222222222", "333333333333"],
+            recommendations=[iam_rec, aoss_rec],
+            comment="Test Account"
         )
 
         assert "test_module" in terraform
@@ -1842,3 +1893,14 @@ class TestGenerateRootRcpTerraform:
         assert "333333333333" in terraform
         assert "deny_aoss_third_party_access = true" in terraform
         assert "aoss_third_party_account_ids_allowlist" in terraform
+
+    def test_empty_recommendations_returns_early(self) -> None:
+        """Should return early when recommendations list is empty."""
+        output_path = Path("/tmp/test_rcps")
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        _generate_root_rcp_terraform([], output_path)
+
+        expected_file = output_path / "root_rcps.tf"
+        assert not expected_file.exists()
+        output_path.rmdir()

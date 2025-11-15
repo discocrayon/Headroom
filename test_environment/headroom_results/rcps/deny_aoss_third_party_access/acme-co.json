@@ -1,0 +1,11 @@
+{
+  "summary": {
+    "account_name": "acme-co",
+    "check": "deny_aoss_third_party_access",
+    "total_resources_with_third_party_access": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_third_party_account": {}
+  },
+  "resources_with_third_party_access": []
+}

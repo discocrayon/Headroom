@@ -16,7 +16,7 @@
       "region": "us-east-1",
       "engine": "aurora-mysql",
       "encrypted": true,
-      "db_arn": "arn:aws:rds:us-east-1:093113290897:db:encrypted-cluster-instance-1"
+      "db_arn": "arn:aws:rds:us-east-1:REDACTED:db:encrypted-cluster-instance-1"
     },
     {
       "db_identifier": "encrypted-cluster",
@@ -24,7 +24,7 @@
       "region": "us-east-1",
       "engine": "aurora-mysql",
       "encrypted": true,
-      "db_arn": "arn:aws:rds:us-east-1:093113290897:cluster:encrypted-cluster"
+      "db_arn": "arn:aws:rds:us-east-1:REDACTED:cluster:encrypted-cluster"
     }
   ]
 }
