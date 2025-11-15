@@ -14655,3 +14655,99 @@ Added the resource tag exclusion condition to the S3 RCP policy:
 - **Test Status:** All passing
 - **Code Quality:** Maintained 100% standards
 
+
+## 2025-11-11: Documentation Update - Added deny_s3_third_party_access Check to README and Specification
+
+### Summary
+Added comprehensive documentation for the `deny_s3_third_party_access` RCP check to both README.md and Headroom-Specification.md files.
+
+### Changes Made
+
+#### README.md
+Added the S3 check to the following sections:
+
+1. **RCP Compliance Analysis Section (line 214)**:
+   - Added description of S3 Third-Party Access Check
+   - Highlighted safety features, tracking capabilities, and exemption support
+
+2. **RCP Checks Section (lines 385-392)**:
+   - Added detailed subsection for S3 Third-Party Access Analysis
+   - Documented purpose, detection, safety, tracking, allowlisting, and exemption support
+   - Explained `dp:exclude:identity` tag exemption mechanism
+
+3. **Output Section (line 311)**:
+   - Added output path for S3 check results: `test_environment/headroom_results/rcps/deny_s3_third_party_access/`
+
+4. **Architecture - Module Structure (lines 328, 337-338)**:
+   - Added `s3.py` to AWS integrations
+   - Added `deny_s3_third_party_access.py` to RCP checks list
+
+#### Headroom-Specification.md
+Added comprehensive technical documentation:
+
+1. **RCP Compliance Analysis Section (lines 45-50)**:
+   - Added S3 Third-Party Access Check
+   - Listed key capabilities: principal type validation, Federated/CanonicalUser detection, action/resource tracking
+
+2. **Module Organization (lines 86, 100-101)**:
+   - Added `s3.py` to aws/ directory
+   - Added `deny_s3_third_party_access.py` to checks/rcps/ directory
+
+3. **Constants Section (lines 1707, 1731)**:
+   - Added `DENY_S3_THIRD_PARTY_ACCESS` constant
+   - Updated `RCP_CHECK_NAMES` set to include the new check
+   - Updated `SCP_CHECK_NAMES` set to include `DENY_RDS_UNENCRYPTED`
+
+4. **RCP Checks Section (lines 859-1078)**:
+   - Added comprehensive 220-line section covering:
+     * **Data Model**: S3BucketPolicyAnalysis dataclass with all fields
+     * **Analysis Function**: Detailed algorithm and function signatures
+     * **Custom Exceptions**: UnknownPrincipalTypeError and UnsupportedPrincipalTypeError
+     * **Check Implementation**: Complete class structure with methods
+     * **Result JSON Schema**: Full example with violations and compliant instances
+     * **Principal Type Matrix**: Table showing all principal types, extraction behavior, RCP compatibility
+     * **Safety Rationale**: Explanation of why Federated/CanonicalUser principals require special handling
+     * **Deployment Safety**: Rules for safe RCP deployment with this check
+
+### Documentation Highlights
+
+**Key Features Documented:**
+- Third-party account ID extraction from S3 bucket policies
+- Federated and CanonicalUser principal detection (critical for SSO/SAML safety)
+- Wildcard principal detection
+- Action-level tracking (which S3 actions are allowed per third-party account)
+- Resource-level tracking (which buckets each third-party account can access)
+- Resource tag exemption (`dp:exclude:identity=true`)
+
+**Safety Mechanisms Documented:**
+- Why Federated principals would break SSO access if RCP deployed
+- Why CanonicalUser principals cannot be allowlisted
+- How the RCP uses `aws:PrincipalAccount` condition
+- How service principals are exempted via `aws:PrincipalIsAWSService`
+- Violation categorization for unsafe principals
+
+**Principal Type Matrix:**
+Created comprehensive table showing 5 principal types:
+1. AWS Account (compliant, can be allowlisted)
+2. Wildcard (violation, can't deploy RCP)
+3. Federated/SAML/OIDC (violation, would break SSO)
+4. CanonicalUser (violation, no account ID)
+5. Service (exempt, handled by RCP condition)
+
+### Test Results
+```
+✅ 431 tests passed
+✅ All documentation updates validated
+✅ No code changes required
+```
+
+### Files Modified
+1. `README.md` - 5 sections updated
+2. `Headroom-Specification.md` - 5 sections updated, 1 major section added (220 lines)
+
+### Impact
+- Complete documentation for the newest RCP check
+- Clear safety guidance for preventing broken SSO/SAML access
+- Comprehensive reference for future check implementations
+- User-facing and technical documentation aligned
+
