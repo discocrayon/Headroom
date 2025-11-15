@@ -479,14 +479,13 @@ class TestAnalyzeAossResourcePolicies:
             "Account": "111111111111",
         }
 
-        # Mock access policies list
-        policy_paginator = MagicMock()
-        policy_paginator.paginate.return_value = [{
+        # Mock access policies list (manual pagination, no nextToken)
+        mock_aoss_client.list_access_policies.return_value = {
             "accessPolicySummaries": [
                 {"name": "test-policy"},
             ],
-        }]
-        mock_aoss_client.get_paginator.return_value = policy_paginator
+            # No "nextToken" key - this terminates the pagination loop
+        }
 
         # Mock get_access_policy
         policy_doc = json.dumps([{
@@ -511,6 +510,63 @@ class TestAnalyzeAossResourcePolicies:
         assert results[0].resource_name == "test-collection"
         assert results[0].third_party_account_ids == {"999888777666"}
 
+    def test_analyze_with_pagination(self) -> None:
+        """Test successful analysis with paginated AOSS policies."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_aoss_client = MagicMock()
+        mock_sts_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "opensearchserverless": mock_aoss_client,
+            "sts": mock_sts_client,
+        }[service]
+
+        # Mock regions
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}],
+        }
+
+        # Mock STS get_caller_identity
+        mock_sts_client.get_caller_identity.return_value = {
+            "Account": "111111111111",
+        }
+
+        # Mock paginated access policies list (2 pages)
+        page1 = {
+            "accessPolicySummaries": [{"name": "policy-1"}],
+            "nextToken": "token123",
+        }
+        page2 = {
+            "accessPolicySummaries": [{"name": "policy-2"}],
+        }
+        mock_aoss_client.list_access_policies.side_effect = [page1, page2]
+
+        # Mock get_access_policy for both policies
+        policy_doc = json.dumps([{
+            "Rules": [{
+                "Resource": ["collection/test-collection"],
+                "Permission": ["aoss:ReadDocument"],
+                "ResourceType": "collection",
+            }],
+            "Principal": ["arn:aws:iam::999888777666:root"],
+        }])
+
+        mock_aoss_client.get_access_policy.return_value = {
+            "accessPolicyDetail": {
+                "policy": policy_doc,
+            },
+        }
+
+        org_account_ids = {"111111111111", "222222222222"}
+        results = analyze_aoss_resource_policies(mock_session, org_account_ids)
+
+        # Should have 2 results (one per policy)
+        assert len(results) == 2
+        # Verify list_access_policies was called twice (pagination)
+        assert mock_aoss_client.list_access_policies.call_count == 2
+
     def test_analyze_empty_policies(self) -> None:
         """Test analysis with no access policies."""
         mock_session = MagicMock()
@@ -534,12 +590,10 @@ class TestAnalyzeAossResourcePolicies:
             "Account": "111111111111",
         }
 
-        # Mock empty access policies
-        policy_paginator = MagicMock()
-        policy_paginator.paginate.return_value = [{
+        # Mock empty access policies list
+        mock_aoss_client.list_access_policies.return_value = {
             "accessPolicySummaries": [],
-        }]
-        mock_aoss_client.get_paginator.return_value = policy_paginator
+        }
 
         org_account_ids = {"111111111111"}
         results = analyze_aoss_resource_policies(mock_session, org_account_ids)
@@ -565,7 +619,10 @@ class TestAnalyzeAossResourcePolicies:
                     region_name = "default"
                 if region_name not in aoss_clients:
                     aoss_clients[region_name] = MagicMock()
-                    aoss_clients[region_name].get_paginator.return_value = create_paginator()
+                    # Mock list_access_policies with empty results (no nextToken)
+                    aoss_clients[region_name].list_access_policies.return_value = {
+                        "accessPolicySummaries": [],
+                    }
                 return aoss_clients[region_name]
             raise ValueError(f"Unexpected service: {service}")
 
@@ -583,14 +640,6 @@ class TestAnalyzeAossResourcePolicies:
         mock_sts_client.get_caller_identity.return_value = {
             "Account": "111111111111",
         }
-
-        # Setup paginator factory for AOSS clients
-        def create_paginator() -> MagicMock:
-            policy_paginator = MagicMock()
-            policy_paginator.paginate.return_value = [{
-                "accessPolicySummaries": [],
-            }]
-            return policy_paginator
 
         org_account_ids = {"111111111111"}
         results = analyze_aoss_resource_policies(mock_session, org_account_ids)
@@ -634,16 +683,14 @@ class TestAnalyzeAossResourcePolicies:
         }
 
         # Mock AOSS not available error
-        policy_paginator = MagicMock()
         error_response = {
             "Error": {"Code": "UnrecognizedClientException"},
         }
         from typing import cast as type_cast, Any
-        policy_paginator.paginate.side_effect = ClientError(
+        mock_aoss_client.list_access_policies.side_effect = ClientError(
             type_cast(Any, error_response),
             "list_access_policies",
         )
-        mock_aoss_client.get_paginator.return_value = policy_paginator
 
         org_account_ids = {"111111111111"}
         results = analyze_aoss_resource_policies(mock_session, org_account_ids)
@@ -675,13 +722,11 @@ class TestAnalyzeAossResourcePolicies:
         }
 
         # Mock access policies list
-        policy_paginator = MagicMock()
-        policy_paginator.paginate.return_value = [{
+        mock_aoss_client.list_access_policies.return_value = {
             "accessPolicySummaries": [
                 {"name": "test-policy"},
             ],
-        }]
-        mock_aoss_client.get_paginator.return_value = policy_paginator
+        }
 
         # Mock get_access_policy with ResourceNotFoundException
         error_response = {
@@ -723,14 +768,12 @@ class TestAnalyzeAossResourcePolicies:
         }
 
         # Mock policy without name
-        policy_paginator = MagicMock()
-        policy_paginator.paginate.return_value = [{
+        mock_aoss_client.list_access_policies.return_value = {
             "accessPolicySummaries": [
                 {},
                 {"name": "valid-policy"},
             ],
-        }]
-        mock_aoss_client.get_paginator.return_value = policy_paginator
+        }
         mock_aoss_client.get_access_policy.return_value = {
             "accessPolicyDetail": {},
         }
@@ -765,13 +808,11 @@ class TestAnalyzeAossResourcePolicies:
         }
 
         # Mock policy list
-        policy_paginator = MagicMock()
-        policy_paginator.paginate.return_value = [{
+        mock_aoss_client.list_access_policies.return_value = {
             "accessPolicySummaries": [
                 {"name": "test-policy"},
             ],
-        }]
-        mock_aoss_client.get_paginator.return_value = policy_paginator
+        }
 
         # Mock get_access_policy with other error
         error_response = {
@@ -811,16 +852,14 @@ class TestAnalyzeAossResourcePolicies:
         }
 
         # Mock list_access_policies with other error
-        policy_paginator = MagicMock()
         error_response = {
             "Error": {"Code": "AccessDeniedException"},
         }
         from typing import cast as type_cast, Any
-        policy_paginator.paginate.side_effect = ClientError(
+        mock_aoss_client.list_access_policies.side_effect = ClientError(
             type_cast(Any, error_response),
             "list_access_policies",
         )
-        mock_aoss_client.get_paginator.return_value = policy_paginator
 
         org_account_ids = {"111111111111"}
         with pytest.raises(ClientError):
@@ -834,13 +873,6 @@ class TestAnalyzeAossResourcePolicies:
 
         aoss_clients: Dict[str, MagicMock] = {}
 
-        def create_paginator() -> MagicMock:
-            policy_paginator = MagicMock()
-            policy_paginator.paginate.return_value = [{
-                "accessPolicySummaries": [],
-            }]
-            return policy_paginator
-
         def get_client(service: str, region_name: Optional[str] = None, **kwargs: object) -> MagicMock:
             if service == "ec2":
                 return mock_ec2_client
@@ -851,7 +883,10 @@ class TestAnalyzeAossResourcePolicies:
                     region_name = "default"
                 if region_name not in aoss_clients:
                     aoss_clients[region_name] = MagicMock()
-                    aoss_clients[region_name].get_paginator.return_value = create_paginator()
+                    # Mock list_access_policies with empty results (no nextToken)
+                    aoss_clients[region_name].list_access_policies.return_value = {
+                        "accessPolicySummaries": [],
+                    }
                 return aoss_clients[region_name]
             raise ValueError(f"Unexpected service: {service}")
 

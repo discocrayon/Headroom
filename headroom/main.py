@@ -1,6 +1,7 @@
 from typing import Any, Callable, Dict, List, Union
 import argparse
 import boto3
+import logging
 from botocore.exceptions import ClientError
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from .aws.organization import analyze_organization_structure
 from .types import OrganizationHierarchy
 from .constants import ORG_INFO_FILENAME
 from .output import OutputHandler
+
+logger = logging.getLogger(__name__)
 
 
 def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> HeadroomConfig:
@@ -183,6 +186,16 @@ def main() -> None:
         handle_scp_workflow(final_config, org_hierarchy)
         handle_rcp_workflow(final_config, org_hierarchy)
 
-    except (ValueError, RuntimeError, ClientError) as e:
-        OutputHandler.error("Terraform Generation Error", e)
+    except ValueError as e:
+        OutputHandler.error("Configuration Error", e)
+        logger.error(f"Invalid configuration: {e}", exc_info=True)
+        exit(1)
+    except RuntimeError as e:
+        OutputHandler.error("Runtime Error", e)
+        logger.error(f"Runtime error during Terraform generation: {e}", exc_info=True)
+        exit(1)
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        OutputHandler.error(f"AWS API Error ({error_code})", e)
+        logger.error(f"AWS API error: {e}", exc_info=True)
         exit(1)

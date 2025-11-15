@@ -9,6 +9,7 @@ from ...aws.eks import (
     get_eks_cluster_tag_analysis,
 )
 from ...constants import DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG
+from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
@@ -43,7 +44,7 @@ class DenyEksCreateClusterWithoutTagCheck(BaseCheck[DenyEksCreateClusterWithoutT
     def categorize_result(
         self,
         result: DenyEksCreateClusterWithoutTag
-    ) -> tuple[str, JsonDict]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single EKS cluster tag result.
 
@@ -51,9 +52,7 @@ class DenyEksCreateClusterWithoutTagCheck(BaseCheck[DenyEksCreateClusterWithoutT
             result: Single DenyEksCreateClusterWithoutTag analysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is:
-            - "violation": Missing PavedRoad=true tag
-            - "compliant": Has PavedRoad=true tag
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
         result_dict = {
             "cluster_name": result.cluster_name,
@@ -64,9 +63,9 @@ class DenyEksCreateClusterWithoutTagCheck(BaseCheck[DenyEksCreateClusterWithoutT
         }
 
         if result.has_paved_road_tag:
-            return ("compliant", result_dict)
+            return (CheckCategory.COMPLIANT, result_dict)
 
-        return ("violation", result_dict)
+        return (CheckCategory.VIOLATION, result_dict)
 
     def build_summary_fields(
         self,

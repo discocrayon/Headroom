@@ -355,6 +355,28 @@ class TestBuildAccountInfoFromAccountDict:
         assert result.owner == "unknown"
         mock_logger.warning.assert_called_once()
 
+    @patch("headroom.analysis.logger")
+    def test_build_account_info_with_other_client_error(self, mock_logger: MagicMock) -> None:
+        """Test building AccountInfo when tags fetch fails with non-AccessDenied error."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=True,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        mock_org_client = MagicMock()
+        mock_org_client.list_tags_for_resource.side_effect = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "Service Error"}},
+            "ListTagsForResource"
+        )
+
+        result = _build_account_info_from_account_dict(account, mock_org_client, config)
+
+        assert result.account_id == "123456789012"
+        assert result.name == "123456789012"
+        assert result.environment == "unknown"
+        assert result.owner == "unknown"
+        mock_logger.error.assert_called_once()
+
     def test_build_account_info_missing_account_name_in_api(self) -> None:
         """Test building AccountInfo when account Name field is missing."""
         config = HeadroomConfig(

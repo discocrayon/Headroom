@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Union, cast
 
 from .constants import get_check_type_map
+from .utils import format_account_identifier
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -142,7 +143,7 @@ def get_results_path(
     if exclude_account_ids:
         account_identifier = account_name
     else:
-        account_identifier = f"{account_name}_{account_id}"
+        account_identifier = format_account_identifier(account_name, account_id)
     return Path(results_dir) / f"{account_identifier}.json"
 
 
