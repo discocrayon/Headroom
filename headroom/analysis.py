@@ -305,10 +305,7 @@ def _all_checks_complete(
     config: HeadroomConfig
 ) -> bool:
     """Check if all checks are complete for an account."""
-    return (
-        all_check_results_exist("scps", account_info, config) and
-        all_check_results_exist("rcps", account_info, config)
-    )
+    return all_check_results_exist("scps", account_info, config) and all_check_results_exist("rcps", account_info, config)
 
 
 def run_checks(
