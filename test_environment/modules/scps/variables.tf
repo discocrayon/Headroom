@@ -14,8 +14,26 @@ variable "target_id" {
 
 # EC2
 
+variable "deny_ec2_ami_owner" {
+  type        = bool
+  description = "Deny launching EC2 instances from untrusted AMI owners"
+}
+
+variable "allowed_ami_owners" {
+  type        = list(string)
+  default     = []
+  description = "List of allowed AMI owner account IDs or aliases (e.g., 'amazon', 'aws-marketplace', '123456789012')"
+}
+
 variable "deny_imds_v1_ec2" {
   type = bool
+}
+
+# EKS
+
+variable "deny_eks_create_cluster_without_tag" {
+  type        = bool
+  description = "Deny EKS cluster creation unless PavedRoad=true tag is present"
 }
 
 # IAM
