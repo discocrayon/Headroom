@@ -1803,7 +1803,6 @@ Use this checklist when adding any new check:
 
 ### Terraform Modules
 - [ ] Added boolean variable to `test_environment/modules/{scps|rcps}/variables.tf`
-- [ ] Added `nullable = false` to require explicit value
 - [ ] Added allowlist variable (if Pattern 5)
 - [ ] Added policy statement to `test_environment/modules/{scps|rcps}/locals.tf`:
   - [ ] Used `include` field tied to variable
@@ -2052,7 +2051,6 @@ Use this checklist when adding any new check:
 # SCP boolean - NO default
 variable "deny_rds_unencrypted" {
   type = bool
-  nullable = false  # Requires explicit value
 }
 
 # RCP allowlist - WITH default

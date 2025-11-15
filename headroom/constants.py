@@ -6,6 +6,11 @@ This module contains check name constants used throughout the Headroom codebase.
 
 from typing import Dict
 
+# AWS IAM Policy Principal Types
+# Base types supported in both IAM trust policies and S3 bucket policies
+# Reference: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
+BASE_PRINCIPAL_TYPES = frozenset({"AWS", "Service", "Federated"})
+
 # Check name constants
 
 # SCP Checks (alphabetical by service)
@@ -24,6 +29,8 @@ DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 # IAM
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+# S3
+DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
 # OpenSearch Serverless
 DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 
