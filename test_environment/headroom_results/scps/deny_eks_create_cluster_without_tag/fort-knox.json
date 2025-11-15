@@ -1,0 +1,13 @@
+{
+  "summary": {
+    "account_name": "fort-knox",
+    "check": "deny_eks_create_cluster_without_tag",
+    "total_clusters": 0,
+    "violations": 0,
+    "compliant": 0,
+    "compliance_percentage": 100
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": []
+}
