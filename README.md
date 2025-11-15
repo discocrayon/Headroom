@@ -211,6 +211,7 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 
 [Current RCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/rcps):
 - **Third-Party AssumeRole Check**: Analyzes IAM role trust policies to identify third-party account access. Detects wildcard principals that require CloudTrail analysis.
+- **ECR Third-Party Access Check**: Analyzes ECR repository resource policies to identify third-party account access. Tracks specific ECR actions allowed per third-party account. Includes fail-fast validation for unsupported principal types.
 
 All checks have:
 - **Current State Checking**: Scans all AWS regions (SCPs) or analyzes IAM policies (RCPs) with pagination support to check the current state against the intended policy.
@@ -306,6 +307,7 @@ The tool generates:
 - **JSON Results**:
   - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_ecr_third_party_access/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
 - **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
@@ -320,6 +322,7 @@ The tool generates:
 headroom/
 ├── aws/           # AWS service integrations
 │   ├── ec2.py     # EC2 analysis functions
+│   ├── ecr.py     # ECR repository policy analysis
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
 │   │   └── users.py   # SCP-focused IAM user enumeration
@@ -332,7 +335,8 @@ headroom/
 │   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
 │   │   └── deny_iam_user_creation.py  # IAM user creation check
 │   └── rcps/      # Resource Control Policy checks
-│       └── check_third_party_assumerole.py  # Third-party access check
+│       ├── deny_ecr_third_party_access.py  # ECR third-party access check
+│       └── deny_third_party_assumerole.py  # IAM third-party access check
 ├── terraform/     # Terraform generation
 │   ├── generate_org_info.py  # Organization data sources
 │   ├── generate_scps.py      # SCP configurations
@@ -380,6 +384,16 @@ headroom/
 - **Detection**: Identifies third-party account IDs and wildcard principals
 - **Output**: Detailed role trust policy analysis with third-party account lists
 - **Allowlisting**: Generates allowlists for RCP modules to permit known third-party access
+
+#### ECR Third-Party Access Analysis
+- **Check Name**: `deny_ecr_third_party_access`
+- **Purpose**: Identifies ECR repositories with resource policies allowing external account access
+- **Detection**: Extracts third-party account IDs from ECR repository policies, detects wildcard principals
+- **Multi-Region Support**: Scans all enabled AWS regions for ECR repositories
+- **Actions Tracking**: Tracks specific ECR actions (e.g., `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`) allowed per third-party account
+- **Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected in ECR policies
+- **Output**: Detailed repository policy analysis with third-party accounts and allowed actions
+- **Allowlisting**: Generates allowlists for RCP modules to permit known third-party ECR access
 
 ### Execution Flow
 

@@ -14454,3 +14454,20 @@ All Terraform variables now follow standard Terraform conventions without explic
 Added `aws:ResourceTag/dp:exclude:identity = true` condition to the ECR third-party access policy in test_environment/modules/rcps/locals.tf.
 
 This allows ECR repositories tagged with `dp:exclude:identity = true` to be exempt from the RCP restriction, consistent with the IAM third-party assumerole policy pattern.
+## 2025-11-12 - Added deny_ecr_third_party_access to Documentation
+
+Updated README.md:
+- Added ECR Third-Party Access Check to RCP Compliance Analysis section
+- Updated Module Structure to include ecr.py
+- Added detailed check description with multi-region support, actions tracking, and fail-fast validation
+- Updated output section to include deny_ecr_third_party_access results path
+
+Updated Headroom-Specification.md:
+- Added ECR Third-Party Access Check to RCP Checks section with complete specification
+- Added ECRRepositoryPolicyAnalysis data model
+- Documented analysis functions, custom exceptions, and check implementation
+- Added example result JSON schema
+- Updated constants section to include DENY_ECR_THIRD_PARTY_ACCESS
+- Updated SCP_CHECK_NAMES and RCP_CHECK_NAMES sets
+
+Both documents now fully document the new ECR third-party access check.
