@@ -308,6 +308,40 @@ def _all_checks_complete(
     return all_check_results_exist("scps", account_info, config) and all_check_results_exist("rcps", account_info, config)
 
 
+def _run_checks_for_account(
+    account_info: AccountInfo,
+    security_session: boto3.Session,
+    config: HeadroomConfig,
+    org_account_ids: Set[str]
+) -> None:
+    """
+    Run all checks for a single account.
+
+    Assumes the Headroom role in the target account and runs any missing
+    SCP and RCP checks.
+
+    Args:
+        account_info: Information about the target account
+        security_session: boto3 Session for security analysis account
+        config: Headroom configuration
+        org_account_ids: Set of all account IDs in the organization
+    """
+    account_identifier = _get_account_identifier(account_info)
+    logger.info(f"Running checks for account: {account_identifier}")
+
+    headroom_session = get_headroom_session(config, security_session, account_info.account_id)
+
+    scp_exist = all_check_results_exist("scps", account_info, config)
+    if not scp_exist:
+        run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
+
+    rcp_exist = all_check_results_exist("rcps", account_info, config)
+    if not rcp_exist:
+        run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
+
+    logger.info(f"Checks completed for account: {account_identifier}")
+
+
 def run_checks(
     security_session: boto3.Session,
     relevant_account_infos: List[AccountInfo],
@@ -330,25 +364,12 @@ def run_checks(
         org_account_ids: Set of all account IDs in the organization
     """
     for account_info in relevant_account_infos:
-        account_identifier = _get_account_identifier(account_info)
-
         if _all_checks_complete(account_info, config):
+            account_identifier = _get_account_identifier(account_info)
             logger.info(f"All results already exist for account {account_identifier}, skipping checks")
             continue
 
-        logger.info(f"Running checks for account: {account_identifier}")
-
-        headroom_session = get_headroom_session(config, security_session, account_info.account_id)
-
-        scp_exist = all_check_results_exist("scps", account_info, config)
-        if not scp_exist:
-            run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
-
-        rcp_exist = all_check_results_exist("rcps", account_info, config)
-        if not rcp_exist:
-            run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
-
-        logger.info(f"Checks completed for account: {account_identifier}")
+        _run_checks_for_account(account_info, security_session, config, org_account_ids)
 
 
 def perform_analysis(config: HeadroomConfig) -> None:
