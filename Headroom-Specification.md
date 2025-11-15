@@ -42,6 +42,11 @@
 
 ### 4. RCP Compliance Analysis
 - **Third-Party AssumeRole Check:** IAM trust policy analysis across organization
+- **S3 Third-Party Access Check:** S3 bucket policy analysis for third-party access
+- Third-party account detection and wildcard principal identification
+- Principal type validation (AWS, Service, Federated, CanonicalUser)
+- Federated and CanonicalUser principal detection to prevent breaking SSO/SAML access
+- Action and resource tracking for third-party S3 access patterns
 - **AOSS Third-Party Access Check:** OpenSearch Serverless data access policy analysis
 - **ECR Third-Party Access Check:** ECR repository resource policy analysis across organization
 - Third-party account detection and wildcard principal identification
@@ -88,6 +93,7 @@ headroom/
 │   ├── ec2.py              # EC2 analysis
 │   ├── ecr.py              # ECR repository policy analysis
 │   ├── rds.py              # RDS analysis
+│   ├── s3.py               # S3 bucket policy analysis
 │   ├── iam/
 │   │   ├── roles.py        # Trust policy analysis (RCP)
 │   │   └── users.py        # User enumeration (SCP)
@@ -102,6 +108,7 @@ headroom/
 │   │   └── deny_rds_unencrypted.py
 │   └── rcps/
 │       ├── deny_third_party_assumerole.py
+│       └── deny_s3_third_party_access.py
 │       └── deny_aoss_third_party_access.py
 │       ├── deny_ecr_third_party_access.py
 │       └── deny_third_party_assumerole.py
@@ -1050,6 +1057,9 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
 }
 ```
 
+### S3 Third-Party Access
+
+**Purpose:** Analyze S3 bucket policies to identify third-party (non-org) account access, Federated/CanonicalUser principals, and wildcard principals.
 ### AOSS Third-Party Access
 
 **Purpose:** Analyze OpenSearch Serverless data access policies to identify third-party (non-org) account access to collections and indexes.
@@ -1057,6 +1067,13 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
 **Data Model:**
 ```python
 @dataclass
+class S3BucketPolicyAnalysis:
+    bucket_name: str
+    bucket_arn: str
+    third_party_account_ids: Set[str]          # External to organization
+    has_wildcard_principal: bool               # True if Principal: "*"
+    has_non_account_principals: bool           # True if Federated or CanonicalUser
+    actions_by_account: Dict[str, Set[str]]    # account_id -> allowed S3 actions
 class AossResourcePolicyAnalysis:
     resource_name: str                  # Collection or index name
     resource_type: str                  # \"collection\" or \"index\"
@@ -1068,6 +1085,81 @@ class AossResourcePolicyAnalysis:
 
 **Analysis Function:**
 ```python
+# aws/s3.py
+
+# S3 supports CanonicalUser in addition to base principal types
+ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES | {"CanonicalUser"}
+
+def analyze_s3_bucket_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str]
+) -> List[S3BucketPolicyAnalysis]:
+    """
+    Analyze all S3 bucket policies for third-party access.
+
+    Algorithm:
+    1. List all buckets with paginator (list_buckets)
+    2. For each bucket, get bucket policy (get_bucket_policy)
+    3. Parse JSON policy document
+    4. For each Allow statement:
+       - Check if Principal contains wildcard
+       - Check if Principal contains Federated or CanonicalUser types
+       - Extract account IDs from Principal field
+       - Extract allowed actions
+       - Filter to third-party accounts (not in org_account_ids)
+       - Track which actions each third-party account can perform
+    5. Return S3BucketPolicyAnalysis for buckets with findings
+
+    Raises:
+    - UnknownPrincipalTypeError: if principal type not in ALLOWED_PRINCIPAL_TYPES
+    - UnsupportedPrincipalTypeError: if Federated/CanonicalUser prevents RCP deployment
+    """
+
+def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
+    """
+    Extract AWS account IDs from principal field.
+
+    Handles:
+    - String: "arn:aws:s3:::bucket" or "123456789012"
+    - List: recursively process each item
+    - Dict: process AWS/Service/Federated/CanonicalUser keys
+    - Mixed: {"AWS": [...], "Federated": "..."}
+
+    Principal Type Handling:
+    - AWS: Extract account IDs from ARNs or plain IDs
+    - Service: Validate but skip (e.g., cloudtrail.amazonaws.com)
+    - Federated: Skip (track separately via has_non_account_principals)
+    - CanonicalUser: Skip (track separately via has_non_account_principals)
+    - Unknown: Raise UnknownPrincipalTypeError
+    """
+
+def _has_wildcard_principal(principal: Any) -> bool:
+    """Check if principal contains "*" (wildcard)."""
+
+def _has_non_account_principals(principal: Any) -> bool:
+    """
+    Check if principal contains Federated or CanonicalUser types.
+
+    These principal types cannot be represented as account IDs, so an RCP that
+    uses aws:PrincipalAccount for allowlisting would break their access.
+    """
+
+def _normalize_actions(action: Any) -> Set[str]:
+    """Normalize action field to a set of action strings."""
+```
+
+**Custom Exceptions:**
+```python
+class UnknownPrincipalTypeError(Exception):
+    """Raised when principal type is not in ALLOWED_PRINCIPAL_TYPES."""
+
+class UnsupportedPrincipalTypeError(Exception):
+    """
+    Raised when a bucket policy contains principal types that can't be handled by RCP.
+
+    Federated and CanonicalUser principals don't have account IDs, so the RCP
+    (which uses aws:PrincipalAccount for allowlisting) would break their access.
+    """
 # aws/aoss.py
 
 def analyze_aoss_resource_policies(
@@ -1130,6 +1222,9 @@ def _analyze_access_policy(
 
 **Check Implementation:**
 ```python
+# checks/rcps/deny_s3_third_party_access.py
+
+class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
 # checks/rcps/deny_aoss_third_party_access.py
 
 class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
@@ -1138,6 +1233,45 @@ class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
         self.org_account_ids = org_account_ids
         self.all_third_party_accounts: Set[str] = set()
         self.actions_by_account: Dict[str, Set[str]] = {}
+        self.buckets_by_account: Dict[str, Set[str]] = {}
+
+    def analyze(self, session):
+        all_results = analyze_s3_bucket_policies(session, self.org_account_ids)
+        # Filter to only buckets with findings
+        return [
+            result for result in all_results
+            if result.has_wildcard_principal 
+            or result.has_non_account_principals 
+            or result.third_party_account_ids
+        ]
+
+    def categorize_result(self, result):
+        # Buckets with wildcards or non-account principals are "violations"
+        # Buckets with third-party account access are "compliant" (expected patterns)
+        if result.has_wildcard_principal or result.has_non_account_principals:
+            return ("violation", ...)
+        else:
+            return ("compliant", ...)
+
+    def build_summary_fields(self, check_result):
+        # Aggregate unique third-party account IDs
+        # Track actions and buckets per third-party account
+        # Count buckets with wildcards and non-account principals as violations
+        return {
+            "total_buckets_analyzed": total,
+            "buckets_with_third_party_access": len(third_party_buckets),
+            "buckets_with_wildcards": len(wildcard_buckets),
+            "buckets_with_non_account_principals": len(non_account_principal_buckets),
+            "unique_third_party_accounts": list(unique_third_parties),
+            "actions_by_third_party_account": {
+                account_id: sorted(list(actions))
+                for account_id, actions in actions_by_account.items()
+            },
+            "buckets_by_third_party_account": {
+                account_id: sorted(list(buckets))
+                for account_id, buckets in buckets_by_account.items()
+            },
+            "violations": len(violations)
 
     def analyze(self, session):
         return analyze_aoss_resource_policies(session, self.org_account_ids)
@@ -1168,6 +1302,76 @@ class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
 **Result JSON Schema:**
 ```json
 {
+  "summary": {
+    "account_name": "string",
+    "account_id": "string",
+    "check": "deny_s3_third_party_access",
+    "total_buckets_analyzed": 0,
+    "buckets_with_third_party_access": 0,
+    "buckets_with_wildcards": 0,
+    "buckets_with_non_account_principals": 0,
+    "unique_third_party_accounts": [],
+    "actions_by_third_party_account": {
+      "999999999999": ["s3:GetObject", "s3:PutObject"]
+    },
+    "buckets_by_third_party_account": {
+      "999999999999": ["arn:aws:s3:::my-bucket", "arn:aws:s3:::another-bucket"]
+    },
+    "violations": 0
+  },
+  "violations": [
+    {
+      "bucket_name": "wildcard-bucket",
+      "bucket_arn": "arn:aws:s3:::wildcard-bucket",
+      "has_wildcard_principal": true,
+      "has_non_account_principals": false
+    },
+    {
+      "bucket_name": "federated-bucket",
+      "bucket_arn": "arn:aws:s3:::federated-bucket",
+      "has_wildcard_principal": false,
+      "has_non_account_principals": true
+    }
+  ],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "bucket_name": "third-party-bucket",
+      "bucket_arn": "arn:aws:s3:::third-party-bucket",
+      "third_party_account_ids": ["999999999999"],
+      "has_wildcard_principal": false,
+      "has_non_account_principals": false,
+      "actions_by_account": {
+        "999999999999": ["s3:GetObject", "s3:PutObject"]
+      }
+    }
+  ]
+}
+```
+
+**Principal Type Matrix:**
+
+| Principal Type | Example | Account ID Extraction | RCP Compatible | Categorization |
+|----------------|---------|----------------------|----------------|----------------|
+| AWS Account | `arn:aws:iam::123456789012:root` | ✅ Extract 123456789012 | ✅ COMPLIANT | Can be allowlisted |
+| Wildcard | `"*"` | ❌ None | ❌ VIOLATION | Can't deploy RCP safely |
+| Federated (SAML/OIDC) | `arn:aws:iam::123456789012:saml-provider/MyProvider` | ⚠️ Extract 123456789012 but not the accessing principal | ❌ VIOLATION | Would break SSO access |
+| CanonicalUser | `79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be` | ❌ None | ❌ VIOLATION | Would break access |
+| Service | `cloudtrail.amazonaws.com` | ❌ None (skip) | ✅ EXEMPT | RCP has `aws:PrincipalIsAWSService` check |
+
+**Safety Rationale:**
+
+The RCP uses `aws:PrincipalAccount` condition for allowlisting. This only works for AWS account principals:
+- ✅ **AWS Account principals:** Have account IDs → can be allowlisted
+- ❌ **Federated principals:** The account ID in the SAML/OIDC provider ARN is NOT the accessing principal (it's the account hosting the provider)
+- ❌ **CanonicalUser principals:** S3-specific IDs with no account ID → cannot be allowlisted
+- ✅ **Service principals:** Exempt via `aws:PrincipalIsAWSService = "false"` condition
+
+**Deployment Safety:**
+- Accounts with wildcard principals → excluded from RCP generation
+- Buckets with Federated/CanonicalUser principals → marked as violations
+- Only buckets with account-based third-party access → used for allowlist generation
+- RCP policy includes `aws:ResourceTag/dp:exclude:identity = "true"` condition to exempt tagged buckets
   \"summary\": {
     \"account_name\": \"string\",
     \"account_id\": \"string\",
@@ -2055,6 +2259,7 @@ DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
 DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 
 _CHECK_TYPE_MAP: Dict[str, str] = {}
@@ -2079,6 +2284,7 @@ def get_check_type_map() -> Dict[str, str]:
 
 # Derived sets
 SCP_CHECK_NAMES = {DENY_IMDS_V1_EC2, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
+RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_S3_THIRD_PARTY_ACCESS}
 RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_AOSS_THIRD_PARTY_ACCESS}
 RCP_CHECK_NAMES = {DENY_ECR_THIRD_PARTY_ACCESS, THIRD_PARTY_ASSUMEROLE}
 ```

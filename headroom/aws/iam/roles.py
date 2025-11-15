@@ -16,6 +16,8 @@ import boto3
 from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
+from ...constants import BASE_PRINCIPAL_TYPES
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,7 @@ class InvalidFederatedPrincipalError(Exception):
     """Raised when a Federated principal has sts:AssumeRole in its actions."""
 
 
-ALLOWED_PRINCIPAL_TYPES = {"AWS", "Service", "Federated"}
+ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES
 
 
 @dataclass
