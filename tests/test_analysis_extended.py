@@ -322,8 +322,10 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.scps.deny_eks_create_cluster_without_tag.DenyEksCreateClusterWithoutTagCheck.execute") as mock_check_eks,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute") as mock_check2,
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute") as mock_check3,
+            patch("headroom.checks.scps.deny_ec2_ami_owner.DenyEc2AmiOwnerCheck.execute") as mock_check4,
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.checks.rcps.deny_ecr_third_party_access.DenyECRThirdPartyAccessCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
@@ -369,10 +371,14 @@ class TestRunChecks:
             # (check parameters are passed to constructor, not execute)
             assert mock_check.call_count == 1
             mock_check.assert_called_with(mock_headroom_session)
+            assert mock_check_eks.call_count == 1
+            mock_check_eks.assert_called_with(mock_headroom_session)
             assert mock_check2.call_count == 1
             mock_check2.assert_called_with(mock_headroom_session)
             assert mock_check3.call_count == 1
             mock_check3.assert_called_with(mock_headroom_session)
+            assert mock_check4.call_count == 1
+            mock_check4.assert_called_with(mock_headroom_session)
 
             # Verify skip logging for first account
             mock_logger.info.assert_any_call("All results already exist for account prod-account_111111111111, skipping checks")

@@ -205,7 +205,9 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 
 [Current SCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/scps):
 - **EC2 IMDSv1 Check**: Comprehensive analysis of EC2 instances for IMDSv1 compliance. Supports `ExemptFromIMDSv2` tag for policy flexibility.
+- **EKS Cluster Tag Check**: Multi-region analysis of EKS clusters to enforce paved road automation. Ensures clusters are created with `PavedRoad=true` tag, encouraging use of approved infrastructure automation.
 - **IAM User Creation Check**: Enumerates all IAM users across accounts and auto-generates SCPs with allowlists to restrict IAM user creation to approved users only.
+- **RDS Unencrypted Check**: Multi-region analysis of RDS instances and Aurora clusters for encryption at rest compliance. Identifies unencrypted databases that would be blocked by the SCP.
 
 ### 🔍 **RCP Compliance Analysis**
 
@@ -307,8 +309,10 @@ The tool generates:
 - **JSON Results**:
   - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
+  - SCPs: `test_environment/headroom_results/scps/deny_eks_create_cluster_without_tag/{account_name}_{account_id}.json`
+  - SCPs: `test_environment/headroom_results/scps/deny_rds_unencrypted/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/deny_ecr_third_party_access/{account_name}_{account_id}.json`
-  - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_third_party_assumerole/{account_name}_{account_id}.json`
 - **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
   - `test_environment/rcps/grab_org_info.tf`
@@ -323,17 +327,21 @@ headroom/
 ├── aws/           # AWS service integrations
 │   ├── ec2.py     # EC2 analysis functions
 │   ├── ecr.py     # ECR repository policy analysis
+│   ├── eks.py     # EKS analysis functions
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
 │   │   └── users.py   # SCP-focused IAM user enumeration
 │   ├── organization.py  # Organizations API integration
+│   ├── rds.py     # RDS analysis functions
 │   └── sessions.py      # Session management utilities
 ├── checks/        # Compliance checks (extensible framework)
 │   ├── base.py    # BaseCheck abstract class (Template Method pattern)
 │   ├── registry.py      # Check registration and discovery
 │   ├── scps/      # Service Control Policy checks
+│   │   ├── deny_eks_create_cluster_without_tag.py  # EKS paved road check
+│   │   ├── deny_iam_user_creation.py  # IAM user creation check
 │   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
-│   │   └── deny_iam_user_creation.py  # IAM user creation check
+│   │   └── deny_rds_unencrypted.py  # RDS encryption check
 │   └── rcps/      # Resource Control Policy checks
 │       ├── deny_ecr_third_party_access.py  # ECR third-party access check
 │       └── deny_third_party_assumerole.py  # IAM third-party access check
@@ -375,6 +383,21 @@ headroom/
 - **Purpose**: Enumerates all IAM users in accounts to enforce IAM user creation policies
 - **Allowlist Support**: Auto-generates SCPs with IAM user ARN allowlists to restrict user creation
 - **Output**: Complete list of IAM users with ARNs, paths, and allowlist generation
+
+#### EKS Cluster Tag Analysis
+- **Check Name**: `deny_eks_create_cluster_without_tag`
+- **Purpose**: Enforces paved road approach for EKS cluster creation by requiring `PavedRoad=true` tag
+- **Multi-Region Support**: Scans all AWS regions for EKS clusters
+- **Policy Pattern**: Implements "Module Tag / Paved Road Pattern" - encourages use of blessed automation/infrastructure-as-code
+- **Policy Coverage**: Denies `eks:CreateCluster` operations unless `aws:RequestTag/PavedRoad` equals "true"
+- **Output**: Detailed compliance reporting showing which clusters were created via approved automation (compliant) vs manual/unapproved methods (violations)
+
+#### RDS Unencrypted Database Analysis
+- **Check Name**: `deny_rds_unencrypted`
+- **Purpose**: Identifies RDS instances and Aurora clusters without encryption at rest enabled (security risk)
+- **Multi-Region Support**: Scans all AWS regions for RDS databases
+- **Policy Coverage**: Denies `rds:CreateDBCluster`, `rds:RestoreDBClusterFromS3`, `rds:CreateBlueGreenDeployment`, and `rds:CreateDBInstance` operations unless `rds:StorageEncrypted` condition key is true
+- **Output**: Detailed violation/compliant reporting with database identifiers, types, engines, and encryption status
 
 ### RCP Checks
 
