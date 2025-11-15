@@ -1,0 +1,14 @@
+{
+  "summary": {
+    "account_name": "fort-knox",
+    "check": "deny_ec2_ami_owner",
+    "total_instances": 0,
+    "violations": 0,
+    "compliant": 0,
+    "compliance_percentage": 100,
+    "unique_ami_owners": []
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": []
+}

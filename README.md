@@ -205,13 +205,17 @@ The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test
 
 [Current SCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/scps):
 - **EC2 IMDSv1 Check**: Comprehensive analysis of EC2 instances for IMDSv1 compliance. Supports `ExemptFromIMDSv2` tag for policy flexibility.
+- **EKS Cluster Tag Check**: Multi-region analysis of EKS clusters to enforce paved road automation. Ensures clusters are created with `PavedRoad=true` tag, encouraging use of approved infrastructure automation.
 - **IAM User Creation Check**: Enumerates all IAM users across accounts and auto-generates SCPs with allowlists to restrict IAM user creation to approved users only.
+- **RDS Unencrypted Check**: Multi-region analysis of RDS instances and Aurora clusters for encryption at rest compliance. Identifies unencrypted databases that would be blocked by the SCP.
 
 ### 🔍 **RCP Compliance Analysis**
 
 [Current RCP checks](https://github.com/discocrayon/Headroom/tree/main/headroom/checks/rcps):
 - **Third-Party AssumeRole Check**: Analyzes IAM role trust policies to identify third-party account access. Detects wildcard principals that require CloudTrail analysis.
 - **S3 Third-Party Access Check**: Analyzes S3 bucket policies to identify third-party account access and Federated/CanonicalUser principals. Tracks which S3 actions are allowed and on which buckets. Prevents deployment of RCPs that would break legitimate access patterns.
+- **AOSS Third-Party Access Check**: Analyzes OpenSearch Serverless data access policies to identify third-party account access to collections and indexes.
+- **ECR Third-Party Access Check**: Analyzes ECR repository resource policies to identify third-party account access. Tracks specific ECR actions allowed per third-party account. Includes fail-fast validation for unsupported principal types.
 
 All checks have:
 - **Current State Checking**: Scans all AWS regions (SCPs) or analyzes IAM policies (RCPs) with pagination support to check the current state against the intended policy.
@@ -309,6 +313,11 @@ The tool generates:
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/deny_s3_third_party_access/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_aoss_third_party_access/{account_name}_{account_id}.json`
+  - SCPs: `test_environment/headroom_results/scps/deny_eks_create_cluster_without_tag/{account_name}_{account_id}.json`
+  - SCPs: `test_environment/headroom_results/scps/deny_rds_unencrypted/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_ecr_third_party_access/{account_name}_{account_id}.json`
+  - RCPs: `test_environment/headroom_results/rcps/deny_third_party_assumerole/{account_name}_{account_id}.json`
 - **Organization Data**:
   - `test_environment/scps/grab_org_info.tf`
   - `test_environment/rcps/grab_org_info.tf`
@@ -322,21 +331,30 @@ The tool generates:
 headroom/
 ├── aws/           # AWS service integrations
 │   ├── ec2.py     # EC2 analysis functions
+│   ├── ecr.py     # ECR repository policy analysis
+│   ├── eks.py     # EKS analysis functions
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
 │   │   └── users.py   # SCP-focused IAM user enumeration
 │   ├── s3.py      # S3 bucket policy analysis
 │   ├── organization.py  # Organizations API integration
+│   ├── rds.py     # RDS analysis functions
 │   └── sessions.py      # Session management utilities
 ├── checks/        # Compliance checks (extensible framework)
 │   ├── base.py    # BaseCheck abstract class (Template Method pattern)
 │   ├── registry.py      # Check registration and discovery
 │   ├── scps/      # Service Control Policy checks
+│   │   ├── deny_eks_create_cluster_without_tag.py  # EKS paved road check
+│   │   ├── deny_iam_user_creation.py  # IAM user creation check
 │   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
-│   │   └── deny_iam_user_creation.py  # IAM user creation check
+│   │   └── deny_rds_unencrypted.py  # RDS encryption check
 │   └── rcps/      # Resource Control Policy checks
 │       ├── deny_third_party_assumerole.py  # Third-party IAM role access check
 │       └── deny_s3_third_party_access.py  # Third-party S3 bucket access check
+│       ├── deny_third_party_assumerole.py  # Third-party IAM AssumeRole check
+│       └── deny_aoss_third_party_access.py  # Third-party AOSS access check
+│       ├── deny_ecr_third_party_access.py  # ECR third-party access check
+│       └── deny_third_party_assumerole.py  # IAM third-party access check
 ├── terraform/     # Terraform generation
 │   ├── generate_org_info.py  # Organization data sources
 │   ├── generate_scps.py      # SCP configurations
@@ -376,6 +394,21 @@ headroom/
 - **Allowlist Support**: Auto-generates SCPs with IAM user ARN allowlists to restrict user creation
 - **Output**: Complete list of IAM users with ARNs, paths, and allowlist generation
 
+#### EKS Cluster Tag Analysis
+- **Check Name**: `deny_eks_create_cluster_without_tag`
+- **Purpose**: Enforces paved road approach for EKS cluster creation by requiring `PavedRoad=true` tag
+- **Multi-Region Support**: Scans all AWS regions for EKS clusters
+- **Policy Pattern**: Implements "Module Tag / Paved Road Pattern" - encourages use of blessed automation/infrastructure-as-code
+- **Policy Coverage**: Denies `eks:CreateCluster` operations unless `aws:RequestTag/PavedRoad` equals "true"
+- **Output**: Detailed compliance reporting showing which clusters were created via approved automation (compliant) vs manual/unapproved methods (violations)
+
+#### RDS Unencrypted Database Analysis
+- **Check Name**: `deny_rds_unencrypted`
+- **Purpose**: Identifies RDS instances and Aurora clusters without encryption at rest enabled (security risk)
+- **Multi-Region Support**: Scans all AWS regions for RDS databases
+- **Policy Coverage**: Denies `rds:CreateDBCluster`, `rds:RestoreDBClusterFromS3`, `rds:CreateBlueGreenDeployment`, and `rds:CreateDBInstance` operations unless `rds:StorageEncrypted` condition key is true
+- **Output**: Detailed violation/compliant reporting with database identifiers, types, engines, and encryption status
+
 ### RCP Checks
 
 #### Third-Party AssumeRole Analysis
@@ -393,6 +426,15 @@ headroom/
 - **Tracking**: Records which S3 actions are allowed per third-party account and which buckets are involved
 - **Allowlisting**: Generates allowlists for RCP modules to permit known third-party S3 access
 - **Exemption Support**: S3 buckets tagged with `dp:exclude:identity=true` are exempt from RCP enforcement
+#### ECR Third-Party Access Analysis
+- **Check Name**: `deny_ecr_third_party_access`
+- **Purpose**: Identifies ECR repositories with resource policies allowing external account access
+- **Detection**: Extracts third-party account IDs from ECR repository policies, detects wildcard principals
+- **Multi-Region Support**: Scans all enabled AWS regions for ECR repositories
+- **Actions Tracking**: Tracks specific ECR actions (e.g., `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`) allowed per third-party account
+- **Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected in ECR policies
+- **Output**: Detailed repository policy analysis with third-party accounts and allowed actions
+- **Allowlisting**: Generates allowlists for RCP modules to permit known third-party ECR access
 
 ### Execution Flow
 

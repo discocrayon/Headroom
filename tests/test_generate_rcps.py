@@ -11,6 +11,7 @@ import shutil
 import pytest
 from pathlib import Path
 from typing import List, Set, Generator
+from headroom.constants import THIRD_PARTY_ASSUMEROLE, DENY_ECR_THIRD_PARTY_ACCESS
 from headroom.terraform.generate_rcps import (
     parse_rcp_result_files,
     determine_rcp_placement,
@@ -1507,10 +1508,18 @@ class TestBuildRcpTerraformModule:
 
     def test_build_module_with_third_party_accounts(self) -> None:
         """Should generate module with third-party account allowlist."""
+        rec = RCPPlacementRecommendations(
+            check_name=THIRD_PARTY_ASSUMEROLE,
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["111111111111", "222222222222"],
+            reasoning="Test"
+        )
         result = _build_rcp_terraform_module(
             module_name="rcps_test_account",
             target_id_reference="local.test_account_account_id",
-            third_party_account_ids=["111111111111", "222222222222"],
+            recommendations=[rec],
             comment="Test Account"
         )
 
@@ -1523,10 +1532,18 @@ class TestBuildRcpTerraformModule:
 
     def test_build_module_with_wildcard(self) -> None:
         """Should generate module without allowlist when wildcard present."""
+        rec = RCPPlacementRecommendations(
+            check_name=THIRD_PARTY_ASSUMEROLE,
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["*"],
+            reasoning="Test"
+        )
         result = _build_rcp_terraform_module(
             module_name="rcps_test",
             target_id_reference="local.test_id",
-            third_party_account_ids=["*"],
+            recommendations=[rec],
             comment="Test"
         )
 
@@ -1536,10 +1553,18 @@ class TestBuildRcpTerraformModule:
 
     def test_build_module_includes_comment(self) -> None:
         """Should include comment in generated content."""
+        rec = RCPPlacementRecommendations(
+            check_name=THIRD_PARTY_ASSUMEROLE,
+            recommended_level="root",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["123456789012"],
+            reasoning="Test"
+        )
         result = _build_rcp_terraform_module(
             module_name="rcps_root",
             target_id_reference="local.root_ou_id",
-            third_party_account_ids=["123456789012"],
+            recommendations=[rec],
             comment="Organization Root"
         )
 
@@ -1573,6 +1598,60 @@ class TestBuildRcpTerraformModule:
         assert 'module "rcps_test"' in result
         assert "third_party_s3_access_account_ids_allowlist" not in result
         assert "deny_s3_third_party_access = false" in result
+    def test_build_module_with_ecr_recommendations(self) -> None:
+        """Should generate module with ECR recommendations."""
+        ecr_rec = RCPPlacementRecommendations(
+            check_name=DENY_ECR_THIRD_PARTY_ACCESS,
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["464622532012", "198449067068"],
+            reasoning="Test ECR access"
+        )
+        result = _build_rcp_terraform_module(
+            module_name="rcps_test",
+            target_id_reference="local.test_id",
+            recommendations=[ecr_rec],
+            comment="Test"
+        )
+
+        assert "deny_ecr_third_party_access_account_ids_allowlist" in result
+        assert '"464622532012"' in result
+        assert '"198449067068"' in result
+        assert "deny_ecr_third_party_access = true" in result
+        assert "enforce_assume_role_org_identities = false" in result
+
+    def test_build_module_with_both_ecr_and_iam(self) -> None:
+        """Should generate module with both ECR and IAM RCP recommendations."""
+        ecr_rec = RCPPlacementRecommendations(
+            check_name=DENY_ECR_THIRD_PARTY_ACCESS,
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["464622532012"],
+            reasoning="Test ECR access"
+        )
+        iam_rec = RCPPlacementRecommendations(
+            check_name=THIRD_PARTY_ASSUMEROLE,
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["999999999999"],
+            reasoning="Test IAM access"
+        )
+        result = _build_rcp_terraform_module(
+            module_name="rcps_test",
+            target_id_reference="local.test_id",
+            recommendations=[ecr_rec, iam_rec],
+            comment="Test"
+        )
+
+        assert "deny_ecr_third_party_access_account_ids_allowlist" in result
+        assert '"464622532012"' in result
+        assert "deny_ecr_third_party_access = true" in result
+        assert "third_party_assumerole_account_ids_allowlist" in result
+        assert '"999999999999"' in result
+        assert "enforce_assume_role_org_identities = true" in result
 
 
 class TestGenerateAccountRcpTerraform:
@@ -1615,7 +1694,7 @@ class TestGenerateAccountRcpTerraform:
         output_path = Path("/tmp/test_rcps")
         output_path.mkdir(parents=True, exist_ok=True)
 
-        _generate_account_rcp_terraform("123456789012", sample_rcp_rec, sample_org, output_path)
+        _generate_account_rcp_terraform("123456789012", [sample_rcp_rec], sample_org, output_path)
 
         expected_file = output_path / "test_account_rcps.tf"
         assert expected_file.exists()
@@ -1636,7 +1715,7 @@ class TestGenerateAccountRcpTerraform:
         output_path = Path("/tmp/test_rcps")
 
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
-            _generate_account_rcp_terraform("999999999999", sample_rcp_rec, empty_org, output_path)
+            _generate_account_rcp_terraform("999999999999", [sample_rcp_rec], empty_org, output_path)
 
 
 class TestGenerateOuRcpTerraform:
@@ -1687,7 +1766,7 @@ class TestGenerateOuRcpTerraform:
         output_path = Path("/tmp/test_rcps")
         output_path.mkdir(parents=True, exist_ok=True)
 
-        _generate_ou_rcp_terraform("ou-12345", sample_ou_rec, sample_org, output_path)
+        _generate_ou_rcp_terraform("ou-12345", [sample_ou_rec], sample_org, output_path)
 
         expected_file = output_path / "test_ou_ou_rcps.tf"
         assert expected_file.exists()
@@ -1707,7 +1786,7 @@ class TestGenerateOuRcpTerraform:
         output_path = Path("/tmp/test_rcps")
 
         with pytest.raises(RuntimeError, match="OU ou-unknown not found in organization hierarchy"):
-            _generate_ou_rcp_terraform("ou-unknown", sample_ou_rec, empty_org, output_path)
+            _generate_ou_rcp_terraform("ou-unknown", [sample_ou_rec], empty_org, output_path)
 
 
 class TestGenerateRootRcpTerraform:
@@ -1733,7 +1812,7 @@ class TestGenerateRootRcpTerraform:
         output_path = Path("/tmp/test_rcps")
         output_path.mkdir(parents=True, exist_ok=True)
 
-        _generate_root_rcp_terraform(sample_root_rec, output_path)
+        _generate_root_rcp_terraform([sample_root_rec], output_path)
 
         expected_file = output_path / "root_rcps.tf"
         assert expected_file.exists()
@@ -1745,3 +1824,21 @@ class TestGenerateRootRcpTerraform:
         assert "Organization Root" in content
         expected_file.unlink()
         output_path.rmdir()
+
+    def test_build_module_with_aoss_third_party_accounts(self) -> None:
+        """Test building Terraform module with AOSS third-party accounts."""
+        terraform = _build_rcp_terraform_module(
+            module_name="test_module",
+            target_id_reference="local.account_id",
+            third_party_account_ids=["111111111111"],
+            comment="Test Account",
+            aoss_third_party_account_ids=["222222222222", "333333333333"],
+        )
+
+        assert "test_module" in terraform
+        assert "local.account_id" in terraform
+        assert "111111111111" in terraform
+        assert "222222222222" in terraform
+        assert "333333333333" in terraform
+        assert "deny_aoss_third_party_access = true" in terraform
+        assert "aoss_third_party_account_ids_allowlist" in terraform

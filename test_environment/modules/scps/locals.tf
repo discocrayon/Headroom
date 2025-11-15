@@ -1,5 +1,23 @@
 locals {
   possible_scp_1_denies = [
+    # var.deny_ec2_ami_owner
+    # -->
+    # Sid: DenyEc2AmiOwner
+    # Denies launching EC2 instances unless AMI owner is in allowlist
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
+    # Uses ec2:Owner condition key which contains the AMI owner account ID or alias
+    {
+      include = var.deny_ec2_ami_owner,
+      statement = {
+        Action   = "ec2:RunInstances"
+        Resource = "arn:aws:ec2:*:*:instance/*"
+        Condition = {
+          "StringNotEquals" = {
+            "ec2:Owner" = var.allowed_ami_owners
+          }
+        }
+      }
+    },
     # var.deny_imds_v1_ec2
     # -->
     # Sid: DenyRoleDeliveryLessThan2
@@ -33,6 +51,24 @@ locals {
             "ec2:MetadataHttpTokens"          = "required",
             "aws:RequestTag/ExemptFromIMDSv2" = "true"
           },
+        }
+      }
+    },
+    # var.deny_eks_create_cluster_without_tag
+    # -->
+    # Sid: DenyEksCreateClusterWithoutTag
+    # Denies EKS cluster creation unless PavedRoad=true tag is present
+    # Encourages use of approved automation (paved road approach)
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonelastickubernetesservice.html
+    {
+      include = var.deny_eks_create_cluster_without_tag,
+      statement = {
+        Action   = "eks:CreateCluster"
+        Resource = "*"
+        Condition = {
+          "StringNotEquals" = {
+            "aws:RequestTag/PavedRoad" = "true"
+          }
         }
       }
     },
@@ -83,6 +119,17 @@ locals {
         }
       }
     },
+      # Automatic root guardrail
+      # -->
+      # Sid: DenyRootLeaveOrganization
+      # Applies when module target is the root (IDs prefixed with r-)
+      {
+        include = startswith(var.target_id, "r-"),
+        statement = {
+          Action   = "organizations:LeaveOrganization"
+          Resource = "*"
+        }
+      },
   ]
   # Included SCP 1 Deny Statements
   included_scp_1_deny_statements = [

@@ -508,3 +508,50 @@ def test_build_scp_terraform_module_with_rds_check_enabled() -> None:
     assert "deny_iam_user_creation = false" in result
     assert "deny_rds_unencrypted = true" in result
     assert "allowed_iam_users" not in result
+
+
+def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners() -> None:
+    """Should include allowed_ami_owners when deny_ec2_ami_owner is enabled."""
+    org = make_org_empty()
+    rec = SCPPlacementRecommendations(
+        check_name="deny-ec2-ami-owner",
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=100.0,
+        reasoning="test",
+        allowed_ami_owners=["amazon", "aws-marketplace"]
+    )
+    result = _build_scp_terraform_module(
+        module_name="scps_root",
+        target_id_reference="local.root_ou_id",
+        recommendations=[rec],
+        comment="Organization Root",
+        organization_hierarchy=org
+    )
+    assert "deny_ec2_ami_owner = true" in result
+    assert '"amazon"' in result
+    assert '"aws-marketplace"' in result
+    assert "allowed_ami_owners = [" in result
+
+
+def test_build_scp_terraform_module_with_ec2_ami_owner_check_without_allowed_owners() -> None:
+    """Should include empty allowed_ami_owners when deny_ec2_ami_owner is enabled without owners."""
+    org = make_org_empty()
+    rec = SCPPlacementRecommendations(
+        check_name="deny-ec2-ami-owner",
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=100.0,
+        reasoning="test",
+    )
+    result = _build_scp_terraform_module(
+        module_name="scps_root",
+        target_id_reference="local.root_ou_id",
+        recommendations=[rec],
+        comment="Organization Root",
+        organization_hierarchy=org
+    )
+    assert "deny_ec2_ami_owner = true" in result
+    assert "allowed_ami_owners = []" in result
