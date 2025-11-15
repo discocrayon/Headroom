@@ -11,6 +11,8 @@ from typing import Dict
 # SCP Checks (alphabetical by service)
 # EC2
 DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
+# EKS
+DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG = "deny_eks_create_cluster_without_tag"
 # IAM
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 # RDS
