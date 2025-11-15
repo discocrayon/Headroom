@@ -410,6 +410,21 @@ This RCP restricts role assumptions to organization principals and explicitly al
 
 **Analysis by:** `headroom/checks/rcps/deny_third_party_assumerole.py`
 
+### Pattern 5a: `deny_aoss_third_party_access`
+
+**Check:** `headroom/checks/rcps/deny_aoss_third_party_access.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf` lines 28-52
+**Variable:** `aoss_third_party_account_ids_allowlist`
+
+This RCP restricts OpenSearch Serverless (AOSS) access to organization principals and explicitly allowlisted third-party account IDs. It blocks all `aoss:*` actions for principals outside the organization unless explicitly allowed.
+
+**Policy Structure:**
+- Deny `aoss:*` (all OpenSearch Serverless actions)
+- Unless `aws:PrincipalOrgID` matches organization OR `aws:PrincipalAccount` is in allowlist
+- Excludes AWS service principals via `aws:PrincipalIsAWSService`
+
+**Headroom's Role:** Analyzes AOSS data access policies to identify third-party account access. Reports which collections and indexes grant access to external accounts, along with the specific AOSS actions permitted for each third-party account. This information informs the allowlist configuration.
+
 ### Pattern 5b: `deny_iam_user_creation`
 
 **Check:** `headroom/checks/scps/deny_iam_user_creation.py`

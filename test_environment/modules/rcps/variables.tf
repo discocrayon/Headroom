@@ -47,3 +47,23 @@ variable "enforce_assume_role_org_identities" {
   type        = bool
   description = "Enforce that role assumptions are restricted to organization identities and specified third-party accounts."
 }
+
+# OpenSearch Serverless
+
+variable "deny_aoss_third_party_access" {
+  type        = bool
+  description = "Deny third-party account access to OpenSearch Serverless resources"
+}
+
+variable "aoss_third_party_account_ids_allowlist" {
+  type        = list(string)
+  default     = []
+  description = "Allowlist of third-party AWS account IDs permitted to access AOSS resources"
+
+  validation {
+    condition = alltrue([
+      for account_id in var.aoss_third_party_account_ids_allowlist : length(account_id) == 12 && can(regex("^[0-9]{12}$", account_id))
+    ])
+    error_message = "All account IDs must be valid 12-digit AWS account IDs."
+  }
+}
