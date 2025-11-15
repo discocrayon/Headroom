@@ -10,7 +10,7 @@ locals {
 # Bucket 1: Single third-party account access (compliant)
 resource "aws_s3_bucket" "single_third_party" {
   provider = aws.acme_co
-  bucket   = "headroom-test-single-third-party-${data.aws_caller_identity.acme_co.account_id}"
+  bucket   = "headroom-test-single-third-party-dg"
 
   tags = {
     Purpose = "Headroom S3 third-party test - single vendor"
@@ -87,9 +87,21 @@ resource "aws_s3_bucket" "wildcard_principal" {
   }
 }
 
+resource "aws_s3_bucket_public_access_block" "wildcard_principal" {
+  provider = aws.fort_knox
+  bucket   = aws_s3_bucket.wildcard_principal.id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
 resource "aws_s3_bucket_policy" "wildcard_principal" {
   provider = aws.fort_knox
   bucket   = aws_s3_bucket.wildcard_principal.id
+
+  depends_on = [aws_s3_bucket_public_access_block.wildcard_principal]
 
   policy = jsonencode({
     Version = "2012-10-17"

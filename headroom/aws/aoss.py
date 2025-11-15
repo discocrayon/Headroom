@@ -223,10 +223,16 @@ def _analyze_aoss_in_region(
     account_id = sts_client.get_caller_identity()["Account"]
 
     try:
-        # List all data access policies
-        paginator = aoss_client.get_paginator("list_access_policies")
-        for page in paginator.paginate(type="data"):
-            for policy_summary in page.get("accessPolicySummaries", []):
+        # List all data access policies (manual pagination)
+        next_token = None
+        while True:
+            list_params = {"type": "data"}
+            if next_token:
+                list_params["nextToken"] = next_token
+
+            response = aoss_client.list_access_policies(**list_params)
+
+            for policy_summary in response.get("accessPolicySummaries", []):
                 policy_name = policy_summary.get("name")
                 if not policy_name:
                     continue
@@ -262,6 +268,11 @@ def _analyze_aoss_in_region(
                             f"in {region}: {e}"
                         )
                         raise
+
+            # Check for more pages
+            next_token = response.get("nextToken")
+            if not next_token:
+                break
 
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")

@@ -1240,8 +1240,8 @@ class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
         # Filter to only buckets with findings
         return [
             result for result in all_results
-            if result.has_wildcard_principal 
-            or result.has_non_account_principals 
+            if result.has_wildcard_principal
+            or result.has_non_account_principals
             or result.third_party_account_ids
         ]
 

@@ -28,3 +28,26 @@ resource "aws_iam_role_policy_attachment" "headroom_securityaudit" {
   role       = aws_iam_role.headroom.name
   policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
 }
+
+resource "aws_iam_policy" "additional_read_only_access" {
+  name        = "HeadroomAdditionalReadOnlyAccess"
+  description = "Allows additional read access"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "aoss:List*"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "additional_read_only_access_attach" {
+  role       = aws_iam_role.headroom.name
+  policy_arn = aws_iam_policy.additional_read_only_access.arn
+}
