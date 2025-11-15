@@ -8,10 +8,11 @@ implement three methods: analyze(), categorize_result(), and build_summary_field
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, Generic, List, TypeVar
+from typing import Any, Generic, List, TypeVar
 
 import boto3
 
+from ..types import JsonDict
 from ..write_results import write_check_results
 from ..output import OutputHandler
 
@@ -26,10 +27,10 @@ class CategorizedCheckResult:
     Contains violations, exemptions, and compliant resources after
     processing raw analysis results.
     """
-    violations: List[Dict[str, Any]]
-    exemptions: List[Dict[str, Any]]
-    compliant: List[Dict[str, Any]]
-    summary: Dict[str, Any]
+    violations: List[JsonDict]
+    exemptions: List[JsonDict]
+    compliant: List[JsonDict]
+    summary: JsonDict
 
 
 class BaseCheck(ABC, Generic[T]):
@@ -86,7 +87,7 @@ class BaseCheck(ABC, Generic[T]):
         """
 
     @abstractmethod
-    def categorize_result(self, result: T) -> tuple[str, Dict[str, Any]]:
+    def categorize_result(self, result: T) -> tuple[str, JsonDict]:
         """
         Categorize a single result.
 
@@ -101,7 +102,7 @@ class BaseCheck(ABC, Generic[T]):
         """
 
     @abstractmethod
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build check-specific summary fields.
 
@@ -112,7 +113,7 @@ class BaseCheck(ABC, Generic[T]):
             Dictionary with check-specific summary fields
         """
 
-    def _build_results_data(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def _build_results_data(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build results data dictionary.
 

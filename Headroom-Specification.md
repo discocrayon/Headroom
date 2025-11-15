@@ -43,11 +43,14 @@
 ### 4. RCP Compliance Analysis
 - **Third-Party AssumeRole Check:** IAM trust policy analysis across organization
 - **AOSS Third-Party Access Check:** OpenSearch Serverless data access policy analysis
+- **ECR Third-Party Access Check:** ECR repository resource policy analysis across organization
 - Third-party account detection and wildcard principal identification
 - Principal type validation (AWS, Service, Federated) for IAM trust policies
 - Organization baseline comparison for external account detection
 - Multi-region scanning for AOSS collections and indexes
 - Action-level tracking for third-party AOSS permissions
+- Multi-region ECR repository scanning with pagination support
+- ECR actions tracking per third-party account
 
 ### 5. Policy Placement Intelligence
 - Organization structure analysis for optimal policy deployment levels
@@ -83,6 +86,7 @@ headroom/
 ├── aws/
 │   ├── aoss.py             # OpenSearch Serverless analysis
 │   ├── ec2.py              # EC2 analysis
+│   ├── ecr.py              # ECR repository policy analysis
 │   ├── rds.py              # RDS analysis
 │   ├── iam/
 │   │   ├── roles.py        # Trust policy analysis (RCP)
@@ -99,6 +103,8 @@ headroom/
 │   └── rcps/
 │       ├── deny_third_party_assumerole.py
 │       └── deny_aoss_third_party_access.py
+│       ├── deny_ecr_third_party_access.py
+│       └── deny_third_party_assumerole.py
 ├── placement/
 │   └── hierarchy.py        # OU hierarchy analysis
 └── terraform/
@@ -284,6 +290,15 @@ class AossResourcePolicyAnalysis:
     policy_name: str                    # Name of the access policy
     third_party_account_ids: Set[str]   # Non-org account IDs
     allowed_actions: List[str]          # AOSS actions allowed for third-parties
+# aws/ecr.py
+@dataclass
+class ECRRepositoryPolicyAnalysis:
+    repository_name: str
+    repository_arn: str
+    region: str
+    third_party_account_ids: Set[str]   # Non-org account IDs
+    actions_by_account: Dict[str, List[str]]  # Account ID -> allowed actions
+    has_wildcard_principal: bool        # True if Principal: "*"
 ```
 
 ---
@@ -730,6 +745,175 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
 ---
 
 ## RCP Checks
+
+### ECR Third-Party Access
+
+**Purpose:** Analyze ECR repository resource policies to identify third-party (non-org) account access and wildcard principals.
+
+**Data Model:**
+```python
+@dataclass
+class ECRRepositoryPolicyAnalysis:
+    repository_name: str
+    repository_arn: str
+    region: str
+    third_party_account_ids: Set[str]         # External to organization
+    actions_by_account: Dict[str, List[str]]  # Account ID -> allowed ECR actions
+    has_wildcard_principal: bool              # True if Principal: "*"
+```
+
+**Analysis Function:**
+```python
+# aws/ecr.py
+
+FAIL_FAST_PRINCIPAL_TYPES = {"Federated"}
+
+def analyze_ecr_repository_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str]
+) -> List[ECRRepositoryPolicyAnalysis]:
+    """
+    Analyze all ECR repository policies for third-party access.
+
+    Algorithm:
+    1. Get all enabled regions via ec2.describe_regions()
+    2. For each region:
+       a. Create regional ECR client
+       b. Use paginator for describe_repositories
+       c. For each repository, call get_repository_policy
+       d. Parse JSON policy document
+       e. For each Statement, check if Action contains ecr:*
+       f. Extract account IDs from Principal field
+       g. Track specific ECR actions allowed per account
+       h. Detect wildcard principals
+       i. Filter to third-party accounts (not in org_account_ids)
+    3. Return ECRRepositoryPolicyAnalysis for repos with third-party or wildcards
+
+    Multi-Region: Scans all enabled AWS regions
+    Pagination: Handles accounts with many ECR repositories
+
+    Raises:
+    - UnsupportedPrincipalTypeError: if Federated principal encountered (fail-fast)
+    - ClientError: if non-RepositoryPolicyNotFoundException error occurs
+    """
+
+def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
+    """
+    Extract AWS account IDs from principal field.
+
+    Handles:
+    - String: "arn:aws:iam::123456789012:..." or "123456789012"
+    - List: recursively process each item
+    - Dict: process AWS/Service/Federated keys
+    - Mixed: {"AWS": [...], "Service": "..."}
+
+    Principal Type Handling:
+    - AWS: Extract account IDs from ARNs or plain IDs
+    - Service: Skip (e.g., ecr.amazonaws.com)
+    - Federated: Raise UnsupportedPrincipalTypeError (fail-fast)
+
+    Fail-Fast Validation:
+    - Federated principals are unsupported in ECR resource policies
+    - Immediately raises exception to prevent unsafe RCP generation
+    """
+
+def _has_wildcard_principal(principal: Any) -> bool:
+    """Check if principal contains "*" (wildcard)."""
+
+def _normalize_actions(actions: Any) -> List[str]:
+    """Normalize actions to list format."""
+```
+
+**Custom Exceptions:**
+```python
+class UnsupportedPrincipalTypeError(Exception):
+    """Raised when Federated or other unsupported principal type encountered."""
+```
+
+**Check Implementation:**
+```python
+# checks/rcps/deny_ecr_third_party_access.py
+
+class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
+    def __init__(self, org_account_ids: Set[str], **kwargs):
+        super().__init__(**kwargs)
+        self.org_account_ids = org_account_ids
+        self.all_third_party_accounts: Set[str] = set()
+        self.all_actions_by_account: Dict[str, List[str]] = {}
+
+    def analyze(self, session):
+        return analyze_ecr_repository_policies(session, self.org_account_ids)
+
+    def categorize_result(self, result):
+        # Repositories with wildcards are "violations"
+        # Repositories with third-party access are "compliant" (expected patterns)
+        if result.has_wildcard_principal:
+            return ("violation", ...)
+        else:
+            # Track third-party accounts and actions globally
+            self.all_third_party_accounts.update(result.third_party_account_ids)
+            for account_id, actions in result.actions_by_account.items():
+                if account_id not in self.all_actions_by_account:
+                    self.all_actions_by_account[account_id] = []
+                self.all_actions_by_account[account_id].extend(actions)
+            return ("compliant", ...)
+
+    def build_summary_fields(self, check_result):
+        # Aggregate unique third-party account IDs and actions
+        # Count repositories with wildcards as violations
+        actions_by_account_sorted = {
+            account_id: sorted(list(set(actions)))
+            for account_id, actions in self.all_actions_by_account.items()
+        }
+        return {
+            "total_repositories_analyzed": total,
+            "repositories_third_parties_can_access": len(compliant),
+            "repositories_with_wildcards": len(violations),
+            "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
+            "third_party_account_count": len(self.all_third_party_accounts),
+            "actions_by_account": actions_by_account_sorted,
+            "violations": len(violations)
+        }
+```
+
+**Result JSON Schema:**
+```json
+{
+  "summary": {
+    "account_name": "string",
+    "account_id": "string",
+    "check": "deny_ecr_third_party_access",
+    "total_repositories_analyzed": 0,
+    "repositories_third_parties_can_access": 0,
+    "repositories_with_wildcards": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_account": {
+      "464622532012": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+    },
+    "violations": 0
+  },
+  "violations": [
+    {
+      "repository_name": "WildcardRepo",
+      "repository_arn": "arn:...",
+      "region": "us-east-1"
+    }
+  ],
+  "exemptions": [],
+  "repositories_third_parties_can_access": [
+    {
+      "repository_name": "DatadogRepo",
+      "repository_arn": "arn:...",
+      "region": "us-east-1",
+      "third_party_account_ids": ["464622532012"],
+      "actions_by_account": {
+        "464622532012": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      }
+    }
+  ]
+}
+```
 
 ### Third-Party AssumeRole
 
@@ -1869,6 +2053,7 @@ def get_results_dir(
 DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
+DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
 DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 
@@ -1895,6 +2080,7 @@ def get_check_type_map() -> Dict[str, str]:
 # Derived sets
 SCP_CHECK_NAMES = {DENY_IMDS_V1_EC2, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
 RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_AOSS_THIRD_PARTY_ACCESS}
+RCP_CHECK_NAMES = {DENY_ECR_THIRD_PARTY_ACCESS, THIRD_PARTY_ASSUMEROLE}
 ```
 
 ### Dynamic Registration Flow
