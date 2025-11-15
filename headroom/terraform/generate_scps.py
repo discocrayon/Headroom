@@ -101,6 +101,12 @@ module "{module_name}" {{
     terraform_content += f"  deny_imds_v1_ec2 = {str(deny_imds_v1_ec2).lower()}\n"
     terraform_content += "\n"
 
+    # EKS
+    terraform_content += "  # EKS\n"
+    deny_eks_create_cluster_without_tag = "deny_eks_create_cluster_without_tag" in enabled_checks
+    terraform_content += f"  deny_eks_create_cluster_without_tag = {str(deny_eks_create_cluster_without_tag).lower()}\n"
+    terraform_content += "\n"
+
     # IAM
     terraform_content += "  # IAM\n"
     deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks

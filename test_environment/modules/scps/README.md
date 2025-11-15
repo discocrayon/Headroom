@@ -10,10 +10,11 @@ Intention is to eventually have this Terraform module in the Terraform registry 
 module "scps" {
   source = "./modules/scps"
 
-  target_id               = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
-  deny_imds_v1_ec2        = true
-  deny_iam_user_creation  = true
-  allowed_iam_users       = [
+  target_id                          = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
+  deny_imds_v1_ec2                   = true
+  deny_eks_create_cluster_without_tag = true
+  deny_iam_user_creation             = true
+  allowed_iam_users                  = [
     "arn:aws:iam::444444444444:user/terraform-user",
     "arn:aws:iam::444444444444:user/github-actions",
   ]
@@ -31,6 +32,7 @@ module "scps" {
 ### Security Policy Variables
 
 - **`deny_imds_v1_ec2`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
+- **`deny_eks_create_cluster_without_tag`** (bool): Deny EKS cluster creation unless PavedRoad=true tag is present
 - **`deny_iam_user_creation`** (bool): Deny creation of IAM users not on the allowed list
 - **`allowed_iam_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
 
@@ -71,6 +73,49 @@ Resources can be exempted from IMDSv2 enforcement using the tag `ExemptFromIMDSv
 - IAM roles: Tag the role with `ExemptFromIMDSv2 = "true"` to exempt all instances using that role
 - EC2 instances: Include `ExemptFromIMDSv2 = "true"` in request tags when launching instances
 
+### EKS Paved Road Enforcement (`deny_eks_create_cluster_without_tag`)
+
+When enabled, this policy enforces the "paved road" approach for EKS cluster creation, encouraging use of blessed automation and infrastructure-as-code:
+
+**DenyEksCreateClusterWithoutTag**: Denies `eks:CreateCluster` action unless `aws:RequestTag/PavedRoad` equals "true"
+
+#### Purpose
+
+This policy implements a "Module Tag / Paved Road Pattern" to:
+- Encourage use of approved automation and infrastructure-as-code tools
+- Discourage manual cluster creation via AWS Console or ad-hoc CLI commands
+- Maintain consistency in cluster configuration and security posture
+- Enable tracking of which clusters were created via approved methods
+
+#### Configuration
+
+To create EKS clusters when this policy is enabled, your automation must include the tag in the creation request:
+
+```bash
+aws eks create-cluster --name my-cluster \
+  --tags PavedRoad=true \
+  ...
+```
+
+In Terraform:
+
+```hcl
+resource "aws_eks_cluster" "example" {
+  name = "my-cluster"
+
+  tags = {
+    PavedRoad = "true"
+  }
+  ...
+}
+```
+
+#### Tag Matching
+
+- The condition uses `StringNotEquals`, requiring exact match: `PavedRoad` (case-sensitive) must equal `"true"` (string)
+- Missing tag or incorrect value (e.g., `"True"`, `"TRUE"`, `"yes"`) will be denied
+- The tag must be present in the request tags at cluster creation time
+
 ### IAM User Creation Restriction (`deny_iam_user_creation`)
 
 When enabled, this policy denies the creation of IAM users that are not on the allowed list through:
@@ -84,6 +129,10 @@ This policy uses the `NotResource` element to explicitly allow creation of only 
 Specify allowed IAM user ARNs using the format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
 
 Example: `arn:aws:iam::444444444444:user/terraform-user`
+
+### Root LeaveOrganization Protection
+
+When the module target is the organization root (values such as `r-root`), a guardrail statement is always included that denies `organizations:LeaveOrganization` for all principals. This prevents detaching the root from the organization, even when no optional checks are enabled.
 
 ## Resources Created
 
