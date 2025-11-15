@@ -267,6 +267,88 @@ def _create_account_level_rcp_recommendations(
     return recommendations
 
 
+def _prepare_account_data_for_placement(
+    account_third_party_map: AccountThirdPartyMap
+) -> List[Dict[str, Any]]:
+    """
+    Convert account third-party map to list format for placement analysis.
+
+    Args:
+        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+
+    Returns:
+        List of dictionaries with account_id and third_party_accounts
+    """
+    return [
+        {"account_id": acc_id, "third_party_accounts": third_parties}
+        for acc_id, third_parties in account_third_party_map.items()
+    ]
+
+
+def _is_safe_for_root_rcp(
+    accounts_with_wildcards: Set[str]
+) -> bool:
+    """
+    Determine if root-level RCP deployment is safe.
+
+    Root-level RCP is only safe if no accounts have wildcard principals.
+    """
+    return len(accounts_with_wildcards) == 0
+
+
+def _is_safe_for_ou_rcp(
+    ou_id: str,
+    organization_hierarchy: OrganizationHierarchy,
+    accounts_with_wildcards: Set[str]
+) -> bool:
+    """
+    Determine if OU-level RCP deployment is safe.
+
+    OU-level RCP is only safe if no accounts in the OU have wildcard principals.
+    """
+    return not _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards)
+
+
+def _process_rcp_placement_candidates(
+    candidates: List[Any],
+    account_third_party_map: AccountThirdPartyMap,
+    organization_hierarchy: OrganizationHierarchy
+) -> List[RCPPlacementRecommendations]:
+    """
+    Process placement candidates and generate RCP recommendations.
+
+    Handles root, OU, and account level recommendations based on candidates.
+
+    Args:
+        candidates: List of placement candidates from analyzer
+        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        organization_hierarchy: Organization structure information
+
+    Returns:
+        List of RCP placement recommendations
+    """
+    for candidate in candidates:
+        if candidate.level == "root":
+            root_recommendation = _create_root_level_rcp_recommendation(
+                account_third_party_map,
+                organization_hierarchy
+            )
+            return [root_recommendation]
+
+    ou_recommendations, ou_covered_accounts = _create_ou_level_rcp_recommendations(
+        candidates,
+        account_third_party_map,
+        organization_hierarchy
+    )
+
+    account_recommendations = _create_account_level_rcp_recommendations(
+        account_third_party_map,
+        ou_covered_accounts
+    )
+
+    return ou_recommendations + account_recommendations
+
+
 def determine_rcp_placement(
     account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy,
@@ -293,45 +375,20 @@ def determine_rcp_placement(
         return []
 
     analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
-
-    account_data = [
-        {"account_id": acc_id, "third_party_accounts": third_parties}
-        for acc_id, third_parties in account_third_party_map.items()
-    ]
-
-    def is_safe_for_root_rcp(results: List[Dict[str, Any]]) -> bool:
-        return len(accounts_with_wildcards) == 0
-
-    def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
-        return not _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards)
+    account_data = _prepare_account_data_for_placement(account_third_party_map)
 
     candidates = analyzer.determine_placement(
         check_results=account_data,
-        is_safe_for_root=is_safe_for_root_rcp,
-        is_safe_for_ou=is_safe_for_ou_rcp,
+        is_safe_for_root=lambda results: _is_safe_for_root_rcp(accounts_with_wildcards),
+        is_safe_for_ou=lambda ou_id, results: _is_safe_for_ou_rcp(ou_id, organization_hierarchy, accounts_with_wildcards),
         get_account_id=lambda r: r["account_id"]
     )
 
-    for candidate in candidates:
-        if candidate.level == "root":
-            root_recommendation = _create_root_level_rcp_recommendation(
-                account_third_party_map,
-                organization_hierarchy
-            )
-            return [root_recommendation]
-
-    ou_recommendations, ou_covered_accounts = _create_ou_level_rcp_recommendations(
+    return _process_rcp_placement_candidates(
         candidates,
         account_third_party_map,
         organization_hierarchy
     )
-
-    account_recommendations = _create_account_level_rcp_recommendations(
-        account_third_party_map,
-        ou_covered_accounts
-    )
-
-    return ou_recommendations + account_recommendations
 
 
 def _build_rcp_terraform_module(
