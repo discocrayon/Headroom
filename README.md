@@ -170,7 +170,7 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   deny_iam_user_creation = true
-  allowed_iam_users = [
+  iam_allowed_users = [
     "arn:aws:iam::${local.security_account_id}:user/automation/cicd",
     "arn:aws:iam::${local.prod_account_id}:user/terraform-user",
   ]

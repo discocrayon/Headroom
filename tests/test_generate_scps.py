@@ -119,8 +119,8 @@ module "scps_test_ou" {
   deny_eks_create_cluster_without_tag = false
 
   # IAM
-  deny_iam_user_creation = false
   deny_iam_saml_provider_not_aws_sso = false
+  deny_iam_user_creation = false
 
   # RDS
   deny_rds_unencrypted = true
@@ -152,7 +152,7 @@ def test_build_scp_terraform_module_single_check_100_percent_compliant() -> None
     assert "deny_iam_user_creation = false" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
     assert "deny_rds_unencrypted = false" in result
-    assert "allowed_iam_users" not in result
+    assert "iam_allowed_users" not in result
     assert 'module "scps_root"' in result
     assert "target_id = local.root_ou_id" in result
     # Verify section comments are present
@@ -196,7 +196,7 @@ def test_build_scp_terraform_module_multiple_checks_all_compliant() -> None:
     assert "deny_iam_user_creation = true" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
     assert "deny_rds_unencrypted = false" in result
-    assert "allowed_iam_users = []" in result
+    assert "iam_allowed_users = []" in result
 
 
 def test_build_scp_terraform_module_with_iam_user_arns() -> None:
@@ -242,7 +242,7 @@ def test_build_scp_terraform_module_with_iam_user_arns() -> None:
     )
     assert "deny_iam_user_creation = true" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
-    assert "allowed_iam_users = [" in result
+    assert "iam_allowed_users = [" in result
     assert '"arn:aws:iam::${local.test_account_1_account_id}:user/terraform-user",' in result
     assert '"arn:aws:iam::${local.test_account_2_account_id}:user/github-actions",' in result
 
@@ -284,7 +284,7 @@ def test_build_scp_terraform_module_with_iam_user_arns_unknown_account() -> None
     )
     assert "deny_iam_user_creation = true" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
-    assert "allowed_iam_users = [" in result
+    assert "iam_allowed_users = [" in result
     assert '"arn:aws:iam::${local.test_account_1_account_id}:user/terraform-user",' in result
     assert '"arn:aws:iam::999999999999:user/unknown-account",' in result
 
@@ -310,7 +310,7 @@ def test_build_scp_terraform_module_partial_compliance_skips_check() -> None:
     assert "deny_ec2_imds_v1 = false" in result
     assert "deny_iam_user_creation = false" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
-    assert "allowed_iam_users" not in result
+    assert "iam_allowed_users" not in result
     assert 'module "scps_root"' in result
 
 
@@ -345,7 +345,7 @@ def test_build_scp_terraform_module_mixed_compliance_includes_only_100_percent()
     assert "deny_ec2_imds_v1 = true" in result
     assert "deny_iam_user_creation = false" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
-    assert "allowed_iam_users" not in result
+    assert "iam_allowed_users" not in result
 
 
 def test_build_scp_terraform_module_check_name_with_hyphens_converts_to_underscores() -> None:
@@ -369,7 +369,7 @@ def test_build_scp_terraform_module_check_name_with_hyphens_converts_to_undersco
     assert "deny_ec2_imds_v1 = true" in result
     assert "deny_iam_user_creation = false" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
-    assert "allowed_iam_users" not in result
+    assert "iam_allowed_users" not in result
     assert "deny-ec2-imds-v1" not in result
 
 
@@ -555,7 +555,7 @@ def test_generate_root_scp_terraform_multiple_checks() -> None:
     assert "deny_iam_user_creation = true" in content
     assert "deny_iam_saml_provider_not_aws_sso = false" in content
     assert "deny_rds_unencrypted = false" in content
-    assert "allowed_iam_users = []" in content
+    assert "iam_allowed_users = []" in content
     expected_file.unlink()
 
 
@@ -606,7 +606,7 @@ def test_build_scp_terraform_module_with_rds_check_enabled() -> None:
     assert "deny_iam_user_creation = false" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
     assert "deny_rds_unencrypted = true" in result
-    assert "allowed_iam_users" not in result
+    assert "iam_allowed_users" not in result
 
 
 def test_build_scp_terraform_module_with_saml_guardrail_enabled() -> None:
@@ -631,11 +631,11 @@ def test_build_scp_terraform_module_with_saml_guardrail_enabled() -> None:
     assert "deny_iam_user_creation = false" in result
     assert "deny_iam_saml_provider_not_aws_sso = true" in result
     assert "deny_rds_unencrypted = false" in result
-    assert "allowed_iam_users" not in result
+    assert "iam_allowed_users" not in result
 
 
 def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners() -> None:
-    """Should include allowed_ami_owners when deny_ec2_ami_owner is enabled."""
+    """Should include ec2_allowed_ami_owners when deny_ec2_ami_owner is enabled."""
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-ec2-ami-owner",
@@ -644,7 +644,7 @@ def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
-        allowed_ami_owners=["amazon", "aws-marketplace"]
+        ec2_allowed_ami_owners=["amazon", "aws-marketplace"]
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -656,11 +656,11 @@ def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners
     assert "deny_ec2_ami_owner = true" in result
     assert '"amazon"' in result
     assert '"aws-marketplace"' in result
-    assert "allowed_ami_owners = [" in result
+    assert "ec2_allowed_ami_owners = [" in result
 
 
 def test_build_scp_terraform_module_with_ec2_ami_owner_check_without_allowed_owners() -> None:
-    """Should include empty allowed_ami_owners when deny_ec2_ami_owner is enabled without owners."""
+    """Should include empty ec2_allowed_ami_owners when deny_ec2_ami_owner is enabled without owners."""
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-ec2-ami-owner",
@@ -678,4 +678,4 @@ def test_build_scp_terraform_module_with_ec2_ami_owner_check_without_allowed_own
         organization_hierarchy=org
     )
     assert "deny_ec2_ami_owner = true" in result
-    assert "allowed_ami_owners = []" in result
+    assert "ec2_allowed_ami_owners = []" in result

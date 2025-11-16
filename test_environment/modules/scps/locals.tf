@@ -13,7 +13,7 @@ locals {
         Resource = "arn:aws:ec2:*:*:instance/*"
         Condition = {
           "StringNotEquals" = {
-            "ec2:Owner" = var.allowed_ami_owners
+            "ec2:Owner" = var.ec2_allowed_ami_owners
           }
         }
       }
@@ -97,7 +97,7 @@ locals {
       include = var.deny_iam_user_creation,
       statement = {
         Action      = "iam:CreateUser"
-        NotResource = var.allowed_iam_users
+        NotResource = var.iam_allowed_users
       }
     },
     # var.deny_iam_saml_provider_not_aws_sso
