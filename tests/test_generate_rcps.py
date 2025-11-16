@@ -11,7 +11,7 @@ import shutil
 import pytest
 from pathlib import Path
 from typing import List, Set, Generator
-from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, DENY_ECR_THIRD_PARTY_ACCESS
+from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, DENY_ECR_THIRD_PARTY_ACCESS, DENY_KMS_THIRD_PARTY_ACCESS
 from headroom.terraform.generate_rcps import (
     parse_rcp_result_files,
     determine_rcp_placement,
@@ -1608,6 +1608,9 @@ module "rcps_test" {
   # ECR
   deny_ecr_third_party_access = false
 
+  # KMS
+  deny_kms_third_party_access = false
+
   # S3
   deny_s3_third_party_access = false
 
@@ -1680,6 +1683,28 @@ module "rcps_test" {
         assert '"464622532012"' in result
         assert '"198449067068"' in result
         assert "deny_ecr_third_party_access = true" in result
+        assert "deny_sts_third_party_assumerole = false" in result
+
+    def test_build_module_with_kms_recommendations(self) -> None:
+        """Should generate module with KMS recommendations."""
+        kms_rec = RCPPlacementRecommendations(
+            check_name=DENY_KMS_THIRD_PARTY_ACCESS,
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["999888777666"],
+            reasoning="Test KMS access"
+        )
+        result = _build_rcp_terraform_module(
+            module_name="rcps_test",
+            target_id_reference="local.test_id",
+            recommendations=[kms_rec],
+            comment="Test"
+        )
+
+        assert "kms_third_party_access_account_ids_allowlist" in result
+        assert '"999888777666"' in result
+        assert "deny_kms_third_party_access = true" in result
         assert "deny_sts_third_party_assumerole = false" in result
 
     def test_build_module_with_both_ecr_and_iam(self) -> None:

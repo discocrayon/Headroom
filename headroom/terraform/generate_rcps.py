@@ -22,6 +22,7 @@ from ..types import (
 from ..constants import (
     DENY_STS_THIRD_PARTY_ASSUMEROLE,
     DENY_ECR_THIRD_PARTY_ACCESS,
+    DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
     DENY_AOSS_THIRD_PARTY_ACCESS,
     DENY_SQS_THIRD_PARTY_ACCESS,
@@ -418,6 +419,7 @@ def _build_rcp_terraform_module(
 
     assume_role_rec = recs_by_check.get(DENY_STS_THIRD_PARTY_ASSUMEROLE)
     ecr_rec = recs_by_check.get(DENY_ECR_THIRD_PARTY_ACCESS)
+    kms_rec = recs_by_check.get(DENY_KMS_THIRD_PARTY_ACCESS)
     s3_rec = recs_by_check.get(DENY_S3_THIRD_PARTY_ACCESS)
     aoss_rec = recs_by_check.get(DENY_AOSS_THIRD_PARTY_ACCESS)
     sqs_rec = recs_by_check.get(DENY_SQS_THIRD_PARTY_ACCESS)
@@ -438,6 +440,14 @@ def _build_rcp_terraform_module(
         parameters.append(TerraformParameter("ecr_third_party_access_account_ids_allowlist", ecr_rec.third_party_account_ids))
     else:
         parameters.append(TerraformParameter("deny_ecr_third_party_access", False))
+
+    parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("KMS"))
+    if kms_rec:
+        parameters.append(TerraformParameter("deny_kms_third_party_access", True))
+        parameters.append(TerraformParameter("kms_third_party_access_account_ids_allowlist", kms_rec.third_party_account_ids))
+    else:
+        parameters.append(TerraformParameter("deny_kms_third_party_access", False))
 
     parameters.append(TerraformComment(""))
     parameters.append(TerraformComment("S3"))
