@@ -218,7 +218,7 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_scp_execute,
+            patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute") as mock_scp_execute,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute"),
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute"),
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
@@ -264,7 +264,7 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute") as mock_check,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute"),
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute"),
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
@@ -291,7 +291,7 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute"),
+            patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute"),
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute"),
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute"),
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
@@ -314,7 +314,7 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute") as mock_check,
             patch("headroom.checks.scps.deny_eks_create_cluster_without_tag.DenyEksCreateClusterWithoutTagCheck.execute") as mock_check_eks,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute") as mock_check2,
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute") as mock_check3,
@@ -401,7 +401,7 @@ class TestRunChecks:
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
-            patch("headroom.checks.scps.deny_imds_v1_ec2.DenyImdsV1Ec2Check.execute") as mock_check,
+            patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute") as mock_check,
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute") as mock_rcp_check
         ):
             org_account_ids: set[str] = set()

@@ -11,7 +11,7 @@ module "scps" {
   source = "./modules/scps"
 
   target_id                          = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
-  deny_imds_v1_ec2                   = true
+  deny_ec2_imds_v1                   = true
   deny_eks_create_cluster_without_tag = true
   deny_iam_user_creation             = true
   allowed_iam_users                  = [
@@ -31,7 +31,7 @@ module "scps" {
 
 ### Security Policy Variables
 
-- **`deny_imds_v1_ec2`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
+- **`deny_ec2_imds_v1`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
 - **`deny_eks_create_cluster_without_tag`** (bool): Deny EKS cluster creation unless PavedRoad=true tag is present
 - **`deny_iam_user_creation`** (bool): Deny creation of IAM users not on the allowed list
 - **`allowed_iam_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
@@ -60,7 +60,7 @@ Policy statements are conditionally included using the pattern in `locals.tf`:
 
 ## Security Policies
 
-### IMDSv2 Enforcement (`deny_imds_v1_ec2`)
+### IMDSv2 Enforcement (`deny_ec2_imds_v1`)
 
 When enabled, this policy enforces IMDSv2 (Instance Metadata Service version 2) for EC2 instances through two statements:
 

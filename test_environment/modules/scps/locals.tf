@@ -18,12 +18,12 @@ locals {
         }
       }
     },
-    # var.deny_imds_v1_ec2
+    # var.deny_ec2_imds_v1
     # -->
     # Sid: DenyRoleDeliveryLessThan2
     # Exempts IAM roles tagged with {"ExemptFromIMDSv2": "true"}
     {
-      include = var.deny_imds_v1_ec2,
+      include = var.deny_ec2_imds_v1,
       statement = {
         Action   = "*"
         Resource = "*"
@@ -37,12 +37,12 @@ locals {
         }
       }
     },
-    # var.deny_imds_v1_ec2
+    # var.deny_ec2_imds_v1
     # -->
     # Sid: DenyRunInstancesMetadataHttpTokensOptional
     # Exempts requests tagged with {"ExemptFromIMDSv2": "true"}
     {
-      include = var.deny_imds_v1_ec2,
+      include = var.deny_ec2_imds_v1,
       statement = {
         Action   = "ec2:RunInstances"
         Resource = "arn:aws:ec2:*:*:instance/*"

@@ -32,4 +32,3 @@ def paginate(
     paginator = client.get_paginator(operation_name)
     for page in paginator.paginate(**operation_kwargs):
         yield page
-

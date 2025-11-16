@@ -250,7 +250,7 @@ class TestResultFileParsing:
             results_path = Path(temp_dir)
 
             # Create test directory structure
-            check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            check_dir = results_path / "scps" / "deny_ec2_imds_v1"
             check_dir.mkdir(parents=True)
 
             # Create test result files
@@ -259,7 +259,7 @@ class TestResultFileParsing:
                     "summary": {
                         "account_name": "test-account-1",
                         "account_id": "111111111111",
-                        "check": "deny_imds_v1_ec2",
+                        "check": "deny_ec2_imds_v1",
                         "total_instances": 5,
                         "violations": 2,
                         "exemptions": 1,
@@ -274,7 +274,7 @@ class TestResultFileParsing:
                     "summary": {
                         "account_name": "test-account-2",
                         "account_id": "222222222222",
-                        "check": "deny_imds_v1_ec2",
+                        "check": "deny_ec2_imds_v1",
                         "total_instances": 3,
                         "violations": 0,
                         "exemptions": 0,
@@ -322,7 +322,7 @@ class TestResultFileParsing:
         """Test handling of invalid JSON files."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
-            check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            check_dir = results_path / "scps" / "deny_ec2_imds_v1"
             check_dir.mkdir(parents=True)
 
             # Create invalid JSON file
@@ -353,13 +353,13 @@ class TestResultFileParsing:
         """Test parsing files where account_id is missing from JSON but in filename."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
-            check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            check_dir = results_path / "scps" / "deny_ec2_imds_v1"
             check_dir.mkdir(parents=True)
 
             test_data = {
                 "summary": {
                     "account_name": "test-account",
-                    "check": "deny_imds_v1_ec2",
+                    "check": "deny_ec2_imds_v1",
                     "total_instances": 5,
                     "violations": 0,
                     "exemptions": 0,
@@ -387,13 +387,13 @@ class TestResultFileParsing:
         """Test parsing files raises error when account_id missing and name not in org hierarchy."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
-            check_dir = results_path / "scps" / "deny_imds_v1_ec2"
+            check_dir = results_path / "scps" / "deny_ec2_imds_v1"
             check_dir.mkdir(parents=True)
 
             test_data = {
                 "summary": {
                     "account_name": "unknown-account",
-                    "check": "deny_imds_v1_ec2",
+                    "check": "deny_ec2_imds_v1",
                     "total_instances": 5,
                     "violations": 0,
                     "exemptions": 0,
@@ -462,8 +462,8 @@ class TestSCPPlacementDetermination:
         """Test recommendation for root level deployment."""
         # All accounts have zero violations
         results_data = [
-            SCPCheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 0, 0, 5, 100.0, 5),
-            SCPCheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("111111111111", "account-1", "deny_ec2_imds_v1", 0, 0, 5, 100.0, 5),
+            SCPCheckResult("222222222222", "account-2", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -489,8 +489,8 @@ class TestSCPPlacementDetermination:
         """Test recommendation for OU level deployment."""
         # Only accounts in one OU have zero violations
         results_data = [
-            SCPCheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),
-            SCPCheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("111111111111", "account-1", "deny_ec2_imds_v1", 2, 0, 3, 60.0, 5),
+            SCPCheckResult("222222222222", "account-2", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -516,9 +516,9 @@ class TestSCPPlacementDetermination:
         """Test recommendation for account level deployment."""
         # Only some individual accounts have zero violations
         results_data = [
-            SCPCheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),
-            SCPCheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
-            SCPCheckResult("333333333333", "account-3", "deny_imds_v1_ec2", 1, 0, 2, 66.7, 3),
+            SCPCheckResult("111111111111", "account-1", "deny_ec2_imds_v1", 2, 0, 3, 60.0, 5),
+            SCPCheckResult("222222222222", "account-2", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("333333333333", "account-3", "deny_ec2_imds_v1", 1, 0, 2, 66.7, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -546,8 +546,8 @@ class TestSCPPlacementDetermination:
         """Test recommendation when no safe deployment is possible."""
         # All accounts have violations
         results_data = [
-            SCPCheckResult("111111111111", "account-1", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),
-            SCPCheckResult("222222222222", "account-2", "deny_imds_v1_ec2", 1, 0, 2, 66.7, 3),
+            SCPCheckResult("111111111111", "account-1", "deny_ec2_imds_v1", 2, 0, 3, 60.0, 5),
+            SCPCheckResult("222222222222", "account-2", "deny_ec2_imds_v1", 1, 0, 2, 66.7, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -627,8 +627,8 @@ class TestSCPPlacementDetermination:
         """Test handling when account is not found in organization hierarchy."""
         # Create scenario that forces OU level check (not all accounts have zero violations)
         results_data = [
-            SCPCheckResult("111111111111", "known-account", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),  # Has violations
-            SCPCheckResult("999999999999", "unknown-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),  # No violations but not in hierarchy
+            SCPCheckResult("111111111111", "known-account", "deny_ec2_imds_v1", 2, 0, 3, 60.0, 5),  # Has violations
+            SCPCheckResult("999999999999", "unknown-account", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),  # No violations but not in hierarchy
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -648,9 +648,9 @@ class TestSCPPlacementDetermination:
     def test_determine_scp_placement_missing_account_id_lookup_by_name(self) -> None:
         """Test handling when account_id is missing but account_name can be found in hierarchy."""
         results_data = [
-            SCPCheckResult("", "known-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
-            SCPCheckResult("222222222222", "another-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
-            SCPCheckResult("333333333333", "third-account", "deny_imds_v1_ec2", 2, 0, 1, 33.3, 3),
+            SCPCheckResult("", "known-account", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("222222222222", "another-account", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("333333333333", "third-account", "deny_ec2_imds_v1", 2, 0, 1, 33.3, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -669,7 +669,7 @@ class TestSCPPlacementDetermination:
         result = determine_scp_placement(results_data, mock_hierarchy)
 
         assert len(result) == 1
-        assert result[0].check_name == "deny_imds_v1_ec2"
+        assert result[0].check_name == "deny_ec2_imds_v1"
         assert result[0].recommended_level == "ou"
         assert result[0].target_ou_id == "ou-1234"
         assert set(result[0].affected_accounts) == {"111111111111", "222222222222"}
@@ -677,8 +677,8 @@ class TestSCPPlacementDetermination:
     def test_determine_scp_placement_missing_account_id_not_found_by_name(self) -> None:
         """Test handling when account_id is missing and account_name is not in hierarchy."""
         results_data = [
-            SCPCheckResult("111111111111", "known-account", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),
-            SCPCheckResult("", "unknown-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("111111111111", "known-account", "deny_ec2_imds_v1", 2, 0, 3, 60.0, 5),
+            SCPCheckResult("", "unknown-account", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
         ]
 
         mock_hierarchy = OrganizationHierarchy(
@@ -867,7 +867,7 @@ class TestParseResultsIntegration:
         )
 
         mock_results = [
-            SCPCheckResult("111111111111", "test-account", "deny_imds_v1_ec2", 0, 0, 5, 100.0, 5)
+            SCPCheckResult("111111111111", "test-account", "deny_ec2_imds_v1", 0, 0, 5, 100.0, 5)
         ]
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results):
@@ -875,7 +875,7 @@ class TestParseResultsIntegration:
 
             # Verify recommendations were returned
             assert len(recommendations) == 1
-            assert recommendations[0].check_name == "deny_imds_v1_ec2"
+            assert recommendations[0].check_name == "deny_ec2_imds_v1"
             assert recommendations[0].recommended_level == "root"
 
     def test_parse_scp_results_with_ou_recommendation_output(self) -> None:
@@ -916,8 +916,8 @@ class TestParseResultsIntegration:
 
         # Create results that will trigger OU-level recommendation
         mock_results = [
-            SCPCheckResult("111111111111", "test-account", "deny_imds_v1_ec2", 2, 0, 3, 60.0, 5),  # Has violations
-            SCPCheckResult("222222222222", "prod-account", "deny_imds_v1_ec2", 0, 0, 3, 100.0, 3),  # No violations
+            SCPCheckResult("111111111111", "test-account", "deny_ec2_imds_v1", 2, 0, 3, 60.0, 5),  # Has violations
+            SCPCheckResult("222222222222", "prod-account", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),  # No violations
         ]
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
@@ -949,7 +949,7 @@ class TestGenerateSCPTerraform:
             # Create mock recommendations
             recommendations = [
                 SCPPlacementRecommendations(
-                    check_name="deny_imds_v1_ec2",
+                    check_name="deny_ec2_imds_v1",
                     recommended_level="account",
                     target_ou_id=None,
                     affected_accounts=["222222222222", "111111111111"],
@@ -973,8 +973,8 @@ class TestGenerateSCPTerraform:
             with open(fort_knox_file, 'r') as f:
                 content = f.read()
                 assert "fort-knox" in content
-                assert "deny_imds_v1_ec2" in content
-                assert "deny_imds_v1_ec2 = true" in content
+                assert "deny_ec2_imds_v1" in content
+                assert "deny_ec2_imds_v1 = true" in content
                 assert "local.fort_knox_account_id" in content
 
     def test_generate_scp_terraform_non_compliant_accounts_skipped(self) -> None:
@@ -993,7 +993,7 @@ class TestGenerateSCPTerraform:
             # Create mock recommendations with mixed compliance
             recommendations = [
                 SCPPlacementRecommendations(
-                    check_name="deny_imds_v1_ec2",
+                    check_name="deny_ec2_imds_v1",
                     recommended_level="account",
                     target_ou_id=None,
                     affected_accounts=["222222222222", "111111111111"],
@@ -1015,7 +1015,7 @@ class TestGenerateSCPTerraform:
             with open(fort_knox_file, 'r') as f:
                 content = f.read()
                 assert "fort-knox" in content
-                assert "deny_imds_v1_ec2 = true" not in content
+                assert "deny_ec2_imds_v1 = true" not in content
 
     def test_generate_scp_terraform_ou_level(self) -> None:
         """Test generating Terraform files for OU-level SCP recommendations."""
@@ -1034,7 +1034,7 @@ class TestGenerateSCPTerraform:
             # Create mock OU-level recommendations
             recommendations = [
                 SCPPlacementRecommendations(
-                    check_name="deny_imds_v1_ec2",
+                    check_name="deny_ec2_imds_v1",
                     recommended_level="ou",
                     target_ou_id="ou-1234",
                     affected_accounts=["222222222222"],
@@ -1056,8 +1056,8 @@ class TestGenerateSCPTerraform:
             with open(production_ou_file, 'r') as f:
                 content = f.read()
                 assert "Production" in content
-                assert "deny_imds_v1_ec2" in content
-                assert "deny_imds_v1_ec2 = true" in content
+                assert "deny_ec2_imds_v1" in content
+                assert "deny_ec2_imds_v1 = true" in content
                 assert "local.top_level_production_ou_id" in content
 
     def test_generate_scp_terraform_root_level(self) -> None:
@@ -1076,7 +1076,7 @@ class TestGenerateSCPTerraform:
             # Create mock root-level recommendations
             recommendations = [
                 SCPPlacementRecommendations(
-                    check_name="deny_imds_v1_ec2",
+                    check_name="deny_ec2_imds_v1",
                     recommended_level="root",
                     target_ou_id=None,
                     affected_accounts=["222222222222"],
@@ -1098,8 +1098,8 @@ class TestGenerateSCPTerraform:
             with open(root_file, 'r') as f:
                 content = f.read()
                 assert "Organization Root" in content
-                assert "deny_imds_v1_ec2" in content
-                assert "deny_imds_v1_ec2 = true" in content
+                assert "deny_ec2_imds_v1" in content
+                assert "deny_ec2_imds_v1 = true" in content
                 assert "local.root_ou_id" in content
 
     def test_generate_scp_terraform_mixed_levels(self) -> None:
@@ -1121,7 +1121,7 @@ class TestGenerateSCPTerraform:
             # Create mock mixed-level recommendations
             recommendations = [
                 SCPPlacementRecommendations(
-                    check_name="deny_imds_v1_ec2",
+                    check_name="deny_ec2_imds_v1",
                     recommended_level="account",
                     target_ou_id=None,
                     affected_accounts=["222222222222"],
@@ -1129,7 +1129,7 @@ class TestGenerateSCPTerraform:
                     reasoning="Account has zero violations"
                 ),
                 SCPPlacementRecommendations(
-                    check_name="deny_imds_v1_ec2",
+                    check_name="deny_ec2_imds_v1",
                     recommended_level="ou",
                     target_ou_id="ou-1234",
                     affected_accounts=["222222222222"],
@@ -1137,7 +1137,7 @@ class TestGenerateSCPTerraform:
                     reasoning="All accounts in OU have zero violations"
                 ),
                 SCPPlacementRecommendations(
-                    check_name="deny_imds_v1_ec2",
+                    check_name="deny_ec2_imds_v1",
                     recommended_level="root",
                     target_ou_id=None,
                     affected_accounts=["222222222222", "111111111111"],
@@ -1163,7 +1163,7 @@ class TestGenerateSCPTerraform:
             for file_path in [fort_knox_file, production_ou_file, root_file]:
                 with open(file_path, 'r') as f:
                     content = f.read()
-                    assert "deny_imds_v1_ec2 = true" in content
+                    assert "deny_ec2_imds_v1 = true" in content
 
 
 class TestPrintPolicyRecommendations:
@@ -1207,7 +1207,7 @@ class TestPrintPolicyRecommendations:
 
         recommendations = [
             SCPPlacementRecommendations(
-                check_name="deny_imds_v1_ec2",
+                check_name="deny_ec2_imds_v1",
                 recommended_level="ou",
                 target_ou_id="ou-123",
                 affected_accounts=["111111111111"],
@@ -1222,7 +1222,7 @@ class TestPrintPolicyRecommendations:
         printed_calls = [str(call) for call in mock_print.call_args_list]
 
         assert any("SCP RECOMMENDATIONS" in str(call) for call in printed_calls)
-        assert any("deny_imds_v1_ec2" in str(call) for call in printed_calls)
+        assert any("deny_ec2_imds_v1" in str(call) for call in printed_calls)
         assert any("75.5%" in str(call) for call in printed_calls)
         assert any("Compliance:" in str(call) for call in printed_calls)
 

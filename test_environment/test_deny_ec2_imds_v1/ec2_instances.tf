@@ -1,6 +1,6 @@
 # EC2 Test Instances for IMDSv1/v2 Testing
 #
-# These instances are used to test the deny_imds_v1_ec2 SCP check.
+# These instances are used to test the deny_ec2_imds_v1 SCP check.
 # They should be destroyed when not actively being used for testing.
 
 # Instance 1: IMDSv1 enabled (should be flagged by the check)

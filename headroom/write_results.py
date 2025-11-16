@@ -31,7 +31,7 @@ class ResultFilePathResolver:
     results_exist() functions.
 
     Attributes:
-        check_name: Name of the check (e.g., 'deny_imds_v1_ec2')
+        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
         results_base_dir: Base directory for results
         account_name: Account name (optional, defaults to empty string)
         account_id: Account ID (optional, defaults to empty string)
@@ -163,7 +163,7 @@ def write_check_results(
     standardized format that can be parsed by parse_results.py.
 
     Args:
-        check_name: Name of the check (e.g., 'deny_imds_v1_ec2')
+        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
         account_name: Account name
         account_id: Account ID
         results_data: Dictionary containing summary, violations, exemptions, etc.
@@ -209,11 +209,11 @@ def get_results_dir(check_name: str, results_base_dir: str) -> str:
     Results are organized by check type (scps/rcps) and then by check name.
 
     Args:
-        check_name: Name of the check (e.g., 'deny_imds_v1_ec2')
+        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
         results_base_dir: Base directory for results
 
     Returns:
-        Path to the check's results directory (e.g., '{results_base_dir}/scps/deny_imds_v1_ec2')
+        Path to the check's results directory (e.g., '{results_base_dir}/scps/deny_ec2_imds_v1')
     """
     results_resolver = ResultFilePathResolver(
         check_name=check_name,
@@ -242,7 +242,7 @@ def get_results_path(
         exclude_account_ids: If True, use only account name in filename
 
     Returns:
-        Path object for the results file (e.g., '{results_base_dir}/scps/deny_imds_v1_ec2/account.json')
+        Path object for the results file (e.g., '{results_base_dir}/scps/deny_ec2_imds_v1/account.json')
     """
     results_resolver = ResultFilePathResolver(
         check_name=check_name,
@@ -267,7 +267,7 @@ def results_exist(
     Checks for both filename formats to handle backward compatibility.
 
     Args:
-        check_name: Name of the check (e.g., 'deny_imds_v1_ec2')
+        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
         account_name: Account name
         account_id: Account ID
         results_base_dir: Base directory for results
