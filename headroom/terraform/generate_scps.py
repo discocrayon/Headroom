@@ -100,11 +100,11 @@ def _build_ec2_terraform_parameters(
         allowed_ami_owners = _get_allowed_ami_owners(recommendations)
         parameters.append(TerraformParameter("allowed_ami_owners", allowed_ami_owners))
 
+    deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_checks
+    parameters.append(TerraformParameter("deny_ec2_imds_v1", deny_ec2_imds_v1))
+
     deny_ec2_public_ip = "deny_ec2_public_ip" in enabled_checks
     parameters.append(TerraformParameter("deny_ec2_public_ip", deny_ec2_public_ip))
-
-    deny_imds_v1_ec2 = "deny_imds_v1_ec2" in enabled_checks
-    parameters.append(TerraformParameter("deny_imds_v1_ec2", deny_imds_v1_ec2))
 
     return parameters
 

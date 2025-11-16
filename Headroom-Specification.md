@@ -103,7 +103,7 @@ headroom/
 │   ├── base.py             # BaseCheck abstract class
 │   ├── registry.py         # Check registration system
 │   ├── scps/
-│   │   ├── deny_imds_v1_ec2.py
+│   │   ├── deny_ec2_imds_v1.py
 │   │   ├── deny_iam_user_creation.py
 │   │   └── deny_rds_unencrypted.py
 │   └── rcps/
@@ -435,7 +435,7 @@ def register_check(check_type: str, check_name: str) -> Callable:
     Decorator to register check class.
 
     Usage:
-        @register_check("scps", "deny_imds_v1_ec2")
+        @register_check("scps", "deny_ec2_imds_v1")
         class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
             ...
 
@@ -558,7 +558,7 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
   "summary": {
     "account_name": "string",
     "account_id": "string",
-    "check": "deny_imds_v1_ec2",
+    "check": "deny_ec2_imds_v1",
     "total_instances": 0,
     "violations": 0,
     "exemptions": 0,
@@ -1310,7 +1310,7 @@ Both SCP and RCP parsers share these patterns:
 {results_dir}/{check_type}/{check_name}/*.json
 
 Examples:
-- {results_dir}/scps/deny_imds_v1_ec2/account-name_111111111111.json
+- {results_dir}/scps/deny_ec2_imds_v1/account-name_111111111111.json
 - {results_dir}/rcps/third_party_assumerole/account-name_111111111111.json
 ```
 
@@ -1687,7 +1687,7 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   # EC2
-  deny_imds_v1_ec2 = true
+  deny_ec2_imds_v1 = true
 
   # IAM
   deny_iam_user_creation = true
@@ -1702,7 +1702,7 @@ module "scps_root" {
 ```hcl
 # modules/scps/variables.tf
 
-variable "deny_imds_v1_ec2" {
+variable "deny_ec2_imds_v1" {
   type = bool
 }
 
@@ -1723,7 +1723,7 @@ variable "allowed_iam_users" {
 locals {
   statements = [
     {
-      include = var.deny_imds_v1_ec2,
+      include = var.deny_ec2_imds_v1,
       statement = {
         Action = "ec2:RunInstances"
         Condition = {
@@ -2141,7 +2141,7 @@ def get_results_dir(
 ```python
 # constants.py
 
-DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
+DENY_IMDS_V1_EC2 = "deny_ec2_imds_v1"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
@@ -2399,7 +2399,7 @@ test_environment/
 │   └── {account_name}_rcps.tf          # Account-level RCPs
 ├── headroom_results/                    # JSON analysis results
 │   ├── scps/
-│   │   ├── deny_imds_v1_ec2/
+│   │   ├── deny_ec2_imds_v1/
 │   │   │   └── {account_name}.json
 │   │   ├── deny_iam_user_creation/
 │   │   │   └── {account_name}.json
@@ -2410,7 +2410,7 @@ test_environment/
 │       │   └── {account_name}.json
 │       └── third_party_assumerole/
 │           └── {account_name}.json
-├── test_deny_imds_v1_ec2/               # EC2 instances (expensive, separate directory)
+├── test_deny_ec2_imds_v1/               # EC2 instances (expensive, separate directory)
 │   ├── README.md                        # Cost warnings and usage
 │   ├── providers.tf                     # Cross-account providers
 │   ├── data.tf                          # AMI data sources
@@ -2666,7 +2666,7 @@ Creates IAM roles with diverse trust policy patterns to test RCP third-party det
 - OU-level RCP not possible (fort-knox has wildcard)
 - Account-level RCPs generated for compliant accounts
 
-#### EC2 IMDSv1 Test (`test_deny_imds_v1_ec2/`)
+#### EC2 IMDSv1 Test (`test_deny_ec2_imds_v1/`)
 
 **⚠️ Cost Warning:** This directory is **separate** because EC2 instances incur ongoing costs. Instances should only be created during active testing.
 
@@ -2682,7 +2682,7 @@ Creates IAM roles with diverse trust policy patterns to test RCP third-party det
 
 **Separate Directory Structure:**
 ```
-test_deny_imds_v1_ec2/
+test_deny_ec2_imds_v1/
 ├── README.md         # Cost warnings and usage instructions
 ├── providers.tf      # Cross-account providers (reuses org account IDs)
 ├── data.tf          # AMI data source (Amazon Linux 2023)
@@ -2692,7 +2692,7 @@ test_deny_imds_v1_ec2/
 **Usage Pattern:**
 ```bash
 # Only when testing
-cd test_deny_imds_v1_ec2/
+cd test_deny_ec2_imds_v1/
 terraform init
 terraform apply
 
@@ -2701,7 +2701,7 @@ cd ..
 python -m headroom --config config.yaml
 
 # Destroy immediately after testing
-cd test_deny_imds_v1_ec2/
+cd test_deny_ec2_imds_v1/
 terraform destroy
 ```
 
@@ -2756,7 +2756,7 @@ variable "target_id" {
   description = "OU ID or account ID to attach SCP"
 }
 
-variable "deny_imds_v1_ec2" {
+variable "deny_ec2_imds_v1" {
   type    = bool
   default = false
 }
@@ -2778,7 +2778,7 @@ variable "allowed_iam_users" {
 locals {
   statements = [
     {
-      include = var.deny_imds_v1_ec2,
+      include = var.deny_ec2_imds_v1,
       statement = {
         Action = "ec2:RunInstances"
         Condition = {
@@ -2914,7 +2914,7 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   # EC2
-  deny_imds_v1_ec2 = false
+  deny_ec2_imds_v1 = false
 
   # IAM
   deny_iam_user_creation = true
@@ -2928,7 +2928,7 @@ module "scps_root" {
 }
 ```
 
-**Note:** `deny_imds_v1_ec2 = false` because EC2 test instances create violations. In real environment with 100% compliance, this would be `true`.
+**Note:** `deny_ec2_imds_v1 = false` because EC2 test instances create violations. In real environment with 100% compliance, this would be `true`.
 
 **`{ou_name}_ou_scps.tf`**
 
@@ -2943,7 +2943,7 @@ module "scps_high_value_assets_ou" {
   target_id = local.top_level_high_value_assets_ou_id
 
   # EC2
-  deny_imds_v1_ec2 = true
+  deny_ec2_imds_v1 = true
 
   # IAM
   deny_iam_user_creation = false
@@ -2963,7 +2963,7 @@ module "scps_fort_knox" {
   target_id = local.fort_knox_account_id
 
   # EC2
-  deny_imds_v1_ec2 = true
+  deny_ec2_imds_v1 = true
 
   # IAM
   deny_iam_user_creation = false
@@ -3037,7 +3037,7 @@ module "rcps_shared_foo_bar" {
 ```
 headroom_results/
 ├── scps/
-│   ├── deny_imds_v1_ec2/
+│   ├── deny_ec2_imds_v1/
 │   │   ├── acme-co.json
 │   │   ├── fort-knox.json
 │   │   ├── security-tooling.json
@@ -3055,12 +3055,12 @@ headroom_results/
         └── shared-foo-bar.json
 ```
 
-**Example: `scps/deny_imds_v1_ec2/acme-co.json`**
+**Example: `scps/deny_ec2_imds_v1/acme-co.json`**
 ```json
 {
   "summary": {
     "account_name": "acme-co",
-    "check": "deny_imds_v1_ec2",
+    "check": "deny_ec2_imds_v1",
     "total_instances": 1,
     "violations": 0,
     "exemptions": 0,
@@ -3279,7 +3279,7 @@ Compare generated files with examples in repository:
 **⚠️ Warning:** Creates billable EC2 instances (~$12.54/month if left running).
 
 ```bash
-cd test_environment/test_deny_imds_v1_ec2/
+cd test_environment/test_deny_ec2_imds_v1/
 terraform init
 terraform apply
 
@@ -3288,10 +3288,10 @@ cd ../..
 python -m headroom --config my_config.yaml
 
 # Check updated results
-cat test_environment/headroom_results/scps/deny_imds_v1_ec2/acme-co.json
+cat test_environment/headroom_results/scps/deny_ec2_imds_v1/acme-co.json
 
 # Destroy instances immediately
-cd test_environment/test_deny_imds_v1_ec2/
+cd test_environment/test_deny_ec2_imds_v1/
 terraform destroy
 ```
 
@@ -3304,7 +3304,7 @@ terraform destroy
 
 **Destroy Member Account Resources:**
 ```bash
-cd test_environment/test_deny_imds_v1_ec2/
+cd test_environment/test_deny_ec2_imds_v1/
 terraform destroy  # If EC2 instances exist
 
 cd ..
@@ -3417,12 +3417,12 @@ terraform destroy -target=aws_iam_role.wildcard_role
 **What NOT to Commit:**
 - `terraform.tfstate` (contains sensitive account IDs)
 - `terraform.tfvars` (contains personal email)
-- `test_deny_imds_v1_ec2/terraform.tfstate` (EC2 instance IDs)
+- `test_deny_ec2_imds_v1/terraform.tfstate` (EC2 instance IDs)
 
 **Gitignore Pattern:**
 ```
 test_environment/terraform.tfstate*
-test_environment/test_deny_imds_v1_ec2/terraform.tfstate*
+test_environment/test_deny_ec2_imds_v1/terraform.tfstate*
 test_environment/terraform.tfvars
 ```
 
@@ -3512,7 +3512,7 @@ The test environment serves as executable documentation:
 ```
 {results_dir}/
 ├── scps/
-│   ├── deny_imds_v1_ec2/
+│   ├── deny_ec2_imds_v1/
 │   │   ├── account-name_111111111111.json
 │   │   ├── another-account_222222222222.json
 │   │   └── ...

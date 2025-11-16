@@ -20,14 +20,14 @@ def register_check(check_type: str, check_name: str) -> Callable[[Type[BaseCheck
 
     Args:
         check_type: Type of check (scps, rcps)
-        check_name: Name of the check (deny_imds_v1_ec2, third_party_assumerole)
+        check_name: Name of the check (deny_ec2_imds_v1, third_party_assumerole)
 
     Returns:
         Decorator function that registers a check class
 
     Usage:
-        @register_check("scps", "deny_imds_v1_ec2")
-        class DenyImdsV1Ec2Check(BaseCheck):
+        @register_check("scps", "deny_ec2_imds_v1")
+        class DenyEc2ImdsV1Check(BaseCheck):
             ...
     """
     def decorator(cls: Type[BaseCheck]) -> Type[BaseCheck]:
