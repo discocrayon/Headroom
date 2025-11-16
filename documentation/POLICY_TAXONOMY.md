@@ -438,6 +438,25 @@ This RCP restricts OpenSearch Serverless (AOSS) access to organization principal
 
 **Headroom's Role:** Analyzes AOSS data access policies to identify third-party account access. Reports which collections and indexes grant access to external accounts, along with the specific AOSS actions permitted for each third-party account. This information informs the allowlist configuration.
 
+### Pattern 5a: `deny_sqs_third_party_access`
+
+**Check:** `headroom/checks/rcps/deny_sqs_third_party_access.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf`
+**Variable:** `sqs_third_party_account_ids_allowlist`
+
+This RCP restricts SQS queue access to organization principals and explicitly allowlisted third-party account IDs. It analyzes SQS queue resource policies to identify external account access patterns.
+
+**Policy Structure:**
+- Deny `sqs:*` actions
+- Unless `aws:PrincipalOrgID` matches the organization OR `aws:PrincipalAccount` is in the allowlist
+- Excludes AWS service principals
+
+**Headroom's Role:** Scans all accounts and analyzes SQS queue policies across all regions, identifying which third-party accounts have access and which SQS actions they can perform. This informs the allowlist configuration for RCP deployment. The check also detects wildcard principals that would block RCP deployment.
+
+**Key Feature:** Tracks which specific SQS actions (e.g., `sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`) each third-party account is granted on which queues, enabling precise understanding of access patterns.
+
+**Fail-Fast Validation:** If any SQS queue policy contains a Federated principal (or other unsupported principal types), the check immediately fails with a clear error message, as these would break when the RCP is deployed.
+
 ### Pattern 5b: `deny_iam_user_creation`
 
 **Check:** `headroom/checks/scps/deny_iam_user_creation.py`

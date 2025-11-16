@@ -24,6 +24,7 @@ from ..constants import (
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
     DENY_AOSS_THIRD_PARTY_ACCESS,
+    DENY_SQS_THIRD_PARTY_ACCESS,
 )
 from ..write_results import get_results_dir
 from ..parse_results import _load_result_file_json, _extract_account_id_from_result
@@ -419,6 +420,7 @@ def _build_rcp_terraform_module(
     ecr_rec = recs_by_check.get(DENY_ECR_THIRD_PARTY_ACCESS)
     s3_rec = recs_by_check.get(DENY_S3_THIRD_PARTY_ACCESS)
     aoss_rec = recs_by_check.get(DENY_AOSS_THIRD_PARTY_ACCESS)
+    sqs_rec = recs_by_check.get(DENY_SQS_THIRD_PARTY_ACCESS)
 
     parameters: List[TerraformElement] = []
 
@@ -455,6 +457,14 @@ def _build_rcp_terraform_module(
         parameters.append(TerraformParameter("deny_s3_third_party_access", True))
     else:
         parameters.append(TerraformParameter("deny_s3_third_party_access", False))
+
+    parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("SQS"))
+    if sqs_rec:
+        parameters.append(TerraformParameter("sqs_third_party_account_ids_allowlist", sqs_rec.third_party_account_ids))
+        parameters.append(TerraformParameter("deny_sqs_third_party_access", True))
+    else:
+        parameters.append(TerraformParameter("deny_sqs_third_party_access", False))
 
     module = TerraformModule(
         name=module_name,
