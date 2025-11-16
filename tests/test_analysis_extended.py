@@ -319,6 +319,7 @@ class TestRunChecks:
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute") as mock_check2,
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute") as mock_check3,
             patch("headroom.checks.scps.deny_ec2_ami_owner.DenyEc2AmiOwnerCheck.execute") as mock_check4,
+            patch("headroom.checks.scps.deny_ec2_public_ip.DenyEc2PublicIpCheck.execute"),
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.checks.rcps.deny_ecr_third_party_access.DenyECRThirdPartyAccessCheck.execute"),
             patch("headroom.checks.rcps.deny_s3_third_party_access.DenyS3ThirdPartyAccessCheck.execute"),
@@ -326,12 +327,12 @@ class TestRunChecks:
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
             # Mock that results exist for first account but not second
-            # Call pattern now (with 5 SCP checks and 3 RCP checks):
-            # Account 1: all_scp_results_exist (5 calls for 5 SCP checks) → all True, all_rcp_results_exist (3 calls) → True, skip
-            # Account 2: all_scp_results_exist (5 calls) → any False, all_rcp_results_exist (3 calls) → False
-            #   Then run_scp_checks calls results_exist per check (5 calls) → False, runs checks
+            # Call pattern now (with 6 SCP checks and 3 RCP checks):
+            # Account 1: all_scp_results_exist (6 calls for 6 SCP checks) → all True, all_rcp_results_exist (3 calls) → True, skip
+            # Account 2: all_scp_results_exist (6 calls) → any False, all_rcp_results_exist (3 calls) → False
+            #   Then run_scp_checks calls results_exist per check (6 calls) → False, runs checks
             #   Then run_rcp_checks calls results_exist per check (3 calls) → False, runs checks
-            # Total: 8 (Account 1) + 8 (Account 2 initial) + 5 (Account 2 SCP) + 3 (Account 2 RCP) = 24 calls
+            # Total: 9 (Account 1) + 9 (Account 2 initial) + 6 (Account 2 SCP) + 3 (Account 2 RCP) = 27 calls
             mock_check_results.return_value = True  # Default
             mock_check_results.side_effect = [
                 True,   # Account 1 - SCP check 1 exists
@@ -339,6 +340,7 @@ class TestRunChecks:
                 True,   # Account 1 - SCP check 3 exists
                 True,   # Account 1 - SCP check 4 exists
                 True,   # Account 1 - SCP check 5 exists
+                True,   # Account 1 - SCP check 6 exists
                 True,   # Account 1 - RCP check 1 exists
                 True,   # Account 1 - RCP check 2 exists
                 True,   # Account 1 - RCP check 3 exists
@@ -347,6 +349,7 @@ class TestRunChecks:
                 False,  # Account 2 - SCP check 3 exists check
                 False,  # Account 2 - SCP check 4 exists check
                 False,  # Account 2 - SCP check 5 exists check
+                False,  # Account 2 - SCP check 6 exists check
                 False,  # Account 2 - RCP check 1 exists check
                 False,  # Account 2 - RCP check 2 exists check
                 False,  # Account 2 - RCP check 3 exists check
@@ -355,6 +358,7 @@ class TestRunChecks:
                 False,  # Account 2 - run_scp_checks internal check for check 3
                 False,  # Account 2 - run_scp_checks internal check for check 4
                 False,  # Account 2 - run_scp_checks internal check for check 5
+                False,  # Account 2 - run_scp_checks internal check for check 6
                 False,  # Account 2 - run_rcp_checks internal check for check 1
                 False,  # Account 2 - run_rcp_checks internal check for check 2
                 False   # Account 2 - run_rcp_checks internal check for check 3

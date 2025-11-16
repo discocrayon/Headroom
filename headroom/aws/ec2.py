@@ -268,7 +268,7 @@ def get_ec2_public_ip_analysis(session: Session) -> List[DenyEc2PublicIp]:
                             continue
 
                         instance_id = instance['InstanceId']
-                        account_id = instance['OwnerId']
+                        account_id = instance.get('OwnerId', '')
 
                         instance_arn = (
                             f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"

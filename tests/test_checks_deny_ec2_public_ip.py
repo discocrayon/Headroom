@@ -77,7 +77,7 @@ class TestCheckDenyEc2PublicIp:
 
             assert mock_write.called
             call_args = mock_write.call_args
-            results_data = call_args[0][0]
+            results_data = call_args.kwargs["results_data"]
 
             assert len(results_data["violations"]) == 2
             assert len(results_data["compliant_instances"]) == 1
@@ -127,7 +127,7 @@ class TestCheckDenyEc2PublicIp:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs["results_data"]
             summary = results_data["summary"]
 
             assert summary["compliance_percentage"] == 100.0
@@ -173,7 +173,7 @@ class TestCheckDenyEc2PublicIp:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs["results_data"]
             summary = results_data["summary"]
 
             assert summary["compliance_percentage"] == 0.0
@@ -202,7 +202,7 @@ class TestCheckDenyEc2PublicIp:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args.kwargs["results_data"]
             summary = results_data["summary"]
 
             assert summary["compliance_percentage"] == 100.0
@@ -279,7 +279,8 @@ class TestCheckDenyEc2PublicIp:
         check_result = CategorizedCheckResult(
             violations=[{"instance_id": "i-111"}, {"instance_id": "i-222"}],
             exemptions=[],
-            compliant=[{"instance_id": "i-333"}]
+            compliant=[{"instance_id": "i-333"}],
+            summary={}
         )
 
         summary_fields = check.build_summary_fields(check_result)

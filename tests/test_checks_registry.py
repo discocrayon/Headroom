@@ -37,7 +37,7 @@ class TestGetAllCheckClasses:
     def test_get_all_check_classes_no_filter(self) -> None:
         """Test getting all check classes without filter."""
         all_checks = get_all_check_classes()
-        assert len(all_checks) == 8
+        assert len(all_checks) == 9
         check_names = {cls.CHECK_NAME for cls in all_checks}
         assert "deny_imds_v1_ec2" in check_names
         assert "deny_eks_create_cluster_without_tag" in check_names
@@ -51,7 +51,7 @@ class TestGetAllCheckClasses:
     def test_get_all_check_classes_filter_by_scps(self) -> None:
         """Test getting check classes filtered by scps."""
         scp_checks = get_all_check_classes("scps")
-        assert len(scp_checks) == 5
+        assert len(scp_checks) == 6
         check_names = {cls.CHECK_NAME for cls in scp_checks}
         assert "deny_imds_v1_ec2" in check_names
         assert "deny_eks_create_cluster_without_tag" in check_names
@@ -87,4 +87,5 @@ class TestGetCheckTypeMap:
         assert type_map["deny_ecr_third_party_access"] == "rcps"
         assert type_map["third_party_assumerole"] == "rcps"
         assert type_map["deny_s3_third_party_access"] == "rcps"
-        assert len(type_map) == 8
+        assert type_map["deny_ec2_public_ip"] == "scps"
+        assert len(type_map) == 9
