@@ -39,12 +39,7 @@ class TestCheckDenySamlProviderNotAwsSso:
             mock_get_providers.return_value = [awssso_provider]
             check.execute(mock_session)
 
-        results_file = (
-            tmp_path
-            / "scps"
-            / "deny_saml_provider_not_aws_sso"
-            / "test-account_111111111111.json"
-        )
+        results_file = tmp_path / "scps" / "deny_saml_provider_not_aws_sso" / "test-account_111111111111.json"
         assert results_file.exists()
 
         with open(results_file) as file_handle:
@@ -98,12 +93,7 @@ class TestCheckDenySamlProviderNotAwsSso:
             mock_get_providers.return_value = [awssso_provider, custom_provider]
             check.execute(mock_session)
 
-        results_file = (
-            tmp_path
-            / "scps"
-            / "deny_saml_provider_not_aws_sso"
-            / "test-account_111111111111.json"
-        )
+        results_file = tmp_path / "scps" / "deny_saml_provider_not_aws_sso" / "test-account_111111111111.json"
         assert results_file.exists()
 
         with open(results_file) as file_handle:
@@ -145,12 +135,7 @@ class TestCheckDenySamlProviderNotAwsSso:
             mock_get_providers.return_value = []
             check.execute(mock_session)
 
-        results_file = (
-            tmp_path
-            / "scps"
-            / "deny_saml_provider_not_aws_sso"
-            / "test-account_111111111111.json"
-        )
+        results_file = tmp_path / "scps" / "deny_saml_provider_not_aws_sso" / "test-account_111111111111.json"
         assert results_file.exists()
 
         with open(results_file) as file_handle:

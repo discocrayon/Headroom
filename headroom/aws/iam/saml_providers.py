@@ -8,27 +8,14 @@ need to analyze IAM SAML providers within an account.
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional, TypedDict
+from typing import List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
+from mypy_boto3_iam.type_defs import ListSAMLProvidersResponseTypeDef
 
 logger = logging.getLogger(__name__)
-
-
-class SamlProviderListEntry(TypedDict, total=False):
-    """Typed representation of an entry returned by list_saml_providers."""
-
-    Arn: str
-    CreateDate: datetime
-    ValidUntil: datetime
-
-
-class ListSamlProvidersResponse(TypedDict, total=False):
-    """Typed representation of the list_saml_providers API response."""
-
-    SAMLProviderList: List[SamlProviderListEntry]
 
 
 @dataclass
@@ -63,7 +50,7 @@ def get_saml_providers_analysis(session: boto3.Session) -> List[SamlProviderAnal
     results: List[SamlProviderAnalysis] = []
 
     try:
-        response: ListSamlProvidersResponse = iam_client.list_saml_providers()
+        response: ListSAMLProvidersResponseTypeDef = iam_client.list_saml_providers()
     except ClientError as exc:
         logger.error("Failed to list IAM SAML providers from AWS API: %s", exc)
         raise

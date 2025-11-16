@@ -7,12 +7,14 @@ prefix). The eventual SCP will deny iam:CreateSAMLProvider unconditionally once 
 accounts meet this constraint.
 """
 
-from typing import Any, Dict, List
+from typing import Any, List
 
 import boto3
 
 from ...aws.iam import SamlProviderAnalysis, get_saml_providers_analysis
 from ...constants import DENY_SAML_PROVIDER_NOT_AWS_SSO
+from ...enums import CheckCategory
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -84,7 +86,7 @@ class DenySamlProviderNotAwsSsoCheck(BaseCheck[SamlProviderAnalysis]):
 
         return providers
 
-    def categorize_result(self, result: SamlProviderAnalysis) -> tuple[str, Dict[str, Any]]:
+    def categorize_result(self, result: SamlProviderAnalysis) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single SAML provider analysis result.
 
@@ -94,7 +96,7 @@ class DenySamlProviderNotAwsSsoCheck(BaseCheck[SamlProviderAnalysis]):
         Returns:
             Tuple containing category and JSON-serializable result data.
         """
-        result_dict: Dict[str, Any] = {
+        result_dict: JsonDict = {
             "arn": result.arn,
             "name": result.name,
             "create_date": result.create_date.isoformat() if result.create_date else None,
@@ -103,15 +105,15 @@ class DenySamlProviderNotAwsSsoCheck(BaseCheck[SamlProviderAnalysis]):
 
         if not _is_awssso_provider(result.name):
             result_dict["violation_reason"] = "provider_prefix_not_awssso"
-            return ("violation", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
 
         if self._total_providers > 1:
             result_dict["violation_reason"] = "multiple_saml_providers_present"
-            return ("violation", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
 
-        return ("compliant", result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build summary fields specific to the SAML provider check.
 
