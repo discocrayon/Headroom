@@ -25,8 +25,9 @@ variable "allowed_ami_owners" {
   description = "List of allowed AMI owner account IDs or aliases (e.g., 'amazon', 'aws-marketplace', '123456789012')"
 }
 
-variable "deny_imds_v1_ec2" {
-  type = bool
+variable "deny_ec2_imds_v1" {
+  type        = bool
+  description = "Deny EC2 instances that allow IMDSv1 (require IMDSv2)"
 }
 
 # EKS

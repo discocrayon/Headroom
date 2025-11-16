@@ -20,7 +20,7 @@ from headroom.aws.ec2 import (
 class TestDenyImdsV1Ec2:
     """Test DenyImdsV1Ec2 dataclass with various configurations."""
 
-    def test_deny_imds_v1_ec2_creation(self) -> None:
+    def test_deny_ec2_imds_v1_creation(self) -> None:
         """Test creating DenyImdsV1Ec2 with valid data."""
         result = DenyImdsV1Ec2(
             region="us-east-1",
@@ -34,7 +34,7 @@ class TestDenyImdsV1Ec2:
         assert result.imdsv1_allowed is True
         assert result.exemption_tag_present is False
 
-    def test_deny_imds_v1_ec2_with_exemption(self) -> None:
+    def test_deny_ec2_imds_v1_with_exemption(self) -> None:
         """Test DenyImdsV1Ec2 with exemption tag present."""
         result = DenyImdsV1Ec2(
             region="us-west-2",
@@ -48,7 +48,7 @@ class TestDenyImdsV1Ec2:
         assert result.imdsv1_allowed is True
         assert result.exemption_tag_present is True
 
-    def test_deny_imds_v1_ec2_imdsv2_enforced(self) -> None:
+    def test_deny_ec2_imds_v1_imdsv2_enforced(self) -> None:
         """Test DenyImdsV1Ec2 with IMDSv2 enforced."""
         result = DenyImdsV1Ec2(
             region="eu-west-1",
@@ -62,7 +62,7 @@ class TestDenyImdsV1Ec2:
         assert result.imdsv1_allowed is False
         assert result.exemption_tag_present is False
 
-    def test_deny_imds_v1_ec2_equality(self) -> None:
+    def test_deny_ec2_imds_v1_equality(self) -> None:
         """Test DenyImdsV1Ec2 equality comparison."""
         result1 = DenyImdsV1Ec2(
             region="us-east-1",
@@ -88,7 +88,7 @@ class TestDenyImdsV1Ec2:
         assert result1 == result2
         assert result1 != result3
 
-    def test_deny_imds_v1_ec2_repr(self) -> None:
+    def test_deny_ec2_imds_v1_repr(self) -> None:
         """Test DenyImdsV1Ec2 string representation."""
         result = DenyImdsV1Ec2(
             region="us-east-1",

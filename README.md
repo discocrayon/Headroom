@@ -102,7 +102,7 @@ $ python -m headroom --config sample_config.yaml
 SCP/RCP PLACEMENT RECOMMENDATIONS
 ================================================================================
 
-Check: deny_imds_v1_ec2
+Check: deny_ec2_imds_v1
 Recommended Level: ROOT
 Affected Accounts: 4
 Compliance: 100.0%
@@ -134,7 +134,7 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   # EC2
-  deny_imds_v1_ec2 = false
+  deny_ec2_imds_v1 = false
 
   # IAM
   deny_iam_user_creation = true
@@ -309,7 +309,7 @@ mypy headroom/ tests/
 ### Output
 The tool generates:
 - **JSON Results**:
-  - SCPs: `test_environment/headroom_results/scps/deny_imds_v1_ec2/{account_name}_{account_id}.json`
+  - SCPs: `test_environment/headroom_results/scps/deny_ec2_imds_v1/{account_name}_{account_id}.json`
   - SCPs: `test_environment/headroom_results/scps/deny_iam_user_creation/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/third_party_assumerole/{account_name}_{account_id}.json`
   - RCPs: `test_environment/headroom_results/rcps/deny_s3_third_party_access/{account_name}_{account_id}.json`
@@ -345,7 +345,7 @@ headroom/
 │   ├── scps/      # Service Control Policy checks
 │   │   ├── deny_eks_create_cluster_without_tag.py  # EKS paved road check
 │   │   ├── deny_iam_user_creation.py  # IAM user creation check
-│   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
+│   │   ├── deny_ec2_imds_v1.py  # EC2 IMDS v1 check
 │   │   └── deny_rds_unencrypted.py  # RDS encryption check
 │   └── rcps/      # Resource Control Policy checks
 │       ├── deny_third_party_assumerole.py  # Third-party IAM AssumeRole check
@@ -379,7 +379,7 @@ headroom/
 ### SCP Checks
 
 #### EC2 IMDS v1 Analysis
-- **Check Name**: `deny_imds_v1_ec2`
+- **Check Name**: `deny_ec2_imds_v1`
 - **Purpose**: Identifies EC2 instances with IMDS v1 enabled (security risk)
 - **Exemption Support**: `ExemptFromIMDSv2` tag (case-insensitive)
 - **Output**: Detailed violation/exemption/compliant instance reporting
