@@ -39,6 +39,25 @@ class DenyEc2AmiOwner:
     ami_name: Optional[str]
 
 
+@dataclass
+class DenyEc2PublicIp:
+    """
+    Data model for EC2 public IP analysis.
+
+    Attributes:
+        instance_id: EC2 instance identifier
+        region: AWS region where instance exists
+        public_ip_address: Public IP address if assigned (None otherwise)
+        has_public_ip: True if instance has a public IP address
+        instance_arn: Full ARN of the EC2 instance
+    """
+    instance_id: str
+    region: str
+    public_ip_address: Optional[str]
+    has_public_ip: bool
+    instance_arn: str
+
+
 def get_imds_v1_ec2_analysis(session: Session) -> List[DenyImdsV1Ec2]:
     """
     Analyze EC2 instances for IMDS v1 configuration across all regions.
@@ -206,4 +225,67 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
     logger.info(
         f"Analyzed {len(results)} EC2 instances across {len(regions)} regions"
     )
+    return results
+
+
+def get_ec2_public_ip_analysis(session: Session) -> List[DenyEc2PublicIp]:
+    """
+    Analyze EC2 instances for public IP address assignment across all regions.
+
+    Algorithm:
+    1. Get all available regions from EC2
+    2. For each region:
+       a. Analyze EC2 instances via describe_instances() (paginated)
+       b. Check for public IP address in network interfaces
+       c. Skip terminated instances
+       d. Create DenyEc2PublicIp results
+    3. Return all results across all regions
+
+    Args:
+        session: boto3.Session for the target account
+
+    Returns:
+        List of DenyEc2PublicIp analysis results
+
+    Raises:
+        RuntimeError: If AWS API calls fail
+    """
+    results = []
+    ec2_client: EC2Client = session.client('ec2')
+
+    regions_response = ec2_client.describe_regions()
+    regions = [region['RegionName'] for region in regions_response['Regions']]
+
+    for region in regions:
+        try:
+            regional_ec2: EC2Client = session.client('ec2', region_name=region)
+            paginator = regional_ec2.get_paginator('describe_instances')
+
+            for page in paginator.paginate():
+                for reservation in page['Reservations']:
+                    for instance in reservation['Instances']:
+                        if instance['State']['Name'] == 'terminated':
+                            continue
+
+                        instance_id = instance['InstanceId']
+                        account_id = instance.get('OwnerId', '')
+
+                        instance_arn = (
+                            f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
+                        )
+
+                        public_ip_address = instance.get('PublicIpAddress')
+                        has_public_ip = public_ip_address is not None
+
+                        results.append(DenyEc2PublicIp(
+                            instance_id=instance_id,
+                            region=region,
+                            public_ip_address=public_ip_address,
+                            has_public_ip=has_public_ip,
+                            instance_arn=instance_arn
+                        ))
+
+        except ClientError as e:
+            raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
+
     return results

@@ -113,6 +113,7 @@ module "scps_test_ou" {
   # EC2
   deny_ec2_ami_owner = false
   deny_ec2_imds_v1 = true
+  deny_ec2_public_ip = false
 
   # EKS
   deny_eks_create_cluster_without_tag = false

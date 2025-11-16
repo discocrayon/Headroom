@@ -30,6 +30,11 @@ variable "deny_ec2_imds_v1" {
   description = "Deny EC2 instances that allow IMDSv1 (require IMDSv2)"
 }
 
+variable "deny_ec2_public_ip" {
+  type        = bool
+  description = "Deny creation of EC2 instances with public IP addresses"
+}
+
 # EKS
 
 variable "deny_eks_create_cluster_without_tag" {
