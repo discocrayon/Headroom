@@ -37,8 +37,23 @@
 - **EC2 IMDS v1 Check:** Multi-region scanning with exemption tag support
 - **IAM User Creation Check:** Automatic allowlist generation from discovered users
 - **RDS Encryption Check:** Multi-region RDS instance and Aurora cluster encryption analysis
+- **SAML Provider Guardrail:** Blocks custom IAM SAML providers so only a single AWS SSO-managed provider exists per account
 - Modular check framework with self-registration pattern
 - JSON result generation with detailed compliance metrics
+
+#### Check: `deny_saml_provider_not_aws_sso`
+
+- **Objective:** Eliminate custom IAM SAML providers so the companion SCP can unconditionally deny `iam:CreateSAMLProvider`
+- **Allowed State:** Zero SAML providers or exactly one AWS SSO-managed provider whose ARN matches `arn:aws:iam::<ACCOUNT_ID>:saml-provider/AWSSSO_<INSTANCE_ID>_<REGION>`
+- **Violation States:**
+  - More than one SAML provider exists
+  - Any provider ARN does not begin with the AWS SSO prefix described above
+- **AWS APIs:** `iam:ListSAMLProviders` (read-only; covered by AWS managed `ViewOnlyAccess`)
+- **Analysis Output:** Per-provider findings with `arn`, `name`, `create_date`, `valid_until`, and `violation_reason` derived from the rules above
+- **Summary Metrics:** `total_saml_providers`, `awssso_provider_count`, `non_awssso_provider_count`, `violating_provider_arns`, `allowed_provider_arn`
+- **Terraform Impact:** Generates an SCP statement that denies `iam:CreateSAMLProvider` (no conditions) with explanatory comments; goal placement is organization root because enforcement is universal
+- **Why deny everyone?** `AWSServiceRoleForSSO` creates the official provider when accounts join IAM Identity Center and is not affected by SCPs, so a blanket deny only affects custom provider creation attempts
+- **Testing Requirements:** Unit tests for AWS enumeration helper, check categorization covering compliant, excess AWSSSO, and non-AWSSSO cases; generator tests confirming Terraform statement, and integration test ensuring placement logic handles new check
 
 ### 4. RCP Compliance Analysis
 - **Third-Party AssumeRole Check:** IAM trust policy analysis across organization
@@ -2024,6 +2039,37 @@ def analyze_iam_roles_trust_policies(
     Pagination: Handles accounts with many roles
     Exception Handling: Specific exceptions only (ClientError, json.JSONDecodeError)
     Fail-Loud: All exceptions logged with context and re-raised
+    """
+```
+
+### SAML Provider Integration
+
+```python
+# aws/iam/saml_providers.py
+
+@dataclass
+class SamlProviderAnalysis:
+    arn: str
+    name: str
+    create_date: datetime.datetime | None
+    valid_until: datetime.datetime | None
+
+def get_saml_providers_analysis(
+    session: boto3.Session,
+) -> List[SamlProviderAnalysis]:
+    """
+    Enumerate IAM SAML providers.
+
+    Algorithm:
+    1. Create IAM client
+    2. Call list_saml_providers()
+    3. For each entry:
+       - Record ARN
+       - Derive provider name from ARN suffix
+       - Capture CreateDate and ValidUntil if present
+    4. Return List[SamlProviderAnalysis]
+
+    Pagination: API does not paginate (single response)
     """
 ```
 
