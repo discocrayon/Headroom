@@ -161,9 +161,10 @@ def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
     """
     if isinstance(action, str):
         return {action}
-    elif isinstance(action, list):
+    if isinstance(action, list):
         return set(action)
-    return set()
+    # Fallback for unexpected types (e.g., dict, None)
+    return set()  # type: ignore[unreachable]
 
 
 def analyze_secrets_manager_policies(
@@ -304,7 +305,10 @@ def _analyze_secret_policy(
     has_non_account_principals = False
     actions_by_account: Dict[str, Set[str]] = {}
 
-    for statement in policy.get("Statement", []):
+    statements = policy.get("Statement", [])
+    if not isinstance(statements, list):
+        statements = []
+    for statement in statements:
         if statement.get("Effect") != "Allow":
             continue
 

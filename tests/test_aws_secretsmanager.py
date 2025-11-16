@@ -3,14 +3,12 @@ Tests for headroom.aws.secretsmanager module.
 """
 
 import json
-from typing import Dict, List, Set
 from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
 
 from headroom.aws.secretsmanager import (
-    SecretsPolicyAnalysis,
     UnsupportedPrincipalTypeError,
     UnknownPrincipalTypeError,
     _analyze_secret_policy,
@@ -50,7 +48,7 @@ class TestExtractAccountIdsFromPrincipal:
         principal = {
             "AWS": "arn:aws:iam::333333333333:root"
         }
-        result = _extract_account_ids_from_principal(principal)
+        result = _extract_account_ids_from_principal(principal)  # type: ignore[arg-type]
         assert result == {"333333333333"}
 
     def test_extract_from_dict_aws_list(self) -> None:
@@ -61,7 +59,7 @@ class TestExtractAccountIdsFromPrincipal:
                 "555555555555"
             ]
         }
-        result = _extract_account_ids_from_principal(principal)
+        result = _extract_account_ids_from_principal(principal)  # type: ignore[arg-type]
         assert result == {"444444444444", "555555555555"}
 
     def test_wildcard_returns_empty(self) -> None:
@@ -74,7 +72,7 @@ class TestExtractAccountIdsFromPrincipal:
         """Test that unknown principal type raises exception."""
         principal = {"UnknownType": "value"}
         with pytest.raises(UnknownPrincipalTypeError):
-            _extract_account_ids_from_principal(principal)
+            _extract_account_ids_from_principal(principal)  # type: ignore[arg-type]
 
 
 class TestHasWildcardPrincipal:
@@ -111,17 +109,17 @@ class TestHasNonAccountPrincipals:
     def test_federated_principal(self) -> None:
         """Test detection of Federated principal."""
         principal = {"Federated": "arn:aws:iam::123456789012:saml-provider/ExampleProvider"}
-        assert _has_non_account_principals(principal) is True
+        assert _has_non_account_principals(principal) is True  # type: ignore[arg-type]
 
     def test_canonical_user_principal(self) -> None:
         """Test detection of CanonicalUser principal."""
         principal = {"CanonicalUser": "example-canonical-user-id"}
-        assert _has_non_account_principals(principal) is True
+        assert _has_non_account_principals(principal) is True  # type: ignore[arg-type]
 
     def test_aws_principal_only(self) -> None:
         """Test AWS principal without non-account types."""
         principal = {"AWS": "arn:aws:iam::123456789012:root"}
-        assert _has_non_account_principals(principal) is False
+        assert _has_non_account_principals(principal) is False  # type: ignore[arg-type]
 
     def test_non_dict_principal(self) -> None:
         """Test non-dict principal."""
@@ -147,7 +145,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "test-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:test-secret",
-            policy,
+            policy,  # type: ignore[arg-type]
             org_account_ids
         )
 
@@ -173,7 +171,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "public-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:public-secret",
-            policy,
+            policy,  # type: ignore[arg-type]
             org_account_ids
         )
 
@@ -197,7 +195,7 @@ class TestAnalyzeSecretPolicy:
             _analyze_secret_policy(
                 "federated-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:federated-secret",
-                policy,
+                policy,  # type: ignore[arg-type]
                 org_account_ids
             )
 
@@ -217,7 +215,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "org-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:org-secret",
-            policy,
+            policy,  # type: ignore[arg-type]
             org_account_ids
         )
 
@@ -239,7 +237,93 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "deny-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:deny-secret",
-            policy,
+            policy,  # type: ignore[arg-type]
+            org_account_ids
+        )
+
+        assert result is None
+
+    def test_action_as_list(self) -> None:
+        """Test secret with action as list."""
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "multi-action-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:multi-action-secret",
+            policy,  # type: ignore[arg-type]
+            org_account_ids
+        )
+
+        assert result is not None
+        assert "999999999999" in result.actions_by_account
+        assert "secretsmanager:GetSecretValue" in result.actions_by_account["999999999999"]
+        assert "secretsmanager:DescribeSecret" in result.actions_by_account["999999999999"]
+
+    def test_statement_without_principal(self) -> None:
+        """Test statement without Principal is skipped."""
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": "secretsmanager:GetSecretValue"
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "no-principal-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:no-principal-secret",
+            policy,  # type: ignore[arg-type]
+            org_account_ids
+        )
+
+        assert result is None
+
+    def test_action_as_dict_normalized_to_empty(self) -> None:
+        """Test that action as dict gets normalized to empty set."""
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Action": {"NotAction": "secretsmanager:*"}
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "dict-action-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:dict-action-secret",
+            policy,  # type: ignore[arg-type]
+            org_account_ids
+        )
+
+        assert result is not None
+        assert result.third_party_account_ids == {"999999999999"}
+        assert result.actions_by_account["999999999999"] == set()
+
+    def test_statement_not_a_list(self) -> None:
+        """Test that policy with Statement as non-list is handled."""
+        policy = {
+            "Statement": "invalid"
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "invalid-statement-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:invalid-statement-secret",
+            policy,  # type: ignore[arg-type]
             org_account_ids
         )
 
@@ -360,7 +444,7 @@ class TestAnalyzeSecretsManagerPolicies:
         mock_sm_client.get_paginator.return_value = paginator
 
         error_response = {"Error": {"Code": "ResourceNotFoundException"}}
-        mock_sm_client.get_resource_policy.side_effect = ClientError(error_response, "GetResourcePolicy")
+        mock_sm_client.get_resource_policy.side_effect = ClientError(error_response, "GetResourcePolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"111111111111"}
         results = analyze_secrets_manager_policies(mock_session, org_account_ids)
@@ -396,7 +480,7 @@ class TestAnalyzeSecretsManagerPolicies:
         mock_sm_client.get_paginator.return_value = paginator
 
         error_response = {"Error": {"Code": "AccessDenied"}}
-        mock_sm_client.get_resource_policy.side_effect = ClientError(error_response, "GetResourcePolicy")
+        mock_sm_client.get_resource_policy.side_effect = ClientError(error_response, "GetResourcePolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"111111111111"}
 

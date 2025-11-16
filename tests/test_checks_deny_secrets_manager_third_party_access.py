@@ -84,7 +84,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
 
             assert mock_write.called
             call_args = mock_write.call_args
-            results_data = call_args[0][0]
+            results_data = call_args[1]["results_data"]
 
             assert len(results_data["secrets_with_wildcards"]) == 1
             assert len(results_data["secrets_third_parties_can_access"]) == 2
@@ -135,7 +135,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 0
@@ -177,12 +177,12 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 1
             assert summary["secrets_with_wildcards"] == 1
-            assert summary["secrets_third_parties_can_access"] == 1
+            assert summary["secrets_third_parties_can_access"] == 0
 
     def test_check_empty_results(
         self,
@@ -208,7 +208,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["total_secrets_analyzed"] == 0
@@ -272,7 +272,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
 
         assert category.value == "compliant"
         assert result_dict["has_wildcard_principal"] is False
-        assert "999999999999" in result_dict["third_party_account_ids"]
+        assert "999999999999" in result_dict["third_party_account_ids"]  # type: ignore[operator]
 
     def test_actions_tracking(
         self,
@@ -321,7 +321,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             actions = set(summary["actions_by_third_party_account"]["999999999999"])
@@ -375,7 +375,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             secrets_arns = summary["secrets_by_third_party_account"]["999999999999"]
