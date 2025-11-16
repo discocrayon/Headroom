@@ -1,5 +1,5 @@
 annotated-types==0.7.0
-boto3-stubs[ec2,ecr,eks,iam,organizations,rds,s3,sts]==1.35.84
+boto3-stubs[ec2,ecr,eks,iam,organizations,rds,s3,secretsmanager,sts]==1.35.84
 cachetools==6.1.0
 cfgv==3.4.0
 chardet==5.2.0

@@ -9,13 +9,14 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Set
+from typing import Dict, List, Optional, Set, Union
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_secretsmanager.client import SecretsManagerClient
 
 from ..constants import BASE_PRINCIPAL_TYPES
+from ..types import JsonDict
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,9 @@ class SecretsPolicyAnalysis:
     actions_by_account: Dict[str, Set[str]]
 
 
-def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
+def _extract_account_ids_from_principal(
+    principal: Union[str, List[str], Dict[str, Union[str, List[str]]]]
+) -> Set[str]:
     """
     Extract AWS account IDs from a Secrets Manager policy principal.
 
@@ -100,7 +103,9 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     return account_ids
 
 
-def _has_wildcard_principal(principal: Any) -> bool:
+def _has_wildcard_principal(
+    principal: Union[str, List[str], Dict[str, Union[str, List[str]]]]
+) -> bool:
     """
     Check if principal contains a wildcard.
 
@@ -124,7 +129,9 @@ def _has_wildcard_principal(principal: Any) -> bool:
     return False
 
 
-def _has_non_account_principals(principal: Any) -> bool:
+def _has_non_account_principals(
+    principal: Union[str, List[str], Dict[str, Union[str, List[str]]]]
+) -> bool:
     """
     Check if principal contains Federated or CanonicalUser types.
 
@@ -142,7 +149,7 @@ def _has_non_account_principals(principal: Any) -> bool:
     return False
 
 
-def _normalize_actions(action: Any) -> Set[str]:
+def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
     """
     Normalize action field to a set of action strings.
 
@@ -274,9 +281,9 @@ def _analyze_secrets_in_region(
 def _analyze_secret_policy(
     secret_name: str,
     secret_arn: str,
-    policy: Dict[str, Any],
+    policy: JsonDict,
     org_account_ids: Set[str]
-) -> SecretsPolicyAnalysis:
+) -> Optional[SecretsPolicyAnalysis]:
     """
     Analyze a single secret's resource policy.
 
