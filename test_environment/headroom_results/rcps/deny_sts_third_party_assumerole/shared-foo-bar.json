@@ -1,7 +1,7 @@
 {
   "summary": {
     "account_name": "shared-foo-bar",
-    "check": "third_party_assumerole",
+    "check": "deny_sts_third_party_assumerole",
     "total_roles_analyzed": 11,
     "roles_third_parties_can_access": 10,
     "roles_with_wildcards": 1,

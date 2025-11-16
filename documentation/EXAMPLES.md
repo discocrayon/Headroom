@@ -18,7 +18,7 @@ Compliance: 100.0%
 Reasoning: All accounts in organization have zero violations - safe to deploy at root level
 ----------------------------------------
 
-Check: third_party_assumerole
+Check: deny_sts_third_party_assumerole
 Recommended Level: OU
 Affected Target: Acme Acquisition OU (ou-xxxx-xxxxxxxx)
 Affected Accounts: 2
@@ -76,9 +76,9 @@ module "rcps_acme_acquisition_ou" {
   source = "../modules/rcps"
   target_id = local.top_level_acme_acquisition_ou_id
 
-  # third_party_assumerole
+  # deny_sts_third_party_assumerole
   enforce_assume_role_org_identities = true
-  third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole_account_ids_allowlist = [
     "111111111111",
     "222222222222",
   ]
@@ -138,13 +138,13 @@ locals {
 
 ### RCP Check Result
 
-**File**: `test_environment/headroom_results/rcps/third_party_assumerole/development_account_333333333333.json`
+**File**: `test_environment/headroom_results/rcps/deny_sts_third_party_assumerole/development_account_333333333333.json`
 
 ```json
 {
   "account_id": "333333333333",
   "account_name": "development_account",
-  "check_name": "third_party_assumerole",
+  "check_name": "deny_sts_third_party_assumerole",
   "third_party_accounts": [
     "444444444444",
     "555555555555"
@@ -176,7 +176,7 @@ test_environment/
 │   │   ├── deny_eks_create_cluster_without_tag/
 │   │   └── deny_rds_unencrypted/
 │   └── rcps/
-│       ├── third_party_assumerole/
+│       ├── deny_sts_third_party_assumerole/
 │       ├── deny_s3_third_party_access/
 │       ├── deny_aoss_third_party_access/
 │       └── deny_ecr_third_party_access/

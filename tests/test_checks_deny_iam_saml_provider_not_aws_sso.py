@@ -1,4 +1,4 @@
-"""Tests for headroom.checks.scps.deny_saml_provider_not_aws_sso module."""
+"""Tests for headroom.checks.scps.deny_iam_saml_provider_not_aws_sso module."""
 
 import json
 from datetime import datetime, timezone
@@ -8,18 +8,18 @@ from unittest.mock import MagicMock, patch
 import boto3
 
 from headroom.aws.iam import SamlProviderAnalysis
-from headroom.checks.scps.deny_saml_provider_not_aws_sso import (
+from headroom.checks.scps.deny_iam_saml_provider_not_aws_sso import (
     DenySamlProviderNotAwsSsoCheck,
 )
 
 
 class TestCheckDenySamlProviderNotAwsSso:
-    """Test deny_saml_provider_not_aws_sso check."""
+    """Test deny_iam_saml_provider_not_aws_sso check."""
 
     def test_single_awssso_provider_compliant(self, tmp_path: Path) -> None:
         """Test that a single AWS SSO provider is compliant."""
         check = DenySamlProviderNotAwsSsoCheck(
-            check_name="deny_saml_provider_not_aws_sso",
+            check_name="deny_iam_saml_provider_not_aws_sso",
             account_name="test-account",
             account_id="111111111111",
             results_dir=str(tmp_path),
@@ -34,12 +34,12 @@ class TestCheckDenySamlProviderNotAwsSso:
         )
 
         with patch(
-            "headroom.checks.scps.deny_saml_provider_not_aws_sso.get_saml_providers_analysis"
+            "headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.get_saml_providers_analysis"
         ) as mock_get_providers:
             mock_get_providers.return_value = [awssso_provider]
             check.execute(mock_session)
 
-        results_file = tmp_path / "scps" / "deny_saml_provider_not_aws_sso" / "test-account_111111111111.json"
+        results_file = tmp_path / "scps" / "deny_iam_saml_provider_not_aws_sso" / "test-account_111111111111.json"
         assert results_file.exists()
 
         with open(results_file) as file_handle:
@@ -67,7 +67,7 @@ class TestCheckDenySamlProviderNotAwsSso:
     def test_multiple_providers_violation(self, tmp_path: Path) -> None:
         """Test that multiple providers create violations."""
         check = DenySamlProviderNotAwsSsoCheck(
-            check_name="deny_saml_provider_not_aws_sso",
+            check_name="deny_iam_saml_provider_not_aws_sso",
             account_name="test-account",
             account_id="111111111111",
             results_dir=str(tmp_path),
@@ -88,12 +88,12 @@ class TestCheckDenySamlProviderNotAwsSso:
         )
 
         with patch(
-            "headroom.checks.scps.deny_saml_provider_not_aws_sso.get_saml_providers_analysis"
+            "headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.get_saml_providers_analysis"
         ) as mock_get_providers:
             mock_get_providers.return_value = [awssso_provider, custom_provider]
             check.execute(mock_session)
 
-        results_file = tmp_path / "scps" / "deny_saml_provider_not_aws_sso" / "test-account_111111111111.json"
+        results_file = tmp_path / "scps" / "deny_iam_saml_provider_not_aws_sso" / "test-account_111111111111.json"
         assert results_file.exists()
 
         with open(results_file) as file_handle:
@@ -121,7 +121,7 @@ class TestCheckDenySamlProviderNotAwsSso:
     def test_no_providers_summary(self, tmp_path: Path) -> None:
         """Test that summary is produced even when no providers exist."""
         check = DenySamlProviderNotAwsSsoCheck(
-            check_name="deny_saml_provider_not_aws_sso",
+            check_name="deny_iam_saml_provider_not_aws_sso",
             account_name="test-account",
             account_id="111111111111",
             results_dir=str(tmp_path),
@@ -130,12 +130,12 @@ class TestCheckDenySamlProviderNotAwsSso:
         mock_session = MagicMock(spec=boto3.Session)
 
         with patch(
-            "headroom.checks.scps.deny_saml_provider_not_aws_sso.get_saml_providers_analysis"
+            "headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.get_saml_providers_analysis"
         ) as mock_get_providers:
             mock_get_providers.return_value = []
             check.execute(mock_session)
 
-        results_file = tmp_path / "scps" / "deny_saml_provider_not_aws_sso" / "test-account_111111111111.json"
+        results_file = tmp_path / "scps" / "deny_iam_saml_provider_not_aws_sso" / "test-account_111111111111.json"
         assert results_file.exists()
 
         with open(results_file) as file_handle:

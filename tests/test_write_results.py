@@ -41,14 +41,14 @@ class TestResultFilePathResolver:
     @patch('headroom.write_results.get_check_type_map')
     def test_get_check_directory_for_rcp(self, mock_get_check_type_map: MagicMock) -> None:
         """Test getting directory for RCP check."""
-        mock_get_check_type_map.return_value = {"deny_third_party_assumerole": "rcps"}
+        mock_get_check_type_map.return_value = {"deny_sts_third_party_assumerole": "rcps"}
         results_resolver = ResultFilePathResolver(
-            check_name="deny_third_party_assumerole",
+            check_name="deny_sts_third_party_assumerole",
             results_base_dir="/tmp/results",
             account_name="test-account",
             account_id="123456789012"
         )
-        assert results_resolver.get_check_directory() == "/tmp/results/rcps/deny_third_party_assumerole"
+        assert results_resolver.get_check_directory() == "/tmp/results/rcps/deny_sts_third_party_assumerole"
 
     @patch('headroom.write_results.get_check_type_map')
     def test_get_check_directory_unknown_check_raises(self, mock_get_check_type_map: MagicMock) -> None:
@@ -688,9 +688,9 @@ class TestRedactAccountIdsFromArns:
     @patch('headroom.write_results.get_check_type_map')
     def test_write_check_results_redacts_arns_when_exclude_account_ids(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that ARNs are redacted when exclude_account_ids=True."""
-        mock_get_check_type_map.return_value = {"third_party_assumerole": "rcps"}
+        mock_get_check_type_map.return_value = {"deny_sts_third_party_assumerole": "rcps"}
         with tempfile.TemporaryDirectory() as temp_dir:
-            check_name = "third_party_assumerole"
+            check_name = "deny_sts_third_party_assumerole"
             account_name = "test-account"
             account_id = "111111111111"
             results_data: Dict[str, Any] = {
@@ -728,9 +728,9 @@ class TestRedactAccountIdsFromArns:
     @patch('headroom.write_results.get_check_type_map')
     def test_write_check_results_preserves_arns_when_exclude_account_ids_false(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that ARNs are NOT redacted when exclude_account_ids=False."""
-        mock_get_check_type_map.return_value = {"third_party_assumerole": "rcps"}
+        mock_get_check_type_map.return_value = {"deny_sts_third_party_assumerole": "rcps"}
         with tempfile.TemporaryDirectory() as temp_dir:
-            check_name = "third_party_assumerole"
+            check_name = "deny_sts_third_party_assumerole"
             account_name = "test-account"
             account_id = "111111111111"
             results_data: Dict[str, Any] = {

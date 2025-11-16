@@ -18,11 +18,11 @@ class TestGetCheckClass:
         assert check_class.CHECK_NAME == "deny_ec2_imds_v1"
         assert check_class.CHECK_TYPE == "scps"
 
-    def test_get_check_class_third_party_assumerole(self) -> None:
+    def test_get_check_class_deny_sts_third_party_assumerole(self) -> None:
         """Test retrieving ThirdPartyAssumeRoleCheck class."""
-        check_class = get_check_class("third_party_assumerole")
+        check_class = get_check_class("deny_sts_third_party_assumerole")
         assert check_class is not None
-        assert check_class.CHECK_NAME == "third_party_assumerole"
+        assert check_class.CHECK_NAME == "deny_sts_third_party_assumerole"
         assert check_class.CHECK_TYPE == "rcps"
 
     def test_get_check_class_unknown_raises_value_error(self) -> None:
@@ -45,9 +45,9 @@ class TestGetAllCheckClasses:
         assert "deny_eks_create_cluster_without_tag" in check_names
         assert "deny_iam_user_creation" in check_names
         assert "deny_rds_unencrypted" in check_names
-        assert "deny_saml_provider_not_aws_sso" in check_names
+        assert "deny_iam_saml_provider_not_aws_sso" in check_names
         assert "deny_ecr_third_party_access" in check_names
-        assert "third_party_assumerole" in check_names
+        assert "deny_sts_third_party_assumerole" in check_names
         assert "deny_s3_third_party_access" in check_names
 
     def test_get_all_check_classes_filter_by_scps(self) -> None:
@@ -61,7 +61,7 @@ class TestGetAllCheckClasses:
         assert "deny_eks_create_cluster_without_tag" in check_names
         assert "deny_iam_user_creation" in check_names
         assert "deny_rds_unencrypted" in check_names
-        assert "deny_saml_provider_not_aws_sso" in check_names
+        assert "deny_iam_saml_provider_not_aws_sso" in check_names
         for check in scp_checks:
             assert check.CHECK_TYPE == "scps"
 
@@ -70,7 +70,7 @@ class TestGetAllCheckClasses:
         rcp_checks = get_all_check_classes("rcps")
         assert len(rcp_checks) == 3
         check_names = {cls.CHECK_NAME for cls in rcp_checks}
-        assert "third_party_assumerole" in check_names
+        assert "deny_sts_third_party_assumerole" in check_names
         assert "deny_s3_third_party_access" in check_names
         assert "deny_ecr_third_party_access" in check_names
         for check in rcp_checks:
@@ -90,8 +90,8 @@ class TestGetCheckTypeMap:
         assert type_map["deny_eks_create_cluster_without_tag"] == "scps"
         assert type_map["deny_iam_user_creation"] == "scps"
         assert type_map["deny_rds_unencrypted"] == "scps"
-        assert type_map["deny_saml_provider_not_aws_sso"] == "scps"
+        assert type_map["deny_iam_saml_provider_not_aws_sso"] == "scps"
         assert type_map["deny_ecr_third_party_access"] == "rcps"
-        assert type_map["third_party_assumerole"] == "rcps"
+        assert type_map["deny_sts_third_party_assumerole"] == "rcps"
         assert type_map["deny_s3_third_party_access"] == "rcps"
         assert len(type_map) == 10
