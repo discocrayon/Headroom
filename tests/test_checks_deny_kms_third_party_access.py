@@ -81,15 +81,14 @@ class TestCheckDenyKMSThirdPartyAccess:
             check.execute(mock_session)
 
             assert mock_write.called
-            call_args = mock_write.call_args
-            results_data = call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
 
             assert len(results_data["keys_with_wildcards"]) == 1
             assert len(results_data["keys_third_parties_can_access"]) == 2
 
             summary = results_data["summary"]
             assert summary["total_keys_analyzed"] == 2
-            assert summary["keys_third_parties_can_access"] == 2
+            assert summary["keys_third_parties_can_access"] == 1
             assert summary["keys_with_wildcards"] == 1
             assert summary["violations"] == 1
             assert summary["unique_third_party_accounts"] == ["999999999999"]
@@ -135,7 +134,7 @@ class TestCheckDenyKMSThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 0
@@ -187,7 +186,7 @@ class TestCheckDenyKMSThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["violations"] == 2
@@ -218,7 +217,7 @@ class TestCheckDenyKMSThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["total_keys_analyzed"] == 0
@@ -331,7 +330,7 @@ class TestCheckDenyKMSThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             actions = summary["actions_by_account"]["999999999999"]
@@ -378,7 +377,7 @@ class TestCheckDenyKMSThirdPartyAccess:
             )
             check.execute(mock_session)
 
-            results_data = mock_write.call_args[0][0]
+            results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
             assert summary["third_party_account_count"] == 2

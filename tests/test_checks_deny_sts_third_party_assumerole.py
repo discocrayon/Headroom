@@ -1,19 +1,19 @@
 """
-Tests for headroom.checks.deny_third_party_assumerole module.
+Tests for headroom.checks.deny_sts_third_party_assumerole module.
 
-Tests for deny_third_party_assumerole function and its integration with IAM analysis.
+Tests for deny_sts_third_party_assumerole function and its integration with IAM analysis.
 """
 
 from unittest.mock import MagicMock, patch
 from typing import List, Set
-from headroom.checks.rcps.deny_third_party_assumerole import ThirdPartyAssumeRoleCheck
-from headroom.constants import THIRD_PARTY_ASSUMEROLE
+from headroom.checks.rcps.deny_sts_third_party_assumerole import ThirdPartyAssumeRoleCheck
+from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
 from headroom.aws.iam import TrustPolicyAnalysis
 from headroom.config import DEFAULT_RESULTS_DIR
 
 
 class TestCheckThirdPartyAssumeRole:
-    """Test check_third_party_assumerole function with various scenarios."""
+    """Test check_deny_sts_third_party_assumerole function with various scenarios."""
 
     def test_roles_with_third_party_accounts(self) -> None:
         """Test check with roles having third-party accounts."""
@@ -38,14 +38,14 @@ class TestCheckThirdPartyAssumeRole:
         ]
 
         with (
-            patch("headroom.checks.rcps.deny_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
             patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
             check = ThirdPartyAssumeRoleCheck(
-                check_name=THIRD_PARTY_ASSUMEROLE,
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
                 account_name=account_name,
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
@@ -57,7 +57,7 @@ class TestCheckThirdPartyAssumeRole:
             mock_write.assert_called_once()
 
             write_call_args = mock_write.call_args
-            assert write_call_args[1]["check_name"] == "third_party_assumerole"
+            assert write_call_args[1]["check_name"] == "deny_sts_third_party_assumerole"
             assert write_call_args[1]["account_name"] == account_name
             assert write_call_args[1]["account_id"] == account_id
 
@@ -66,7 +66,7 @@ class TestCheckThirdPartyAssumeRole:
 
             assert summary["account_name"] == "test-account"
             assert summary["account_id"] == "111111111111"
-            assert summary["check"] == "third_party_assumerole"
+            assert summary["check"] == "deny_sts_third_party_assumerole"
             assert summary["total_roles_analyzed"] == 2
             assert summary["roles_third_parties_can_access"] == 2
             assert summary["roles_with_wildcards"] == 0
@@ -96,14 +96,14 @@ class TestCheckThirdPartyAssumeRole:
         ]
 
         with (
-            patch("headroom.checks.rcps.deny_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
             patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
             check = ThirdPartyAssumeRoleCheck(
-                check_name=THIRD_PARTY_ASSUMEROLE,
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
                 account_name=account_name,
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
@@ -142,14 +142,14 @@ class TestCheckThirdPartyAssumeRole:
         ]
 
         with (
-            patch("headroom.checks.rcps.deny_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
             patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
             check = ThirdPartyAssumeRoleCheck(
-                check_name=THIRD_PARTY_ASSUMEROLE,
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
                 account_name=account_name,
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
@@ -175,14 +175,14 @@ class TestCheckThirdPartyAssumeRole:
         trust_policy_results: List[TrustPolicyAnalysis] = []
 
         with (
-            patch("headroom.checks.rcps.deny_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
             patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
             check = ThirdPartyAssumeRoleCheck(
-                check_name=THIRD_PARTY_ASSUMEROLE,
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
                 account_name=account_name,
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
@@ -219,14 +219,14 @@ class TestCheckThirdPartyAssumeRole:
         ]
 
         with (
-            patch("headroom.checks.rcps.deny_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
             patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
             check = ThirdPartyAssumeRoleCheck(
-                check_name=THIRD_PARTY_ASSUMEROLE,
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
                 account_name=account_name,
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
@@ -255,14 +255,14 @@ class TestCheckThirdPartyAssumeRole:
         ]
 
         with (
-            patch("headroom.checks.rcps.deny_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
             patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
             mock_analyze.return_value = trust_policy_results
 
             check = ThirdPartyAssumeRoleCheck(
-                check_name=THIRD_PARTY_ASSUMEROLE,
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
                 account_name=account_name,
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
