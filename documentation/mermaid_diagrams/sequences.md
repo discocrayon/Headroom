@@ -56,7 +56,7 @@ sequenceDiagram
   participant Registry as headroom.checks.registry
   participant BaseCheck as headroom.checks.base.BaseCheck
   participant SCPCheck as SCP Check (e.g., deny_ec2_imds_v1)
-  participant RCPCheck as RCP Check (e.g., third_party_assumerole)
+  participant RCPCheck as RCP Check (e.g., deny_sts_third_party_assumerole)
   participant WriteResults as headroom.write_results
   participant FS as filesystem
 
@@ -137,7 +137,7 @@ sequenceDiagram
   participant Org as headroom.aws.organization
 
   Note over GenRCP: Parse RCP results from disk
-  GenRCP->>FS: scan results_dir/rcps/third_party_assumerole/*.json
+  GenRCP->>FS: scan results_dir/rcps/deny_sts_third_party_assumerole/*.json
   FS-->>GenRCP: raw JSON files
   GenRCP->>GenRCP: parse_rcp_result_files(results_dir, org_hierarchy)
   GenRCP->>GenRCP: _parse_single_rcp_result_file()

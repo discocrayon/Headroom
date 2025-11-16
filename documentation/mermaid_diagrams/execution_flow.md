@@ -30,7 +30,7 @@ sequenceDiagram
     Note over Tool,Prod1: Run RCP Checks (via registry)
     Tool->>Prod1: list_roles(), get_role()
     Prod1-->>Tool: IAM Role Details & Trust Policies
-    Tool->>Tool: Check Third-Party AssumeRole
+    Tool->>Tool: Check STS Third-Party AssumeRole
     Tool->>Tool: Write RCP Results to JSON
 
     Tool->>ProdN: AssumeRole(Headroom)

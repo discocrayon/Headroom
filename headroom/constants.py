@@ -11,6 +11,11 @@ from typing import Dict
 # Reference: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
 BASE_PRINCIPAL_TYPES = frozenset({"AWS", "Service", "Federated"})
 
+# AWS ARN Regex Pattern
+# Pattern to extract 12-digit account ID from AWS ARN
+# Format: arn:aws:service:region:account-id:resource
+AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+
 # Check name constants
 
 # SCP Checks (alphabetical by service)
@@ -22,20 +27,26 @@ DENY_EC2_PUBLIC_IP = "deny_ec2_public_ip"
 DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG = "deny_eks_create_cluster_without_tag"
 # IAM
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
+# IAM SAML
+DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO = "deny_iam_saml_provider_not_aws_sso"
 # RDS
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 
 # RCP Checks (alphabetical by service)
+# AOSS
+DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 # ECR
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
-# IAM
-THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
-# OpenSearch Serverless
-DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
+# KMS
+DENY_KMS_THIRD_PARTY_ACCESS = "deny_kms_third_party_access"
 # S3
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
 # Secrets Manager
 DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS = "deny_secrets_manager_third_party_access"
+# SQS
+DENY_SQS_THIRD_PARTY_ACCESS = "deny_sqs_third_party_access"
+# STS
+DENY_STS_THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 
 # Terraform file generation constants
 ORG_INFO_FILENAME = "grab_org_info.tf"
