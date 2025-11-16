@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, List, TypeVar
 
-import boto3
+from boto3.session import Session
 
 from ..enums import CheckCategory
 from ..types import JsonDict
@@ -77,7 +77,7 @@ class BaseCheck(ABC, Generic[T]):
         self.exclude_account_ids = exclude_account_ids
 
     @abstractmethod
-    def analyze(self, session: boto3.Session) -> List[T]:
+    def analyze(self, session: Session) -> List[T]:
         """
         Perform AWS API analysis.
 
@@ -131,7 +131,7 @@ class BaseCheck(ABC, Generic[T]):
             "compliant_instances": check_result.compliant,
         }
 
-    def execute(self, session: boto3.Session) -> None:
+    def execute(self, session: Session) -> None:
         """
         Execute the check (template method).
 

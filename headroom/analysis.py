@@ -1,8 +1,9 @@
 import logging
-import boto3
-from botocore.exceptions import ClientError
 from typing import Dict, List, Set
 from dataclasses import dataclass
+
+from boto3.session import Session
+from botocore.exceptions import ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 from mypy_boto3_organizations.type_defs import AccountTypeDef
 
@@ -25,17 +26,17 @@ class AccountInfo:
     owner: str
 
 
-def get_security_analysis_session(config: HeadroomConfig) -> boto3.Session:
+def get_security_analysis_session(config: HeadroomConfig) -> Session:
     """Assume OrganizationAccountAccessRole in the security analysis account and return a boto3 session."""
     account_id = config.security_analysis_account_id
     if not account_id:
         logger.debug("No security_analysis_account_id provided, assuming already in security analysis account")
-        return boto3.Session()
+        return Session()
     role_arn = f"arn:aws:iam::{account_id}:role/OrganizationAccountAccessRole"
     return assume_role(role_arn, "HeadroomSecurityAnalysisSession")
 
 
-def get_management_account_session(config: HeadroomConfig, security_session: boto3.Session) -> boto3.Session:
+def get_management_account_session(config: HeadroomConfig, security_session: Session) -> Session:
     """
     Assume OrgAndAccountInfoReader role in the management account and return a boto3 session.
 
@@ -145,7 +146,7 @@ def _build_account_info_from_account_dict(
     )
 
 
-def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -> List[AccountInfo]:
+def get_subaccount_information(config: HeadroomConfig, session: Session) -> List[AccountInfo]:
     """
     Get subaccount information from the management account.
 
@@ -181,7 +182,7 @@ def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -
     return accounts
 
 
-def get_all_organization_account_ids(config: HeadroomConfig, session: boto3.Session) -> Set[str]:
+def get_all_organization_account_ids(config: HeadroomConfig, session: Session) -> Set[str]:
     """
     Get all account IDs in the organization (including management account).
 
@@ -221,7 +222,7 @@ def get_relevant_subaccounts(account_infos: List[AccountInfo]) -> List[AccountIn
     return account_infos
 
 
-def get_headroom_session(config: HeadroomConfig, security_session: boto3.Session, account_id: str) -> boto3.Session:
+def get_headroom_session(config: HeadroomConfig, security_session: Session, account_id: str) -> Session:
     """Assume Headroom role in the target account and return a boto3 session."""
     role_arn = f"arn:aws:iam::{account_id}:role/Headroom"
     return assume_role(role_arn, "HeadroomAnalysisSession", security_session)
@@ -254,7 +255,7 @@ def all_check_results_exist(check_type: str, account_info: AccountInfo, config: 
 
 def run_checks_for_type(
     check_type: str,
-    headroom_session: boto3.Session,
+    headroom_session: Session,
     account_info: AccountInfo,
     config: HeadroomConfig,
     org_account_ids: Set[str]
@@ -310,7 +311,7 @@ def _all_checks_complete(
 
 def _run_checks_for_account(
     account_info: AccountInfo,
-    security_session: boto3.Session,
+    security_session: Session,
     config: HeadroomConfig,
     org_account_ids: Set[str]
 ) -> None:
@@ -343,7 +344,7 @@ def _run_checks_for_account(
 
 
 def run_checks(
-    security_session: boto3.Session,
+    security_session: Session,
     relevant_account_infos: List[AccountInfo],
     config: HeadroomConfig,
     org_account_ids: Set[str]

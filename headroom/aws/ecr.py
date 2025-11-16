@@ -11,8 +11,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Set
 
-import boto3
+from boto3.session import Session
 from botocore.exceptions import ClientError
+from mypy_boto3_ec2.client import EC2Client
+from mypy_boto3_ecr.client import ECRClient
+from mypy_boto3_ecr.type_defs import RepositoryTypeDef
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +155,8 @@ def _normalize_actions(action: Any) -> List[str]:
 
 
 def _analyze_repository_in_region(
-    ecr_client: Any,
-    repository: Dict[str, Any],
+    ecr_client: ECRClient,
+    repository: RepositoryTypeDef,
     region: str,
     org_account_ids: Set[str]
 ) -> ECRRepositoryPolicyAnalysis:
@@ -234,7 +237,7 @@ def _analyze_repository_in_region(
 
 
 def analyze_ecr_repository_policies(
-    session: boto3.Session,
+    session: Session,
     org_account_ids: Set[str]
 ) -> List[ECRRepositoryPolicyAnalysis]:
     """
@@ -268,7 +271,7 @@ def analyze_ecr_repository_policies(
         UnsupportedPrincipalTypeError: If any repository policy contains principal
             types that would break RCP deployment (like Federated)
     """
-    ec2_client = session.client("ec2")
+    ec2_client: EC2Client = session.client("ec2")
     results: List[ECRRepositoryPolicyAnalysis] = []
 
     regions_response = ec2_client.describe_regions()
@@ -276,7 +279,7 @@ def analyze_ecr_repository_policies(
 
     for region in regions:
         logger.info(f"Analyzing ECR repositories in {region}")
-        ecr_client = session.client("ecr", region_name=region)
+        ecr_client: ECRClient = session.client("ecr", region_name=region)
 
         try:
             paginator = ecr_client.get_paginator("describe_repositories")

@@ -2,7 +2,7 @@
 
 from typing import List
 
-import boto3
+from boto3.session import Session
 
 from ...aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
 from ...constants import DENY_IMDS_V1_EC2
@@ -23,7 +23,7 @@ class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
     - Overall compliance status for the account
     """
 
-    def analyze(self, session: boto3.Session) -> List[DenyImdsV1Ec2]:
+    def analyze(self, session: Session) -> List[DenyImdsV1Ec2]:
         """
         Analyze EC2 instances for IMDS v1 configuration.
 

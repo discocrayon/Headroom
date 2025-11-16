@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List
 
-import boto3
+from boto3.session import Session
 
 from .utils import make_safe_variable_name
 from ..aws.organization import analyze_organization_structure
@@ -19,7 +19,7 @@ from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlaceme
 logger = logging.getLogger(__name__)
 
 
-def generate_terraform_org_info(session: boto3.Session, output_path: str) -> None:
+def generate_terraform_org_info(session: Session, output_path: str) -> None:
     """
     Generate grab_org_info.tf file with organization structure data sources.
 

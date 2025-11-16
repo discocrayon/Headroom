@@ -7,7 +7,7 @@ from accounts outside the organization to assume them.
 
 from typing import Any, List, Set
 
-import boto3
+from boto3.session import Session
 
 from ...aws.iam.roles import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
 from ...constants import THIRD_PARTY_ASSUMEROLE
@@ -61,7 +61,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
         self.org_account_ids = org_account_ids
         self.all_third_party_accounts: Set[str] = set()
 
-    def analyze(self, session: boto3.Session) -> List[TrustPolicyAnalysis]:
+    def analyze(self, session: Session) -> List[TrustPolicyAnalysis]:
         """
         Analyze IAM role trust policies for third-party access.
 
@@ -130,7 +130,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             "third_party_account_count": len(self.all_third_party_accounts),
         }
 
-    def execute(self, session: boto3.Session) -> None:
+    def execute(self, session: Session) -> None:
         """
         Execute the check.
 

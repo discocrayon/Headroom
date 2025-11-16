@@ -27,7 +27,7 @@ class TestAssumeRole:
             }
         }
 
-        with patch("headroom.aws.sessions.boto3.Session") as mock_session_class:
+        with patch("headroom.aws.sessions.Session") as mock_session_class:
             mock_new_session = MagicMock()
             mock_session_class.return_value = mock_new_session
 
@@ -52,7 +52,7 @@ class TestAssumeRole:
 
     def test_assume_role_with_default_session(self) -> None:
         """Test role assumption with default base session."""
-        with patch("headroom.aws.sessions.boto3.Session") as mock_session_class:
+        with patch("headroom.aws.sessions.Session") as mock_session_class:
             mock_session = MagicMock()
             mock_session_class.return_value = mock_session
             mock_sts_client = MagicMock()
@@ -134,7 +134,7 @@ class TestAssumeRole:
             }
         }
 
-        with patch("headroom.aws.sessions.boto3.Session") as mock_session_class:
+        with patch("headroom.aws.sessions.Session") as mock_session_class:
             mock_new_session = MagicMock()
             mock_session_class.return_value = mock_new_session
 
