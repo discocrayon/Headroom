@@ -424,6 +424,14 @@ def _build_rcp_terraform_module(
 
     parameters: List[TerraformElement] = []
 
+    parameters.append(TerraformComment("OpenSearch Serverless"))
+    if aoss_rec:
+        parameters.append(TerraformParameter("aoss_third_party_account_ids_allowlist", aoss_rec.third_party_account_ids))
+        parameters.append(TerraformParameter("deny_aoss_third_party_access", True))
+    else:
+        parameters.append(TerraformParameter("deny_aoss_third_party_access", False))
+
+    parameters.append(TerraformComment(""))
     parameters.append(TerraformComment("ECR"))
     if ecr_rec:
         parameters.append(TerraformParameter("deny_ecr_third_party_access_account_ids_allowlist", ecr_rec.third_party_account_ids))
@@ -449,14 +457,6 @@ def _build_rcp_terraform_module(
         parameters.append(TerraformParameter("deny_kms_third_party_access", True))
     else:
         parameters.append(TerraformParameter("deny_kms_third_party_access", False))
-
-    parameters.append(TerraformComment(""))
-    parameters.append(TerraformComment("OpenSearch Serverless"))
-    if aoss_rec:
-        parameters.append(TerraformParameter("aoss_third_party_account_ids_allowlist", aoss_rec.third_party_account_ids))
-        parameters.append(TerraformParameter("deny_aoss_third_party_access", True))
-    else:
-        parameters.append(TerraformParameter("deny_aoss_third_party_access", False))
 
     parameters.append(TerraformComment(""))
     parameters.append(TerraformComment("S3"))
