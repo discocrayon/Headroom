@@ -10,13 +10,117 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Union, cast
 
 from .constants import get_check_type_map
+from .utils import format_account_identifier
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ResultFilePathResolver:
+    """
+    Resolves file paths for check results with backward compatibility.
+
+    Centralizes all path resolution logic to eliminate duplication across
+    write_check_results(), get_results_dir(), get_results_path(), and
+    results_exist() functions.
+
+    Attributes:
+        check_name: Name of the check (e.g., 'deny_imds_v1_ec2')
+        results_base_dir: Base directory for results
+        account_name: Account name (optional, defaults to empty string)
+        account_id: Account ID (optional, defaults to empty string)
+        exclude_account_ids: If True, exclude account ID from filename
+    """
+
+    check_name: str
+    results_base_dir: str
+    account_name: str = ""
+    account_id: str = ""
+    exclude_account_ids: bool = False
+
+    def get_check_directory(self) -> str:
+        """
+        Get directory for this check type.
+
+        Returns:
+            Path to the check's results directory
+
+        Raises:
+            ValueError: If check_name is not recognized
+        """
+        check_type_map = get_check_type_map()
+        check_type = check_type_map.get(self.check_name)
+        if not check_type:
+            raise ValueError(
+                f"Unknown check name: {self.check_name}. "
+                f"Must be one of {list(check_type_map.keys())}"
+            )
+        return f"{self.results_base_dir}/{check_type}/{self.check_name}"
+
+    def get_file_path(self) -> Path:
+        """
+        Get file path for results.
+
+        Returns:
+            Path object for the results file
+        """
+        results_dir = self.get_check_directory()
+        filename = self._build_filename()
+        return Path(results_dir) / filename
+
+    def exists(self) -> bool:
+        """
+        Check if result file exists.
+
+        Checks both current and alternate formats for backward compatibility.
+
+        Returns:
+            True if file exists in either format, False otherwise
+        """
+        if self.get_file_path().exists():
+            return True
+        return self._get_alternate_path().exists()
+
+    def _build_filename(self) -> str:
+        """
+        Build filename based on configuration.
+
+        Returns:
+            Filename string (e.g., 'account_123456789012.json' or 'account.json')
+        """
+        if self.exclude_account_ids:
+            account_identifier = self.account_name
+        else:
+            account_identifier = format_account_identifier(
+                self.account_name,
+                self.account_id
+            )
+        return f"{account_identifier}.json"
+
+    def _get_alternate_path(self) -> Path:
+        """
+        Get alternate format path for backward compatibility.
+
+        Returns alternate filename format to check if file exists under
+        the opposite naming convention.
+
+        Returns:
+            Path object for the alternate format file
+        """
+        alternate = ResultFilePathResolver(
+            check_name=self.check_name,
+            results_base_dir=self.results_base_dir,
+            account_name=self.account_name,
+            account_id=self.account_id,
+            exclude_account_ids=not self.exclude_account_ids
+        )
+        return alternate.get_file_path()
 
 
 def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, Any]) -> Union[Dict[str, Any], List[Any], str, Any]:
@@ -70,16 +174,18 @@ def write_check_results(
         {results_base_dir}/{check_type}/{check_name}/{account_name}_{account_id}.json
         or {results_base_dir}/{check_type}/{check_name}/{account_name}.json if exclude_account_ids=True
     """
-    results_dir = get_results_dir(check_name, results_base_dir)
+    results_resolver = ResultFilePathResolver(
+        check_name=check_name,
+        results_base_dir=results_base_dir,
+        account_name=account_name,
+        account_id=account_id,
+        exclude_account_ids=exclude_account_ids
+    )
+
+    results_dir = results_resolver.get_check_directory()
     os.makedirs(results_dir, exist_ok=True)
 
-    output_file = get_results_path(
-        check_name,
-        account_name,
-        account_id,
-        results_base_dir,
-        exclude_account_ids,
-    )
+    output_file = results_resolver.get_file_path()
 
     # If excluding account IDs, remove account_id from the results data
     # and redact account IDs from ARNs
@@ -109,11 +215,11 @@ def get_results_dir(check_name: str, results_base_dir: str) -> str:
     Returns:
         Path to the check's results directory (e.g., '{results_base_dir}/scps/deny_imds_v1_ec2')
     """
-    check_type_map = get_check_type_map()
-    check_type = check_type_map.get(check_name)
-    if not check_type:
-        raise ValueError(f"Unknown check name: {check_name}. Must be one of {list(check_type_map.keys())}")
-    return f"{results_base_dir}/{check_type}/{check_name}"
+    results_resolver = ResultFilePathResolver(
+        check_name=check_name,
+        results_base_dir=results_base_dir
+    )
+    return results_resolver.get_check_directory()
 
 
 def get_results_path(
@@ -138,12 +244,14 @@ def get_results_path(
     Returns:
         Path object for the results file (e.g., '{results_base_dir}/scps/deny_imds_v1_ec2/account.json')
     """
-    results_dir = get_results_dir(check_name, results_base_dir)
-    if exclude_account_ids:
-        account_identifier = account_name
-    else:
-        account_identifier = f"{account_name}_{account_id}"
-    return Path(results_dir) / f"{account_identifier}.json"
+    results_resolver = ResultFilePathResolver(
+        check_name=check_name,
+        results_base_dir=results_base_dir,
+        account_name=account_name,
+        account_id=account_id,
+        exclude_account_ids=exclude_account_ids
+    )
+    return results_resolver.get_file_path()
 
 
 def results_exist(
@@ -168,22 +276,11 @@ def results_exist(
     Returns:
         True if results file exists, False otherwise
     """
-    results_file = get_results_path(
-        check_name,
-        account_name,
-        account_id,
-        results_base_dir,
-        exclude_account_ids,
+    results_resolver = ResultFilePathResolver(
+        check_name=check_name,
+        results_base_dir=results_base_dir,
+        account_name=account_name,
+        account_id=account_id,
+        exclude_account_ids=exclude_account_ids
     )
-    if results_file.exists():
-        return True
-
-    # Check alternate format for backward compatibility
-    alternate_file = get_results_path(
-        check_name,
-        account_name,
-        account_id,
-        results_base_dir,
-        not exclude_account_ids,
-    )
-    return alternate_file.exists()
+    return results_resolver.exists()

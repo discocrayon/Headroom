@@ -438,7 +438,7 @@ class TestHandleScpWorkflow:
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
         recommendations = {"check1": "recommendation1"}
 
-        with patch('headroom.main.parse_scp_results', return_value=recommendations):
+        with patch('headroom.main.analyze_scp_compliance', return_value=recommendations):
             with patch('headroom.main.process_policy_recommendations') as mock_process:
                 handle_scp_workflow(config, org_hierarchy)
 
@@ -453,7 +453,7 @@ class TestHandleScpWorkflow:
         config = MagicMock(spec=HeadroomConfig)
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        with patch('headroom.main.parse_scp_results', return_value={}):
+        with patch('headroom.main.analyze_scp_compliance', return_value={}):
             with patch('headroom.main.process_policy_recommendations') as mock_process:
                 handle_scp_workflow(config, org_hierarchy)
 
@@ -464,7 +464,7 @@ class TestHandleScpWorkflow:
         config = MagicMock(spec=HeadroomConfig)
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        with patch('headroom.main.parse_scp_results', return_value=None):
+        with patch('headroom.main.analyze_scp_compliance', return_value=None):
             with patch('headroom.main.process_policy_recommendations') as mock_process:
                 handle_scp_workflow(config, org_hierarchy)
 

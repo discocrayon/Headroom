@@ -14,6 +14,7 @@ This document categorizes the different patterns of Service Control Policies (SC
 | 4 | **Exception Tag Allow** | Exempt resources via a targeted exception tag | Deny statement with exception tag condition | `aws:RequestTag`, `aws:PrincipalTag` |
 | 5a | **Account-Level Principal Allowlist** | Deny except for explicitly approved AWS account IDs | Deny statement with principal account condition | `aws:PrincipalAccount` |
 | 5b | **Resource ARN Allowlist** | Deny except for explicitly approved resource ARNs | Deny statement with NotResource | `NotResource` |
+| 5c | **Condition Key Value Allowlist** | Deny except for explicitly approved condition key values | Deny statement with allowlist of condition values | `Condition` with value list |
 | 6 | **Conditional Deny + Allowlist Composition** | Deny unless condition is met AND only allow specific principals/resources | Combination of patterns #2 and #5 | Multiple `Condition` keys |
 
 ## Pattern Details
@@ -244,6 +245,46 @@ This document categorizes the different patterns of Service Control Policies (SC
 
 ---
 
+### Pattern 5c: Condition Key Value Allowlist
+
+**Use Case:** Restrict based on specific values of a condition key by allowing only explicitly approved values.
+
+**Focus:** WHICH VALUES of a condition key are allowed.
+
+**Examples:**
+- Only allow EC2 instances from specific AMI owners (amazon, aws-marketplace, trusted account IDs)
+- Only allow S3 buckets with specific encryption types
+- Restrict actions based on approved source IPs or VPCs
+
+**Implementation Example (from `deny_ec2_ami_owner`):**
+
+```json
+{
+  "Effect": "Deny",
+  "Action": "ec2:RunInstances",
+  "Resource": "arn:aws:ec2:*:*:instance/*",
+  "Condition": {
+    "StringNotEquals": {
+      "ec2:Owner": [
+        "amazon",
+        "aws-marketplace",
+        "111111111111"
+      ]
+    }
+  }
+}
+```
+
+**Codebase Reference:** `test_environment/modules/scps/locals.tf` lines 3-20
+
+**Characteristics:**
+- Uses `Condition` with a list of approved values
+- Condition operators typically `StringNotEquals`, `StringNotLike`, or similar
+- Values can be AWS account IDs, aliases (like "amazon"), or other identifiers
+- Useful for restricting to trusted sources or approved configurations
+
+---
+
 ### Pattern 6: Conditional Deny + Allowlist Composition
 
 **Use Case:** Combine conditional requirements with an allowlist for complex access control scenarios.
@@ -294,20 +335,23 @@ Both patterns use tags, but their meaning and intent are fundamentally different
 
 **Key Insight:** Pattern 3 encourages correct behavior through tooling. Pattern 4 acknowledges incorrect behavior but provides escape hatch.
 
-### Pattern 5a vs 5b: Implementation Mechanism
+### Pattern 5 Variants: Implementation Mechanisms
 
-Both patterns use allowlists, but they focus on different aspects of the request:
+All Pattern 5 variants use allowlists, but they focus on different aspects of the request:
 
-| Aspect | Pattern 5a: Account-Level | Pattern 5b: Resource ARN |
-|--------|---------------------------|--------------------------|
-| **Focus** | WHO (Principal) | WHAT (Resource) |
-| **Question** | "Who can perform this action?" | "What can be acted upon?" |
-| **Condition Type** | IAM condition keys | Resource matching |
-| **AWS Constructs** | `aws:PrincipalAccount` | `NotResource` with ARN patterns |
-| **Example** | Third-party assume role access | Allowed IAM user paths |
-| **Flexibility** | Account-level granularity | Resource-level granularity |
+| Aspect | Pattern 5a: Account Allowlist | Pattern 5b: Resource ARN Allowlist | Pattern 5c: Condition Key Value Allowlist |
+|--------|------------------------------|-----------------------------------|------------------------------------------|
+| **Focus** | WHO (Principal) | WHAT (Resource) | WHICH VALUES (Condition) |
+| **Question** | "Who can perform this action?" | "What can be acted upon?" | "Which condition values are allowed?" |
+| **Mechanism** | IAM condition keys | Resource matching | Condition value matching |
+| **AWS Constructs** | `aws:PrincipalAccount` | `NotResource` with ARN patterns | `Condition` with value list |
+| **Example** | Third-party assume role access | Allowed IAM user paths | Allowed AMI owners |
+| **Flexibility** | Account-level granularity | Resource-level granularity | Attribute-level granularity |
 
-**Key Insight:** Use 5a when controlling access based on identity. Use 5b when controlling access based on target resources.
+**Key Insights:**
+- Use 5a when controlling access based on identity
+- Use 5b when controlling access based on target resources
+- Use 5c when controlling access based on specific condition key values
 
 ## Implementation Examples from Headroom Codebase
 
@@ -351,14 +395,48 @@ This check identifies EC2 instances with IMDSv1 enabled. The SCP denies IMDSv1 c
 1. Deny modification of IAM role delivery to less than version 2.0 (unless principal has exemption tag)
 2. Deny launching instances with `MetadataHttpTokens != "required"` (unless request has exemption tag)
 
+### Pattern 5a: `deny_ecr_third_party_access`
+
+**Check:** `headroom/checks/rcps/deny_ecr_third_party_access.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf` lines 3-26
+**Variable:** `deny_ecr_third_party_access_account_ids_allowlist`
+
+This RCP restricts ECR repository access to organization principals and explicitly allowlisted third-party account IDs. It analyzes ECR repository resource policies to identify external account access patterns.
+
+**Policy Structure:**
+- Deny `ecr:*` actions
+- Unless `aws:PrincipalOrgID` matches the organization OR `aws:PrincipalAccount` is in the allowlist
+- Excludes AWS service principals
+
+**Headroom's Role:** Scans all accounts and analyzes ECR repository policies, identifying which third-party accounts have access and which ECR actions they can perform. This informs the allowlist configuration for RCP deployment. The check also detects wildcard principals that would block RCP deployment.
+
+**Key Feature:** Tracks which specific ECR actions (e.g., `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`) each third-party account is granted, enabling precise understanding of access patterns.
+
+**Fail-Fast Validation:** If any ECR repository policy contains a Federated principal (or other unsupported principal types), the check immediately fails with a clear error message, as these would break when the RCP is deployed.
+
 ### Pattern 5a: `enforce_assume_role_org_identities`
 
-**Terraform:** `test_environment/modules/rcps/locals.tf` lines 3-27
+**Terraform:** `test_environment/modules/rcps/locals.tf` lines 27-51
 **Variable:** `third_party_assumerole_account_ids_allowlist`
 
 This RCP restricts role assumptions to organization principals and explicitly allowlisted third-party account IDs. It uses `aws:PrincipalOrgID` and `aws:PrincipalAccount` conditions.
 
 **Analysis by:** `headroom/checks/rcps/deny_third_party_assumerole.py`
+
+### Pattern 5a: `deny_aoss_third_party_access`
+
+**Check:** `headroom/checks/rcps/deny_aoss_third_party_access.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf` lines 28-52
+**Variable:** `aoss_third_party_account_ids_allowlist`
+
+This RCP restricts OpenSearch Serverless (AOSS) access to organization principals and explicitly allowlisted third-party account IDs. It blocks all `aoss:*` actions for principals outside the organization unless explicitly allowed.
+
+**Policy Structure:**
+- Deny `aoss:*` (all OpenSearch Serverless actions)
+- Unless `aws:PrincipalOrgID` matches organization OR `aws:PrincipalAccount` is in allowlist
+- Excludes AWS service principals via `aws:PrincipalIsAWSService`
+
+**Headroom's Role:** Analyzes AOSS data access policies to identify third-party account access. Reports which collections and indexes grant access to external accounts, along with the specific AOSS actions permitted for each third-party account. This information informs the allowlist configuration.
 
 ### Pattern 5b: `deny_iam_user_creation`
 
@@ -370,11 +448,29 @@ This check lists all IAM users in accounts. The SCP uses `NotResource` to deny `
 
 **Headroom's Role:** Scans accounts and reports existing users, which inform the allowlist configuration.
 
+### Pattern 5c: `deny_ec2_ami_owner`
+
+**Check:** `headroom/checks/scps/deny_ec2_ami_owner.py`
+**Terraform:** `test_environment/modules/scps/locals.tf` lines 3-20
+**Variable:** `allowed_ami_owners`
+
+This check identifies EC2 instances and determines the owner of the AMI used to launch each instance. The SCP denies `ec2:RunInstances` unless the AMI owner is in the allowlist.
+
+**Policy Structure:**
+- Deny `ec2:RunInstances`
+- Unless `ec2:Owner` is in the approved list (e.g., "amazon", "aws-marketplace", trusted account IDs)
+
+**Headroom's Role:** Scans all accounts and reports all EC2 instances with their AMI owners. This generates a comprehensive list of unique AMI owners that can be used to populate the allowlist. The check helps identify:
+- Amazon-owned AMIs (owner: "amazon")
+- AWS Marketplace AMIs (various vendor account IDs)
+- Custom AMIs (account-owned)
+- Unknown AMIs (AMI no longer exists)
+
 ## Design Principles
 
 ### 1. Start with Least Privilege
 
-Begin with deny-all and add allowlists (Patterns 5a/5b) rather than trying to deny specific bad behaviors.
+Begin with deny-all and add allowlists (Patterns 5a/5b/5c) rather than trying to deny specific bad behaviors.
 
 ### 2. Prefer Paved Roads over Exceptions
 
@@ -393,6 +489,7 @@ Use Pattern 6 (Composition) to layer multiple controls:
 - Conditional requirements (Pattern 2)
 - Plus principal restrictions (Pattern 5a)
 - Plus resource restrictions (Pattern 5b)
+- Plus condition value restrictions (Pattern 5c)
 
 ### 5. Document the "Why"
 
@@ -408,7 +505,7 @@ Headroom implements checks that analyze compliance with these policy patterns:
 
 1. **Scanning:** Headroom scans AWS accounts to find resources that would be affected by these policies
 2. **Categorization:** Results are categorized as violations, exemptions (Pattern 4), or compliant
-3. **Allowlist Generation:** For Patterns 5a/5b, Headroom generates the lists of principals/resources that should be allowed
+3. **Allowlist Generation:** For Patterns 5a/5b/5c, Headroom generates the lists of principals/resources/values that should be allowed
 4. **Terraform Generation:** Headroom can generate Terraform configurations that implement these patterns
 
 **Workflow:**

@@ -1803,7 +1803,6 @@ Use this checklist when adding any new check:
 
 ### Terraform Modules
 - [ ] Added boolean variable to `test_environment/modules/{scps|rcps}/variables.tf`
-- [ ] Added `nullable = false` to require explicit value
 - [ ] Added allowlist variable (if Pattern 5)
 - [ ] Added policy statement to `test_environment/modules/{scps|rcps}/locals.tf`:
   - [ ] Used `include` field tied to variable
@@ -2052,7 +2051,6 @@ Use this checklist when adding any new check:
 # SCP boolean - NO default
 variable "deny_rds_unencrypted" {
   type = bool
-  nullable = false  # Requires explicit value
 }
 
 # RCP allowlist - WITH default
@@ -2229,7 +2227,7 @@ These lessons were learned during the implementation of the `deny_rds_unencrypte
 2. Read complete list of RDS actions and their condition key columns
 3. Found only 3 actions explicitly list `rds:StorageEncrypted`:
    - `rds:CreateDBCluster` ✅
-   - `rds:RestoreDBClusterFromS3` ✅  
+   - `rds:RestoreDBClusterFromS3` ✅
    - `rds:CreateBlueGreenDeployment` ✅
 4. Confirmed `rds:CreateDBInstance` does NOT list it ❌
 

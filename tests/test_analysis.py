@@ -37,7 +37,7 @@ class TestSecurityAnalysisSession:
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
-        with patch("boto3.Session") as session_patch:
+        with patch("headroom.analysis.Session") as session_patch:
             session = get_security_analysis_session(config)
             session_patch.assert_called_once_with()
             assert session is session_patch.return_value
@@ -49,7 +49,7 @@ class TestSecurityAnalysisSession:
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
         with (
-            patch("boto3.Session") as session_patch,
+            patch("headroom.analysis.Session") as session_patch,
             patch("headroom.analysis.logger") as mock_logger,
         ):
             session = get_security_analysis_session(config)
@@ -119,17 +119,15 @@ class TestPerformAnalysis:
 
 
 class TestGetSubaccountInformation:
-    @patch("headroom.analysis.boto3.Session")
+    @patch("headroom.analysis.get_management_account_session")
     @patch("headroom.analysis.logger")
-    def test_get_subaccount_information_name_from_tags(self, mock_logger: MagicMock, mock_boto_session: MagicMock) -> None:
+    def test_get_subaccount_information_name_from_tags(self, mock_logger: MagicMock, mock_get_mgmt_session: MagicMock) -> None:
         config = HeadroomConfig(
             management_account_id="222222222222",
             security_analysis_account_id="111111111111",
             use_account_name_from_tags=True,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        mock_sts = MagicMock()
-        mock_sts.assume_role.return_value = {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "b", "SessionToken": "c"}}
         mock_org_client = MagicMock()
         mock_org_client.get_paginator.return_value.paginate.return_value = [
             {"Accounts": [
@@ -146,28 +144,24 @@ class TestGetSubaccountInformation:
         }
         mock_org_client.list_tags_for_resource.side_effect = lambda ResourceId: tag_map.get(ResourceId, {"Tags": []})
         mgmt_session = MagicMock()
-        mgmt_session.client.side_effect = lambda service: mock_org_client if service == "organizations" else mock_sts
-        mock_boto_session.return_value = mgmt_session
-        session = MagicMock()
-        session.client.return_value = mock_sts
-        result = get_subaccount_information(config, session)
+        mgmt_session.client.return_value = mock_org_client
+        mock_get_mgmt_session.return_value = mgmt_session
+        result = get_subaccount_information(config, MagicMock())
         assert result == [
             AccountInfo(account_id="333333333333", environment="prod", name="TagName1", owner="Alice"),
             AccountInfo(account_id="444444444444", environment="dev", name="TagName2", owner="Bob"),
             AccountInfo(account_id="555555555555", environment="unknown", name="555555555555", owner="unknown"),
         ]
 
-    @patch("headroom.analysis.boto3.Session")
+    @patch("headroom.analysis.get_management_account_session")
     @patch("headroom.analysis.logger")
-    def test_get_subaccount_information_name_from_api(self, mock_logger: MagicMock, mock_boto_session: MagicMock) -> None:
+    def test_get_subaccount_information_name_from_api(self, mock_logger: MagicMock, mock_get_mgmt_session: MagicMock) -> None:
         config = HeadroomConfig(
             management_account_id="222222222222",
             security_analysis_account_id="111111111111",
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        mock_sts = MagicMock()
-        mock_sts.assume_role.return_value = {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "b", "SessionToken": "c"}}
         mock_org_client = MagicMock()
         mock_org_client.get_paginator.return_value.paginate.return_value = [
             {"Accounts": [
@@ -177,17 +171,14 @@ class TestGetSubaccountInformation:
         ]
         mock_org_client.list_tags_for_resource.return_value = {"Tags": [{"Key": "Env", "Value": "prod"}, {"Key": "OwnerTag", "Value": "Alice"}]}
         mgmt_session = MagicMock()
-        mgmt_session.client.side_effect = lambda service: mock_org_client if service == "organizations" else mock_sts
-        mock_boto_session.return_value = mgmt_session
-        session = MagicMock()
-        session.client.return_value = mock_sts
-        result = get_subaccount_information(config, session)
+        mgmt_session.client.return_value = mock_org_client
+        mock_get_mgmt_session.return_value = mgmt_session
+        result = get_subaccount_information(config, MagicMock())
         assert result == [
             AccountInfo(account_id="333333333333", environment="prod", name="SubAccount1", owner="Alice")
         ]
 
-    @patch("headroom.analysis.boto3.Session")
-    def test_get_subaccount_information_missing_management_account_id(self, mock_boto_session: MagicMock) -> None:
+    def test_get_subaccount_information_missing_management_account_id(self) -> None:
         config = HeadroomConfig(
             management_account_id=None,
             security_analysis_account_id="111111111111",
@@ -198,17 +189,15 @@ class TestGetSubaccountInformation:
         with pytest.raises(ValueError, match="management_account_id must be set in config"):
             get_subaccount_information(config, session)
 
-    @patch("headroom.analysis.boto3.Session")
+    @patch("headroom.analysis.get_management_account_session")
     @patch("headroom.analysis.logger")
-    def test_get_subaccount_information_tag_fetch_error(self, mock_logger: MagicMock, mock_boto_session: MagicMock) -> None:
+    def test_get_subaccount_information_tag_fetch_error(self, mock_logger: MagicMock, mock_get_mgmt_session: MagicMock) -> None:
         config = HeadroomConfig(
             management_account_id="222222222222",
             security_analysis_account_id="111111111111",
             use_account_name_from_tags=True,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        mock_sts = MagicMock()
-        mock_sts.assume_role.return_value = {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "b", "SessionToken": "c"}}
         mock_org_client = MagicMock()
         mock_org_client.get_paginator.return_value.paginate.return_value = [
             {"Accounts": [
@@ -217,18 +206,15 @@ class TestGetSubaccountInformation:
         ]
         mock_org_client.list_tags_for_resource.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "ListTagsForResource")
         mgmt_session = MagicMock()
-        mgmt_session.client.side_effect = lambda service: mock_org_client if service == "organizations" else mock_sts
-        mock_boto_session.return_value = mgmt_session
-        session = MagicMock()
-        session.client.return_value = mock_sts
-        result = get_subaccount_information(config, session)
+        mgmt_session.client.return_value = mock_org_client
+        mock_get_mgmt_session.return_value = mgmt_session
+        result = get_subaccount_information(config, MagicMock())
         assert result == [
             AccountInfo(account_id="333333333333", environment="unknown", name="333333333333", owner="unknown")
         ]
         mock_logger.warning.assert_called()
 
-    @patch("headroom.analysis.boto3.Session")
-    def test_get_subaccount_information_assume_role_failure(self, mock_boto_session: MagicMock) -> None:
+    def test_get_subaccount_information_assume_role_failure(self) -> None:
         config = HeadroomConfig(
             management_account_id="222222222222",
             security_analysis_account_id="111111111111",
@@ -354,6 +340,28 @@ class TestBuildAccountInfoFromAccountDict:
         assert result.environment == "unknown"
         assert result.owner == "unknown"
         mock_logger.warning.assert_called_once()
+
+    @patch("headroom.analysis.logger")
+    def test_build_account_info_with_other_client_error(self, mock_logger: MagicMock) -> None:
+        """Test building AccountInfo when tags fetch fails with non-AccessDenied error."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=True,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        mock_org_client = MagicMock()
+        mock_org_client.list_tags_for_resource.side_effect = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "Service Error"}},
+            "ListTagsForResource"
+        )
+
+        result = _build_account_info_from_account_dict(account, mock_org_client, config)
+
+        assert result.account_id == "123456789012"
+        assert result.name == "123456789012"
+        assert result.environment == "unknown"
+        assert result.owner == "unknown"
+        mock_logger.error.assert_called_once()
 
     def test_build_account_info_missing_account_name_in_api(self) -> None:
         """Test building AccountInfo when account Name field is missing."""

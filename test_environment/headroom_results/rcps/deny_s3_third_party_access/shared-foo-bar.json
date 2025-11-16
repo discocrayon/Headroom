@@ -1,0 +1,97 @@
+{
+  "summary": {
+    "account_name": "shared-foo-bar",
+    "check": "deny_s3_third_party_access",
+    "total_buckets_analyzed": 3,
+    "buckets_third_parties_can_access": 3,
+    "buckets_with_wildcards": 0,
+    "violations": 0,
+    "unique_third_party_accounts": [
+      "517716713836",
+      "749430749651",
+      "758245563457"
+    ],
+    "third_party_account_count": 3,
+    "actions_by_third_party_account": {
+      "749430749651": [
+        "s3:GetObject",
+        "s3:ListBucket",
+        "s3:PutObject"
+      ],
+      "758245563457": [
+        "s3:*",
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "517716713836": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ]
+    },
+    "buckets_by_third_party_account": {
+      "749430749651": [
+        "arn:aws:s3:::headroom-test-mixed-access-754902277551"
+      ],
+      "758245563457": [
+        "arn:aws:s3:::headroom-test-multiple-third-parties-754902277551",
+        "arn:aws:s3:::headroom-test-wildcard-action-754902277551"
+      ],
+      "517716713836": [
+        "arn:aws:s3:::headroom-test-multiple-third-parties-754902277551"
+      ]
+    }
+  },
+  "buckets_third_parties_can_access": [
+    {
+      "bucket_name": "headroom-test-mixed-access-754902277551",
+      "bucket_arn": "arn:aws:s3:::headroom-test-mixed-access-754902277551",
+      "third_party_account_ids": [
+        "749430749651"
+      ],
+      "has_wildcard_principal": false,
+      "has_non_account_principals": false,
+      "actions_by_account": {
+        "749430749651": [
+          "s3:GetObject",
+          "s3:ListBucket",
+          "s3:PutObject"
+        ]
+      }
+    },
+    {
+      "bucket_name": "headroom-test-multiple-third-parties-754902277551",
+      "bucket_arn": "arn:aws:s3:::headroom-test-multiple-third-parties-754902277551",
+      "third_party_account_ids": [
+        "517716713836",
+        "758245563457"
+      ],
+      "has_wildcard_principal": false,
+      "has_non_account_principals": false,
+      "actions_by_account": {
+        "758245563457": [
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        "517716713836": [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+      }
+    },
+    {
+      "bucket_name": "headroom-test-wildcard-action-754902277551",
+      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-action-754902277551",
+      "third_party_account_ids": [
+        "758245563457"
+      ],
+      "has_wildcard_principal": false,
+      "has_non_account_principals": false,
+      "actions_by_account": {
+        "758245563457": [
+          "s3:*"
+        ]
+      }
+    }
+  ],
+  "buckets_with_wildcards": []
+}
