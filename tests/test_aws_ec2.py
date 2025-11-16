@@ -1048,6 +1048,8 @@ class TestGetEc2AmiOwnerAnalysis:
 
         with pytest.raises(RuntimeError, match="Failed to analyze EC2 AMI owners in region us-east-1"):
             get_ec2_ami_owner_analysis(mock_session)
+
+
 class TestDenyEc2PublicIp:
     """Test DenyEc2PublicIp dataclass with various configurations."""
 

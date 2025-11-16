@@ -6,6 +6,7 @@ import boto3
 
 from ...aws.ec2 import DenyEc2PublicIp, get_ec2_public_ip_analysis
 from ...constants import DENY_EC2_PUBLIC_IP
+from ...enums import CheckCategory
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -36,7 +37,7 @@ class DenyEc2PublicIpCheck(BaseCheck[DenyEc2PublicIp]):
     def categorize_result(
         self,
         result: DenyEc2PublicIp
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, Dict[str, Any]]:
         """
         Categorize a single EC2 public IP analysis result.
 
@@ -45,8 +46,8 @@ class DenyEc2PublicIpCheck(BaseCheck[DenyEc2PublicIp]):
 
         Returns:
             Tuple of (category, result_dict) where category is:
-            - "violation": Instance has public IP address
-            - "compliant": Instance does not have public IP address
+            - CheckCategory.VIOLATION: Instance has public IP address
+            - CheckCategory.COMPLIANT: Instance does not have public IP address
         """
         result_dict = {
             "instance_id": result.instance_id,
@@ -57,9 +58,9 @@ class DenyEc2PublicIpCheck(BaseCheck[DenyEc2PublicIp]):
         }
 
         if result.has_public_ip:
-            return ("violation", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
         else:
-            return ("compliant", result_dict)
+            return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,

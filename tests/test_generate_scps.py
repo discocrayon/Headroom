@@ -112,6 +112,7 @@ module "scps_test_ou" {
 
   # EC2
   deny_ec2_ami_owner = false
+  deny_ec2_public_ip = false
   deny_imds_v1_ec2 = true
 
   # EKS
