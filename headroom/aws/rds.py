@@ -6,9 +6,10 @@ from typing import List, Sequence
 from typing import cast
 
 from boto3.session import Session
-from mypy_boto3_ec2.client import EC2Client
 from mypy_boto3_rds.client import RDSClient
 from mypy_boto3_rds.type_defs import DBClusterTypeDef, DBInstanceTypeDef
+
+from .helpers import get_all_regions, paginate
 
 
 logger = logging.getLogger(__name__)
@@ -59,13 +60,11 @@ def get_rds_unencrypted_analysis(
     Raises:
         ClientError: If AWS API calls fail
     """
-    ec2_client: EC2Client = session.client("ec2")
     all_results = []
 
     # Get all regions (including opt-in regions that may be disabled)
     # We intentionally scan all regions to detect resources in any region
-    regions_response = ec2_client.describe_regions()
-    regions = [region["RegionName"] for region in regions_response["Regions"]]
+    regions = get_all_regions(session)
 
     for region in regions:
         logger.info(f"Analyzing RDS resources in {region}")
@@ -100,16 +99,14 @@ def _analyze_rds_in_region(
     results = []
 
     # Analyze RDS instances
-    instance_paginator = rds_client.get_paginator("describe_db_instances")
-    for instance_page in instance_paginator.paginate():
+    for instance_page in paginate(rds_client, "describe_db_instances"):
         instances = cast(Sequence[DBInstanceTypeDef], instance_page.get("DBInstances", []))
         for instance in instances:
             result = _analyze_rds_instance(instance, region)
             results.append(result)
 
     # Analyze Aurora clusters
-    cluster_paginator = rds_client.get_paginator("describe_db_clusters")
-    for cluster_page in cluster_paginator.paginate():
+    for cluster_page in paginate(rds_client, "describe_db_clusters"):
         clusters = cast(Sequence[DBClusterTypeDef], cluster_page.get("DBClusters", []))
         for cluster in clusters:
             result = _analyze_rds_cluster(cluster, region)

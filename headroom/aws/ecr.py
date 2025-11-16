@@ -8,14 +8,16 @@ specifically for identifying third-party account access (RCP checks).
 import json
 import logging
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Set
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
-from mypy_boto3_ec2.client import EC2Client
 from mypy_boto3_ecr.client import ECRClient
 from mypy_boto3_ecr.type_defs import RepositoryTypeDef
+
+from .helpers import get_all_regions, paginate
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +181,7 @@ def _analyze_repository_in_region(
     repository_arn = repository["repositoryArn"]
 
     third_party_accounts: Set[str] = set()
-    actions_by_account: Dict[str, List[str]] = {}
+    actions_by_account: defaultdict[str, Set[str]] = defaultdict(set)
     has_wildcard = False
 
     try:
@@ -216,22 +218,23 @@ def _analyze_repository_in_region(
         actions = _normalize_actions(statement.get("Action", []))
 
         for account_id in account_ids:
-            if account_id not in org_account_ids:
-                third_party_accounts.add(account_id)
+            if account_id in org_account_ids:
+                continue
 
-                if account_id not in actions_by_account:
-                    actions_by_account[account_id] = []
+            third_party_accounts.add(account_id)
+            actions_by_account[account_id].update(actions)
 
-                for action in actions:
-                    if action not in actions_by_account[account_id]:
-                        actions_by_account[account_id].append(action)
+    actions_by_account_serializable = {
+        account_id: sorted(actions)
+        for account_id, actions in actions_by_account.items()
+    }
 
     return ECRRepositoryPolicyAnalysis(
         repository_name=repository_name,
         repository_arn=repository_arn,
         region=region,
         third_party_account_ids=third_party_accounts,
-        actions_by_account=actions_by_account,
+        actions_by_account=actions_by_account_serializable,
         has_wildcard_principal=has_wildcard
     )
 
@@ -271,19 +274,16 @@ def analyze_ecr_repository_policies(
         UnsupportedPrincipalTypeError: If any repository policy contains principal
             types that would break RCP deployment (like Federated)
     """
-    ec2_client: EC2Client = session.client("ec2")
     results: List[ECRRepositoryPolicyAnalysis] = []
 
-    regions_response = ec2_client.describe_regions()
-    regions = [region["RegionName"] for region in regions_response["Regions"]]
+    regions = get_all_regions(session)
 
     for region in regions:
         logger.info(f"Analyzing ECR repositories in {region}")
         ecr_client: ECRClient = session.client("ecr", region_name=region)
 
         try:
-            paginator = ecr_client.get_paginator("describe_repositories")
-            for page in paginator.paginate():
+            for page in paginate(ecr_client, "describe_repositories"):
                 for repository in page.get("repositories", []):
                     analysis = _analyze_repository_in_region(
                         ecr_client,

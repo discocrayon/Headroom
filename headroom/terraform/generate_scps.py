@@ -5,6 +5,7 @@ Generates Terraform files for SCP deployment based on compliance analysis recomm
 """
 
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import List
 
@@ -333,21 +334,21 @@ def generate_scp_terraform(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Group recommendations by level and target
-    account_recommendations: GroupedSCPRecommendations = {}
-    ou_recommendations: GroupedSCPRecommendations = {}
+    account_recommendations: GroupedSCPRecommendations = defaultdict(list)
+    ou_recommendations: GroupedSCPRecommendations = defaultdict(list)
     root_recommendations: List[SCPPlacementRecommendations] = []
 
     for rec in recommendations:
         if rec.recommended_level == "account":
             for account_id in rec.affected_accounts:
-                if account_id not in account_recommendations:
-                    account_recommendations[account_id] = []
                 account_recommendations[account_id].append(rec)
-        elif rec.recommended_level == "ou" and rec.target_ou_id:
-            if rec.target_ou_id not in ou_recommendations:
-                ou_recommendations[rec.target_ou_id] = []
+            continue
+
+        if rec.recommended_level == "ou" and rec.target_ou_id:
             ou_recommendations[rec.target_ou_id].append(rec)
-        elif rec.recommended_level == "root":
+            continue
+
+        if rec.recommended_level == "root":
             root_recommendations.append(rec)
 
     # Generate Terraform files for each account

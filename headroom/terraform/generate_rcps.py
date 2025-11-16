@@ -6,6 +6,7 @@ Generates Terraform files for RCP deployment based on third-party account analys
 
 import logging
 import os
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
@@ -612,21 +613,21 @@ def generate_rcp_terraform(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Group recommendations by level and target
-    account_recommendations: Dict[str, List[RCPPlacementRecommendations]] = {}
-    ou_recommendations: Dict[str, List[RCPPlacementRecommendations]] = {}
+    account_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
+    ou_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     root_recommendations: List[RCPPlacementRecommendations] = []
 
     for rec in recommendations:
         if rec.recommended_level == "account":
             for account_id in rec.affected_accounts:
-                if account_id not in account_recommendations:
-                    account_recommendations[account_id] = []
                 account_recommendations[account_id].append(rec)
-        elif rec.recommended_level == "ou" and rec.target_ou_id:
-            if rec.target_ou_id not in ou_recommendations:
-                ou_recommendations[rec.target_ou_id] = []
+            continue
+
+        if rec.recommended_level == "ou" and rec.target_ou_id:
             ou_recommendations[rec.target_ou_id].append(rec)
-        elif rec.recommended_level == "root":
+            continue
+
+        if rec.recommended_level == "root":
             root_recommendations.append(rec)
 
     # Generate Terraform file for root level

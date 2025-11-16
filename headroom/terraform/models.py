@@ -5,7 +5,11 @@ Separates Terraform structure from rendering logic for better testability.
 """
 
 from dataclasses import dataclass
-from typing import Any, List, Union
+from typing import TypeAlias
+
+TerraformScalarValue: TypeAlias = bool | int | float | str
+TerraformListValue: TypeAlias = list[str]
+TerraformValue: TypeAlias = TerraformScalarValue | TerraformListValue
 
 
 @dataclass
@@ -19,7 +23,7 @@ class TerraformParameter:
     """
 
     key: str
-    value: Any
+    value: TerraformValue
 
     def render(self) -> str:
         """
@@ -66,7 +70,7 @@ class TerraformComment:
         return ""
 
 
-TerraformElement = Union[TerraformParameter, TerraformComment]
+TerraformElement: TypeAlias = TerraformParameter | TerraformComment
 
 
 @dataclass
@@ -86,7 +90,7 @@ class TerraformModule:
     name: str
     source: str
     target_id: str
-    parameters: List[TerraformElement]
+    parameters: list[TerraformElement]
     comment: str = ""
     policy_type: str = "SCP"
 
@@ -97,7 +101,7 @@ class TerraformModule:
         Returns:
             Complete Terraform module block as string
         """
-        lines = []
+        lines: list[str] = []
 
         if self.comment:
             lines.append(f"# Auto-generated {self.policy_type} Terraform configuration for {self.comment}")
