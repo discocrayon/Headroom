@@ -12,6 +12,7 @@ from boto3.session import Session
 from ...aws.sqs import SQSQueuePolicyAnalysis, analyze_sqs_queue_policies
 from ...constants import DENY_SQS_THIRD_PARTY_ACCESS
 from ...enums import CheckCategory
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -83,7 +84,7 @@ class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
             if result.has_wildcard_principal or result.has_non_account_principals or result.third_party_account_ids
         ]
 
-    def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, Dict[str, Any]]:
+    def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single queue policy analysis result.
 
@@ -123,7 +124,7 @@ class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build SQS third-party access check-specific summary fields.
 
@@ -171,7 +172,7 @@ class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
         """
         super().execute(session)
 
-    def _build_results_data(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def _build_results_data(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build results data in the format expected by this check.
 
