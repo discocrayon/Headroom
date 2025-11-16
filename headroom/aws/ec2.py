@@ -1,10 +1,10 @@
 """EC2-related security analysis functions for Headroom."""
 
 import logging
-import boto3
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_ec2.client import EC2Client
 
@@ -39,7 +39,7 @@ class DenyEc2AmiOwner:
     ami_name: Optional[str]
 
 
-def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
+def get_imds_v1_ec2_analysis(session: Session) -> List[DenyImdsV1Ec2]:
     """
     Analyze EC2 instances for IMDS v1 configuration across all regions.
 
@@ -103,7 +103,7 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
     return results
 
 
-def get_ec2_ami_owner_analysis(session: boto3.Session) -> List[DenyEc2AmiOwner]:
+def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
     """
     Analyze EC2 instances to determine AMI owner for each instance.
 

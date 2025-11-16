@@ -1,13 +1,15 @@
 from typing import Any, Callable, Dict, List, Union
 import argparse
-import boto3
-from botocore.exceptions import ClientError
+import logging
 from pathlib import Path
+
+from boto3.session import Session
+from botocore.exceptions import ClientError
 
 from .config import HeadroomConfig
 from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session
-from .parse_results import parse_scp_results, print_policy_recommendations
+from .parse_results import analyze_scp_compliance, print_policy_recommendations
 from .terraform.generate_scps import generate_scp_terraform
 from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform, _create_org_info_symlink
 from .terraform.generate_org_info import generate_terraform_org_info
@@ -15,6 +17,8 @@ from .aws.organization import analyze_organization_structure
 from .types import OrganizationHierarchy
 from .constants import ORG_INFO_FILENAME
 from .output import OutputHandler
+
+logger = logging.getLogger(__name__)
 
 
 def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> HeadroomConfig:
@@ -68,8 +72,8 @@ def process_policy_recommendations(
 
 def setup_organization_context(
     final_config: HeadroomConfig,
-    security_session: boto3.Session
-) -> tuple[boto3.Session, OrganizationHierarchy]:
+    security_session: Session
+) -> tuple[Session, OrganizationHierarchy]:
     """
     Set up organization context for policy analysis.
 
@@ -115,7 +119,7 @@ def handle_scp_workflow(final_config: HeadroomConfig, org_hierarchy: Organizatio
         final_config: Validated Headroom configuration
         org_hierarchy: Organization hierarchy structure
     """
-    scp_recommendations = parse_scp_results(final_config, org_hierarchy)
+    scp_recommendations = analyze_scp_compliance(final_config, org_hierarchy)
 
     if not scp_recommendations:
         return
@@ -183,6 +187,16 @@ def main() -> None:
         handle_scp_workflow(final_config, org_hierarchy)
         handle_rcp_workflow(final_config, org_hierarchy)
 
-    except (ValueError, RuntimeError, ClientError) as e:
-        OutputHandler.error("Terraform Generation Error", e)
+    except ValueError as e:
+        OutputHandler.error("Configuration Error", e)
+        logger.error(f"Invalid configuration: {e}", exc_info=True)
+        exit(1)
+    except RuntimeError as e:
+        OutputHandler.error("Runtime Error", e)
+        logger.error(f"Runtime error during Terraform generation: {e}", exc_info=True)
+        exit(1)
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        OutputHandler.error(f"AWS API Error ({error_code})", e)
+        logger.error(f"AWS API error: {e}", exc_info=True)
         exit(1)

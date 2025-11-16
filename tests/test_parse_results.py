@@ -16,7 +16,7 @@ from botocore.exceptions import ClientError
 from headroom.parse_results import (
     parse_scp_result_files,
     determine_scp_placement,
-    parse_scp_results,
+    analyze_scp_compliance,
     print_policy_recommendations,
 )
 from headroom.terraform.generate_scps import generate_scp_terraform
@@ -696,10 +696,10 @@ class TestSCPPlacementDetermination:
 
 
 class TestParseResultsIntegration:
-    """Test integration of parse_scp_results function."""
+    """Test integration of analyze_scp_compliance function."""
 
     def test_parse_scp_results_success(self) -> None:
-        """Test successful parse_scp_results execution."""
+        """Test successful analyze_scp_compliance execution."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -722,10 +722,10 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
             # Should not raise any exceptions
-            parse_scp_results(config, mock_hierarchy)
+            analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_missing_management_account_id(self) -> None:
-        """Test that parse_scp_results works with minimal organization hierarchy."""
+        """Test that analyze_scp_compliance works with minimal organization hierarchy."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -745,7 +745,7 @@ class TestParseResultsIntegration:
         )
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            parse_scp_results(config, mock_hierarchy)
+            analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_no_result_files(self) -> None:
         """Test handling when no result files are found."""
@@ -780,10 +780,10 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
             # Should return early without error
-            parse_scp_results(config, mock_hierarchy)
+            analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_assume_role_failure(self) -> None:
-        """Test that parse_scp_results handles empty results gracefully."""
+        """Test that analyze_scp_compliance handles empty results gracefully."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -804,11 +804,11 @@ class TestParseResultsIntegration:
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
             # Should handle gracefully
-            result = parse_scp_results(config, mock_hierarchy)
+            result = analyze_scp_compliance(config, mock_hierarchy)
             assert result == []
 
     def test_parse_scp_results_organization_analysis_failure(self) -> None:
-        """Test that parse_scp_results works with minimal hierarchy data."""
+        """Test that analyze_scp_compliance works with minimal hierarchy data."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -828,11 +828,11 @@ class TestParseResultsIntegration:
         )
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            result = parse_scp_results(config, mock_hierarchy)
+            result = analyze_scp_compliance(config, mock_hierarchy)
             assert result == []
 
     def test_parse_scp_results_with_recommendations_output(self) -> None:
-        """Test parse_scp_results returns recommendations without printing."""
+        """Test analyze_scp_compliance returns recommendations without printing."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -871,7 +871,7 @@ class TestParseResultsIntegration:
         ]
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results):
-            recommendations = parse_scp_results(config, mock_hierarchy)
+            recommendations = analyze_scp_compliance(config, mock_hierarchy)
 
             # Verify recommendations were returned
             assert len(recommendations) == 1
@@ -879,7 +879,7 @@ class TestParseResultsIntegration:
             assert recommendations[0].recommended_level == "root"
 
     def test_parse_scp_results_with_ou_recommendation_output(self) -> None:
-        """Test parse_scp_results with OU-level recommendation output."""
+        """Test analyze_scp_compliance with OU-level recommendation output."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -923,7 +923,7 @@ class TestParseResultsIntegration:
         with patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
              patch('builtins.print'):
 
-            recommendations = parse_scp_results(config, mock_hierarchy)
+            recommendations = analyze_scp_compliance(config, mock_hierarchy)
 
             # Verify that recommendations were returned
             assert isinstance(recommendations, list)

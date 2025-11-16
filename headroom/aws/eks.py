@@ -1,10 +1,11 @@
 """AWS EKS analysis functions for Headroom checks."""
 
 import logging
-import boto3
 from dataclasses import dataclass
 from typing import Dict, List
 
+from boto3.session import Session
+from mypy_boto3_ec2.client import EC2Client
 from mypy_boto3_eks.client import EKSClient
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class DenyEksCreateClusterWithoutTag:
 
 
 def get_eks_cluster_tag_analysis(
-    session: boto3.Session
+    session: Session
 ) -> List[DenyEksCreateClusterWithoutTag]:
     """
     Analyze EKS clusters for PavedRoad tag presence.
@@ -55,7 +56,7 @@ def get_eks_cluster_tag_analysis(
     Raises:
         ClientError: If AWS API calls fail
     """
-    ec2_client = session.client("ec2")
+    ec2_client: EC2Client = session.client("ec2")
     all_results = []
 
     # Get all regions (including opt-in regions that may be disabled)
@@ -76,7 +77,7 @@ def get_eks_cluster_tag_analysis(
 
 
 def _analyze_eks_in_region(
-    session: boto3.Session,
+    session: Session,
     region: str
 ) -> List[DenyEksCreateClusterWithoutTag]:
     """
@@ -92,7 +93,7 @@ def _analyze_eks_in_region(
     Raises:
         ClientError: If AWS API calls fail
     """
-    eks_client = session.client("eks", region_name=region)
+    eks_client: EKSClient = session.client("eks", region_name=region)
     results = []
 
     # List all EKS clusters

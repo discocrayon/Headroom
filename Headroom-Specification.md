@@ -108,10 +108,8 @@ headroom/
 │   │   └── deny_rds_unencrypted.py
 │   └── rcps/
 │       ├── deny_third_party_assumerole.py
-│       └── deny_s3_third_party_access.py
-│       └── deny_aoss_third_party_access.py
-│       ├── deny_ecr_third_party_access.py
-│       └── deny_third_party_assumerole.py
+│       ├── deny_s3_third_party_access.py
+│       └── deny_ecr_third_party_access.py
 ├── placement/
 │   └── hierarchy.py        # OU hierarchy analysis
 └── terraform/
@@ -1225,78 +1223,6 @@ def _analyze_access_policy(
 # checks/rcps/deny_s3_third_party_access.py
 
 class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
-# checks/rcps/deny_aoss_third_party_access.py
-
-class DenyAossThirdPartyAccessCheck(BaseCheck[AossResourcePolicyAnalysis]):
-    def __init__(self, org_account_ids: Set[str], **kwargs):
-        super().__init__(**kwargs)
-        self.org_account_ids = org_account_ids
-        self.all_third_party_accounts: Set[str] = set()
-        self.actions_by_account: Dict[str, Set[str]] = {}
-        self.buckets_by_account: Dict[str, Set[str]] = {}
-
-    def analyze(self, session):
-        all_results = analyze_s3_bucket_policies(session, self.org_account_ids)
-        # Filter to only buckets with findings
-        return [
-            result for result in all_results
-            if result.has_wildcard_principal
-            or result.has_non_account_principals
-            or result.third_party_account_ids
-        ]
-
-    def categorize_result(self, result):
-        # Buckets with wildcards or non-account principals are "violations"
-        # Buckets with third-party account access are "compliant" (expected patterns)
-        if result.has_wildcard_principal or result.has_non_account_principals:
-            return ("violation", ...)
-        else:
-            return ("compliant", ...)
-
-    def build_summary_fields(self, check_result):
-        # Aggregate unique third-party account IDs
-        # Track actions and buckets per third-party account
-        # Count buckets with wildcards and non-account principals as violations
-        return {
-            "total_buckets_analyzed": total,
-            "buckets_with_third_party_access": len(third_party_buckets),
-            "buckets_with_wildcards": len(wildcard_buckets),
-            "buckets_with_non_account_principals": len(non_account_principal_buckets),
-            "unique_third_party_accounts": list(unique_third_parties),
-            "actions_by_third_party_account": {
-                account_id: sorted(list(actions))
-                for account_id, actions in actions_by_account.items()
-            },
-            "buckets_by_third_party_account": {
-                account_id: sorted(list(buckets))
-                for account_id, buckets in buckets_by_account.items()
-            },
-            "violations": len(violations)
-
-    def analyze(self, session):
-        return analyze_aoss_resource_policies(session, self.org_account_ids)
-
-    def categorize_result(self, result):
-        # All third-party access categorized as \"compliant\" (allowlisting pattern)
-        # Track accounts and actions for summary aggregation
-        self.all_third_party_accounts.update(result.third_party_account_ids)
-        for account_id in result.third_party_account_ids:
-            if account_id not in self.actions_by_account:
-                self.actions_by_account[account_id] = set()
-            self.actions_by_account[account_id].update(result.allowed_actions)
-        return (\"compliant\", ...)
-
-    def build_summary_fields(self, check_result):
-        # Convert actions sets to sorted lists for JSON serialization
-        return {
-            \"total_resources_with_third_party_access\": total,
-            \"third_party_account_count\": len(self.all_third_party_accounts),
-            \"unique_third_party_accounts\": sorted(self.all_third_party_accounts),
-            \"actions_by_third_party_account\": {
-                account: sorted(actions)
-                for account, actions in self.actions_by_account.items()
-            }
-        }
 ```
 
 **Result JSON Schema:**
@@ -1372,45 +1298,6 @@ The RCP uses `aws:PrincipalAccount` condition for allowlisting. This only works 
 - Buckets with Federated/CanonicalUser principals → marked as violations
 - Only buckets with account-based third-party access → used for allowlist generation
 - RCP policy includes `aws:ResourceTag/dp:exclude:identity = "true"` condition to exempt tagged buckets
-  \"summary\": {
-    \"account_name\": \"string\",
-    \"account_id\": \"string\",
-    \"check\": \"deny_aoss_third_party_access\",
-    \"total_resources_with_third_party_access\": 2,
-    \"third_party_account_count\": 2,
-    \"unique_third_party_accounts\": [\"999888777666\", \"111222333444\"],
-    \"actions_by_third_party_account\": {
-      \"999888777666\": [\"aoss:ReadDocument\", \"aoss:WriteDocument\"],
-      \"111222333444\": [\"aoss:ReadDocument\"]
-    }
-  },
-  \"violations\": [],
-  \"exemptions\": [],
-  \"resources_with_third_party_access\": [
-    {
-      \"resource_name\": \"analytics-collection\",
-      \"resource_type\": \"collection\",
-      \"resource_arn\": \"arn:aws:aoss:us-east-1:111111111111:collection/analytics-collection\",
-      \"policy_name\": \"vendor-access-policy\",
-      \"third_party_account_ids\": [\"999888777666\"],
-      \"allowed_actions\": [\"aoss:ReadDocument\", \"aoss:WriteDocument\"]
-    },
-    {
-      \"resource_name\": \"logs-index\",
-      \"resource_type\": \"index\",
-      \"resource_arn\": \"arn:aws:aoss:us-west-2:111111111111:index/logs-index\",
-      \"policy_name\": \"partner-access-policy\",
-      \"third_party_account_ids\": [\"111222333444\"],
-      \"allowed_actions\": [\"aoss:ReadDocument\"]
-    }
-  ]
-}
-```
-
-**Custom Result Structure:**
-The AOSS check uses a custom `_build_results_data()` method to rename \"compliant_instances\" to \"resources_with_third_party_access\" for better clarity.
-
----
 
 ## Results Processing
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, List, Set
 from urllib.parse import unquote
 
-import boto3
+from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
@@ -124,7 +124,7 @@ def _has_wildcard_principal(principal: Any) -> bool:
 
 
 def analyze_iam_roles_trust_policies(
-    session: boto3.Session,
+    session: Session,
     org_account_ids: Set[str]
 ) -> List[TrustPolicyAnalysis]:
     """

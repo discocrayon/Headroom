@@ -1,14 +1,17 @@
 """AWS session management utilities."""
 
-import boto3
 from typing import Optional
+
+from boto3.session import Session
+from mypy_boto3_sts.client import STSClient
+from mypy_boto3_sts.type_defs import AssumeRoleResponseTypeDef, CredentialsTypeDef
 
 
 def assume_role(
     role_arn: str,
     session_name: str,
-    base_session: Optional[boto3.Session] = None
-) -> boto3.Session:
+    base_session: Optional[Session] = None
+) -> Session:
     """
     Assume an IAM role and return a session with temporary credentials.
 
@@ -24,16 +27,16 @@ def assume_role(
         ClientError: If role assumption fails (AccessDenied, InvalidParameterValue, etc.)
     """
     if base_session is None:
-        base_session = boto3.Session()
+        base_session = Session()
 
-    sts = base_session.client("sts")
-    resp = sts.assume_role(
+    sts: STSClient = base_session.client("sts")
+    resp: AssumeRoleResponseTypeDef = sts.assume_role(
         RoleArn=role_arn,
         RoleSessionName=session_name
     )
 
-    creds = resp["Credentials"]
-    return boto3.Session(
+    creds: CredentialsTypeDef = resp["Credentials"]
+    return Session(
         aws_access_key_id=creds["AccessKeyId"],
         aws_secret_access_key=creds["SecretAccessKey"],
         aws_session_token=creds["SessionToken"]
