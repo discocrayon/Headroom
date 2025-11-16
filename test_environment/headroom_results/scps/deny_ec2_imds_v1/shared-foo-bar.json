@@ -1,7 +1,7 @@
 {
   "summary": {
     "account_name": "shared-foo-bar",
-    "check": "deny_imds_v1_ec2",
+    "check": "deny_ec2_imds_v1",
     "total_instances": 1,
     "violations": 1,
     "exemptions": 0,

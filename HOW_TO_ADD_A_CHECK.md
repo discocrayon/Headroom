@@ -60,7 +60,7 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 
 **Existing Code Familiarity:**
 - Review existing checks:
-  - `headroom/checks/scps/deny_imds_v1_ec2.py`
+  - `headroom/checks/scps/deny_ec2_imds_v1.py`
   - `headroom/checks/scps/deny_iam_user_creation.py`
   - `headroom/checks/rcps/deny_third_party_assumerole.py`
 - Understand `headroom/checks/base.py` (BaseCheck pattern)
@@ -429,17 +429,37 @@ Add your check name to the constants module:
 
 ```python
 # Check name constants
-DENY_IMDS_V1_EC2 = "deny_imds_v1_ec2"
+DENY_IMDS_V1_EC2 = "deny_ec2_imds_v1"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"  # ADD THIS LINE
 ```
 
-**Rules:**
-- Use snake_case
-- Prefix with action (deny_, enforce_, require_)
+**Naming Convention Rules:**
+- **Format:** `{action}_{aws_service}_{specific_check}`
+  - Examples: `deny_ec2_imds_v1`, `deny_rds_unencrypted`, `deny_s3_third_party_access`
+- **Action prefixes:** deny_, enforce_, require_
+- **AWS service:** Always include the AWS service name (ec2, rds, iam, s3, etc.) immediately after the action
+- **Specific check:** Describe what specifically is being checked or denied
+- Use snake_case (lowercase with underscores)
 - Be descriptive but concise
 - Match filename (minus extension)
+
+**Why This Convention:**
+- **Discoverability:** Grouping by service (e.g., all `deny_ec2_*` checks) makes it easy to find related checks
+- **Clarity:** Immediately clear which AWS service the check targets
+- **Consistency:** Standardized structure across all checks
+- **Alphabetical sorting:** Checks naturally group by service when sorted
+
+**Bad Examples (old convention):**
+- ❌ `deny_imds_v1_ec2` - service at the end makes discovery harder
+- ❌ `imds_v1_check` - missing action prefix
+- ❌ `ec2check` - not snake_case, unclear
+
+**Good Examples:**
+- ✅ `deny_ec2_imds_v1` - action, service, then specific check
+- ✅ `deny_rds_unencrypted` - clear service (RDS) and check (unencrypted)
+- ✅ `deny_iam_user_creation` - IAM service, user creation check
 
 ### Step 1.2: Create Data Model
 
@@ -880,8 +900,8 @@ def _build_scp_terraform_module(...):
 
     # EC2
     terraform_content += "  # EC2\n"
-    deny_imds_v1_ec2 = "deny_imds_v1_ec2" in enabled_checks
-    terraform_content += f"  deny_imds_v1_ec2 = {str(deny_imds_v1_ec2).lower()}\n"
+    deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_checks
+    terraform_content += f"  deny_ec2_imds_v1 = {str(deny_ec2_imds_v1).lower()}\n"
     terraform_content += "\n"
 
     # IAM
@@ -1483,7 +1503,7 @@ module "scps_acme_co" {
   target_id = local.acme_co_account_id
 
   # EC2
-  deny_imds_v1_ec2 = false
+  deny_ec2_imds_v1 = false
 
   # IAM
   deny_iam_user_creation = false
@@ -1803,7 +1823,6 @@ Use this checklist when adding any new check:
 
 ### Terraform Modules
 - [ ] Added boolean variable to `test_environment/modules/{scps|rcps}/variables.tf`
-- [ ] Added `nullable = false` to require explicit value
 - [ ] Added allowlist variable (if Pattern 5)
 - [ ] Added policy statement to `test_environment/modules/{scps|rcps}/locals.tf`:
   - [ ] Used `include` field tied to variable
@@ -2052,7 +2071,6 @@ Use this checklist when adding any new check:
 # SCP boolean - NO default
 variable "deny_rds_unencrypted" {
   type = bool
-  nullable = false  # Requires explicit value
 }
 
 # RCP allowlist - WITH default
@@ -2229,7 +2247,7 @@ These lessons were learned during the implementation of the `deny_rds_unencrypte
 2. Read complete list of RDS actions and their condition key columns
 3. Found only 3 actions explicitly list `rds:StorageEncrypted`:
    - `rds:CreateDBCluster` ✅
-   - `rds:RestoreDBClusterFromS3` ✅  
+   - `rds:RestoreDBClusterFromS3` ✅
    - `rds:CreateBlueGreenDeployment` ✅
 4. Confirmed `rds:CreateDBInstance` does NOT list it ❌
 
@@ -2371,7 +2389,7 @@ The `[^:]*:` allows for optional region field (zero or more non-colon characters
 
 1. **Start Small:** Implement simplest version first, add features incrementally
 2. **Test Early:** Write tests alongside implementation, not after
-3. **Follow Patterns:** Copy from existing checks (deny_imds_v1_ec2, deny_iam_user_creation)
+3. **Follow Patterns:** Copy from existing checks (deny_ec2_imds_v1, deny_iam_user_creation)
 4. **Quality First:** Run `tox` frequently during development, not just at the end
 5. **Type Everything:** Add type hints as you write code, not as an afterthought
 6. **DRY Continuously:** Refactor duplicate code immediately when you see it

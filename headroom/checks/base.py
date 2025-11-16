@@ -8,12 +8,15 @@ implement three methods: analyze(), categorize_result(), and build_summary_field
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, Generic, List, TypeVar
+from typing import Any, Generic, List, TypeVar
 
-import boto3
+from boto3.session import Session
 
+from ..enums import CheckCategory
+from ..types import JsonDict
 from ..write_results import write_check_results
 from ..output import OutputHandler
+from ..utils import format_account_identifier
 
 T = TypeVar('T')
 
@@ -26,10 +29,10 @@ class CategorizedCheckResult:
     Contains violations, exemptions, and compliant resources after
     processing raw analysis results.
     """
-    violations: List[Dict[str, Any]]
-    exemptions: List[Dict[str, Any]]
-    compliant: List[Dict[str, Any]]
-    summary: Dict[str, Any]
+    violations: List[JsonDict]
+    exemptions: List[JsonDict]
+    compliant: List[JsonDict]
+    summary: JsonDict
 
 
 class BaseCheck(ABC, Generic[T]):
@@ -74,7 +77,7 @@ class BaseCheck(ABC, Generic[T]):
         self.exclude_account_ids = exclude_account_ids
 
     @abstractmethod
-    def analyze(self, session: boto3.Session) -> List[T]:
+    def analyze(self, session: Session) -> List[T]:
         """
         Perform AWS API analysis.
 
@@ -86,7 +89,7 @@ class BaseCheck(ABC, Generic[T]):
         """
 
     @abstractmethod
-    def categorize_result(self, result: T) -> tuple[str, Dict[str, Any]]:
+    def categorize_result(self, result: T) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single result.
 
@@ -94,14 +97,11 @@ class BaseCheck(ABC, Generic[T]):
             result: Single analysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is one of:
-            - "violation"
-            - "exemption"
-            - "compliant"
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
 
     @abstractmethod
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build check-specific summary fields.
 
@@ -112,7 +112,7 @@ class BaseCheck(ABC, Generic[T]):
             Dictionary with check-specific summary fields
         """
 
-    def _build_results_data(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def _build_results_data(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build results data dictionary.
 
@@ -131,7 +131,7 @@ class BaseCheck(ABC, Generic[T]):
             "compliant_instances": check_result.compliant,
         }
 
-    def execute(self, session: boto3.Session) -> None:
+    def execute(self, session: Session) -> None:
         """
         Execute the check (template method).
 
@@ -153,11 +153,11 @@ class BaseCheck(ABC, Generic[T]):
 
         for result in raw_results:
             category, result_dict = self.categorize_result(result)
-            if category == "violation":
+            if category == CheckCategory.VIOLATION:
                 violations.append(result_dict)
-            elif category == "exemption":
+            elif category == CheckCategory.EXEMPTION:
                 exemptions.append(result_dict)
-            elif category == "compliant":
+            elif category == CheckCategory.COMPLIANT:
                 compliant.append(result_dict)
 
         check_result = CategorizedCheckResult(
@@ -186,7 +186,7 @@ class BaseCheck(ABC, Generic[T]):
             exclude_account_ids=self.exclude_account_ids,
         )
 
-        account_identifier = f"{self.account_name}_{self.account_id}"
+        account_identifier = format_account_identifier(self.account_name, self.account_id)
         OutputHandler.check_completed(
             self.check_name,
             account_identifier,

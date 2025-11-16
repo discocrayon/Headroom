@@ -14,7 +14,7 @@
       "region": "us-east-1",
       "engine": "mysql",
       "encrypted": false,
-      "db_arn": "arn:aws:rds:us-east-1:754902277551:db:unencrypted-instance"
+      "db_arn": "arn:aws:rds:us-east-1:REDACTED:db:unencrypted-instance"
     }
   ],
   "exemptions": [],

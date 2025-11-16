@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import boto3
+from boto3.session import Session
 
 from headroom.aws.iam import IamUserAnalysis
 from headroom.checks.scps.deny_iam_user_creation import DenyIamUserCreationCheck
@@ -22,7 +22,7 @@ class TestCheckDenyIamUserCreation:
             results_dir=str(tmp_path),
         )
 
-        mock_session = MagicMock(spec=boto3.Session)
+        mock_session = MagicMock(spec=Session)
 
         with patch(
             "headroom.checks.scps.deny_iam_user_creation.get_iam_users_analysis"
@@ -64,7 +64,7 @@ class TestCheckDenyIamUserCreation:
             results_dir=str(tmp_path),
         )
 
-        mock_session = MagicMock(spec=boto3.Session)
+        mock_session = MagicMock(spec=Session)
 
         with patch(
             "headroom.checks.scps.deny_iam_user_creation.get_iam_users_analysis"
@@ -91,7 +91,7 @@ class TestCheckDenyIamUserCreation:
             results_dir=str(tmp_path),
         )
 
-        mock_session = MagicMock(spec=boto3.Session)
+        mock_session = MagicMock(spec=Session)
 
         with patch(
             "headroom.checks.scps.deny_iam_user_creation.get_iam_users_analysis"

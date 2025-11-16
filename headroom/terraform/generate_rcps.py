@@ -6,9 +6,11 @@ Generates Terraform files for RCP deployment based on third-party account analys
 
 import logging
 import os
+from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Set
 
+from .models import TerraformModule, TerraformParameter, TerraformComment, TerraformElement
 from .utils import make_safe_variable_name, write_terraform_file
 from ..types import (
     AccountThirdPartyMap,
@@ -17,7 +19,12 @@ from ..types import (
     RCPParseResult,
     RCPPlacementRecommendations,
 )
-from ..constants import THIRD_PARTY_ASSUMEROLE
+from ..constants import (
+    THIRD_PARTY_ASSUMEROLE,
+    DENY_ECR_THIRD_PARTY_ACCESS,
+    DENY_S3_THIRD_PARTY_ACCESS,
+    DENY_AOSS_THIRD_PARTY_ACCESS,
+)
 from ..write_results import get_results_dir
 from ..parse_results import _load_result_file_json, _extract_account_id_from_result
 from ..placement import HierarchyPlacementAnalyzer
@@ -262,6 +269,88 @@ def _create_account_level_rcp_recommendations(
     return recommendations
 
 
+def _prepare_account_data_for_placement(
+    account_third_party_map: AccountThirdPartyMap
+) -> List[Dict[str, Any]]:
+    """
+    Convert account third-party map to list format for placement analysis.
+
+    Args:
+        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+
+    Returns:
+        List of dictionaries with account_id and third_party_accounts
+    """
+    return [
+        {"account_id": acc_id, "third_party_accounts": third_parties}
+        for acc_id, third_parties in account_third_party_map.items()
+    ]
+
+
+def _is_safe_for_root_rcp(
+    accounts_with_wildcards: Set[str]
+) -> bool:
+    """
+    Determine if root-level RCP deployment is safe.
+
+    Root-level RCP is only safe if no accounts have wildcard principals.
+    """
+    return len(accounts_with_wildcards) == 0
+
+
+def _is_safe_for_ou_rcp(
+    ou_id: str,
+    organization_hierarchy: OrganizationHierarchy,
+    accounts_with_wildcards: Set[str]
+) -> bool:
+    """
+    Determine if OU-level RCP deployment is safe.
+
+    OU-level RCP is only safe if no accounts in the OU have wildcard principals.
+    """
+    return not _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards)
+
+
+def _process_rcp_placement_candidates(
+    candidates: List[Any],
+    account_third_party_map: AccountThirdPartyMap,
+    organization_hierarchy: OrganizationHierarchy
+) -> List[RCPPlacementRecommendations]:
+    """
+    Process placement candidates and generate RCP recommendations.
+
+    Handles root, OU, and account level recommendations based on candidates.
+
+    Args:
+        candidates: List of placement candidates from analyzer
+        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        organization_hierarchy: Organization structure information
+
+    Returns:
+        List of RCP placement recommendations
+    """
+    for candidate in candidates:
+        if candidate.level == "root":
+            root_recommendation = _create_root_level_rcp_recommendation(
+                account_third_party_map,
+                organization_hierarchy
+            )
+            return [root_recommendation]
+
+    ou_recommendations, ou_covered_accounts = _create_ou_level_rcp_recommendations(
+        candidates,
+        account_third_party_map,
+        organization_hierarchy
+    )
+
+    account_recommendations = _create_account_level_rcp_recommendations(
+        account_third_party_map,
+        ou_covered_accounts
+    )
+
+    return ou_recommendations + account_recommendations
+
+
 def determine_rcp_placement(
     account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy,
@@ -288,51 +377,26 @@ def determine_rcp_placement(
         return []
 
     analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
-
-    account_data = [
-        {"account_id": acc_id, "third_party_accounts": third_parties}
-        for acc_id, third_parties in account_third_party_map.items()
-    ]
-
-    def is_safe_for_root_rcp(results: List[Dict[str, Any]]) -> bool:
-        return len(accounts_with_wildcards) == 0
-
-    def is_safe_for_ou_rcp(ou_id: str, results: List[Dict[str, Any]]) -> bool:
-        return not _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards)
+    account_data = _prepare_account_data_for_placement(account_third_party_map)
 
     candidates = analyzer.determine_placement(
         check_results=account_data,
-        is_safe_for_root=is_safe_for_root_rcp,
-        is_safe_for_ou=is_safe_for_ou_rcp,
+        is_safe_for_root=lambda results: _is_safe_for_root_rcp(accounts_with_wildcards),
+        is_safe_for_ou=lambda ou_id, results: _is_safe_for_ou_rcp(ou_id, organization_hierarchy, accounts_with_wildcards),
         get_account_id=lambda r: r["account_id"]
     )
 
-    for candidate in candidates:
-        if candidate.level == "root":
-            root_recommendation = _create_root_level_rcp_recommendation(
-                account_third_party_map,
-                organization_hierarchy
-            )
-            return [root_recommendation]
-
-    ou_recommendations, ou_covered_accounts = _create_ou_level_rcp_recommendations(
+    return _process_rcp_placement_candidates(
         candidates,
         account_third_party_map,
         organization_hierarchy
     )
 
-    account_recommendations = _create_account_level_rcp_recommendations(
-        account_third_party_map,
-        ou_covered_accounts
-    )
-
-    return ou_recommendations + account_recommendations
-
 
 def _build_rcp_terraform_module(
     module_name: str,
     target_id_reference: str,
-    third_party_account_ids: List[str],
+    recommendations: List[RCPPlacementRecommendations],
     comment: str
 ) -> str:
     """
@@ -341,37 +405,72 @@ def _build_rcp_terraform_module(
     Args:
         module_name: Name of the Terraform module instance (e.g., "rcps_root")
         target_id_reference: Reference to the target ID (e.g., "local.root_ou_id")
-        third_party_account_ids: List of third-party AWS account IDs to whitelist
+        recommendations: List of RCP recommendations for this target
         comment: Comment line describing the configuration (e.g., "Organization Root")
 
     Returns:
         Complete Terraform module block as a string
     """
-    has_wildcard = "*" in third_party_account_ids
-    enforce_assume_role_org_identities = not has_wildcard
+    recs_by_check: Dict[str, RCPPlacementRecommendations] = {}
+    for rec in recommendations:
+        recs_by_check[rec.check_name] = rec
 
-    terraform_content = f'''# Auto-generated RCP Terraform configuration for {comment}
-# Generated by Headroom based on third-party account analysis
+    assume_role_rec = recs_by_check.get(THIRD_PARTY_ASSUMEROLE)
+    ecr_rec = recs_by_check.get(DENY_ECR_THIRD_PARTY_ACCESS)
+    s3_rec = recs_by_check.get(DENY_S3_THIRD_PARTY_ACCESS)
+    aoss_rec = recs_by_check.get(DENY_AOSS_THIRD_PARTY_ACCESS)
 
-module "{module_name}" {{
-  source = "../modules/rcps"
-  target_id = {target_id_reference}
+    parameters: List[TerraformElement] = []
 
-'''
-    if enforce_assume_role_org_identities:
-        terraform_content += '  third_party_assumerole_account_ids_allowlist = [\n'
-        for account_id in third_party_account_ids:
-            terraform_content += f'    "{account_id}",\n'
-        terraform_content += '  ]\n'
+    parameters.append(TerraformComment("ECR"))
+    if ecr_rec:
+        parameters.append(TerraformParameter("deny_ecr_third_party_access_account_ids_allowlist", ecr_rec.third_party_account_ids))
+        parameters.append(TerraformParameter("deny_ecr_third_party_access", True))
+    else:
+        parameters.append(TerraformParameter("deny_ecr_third_party_access", False))
 
-    terraform_content += f'  enforce_assume_role_org_identities = {str(enforce_assume_role_org_identities).lower()}\n'
-    terraform_content += '}\n'
-    return terraform_content
+    parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("IAM"))
+    if assume_role_rec:
+        has_wildcard = "*" in assume_role_rec.third_party_account_ids
+        enforce_assume_role_org_identities = not has_wildcard
+        if enforce_assume_role_org_identities:
+            parameters.append(TerraformParameter("third_party_assumerole_account_ids_allowlist", assume_role_rec.third_party_account_ids))
+        parameters.append(TerraformParameter("enforce_assume_role_org_identities", enforce_assume_role_org_identities))
+    else:
+        parameters.append(TerraformParameter("enforce_assume_role_org_identities", False))
+
+    parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("OpenSearch Serverless"))
+    if aoss_rec:
+        parameters.append(TerraformParameter("aoss_third_party_account_ids_allowlist", aoss_rec.third_party_account_ids))
+        parameters.append(TerraformParameter("deny_aoss_third_party_access", True))
+    else:
+        parameters.append(TerraformParameter("deny_aoss_third_party_access", False))
+
+    parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("S3"))
+    if s3_rec:
+        parameters.append(TerraformParameter("third_party_s3_access_account_ids_allowlist", s3_rec.third_party_account_ids))
+        parameters.append(TerraformParameter("deny_s3_third_party_access", True))
+    else:
+        parameters.append(TerraformParameter("deny_s3_third_party_access", False))
+
+    module = TerraformModule(
+        name=module_name,
+        source="../modules/rcps",
+        target_id=target_id_reference,
+        parameters=parameters,
+        comment=comment,
+        policy_type="RCP"
+    )
+
+    return module.render()
 
 
 def _generate_account_rcp_terraform(
     account_id: str,
-    rec: RCPPlacementRecommendations,
+    recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
 ) -> None:
@@ -380,7 +479,7 @@ def _generate_account_rcp_terraform(
 
     Args:
         account_id: AWS account ID
-        rec: RCP recommendation for this account
+        recs: List of RCP recommendations for this account
         organization_hierarchy: Organization structure information
         output_path: Directory to write Terraform files to
     """
@@ -392,10 +491,13 @@ def _generate_account_rcp_terraform(
     filename = f"{account_name}_rcps.tf"
     filepath = output_path / filename
 
+    if not recs:
+        return
+
     terraform_content = _build_rcp_terraform_module(
         module_name=f"rcps_{account_name}",
         target_id_reference=f"local.{account_name}_account_id",
-        third_party_account_ids=rec.third_party_account_ids,
+        recommendations=recs,
         comment=account_info.account_name
     )
     write_terraform_file(filepath, terraform_content, "RCP")
@@ -403,7 +505,7 @@ def _generate_account_rcp_terraform(
 
 def _generate_ou_rcp_terraform(
     ou_id: str,
-    rec: RCPPlacementRecommendations,
+    recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
 ) -> None:
@@ -412,7 +514,7 @@ def _generate_ou_rcp_terraform(
 
     Args:
         ou_id: Organizational Unit ID
-        rec: RCP recommendation for this OU
+        recs: List of RCP recommendations for this OU
         organization_hierarchy: Organization structure information
         output_path: Directory to write Terraform files to
     """
@@ -424,33 +526,39 @@ def _generate_ou_rcp_terraform(
     filename = f"{ou_name}_ou_rcps.tf"
     filepath = output_path / filename
 
+    if not recs:
+        return
+
     terraform_content = _build_rcp_terraform_module(
         module_name=f"rcps_{ou_name}_ou",
         target_id_reference=f"local.top_level_{ou_name}_ou_id",
-        third_party_account_ids=rec.third_party_account_ids,
+        recommendations=recs,
         comment=f"OU {ou_info.name}"
     )
     write_terraform_file(filepath, terraform_content, "RCP")
 
 
 def _generate_root_rcp_terraform(
-    rec: RCPPlacementRecommendations,
+    recs: List[RCPPlacementRecommendations],
     output_path: Path
 ) -> None:
     """
     Generate and write Terraform file for root-level RCP.
 
     Args:
-        rec: RCP recommendation for root level
+        recs: List of RCP recommendations for root level
         output_path: Directory to write Terraform files to
     """
     filename = "root_rcps.tf"
     filepath = output_path / filename
 
+    if not recs:
+        return
+
     terraform_content = _build_rcp_terraform_module(
         module_name="rcps_root",
         target_id_reference="local.root_ou_id",
-        third_party_account_ids=rec.third_party_account_ids,
+        recommendations=recs,
         comment="Organization Root"
     )
     write_terraform_file(filepath, terraform_content, "RCP")
@@ -505,27 +613,44 @@ def generate_rcp_terraform(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Group recommendations by level and target
-    account_recommendations: Dict[str, RCPPlacementRecommendations] = {}
-    ou_recommendations: Dict[str, RCPPlacementRecommendations] = {}
-    root_recommendation: Optional[RCPPlacementRecommendations] = None
+    account_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
+    ou_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
+    root_recommendations: List[RCPPlacementRecommendations] = []
 
     for rec in recommendations:
         if rec.recommended_level == "account":
             for account_id in rec.affected_accounts:
-                account_recommendations[account_id] = rec
-        elif rec.recommended_level == "ou" and rec.target_ou_id:
-            ou_recommendations[rec.target_ou_id] = rec
-        elif rec.recommended_level == "root":
-            root_recommendation = rec
+                account_recommendations[account_id].append(rec)
+            continue
 
-    # Generate Terraform files for each account
-    for account_id, rec in account_recommendations.items():
-        _generate_account_rcp_terraform(account_id, rec, organization_hierarchy, output_path)
+        if rec.recommended_level == "ou" and rec.target_ou_id:
+            ou_recommendations[rec.target_ou_id].append(rec)
+            continue
 
-    # Generate Terraform files for each OU
-    for ou_id, rec in ou_recommendations.items():
-        _generate_ou_rcp_terraform(ou_id, rec, organization_hierarchy, output_path)
+        if rec.recommended_level == "root":
+            root_recommendations.append(rec)
 
     # Generate Terraform file for root level
-    if root_recommendation:
-        _generate_root_rcp_terraform(root_recommendation, output_path)
+    if root_recommendations:
+        _generate_root_rcp_terraform(
+            root_recommendations,
+            output_path
+        )
+
+    # Generate Terraform files for each account
+    for account_id, recs in account_recommendations.items():
+        _generate_account_rcp_terraform(
+            account_id,
+            recs,
+            organization_hierarchy,
+            output_path
+        )
+
+    # Generate Terraform files for each OU
+    for ou_id, recs in ou_recommendations.items():
+        _generate_ou_rcp_terraform(
+            ou_id,
+            recs,
+            organization_hierarchy,
+            output_path
+        )

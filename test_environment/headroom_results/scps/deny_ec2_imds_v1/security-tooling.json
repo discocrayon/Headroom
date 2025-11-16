@@ -1,0 +1,14 @@
+{
+  "summary": {
+    "account_name": "security-tooling",
+    "check": "deny_ec2_imds_v1",
+    "total_instances": 0,
+    "violations": 0,
+    "exemptions": 0,
+    "compliant": 0,
+    "compliance_percentage": 100
+  },
+  "violations": [],
+  "exemptions": [],
+  "compliant_instances": []
+}
