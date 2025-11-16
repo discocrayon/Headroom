@@ -1243,7 +1243,7 @@ class TestPrintPolicyRecommendations:
 
         recommendations = [
             RCPPlacementRecommendations(
-                check_name="third_party_assumerole",
+                check_name="deny_sts_third_party_assumerole",
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
@@ -1258,5 +1258,5 @@ class TestPrintPolicyRecommendations:
         printed_calls = [str(call) for call in mock_print.call_args_list]
 
         assert any("RCP RECOMMENDATIONS" in str(call) for call in printed_calls)
-        assert any("third_party_assumerole" in str(call) for call in printed_calls)
+        assert any("deny_sts_third_party_assumerole" in str(call) for call in printed_calls)
         assert any("Third-Party Accounts: 2" in str(call) for call in printed_calls)

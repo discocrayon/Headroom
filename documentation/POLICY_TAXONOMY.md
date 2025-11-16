@@ -417,11 +417,11 @@ This RCP restricts ECR repository access to organization principals and explicit
 ### Pattern 5a: `enforce_assume_role_org_identities`
 
 **Terraform:** `test_environment/modules/rcps/locals.tf` lines 27-51
-**Variable:** `third_party_assumerole_account_ids_allowlist`
+**Variable:** `deny_sts_third_party_assumerole_account_ids_allowlist`
 
 This RCP restricts role assumptions to organization principals and explicitly allowlisted third-party account IDs. It uses `aws:PrincipalOrgID` and `aws:PrincipalAccount` conditions.
 
-**Analysis by:** `headroom/checks/rcps/deny_third_party_assumerole.py`
+**Analysis by:** `headroom/checks/rcps/deny_deny_sts_third_party_assumerole.py`
 
 ### Pattern 5a: `deny_aoss_third_party_access`
 

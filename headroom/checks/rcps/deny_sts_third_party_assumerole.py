@@ -10,14 +10,14 @@ from typing import Any, List, Set
 from boto3.session import Session
 
 from ...aws.iam.roles import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
-from ...constants import THIRD_PARTY_ASSUMEROLE
+from ...constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
 from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
 
-@register_check("rcps", THIRD_PARTY_ASSUMEROLE)
+@register_check("rcps", DENY_STS_THIRD_PARTY_ASSUMEROLE)
 class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
     """
     Check for IAM roles that allow third-party account AssumeRole access.
@@ -39,7 +39,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
         **kwargs: Any,
     ) -> None:
         """
-        Initialize the third-party AssumeRole check.
+        Initialize the STS third-party AssumeRole check.
 
         Args:
             check_name: Name of the check
@@ -105,7 +105,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
 
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
-        Build third-party AssumeRole check-specific summary fields.
+        Build STS third-party AssumeRole check-specific summary fields.
 
         Args:
             check_result: Categorized check result

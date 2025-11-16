@@ -15,6 +15,7 @@ module "scps_root" {
 
   # IAM
   deny_iam_user_creation = true
+  deny_iam_saml_provider_not_aws_sso = true
   allowed_iam_users = [
     "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
     "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",

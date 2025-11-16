@@ -9,7 +9,7 @@ module "rcps_acme_acquisition_ou" {
   deny_ecr_third_party_access = false
 
   # IAM
-  third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole_account_ids_allowlist = [
     "749430749651",
   ]
   enforce_assume_role_org_identities = true
