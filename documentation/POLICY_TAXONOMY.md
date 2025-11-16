@@ -438,6 +438,25 @@ This RCP restricts OpenSearch Serverless (AOSS) access to organization principal
 
 **Headroom's Role:** Analyzes AOSS data access policies to identify third-party account access. Reports which collections and indexes grant access to external accounts, along with the specific AOSS actions permitted for each third-party account. This information informs the allowlist configuration.
 
+### Pattern 5a: `deny_kms_third_party_access`
+
+**Check:** `headroom/checks/rcps/deny_kms_third_party_access.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf` lines 53-78
+**Variable:** `deny_kms_third_party_access_account_ids_allowlist`
+
+This RCP restricts KMS key access to organization principals and explicitly allowlisted third-party account IDs. It blocks all `kms:*` actions for principals outside the organization unless explicitly allowed.
+
+**Policy Structure:**
+- Deny `kms:*` (all KMS actions)
+- Unless `aws:PrincipalOrgID` matches organization OR `aws:PrincipalAccount` is in allowlist
+- Excludes AWS service principals via `aws:PrincipalIsAWSService`
+
+**Headroom's Role:** Scans all accounts and analyzes KMS key policies, identifying which third-party accounts have access and which KMS actions they can perform. This informs the allowlist configuration for RCP deployment. The check also detects wildcard principals that would block RCP deployment.
+
+**Key Feature:** Tracks which specific KMS actions (e.g., `kms:Decrypt`, `kms:Encrypt`, `kms:GenerateDataKey`) each third-party account is granted, enabling precise understanding of access patterns across all KMS keys in the account.
+
+**Fail-Fast Validation:** If any KMS key policy contains a Federated principal (or other unsupported principal types), the check immediately fails with a clear error message, as these would break when the RCP is deployed.
+
 ### Pattern 5b: `deny_iam_user_creation`
 
 **Check:** `headroom/checks/scps/deny_iam_user_creation.py`

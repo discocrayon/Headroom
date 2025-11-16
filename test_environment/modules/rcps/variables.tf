@@ -65,6 +65,27 @@ variable "deny_s3_third_party_access" {
   type        = bool
   description = "Deny S3 access from third-party accounts except those in the allowlist."
 }
+
+# KMS
+
+variable "deny_kms_third_party_access" {
+  type        = bool
+  description = "Deny KMS access to accounts outside the organization unless explicitly allowed."
+}
+
+variable "deny_kms_third_party_access_account_ids_allowlist" {
+  type        = list(string)
+  default     = []
+  description = "Allowlist of third-party AWS account IDs permitted to access KMS keys in this target ID."
+
+  validation {
+    condition = alltrue([
+      for account_id in var.deny_kms_third_party_access_account_ids_allowlist : length(account_id) == 12 && can(regex("^[0-9]{12}$", account_id))
+    ])
+    error_message = "All deny_kms_third_party_access_account_ids_allowlist must be valid 12-digit AWS account IDs."
+  }
+}
+
 # OpenSearch Serverless
 
 variable "deny_aoss_third_party_access" {

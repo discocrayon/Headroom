@@ -22,6 +22,7 @@ from ..types import (
 from ..constants import (
     THIRD_PARTY_ASSUMEROLE,
     DENY_ECR_THIRD_PARTY_ACCESS,
+    DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
     DENY_AOSS_THIRD_PARTY_ACCESS,
 )
@@ -417,6 +418,7 @@ def _build_rcp_terraform_module(
 
     assume_role_rec = recs_by_check.get(THIRD_PARTY_ASSUMEROLE)
     ecr_rec = recs_by_check.get(DENY_ECR_THIRD_PARTY_ACCESS)
+    kms_rec = recs_by_check.get(DENY_KMS_THIRD_PARTY_ACCESS)
     s3_rec = recs_by_check.get(DENY_S3_THIRD_PARTY_ACCESS)
     aoss_rec = recs_by_check.get(DENY_AOSS_THIRD_PARTY_ACCESS)
 
@@ -439,6 +441,14 @@ def _build_rcp_terraform_module(
         parameters.append(TerraformParameter("enforce_assume_role_org_identities", enforce_assume_role_org_identities))
     else:
         parameters.append(TerraformParameter("enforce_assume_role_org_identities", False))
+
+    parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("KMS"))
+    if kms_rec:
+        parameters.append(TerraformParameter("deny_kms_third_party_access_account_ids_allowlist", kms_rec.third_party_account_ids))
+        parameters.append(TerraformParameter("deny_kms_third_party_access", True))
+    else:
+        parameters.append(TerraformParameter("deny_kms_third_party_access", False))
 
     parameters.append(TerraformComment(""))
     parameters.append(TerraformComment("OpenSearch Serverless"))
