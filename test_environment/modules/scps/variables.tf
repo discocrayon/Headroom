@@ -48,6 +48,11 @@ variable "deny_iam_user_creation" {
   type = bool
 }
 
+variable "deny_saml_provider_not_aws_sso" {
+  type        = bool
+  description = "Deny creation of IAM SAML providers so environments rely solely on AWS IAM Identity Center (AWS SSO)"
+}
+
 variable "allowed_iam_users" {
   type        = list(string)
   default     = []

@@ -107,8 +107,11 @@ See [full examples](documentation/EXAMPLES.md).
 
 ### SCP Checks
 - **EC2 IMDSv1**: Enforce IMDSv2 on all instances (supports exemption tags)
+- **EC2 AMI Owner**: Restrict AMI usage to approved owners
+- **EC2 Public IP**: Block public IP allocation on instances
 - **EKS Paved Road**: Require `PavedRoad=true` tag on clusters
 - **IAM User Creation**: Restrict to approved users (auto-generates allowlists)
+- **IAM SAML Provider**: Enforce AWS IAM Identity Center SAML providers only
 - **RDS Encryption**: Block unencrypted databases
 
 ### RCP Checks
@@ -180,8 +183,8 @@ module "scps_root" {
 
 ✅ **Working**:
 - Multi-account AWS Organizations scanning
-- SCP checks: EC2 IMDSv1, IAM users, EKS tags, RDS encryption
-- RCP checks: IAM trust policies, S3/AOSS/ECR third-party access
+- SCP checks: EC2 IMDSv1, EC2 AMI owner, EC2 public IP, IAM users, IAM SAML providers, EKS tags, RDS encryption
+- RCP checks: IAM trust policies, S3/ECR third-party access
 - Terraform auto-generation with allowlists
 - JSON violation reports
 - Smart placement recommendations

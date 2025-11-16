@@ -22,6 +22,8 @@ DENY_EC2_PUBLIC_IP = "deny_ec2_public_ip"
 DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG = "deny_eks_create_cluster_without_tag"
 # IAM
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
+# IAM SAML
+DENY_SAML_PROVIDER_NOT_AWS_SSO = "deny_saml_provider_not_aws_sso"
 # RDS
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 

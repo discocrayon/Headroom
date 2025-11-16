@@ -14,6 +14,7 @@ module "scps_high_value_assets_ou" {
 
   # IAM
   deny_iam_user_creation = false
+  deny_saml_provider_not_aws_sso = false
 
   # RDS
   deny_rds_unencrypted = true

@@ -120,6 +120,7 @@ module "scps_test_ou" {
 
   # IAM
   deny_iam_user_creation = false
+  deny_saml_provider_not_aws_sso = false
 
   # RDS
   deny_rds_unencrypted = true
@@ -149,6 +150,7 @@ def test_build_scp_terraform_module_single_check_100_percent_compliant() -> None
     )
     assert "deny_ec2_imds_v1 = true" in result
     assert "deny_iam_user_creation = false" in result
+    assert "deny_saml_provider_not_aws_sso = false" in result
     assert "deny_rds_unencrypted = false" in result
     assert "allowed_iam_users" not in result
     assert 'module "scps_root"' in result
@@ -192,6 +194,7 @@ def test_build_scp_terraform_module_multiple_checks_all_compliant() -> None:
     )
     assert "deny_ec2_imds_v1 = true" in result
     assert "deny_iam_user_creation = true" in result
+    assert "deny_saml_provider_not_aws_sso = false" in result
     assert "deny_rds_unencrypted = false" in result
     assert "allowed_iam_users = []" in result
 
@@ -238,6 +241,7 @@ def test_build_scp_terraform_module_with_iam_user_arns() -> None:
         organization_hierarchy=org
     )
     assert "deny_iam_user_creation = true" in result
+    assert "deny_saml_provider_not_aws_sso = false" in result
     assert "allowed_iam_users = [" in result
     assert '"arn:aws:iam::${local.test_account_1_account_id}:user/terraform-user",' in result
     assert '"arn:aws:iam::${local.test_account_2_account_id}:user/github-actions",' in result
@@ -279,6 +283,7 @@ def test_build_scp_terraform_module_with_iam_user_arns_unknown_account() -> None
         organization_hierarchy=org
     )
     assert "deny_iam_user_creation = true" in result
+    assert "deny_saml_provider_not_aws_sso = false" in result
     assert "allowed_iam_users = [" in result
     assert '"arn:aws:iam::${local.test_account_1_account_id}:user/terraform-user",' in result
     assert '"arn:aws:iam::999999999999:user/unknown-account",' in result
@@ -304,6 +309,7 @@ def test_build_scp_terraform_module_partial_compliance_skips_check() -> None:
     )
     assert "deny_ec2_imds_v1 = false" in result
     assert "deny_iam_user_creation = false" in result
+    assert "deny_saml_provider_not_aws_sso = false" in result
     assert "allowed_iam_users" not in result
     assert 'module "scps_root"' in result
 
@@ -338,6 +344,7 @@ def test_build_scp_terraform_module_mixed_compliance_includes_only_100_percent()
     )
     assert "deny_ec2_imds_v1 = true" in result
     assert "deny_iam_user_creation = false" in result
+    assert "deny_saml_provider_not_aws_sso = false" in result
     assert "allowed_iam_users" not in result
 
 
@@ -361,6 +368,7 @@ def test_build_scp_terraform_module_check_name_with_hyphens_converts_to_undersco
     )
     assert "deny_ec2_imds_v1 = true" in result
     assert "deny_iam_user_creation = false" in result
+    assert "deny_saml_provider_not_aws_sso = false" in result
     assert "allowed_iam_users" not in result
     assert "deny-ec2-imds-v1" not in result
 
@@ -399,6 +407,7 @@ def test_generate_account_scp_terraform_creates_file_with_correct_name() -> None
     assert "scps_test_account" in content
     assert "local.test_account_account_id" in content
     assert "deny_ec2_imds_v1 = true" in content
+    assert "deny_saml_provider_not_aws_sso = false" in content
     expected_file.unlink()
 
 
@@ -454,6 +463,7 @@ def test_generate_ou_scp_terraform_creates_file_with_correct_name() -> None:
     assert "scps_test_ou_ou" in content
     assert "local.top_level_test_ou_ou_id" in content
     assert "deny_ec2_imds_v1 = true" in content
+    assert "deny_saml_provider_not_aws_sso = false" in content
     expected_file.unlink()
 
 
@@ -497,6 +507,7 @@ def test_generate_root_scp_terraform_creates_file() -> None:
     assert "scps_root" in content
     assert "local.root_ou_id" in content
     assert "deny_ec2_imds_v1 = true" in content
+    assert "deny_saml_provider_not_aws_sso = false" in content
     expected_file.unlink()
 
 
@@ -542,8 +553,34 @@ def test_generate_root_scp_terraform_multiple_checks() -> None:
     content = expected_file.read_text()
     assert "deny_ec2_imds_v1 = true" in content
     assert "deny_iam_user_creation = true" in content
+    assert "deny_saml_provider_not_aws_sso = false" in content
     assert "deny_rds_unencrypted = false" in content
     assert "allowed_iam_users = []" in content
+    expected_file.unlink()
+
+
+def test_generate_root_scp_terraform_includes_saml_guardrail(tmp_path: Path) -> None:
+    """Should set deny_saml_provider_not_aws_sso when recommendation is compliant."""
+    org = make_org_empty()
+    rec = SCPPlacementRecommendations(
+        check_name="deny-saml-provider-not-aws-sso",
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=100.0,
+        reasoning="test",
+    )
+    output_path = Path(tmp_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    _generate_root_scp_terraform([rec], org, output_path)
+
+    expected_file = output_path / "root_scps.tf"
+    content = expected_file.read_text()
+    assert "deny_ec2_imds_v1 = false" in content
+    assert "deny_iam_user_creation = false" in content
+    assert "deny_saml_provider_not_aws_sso = true" in content
+    assert "deny_rds_unencrypted = false" in content
     expected_file.unlink()
 
 
@@ -567,7 +604,33 @@ def test_build_scp_terraform_module_with_rds_check_enabled() -> None:
     )
     assert "deny_ec2_imds_v1 = false" in result
     assert "deny_iam_user_creation = false" in result
+    assert "deny_saml_provider_not_aws_sso = false" in result
     assert "deny_rds_unencrypted = true" in result
+    assert "allowed_iam_users" not in result
+
+
+def test_build_scp_terraform_module_with_saml_guardrail_enabled() -> None:
+    """Should include deny_saml_provider_not_aws_sso flag when check is enabled."""
+    org = make_org_empty()
+    rec = SCPPlacementRecommendations(
+        check_name="deny-saml-provider-not-aws-sso",
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=100.0,
+        reasoning="test",
+    )
+    result = _build_scp_terraform_module(
+        module_name="scps_root",
+        target_id_reference="local.root_ou_id",
+        recommendations=[rec],
+        comment="Organization Root",
+        organization_hierarchy=org
+    )
+    assert "deny_ec2_imds_v1 = false" in result
+    assert "deny_iam_user_creation = false" in result
+    assert "deny_saml_provider_not_aws_sso = true" in result
+    assert "deny_rds_unencrypted = false" in result
     assert "allowed_iam_users" not in result
 
 
