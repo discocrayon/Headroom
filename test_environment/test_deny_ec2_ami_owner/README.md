@@ -60,7 +60,7 @@ terraform destroy
 
 ## Allowlist Configuration
 
-The generated Terraform will include an `allowed_ami_owners` list with all unique AMI owners discovered:
+The generated Terraform will include an `ec2_allowed_ami_owners` list with all unique AMI owners discovered:
 
 ```hcl
 module "scps_acme_co" {
@@ -68,7 +68,7 @@ module "scps_acme_co" {
   target_id = local.acme_co_account_id
 
   deny_ec2_ami_owner = true
-  allowed_ami_owners = [
+  ec2_allowed_ami_owners = [
     "amazon",
     "099720109477"
   ]

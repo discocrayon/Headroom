@@ -51,7 +51,7 @@ module "scps_root" {
 
   # IAM
   deny_iam_user_creation = true
-  allowed_iam_users = [
+  iam_allowed_users = [
     "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
     "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
     "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",
@@ -77,8 +77,8 @@ module "rcps_acme_acquisition_ou" {
   target_id = local.top_level_acme_acquisition_ou_id
 
   # deny_sts_third_party_assumerole
-  enforce_assume_role_org_identities = true
-  deny_sts_third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole = true
+  sts_third_party_assumerole_account_ids_allowlist = [
     "111111111111",
     "222222222222",
   ]

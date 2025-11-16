@@ -859,12 +859,60 @@ variable "deny_rds_unencrypted" {
 - Add descriptive documentation
 - Be consistent with existing check variables (no `nullable` attribute for booleans)
 
+**Variable Naming Convention:**
+- **ALWAYS start with service name:** `ec2_`, `iam_`, `rds_`, `s3_`, `sts_`, etc.
+- Format: `<service>_<descriptor>` for allowlists (e.g., `ec2_allowed_ami_owners`, `iam_allowed_users`)
+- Format: `deny_<service>_<action>` for boolean flags (e.g., `deny_rds_unencrypted`)
+
+**Variable Ordering Convention:**
+1. **Alphabetically by service** (AOSS, ECR, S3, SQS, STS for RCPs; EC2, EKS, IAM, RDS for SCPs)
+2. **Within each service:**
+   - Required boolean argument first
+   - Optional allowlist argument immediately after (if applicable)
+3. **Example for EC2:**
+   ```hcl
+   # EC2
+   variable "deny_ec2_ami_owner" {
+     type = bool
+   }
+   
+   variable "ec2_allowed_ami_owners" {  # Immediately after
+     type    = list(string)
+     default = []
+   }
+   
+   variable "deny_ec2_imds_v1" {  # Next deny flag
+     type = bool
+   }
+   ```
+
 **For Allowlist Variables (Pattern 5b):**
 ```hcl
-variable "allowed_rds_databases" {
+variable "ec2_allowed_ami_owners" {
   type        = list(string)
   default     = []
-  description = "List of RDS database ARNs that are allowed to exist unencrypted"
+  description = "List of allowed AMI owner account IDs or aliases (e.g., 'amazon', 'aws-marketplace', '123456789012')"
+}
+
+variable "iam_allowed_users" {
+  type        = list(string)
+  default     = []
+  description = "List of IAM user ARNs that are allowed to be created. Format: arn:aws:iam::ACCOUNT_ID:user/USERNAME"
+}
+```
+
+**For RCPs with Third-Party Account Allowlists:**
+```hcl
+# STS
+variable "deny_sts_third_party_assumerole" {
+  type        = bool
+  description = "Deny STS AssumeRole from third-party accounts except those in the allowlist."
+}
+
+variable "sts_third_party_assumerole_account_ids_allowlist" {
+  type        = list(string)
+  default     = []
+  description = "Allowlist of third-party AWS account IDs that are permitted to assume roles in this target ID."
 }
 ```
 
@@ -946,17 +994,26 @@ def _build_scp_terraform_module(...):
 
     # EC2
     terraform_content += "  # EC2\n"
+    deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_checks
+    terraform_content += f"  deny_ec2_ami_owner = {str(deny_ec2_ami_owner).lower()}\n"
+    if deny_ec2_ami_owner:
+        ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
+        terraform_content += f"  ec2_allowed_ami_owners = {ec2_allowed_ami_owners}\n"
+    
     deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_checks
     terraform_content += f"  deny_ec2_imds_v1 = {str(deny_ec2_imds_v1).lower()}\n"
     terraform_content += "\n"
 
     # IAM
     terraform_content += "  # IAM\n"
+    deny_iam_saml_provider_not_aws_sso = "deny_iam_saml_provider_not_aws_sso" in enabled_checks
+    terraform_content += f"  deny_iam_saml_provider_not_aws_sso = {str(deny_iam_saml_provider_not_aws_sso).lower()}\n"
+    
     deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks
     terraform_content += f"  deny_iam_user_creation = {str(deny_iam_user_creation).lower()}\n"
-
     if deny_iam_user_creation:
         # ... IAM user allowlist logic ...
+        terraform_content += f"  iam_allowed_users = [...]\n"
 
     terraform_content += "\n"
 
@@ -973,8 +1030,31 @@ def _build_scp_terraform_module(...):
 - Add service category comment (e.g., `# RDS`)
 - Check if check name is in `enabled_checks` set
 - Generate boolean variable assignment
-- Maintain alphabetical category ordering (EC2, IAM, RDS, S3, etc.)
+- **CRITICAL ORDERING RULES:**
+  1. **Alphabetically by service** (EC2, EKS, IAM, RDS, S3, etc.)
+  2. **Within each service:** Boolean flag first, then allowlist immediately after (if applicable)
+  3. **Example:** `deny_ec2_ami_owner` → `ec2_allowed_ami_owners` → `deny_ec2_imds_v1`
 - Add blank line between categories for readability
+
+**Ordering Example:**
+```python
+# EC2
+parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
+if deny_ec2_ami_owner:
+    parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
+
+parameters.append(TerraformParameter("deny_ec2_imds_v1", deny_ec2_imds_v1))
+parameters.append(TerraformParameter("deny_ec2_public_ip", deny_ec2_public_ip))
+
+# EKS
+parameters.append(TerraformParameter("deny_eks_create_cluster_without_tag", ...))
+
+# IAM
+parameters.append(TerraformParameter("deny_iam_saml_provider_not_aws_sso", ...))
+parameters.append(TerraformParameter("deny_iam_user_creation", ...))
+if deny_iam_user_creation:
+    parameters.append(TerraformParameter("iam_allowed_users", ...))
+```
 
 **For Checks with Allowlists:**
 ```python
@@ -1870,18 +1950,28 @@ Use this checklist when adding any new check:
 ### Terraform Modules
 - [ ] Added boolean variable to `test_environment/modules/{scps|rcps}/variables.tf`
 - [ ] Added allowlist variable (if Pattern 5)
+- [ ] **Verified variable naming convention:**
+  - [ ] Variable names start with service name (e.g., `ec2_`, `iam_`, `rds_`, `sts_`)
+  - [ ] Boolean flags use `deny_<service>_<action>` format
+  - [ ] Allowlist variables use `<service>_<descriptor>` format (e.g., `ec2_allowed_ami_owners`)
+- [ ] **Verified variable ordering:**
+  - [ ] Variables ordered alphabetically by service
+  - [ ] Within each service: required boolean first, then optional allowlist immediately after
 - [ ] Added policy statement to `test_environment/modules/{scps|rcps}/locals.tf`:
   - [ ] Used `include` field tied to variable
   - [ ] Verified policy syntax matches AWS format
   - [ ] Tested condition logic
   - [ ] Added descriptive comments
+  - [ ] Policy statements ordered alphabetically by service (matching variables.tf)
 
 ### Terraform Generation
 - [ ] Updated `headroom/terraform/generate_scps.py` or `generate_rcps.py`:
   - [ ] Added service category comment
   - [ ] Added check boolean generation
   - [ ] Added allowlist generation (if applicable)
-  - [ ] Maintained alphabetical category ordering
+  - [ ] **Verified ordering convention:**
+    - [ ] Services ordered alphabetically (AOSS, ECR, S3, SQS, STS for RCPs; EC2, EKS, IAM, RDS for SCPs)
+    - [ ] Within each service: boolean flag first, then allowlist immediately after
   - [ ] Added blank lines between categories
 
 ### Unit Tests
@@ -2172,8 +2262,26 @@ for page in paginator.paginate():
 ### 9. Category Placement in Terraform Generation
 
 **Symptom:** Generated Terraform has checks in wrong/inconsistent order
-**Issue:** Not following alphabetical service ordering
-**Fix:** Maintain this order: EC2, IAM, RDS, S3, VPC, etc.
+**Issue:** Not following alphabetical service ordering and required-before-optional convention
+**Fix:** 
+- **Service Order:** Alphabetically by service name (EC2, EKS, IAM, RDS, S3, STS, etc.)
+- **Within Service:** Required boolean flag first, then optional allowlist immediately after
+- **Example:**
+  ```python
+  # EC2
+  deny_ec2_ami_owner = ...
+  ec2_allowed_ami_owners = ...  # Immediately after corresponding boolean
+  deny_ec2_imds_v1 = ...         # Next boolean flag
+  deny_ec2_public_ip = ...
+  
+  # EKS (alphabetically after EC2)
+  deny_eks_create_cluster_without_tag = ...
+  
+  # IAM (alphabetically after EKS)
+  deny_iam_saml_provider_not_aws_sso = ...
+  deny_iam_user_creation = ...
+  iam_allowed_users = ...        # Immediately after corresponding boolean
+  ```
 
 ### 10. Test Environment Resource Naming Conflicts
 
@@ -2608,6 +2716,126 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict
 - For complex types, define proper Union types or recursive types
 
 **Remember:** The codebase standard is that `Any` makes code worse, not better. The only exception is `**kwargs: Any` when matching a base class.
+
+### Lessons from Terraform Variable Standardization (November 2025)
+
+#### Lesson 0: Terraform Variable Naming and Ordering Conventions
+
+**Problem:** Terraform module variables had inconsistent naming and ordering:
+- Some variables didn't start with service name (e.g., `allowed_ami_owners` instead of `ec2_allowed_ami_owners`)
+- Variables named `deny_<service>_*_allowlist` when allowlists shouldn't have `deny_` prefix
+- Variables not consistently ordered alphabetically
+- Allowlist variables not immediately following their corresponding boolean flags
+
+**Impact:**
+- Harder to discover related variables (all EC2 variables should be adjacent)
+- Inconsistent API makes module harder to learn and use
+- Manual sorting needed when reviewing large module configurations
+- Unclear which allowlist corresponds to which boolean flag
+
+**Solution:**
+1. **Naming Convention:**
+   - ALL variables start with service name: `ec2_`, `iam_`, `rds_`, `s3_`, `sts_`, `aoss_`, `ecr_`, `sqs_`
+   - Boolean flags: `deny_<service>_<action>` (e.g., `deny_rds_unencrypted`, `deny_sts_third_party_assumerole`)
+   - Allowlists: `<service>_<descriptor>` (e.g., `ec2_allowed_ami_owners`, `iam_allowed_users`)
+   - RCP allowlists: `<service>_<action>_account_ids_allowlist` (e.g., `sts_third_party_assumerole_account_ids_allowlist`)
+
+2. **Ordering Convention:**
+   - Services ordered alphabetically (AOSS → ECR → S3 → SQS → STS for RCPs; EC2 → EKS → IAM → RDS for SCPs)
+   - Within each service: required boolean first, then optional allowlist immediately after
+   - Makes it immediately clear which allowlist belongs to which boolean
+
+**Examples:**
+
+**SCPs Module:**
+```hcl
+# EC2 (alphabetically first)
+variable "deny_ec2_ami_owner" {
+  type = bool
+}
+
+variable "ec2_allowed_ami_owners" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+
+variable "deny_ec2_imds_v1" {  # Next EC2 flag
+  type = bool
+}
+
+variable "deny_ec2_public_ip" {
+  type = bool
+}
+
+# EKS (alphabetically after EC2)
+variable "deny_eks_create_cluster_without_tag" {
+  type = bool
+}
+
+# IAM (alphabetically after EKS)
+variable "deny_iam_saml_provider_not_aws_sso" {
+  type = bool
+}
+
+variable "deny_iam_user_creation" {
+  type = bool
+}
+
+variable "iam_allowed_users" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+```
+
+**RCPs Module:**
+```hcl
+# AOSS (alphabetically first)
+variable "deny_aoss_third_party_access" {
+  type = bool
+}
+
+variable "aoss_third_party_access_account_ids_allowlist" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+
+# ECR (alphabetically after AOSS)
+variable "deny_ecr_third_party_access" {
+  type = bool
+}
+
+variable "ecr_third_party_access_account_ids_allowlist" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+
+# S3 (alphabetically after ECR)
+variable "deny_s3_third_party_access" {
+  type = bool
+}
+
+variable "s3_third_party_access_account_ids_allowlist" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+```
+
+**Prevention:**
+- Always start variable names with service name
+- Order variables alphabetically by service
+- Place allowlist immediately after its corresponding boolean flag
+- Update Python code generators to output in the same order
+- Apply convention to both variables.tf and locals.tf
+- Apply convention to module usage files in test_environment/
+
+**Files Affected in Standardization:**
+- `test_environment/modules/rcps/variables.tf` - 6 renames
+- `test_environment/modules/scps/variables.tf` - 2 renames
+- All module usage files
+- Python code generators (generate_rcps.py, generate_scps.py)
+- Type definitions (types.py)
+- All tests
+- All documentation
 
 ### Lessons from deny_rds_unencrypted Implementation (November 2025)
 

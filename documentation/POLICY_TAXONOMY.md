@@ -179,7 +179,7 @@ This document categorizes the different patterns of Service Control Policies (SC
 - Only security tooling accounts can access certain APIs
 - Cross-account access limited to trusted accounts
 
-**Implementation Example (from `enforce_assume_role_org_identities`):**
+**Implementation Example (from `deny_sts_third_party_assumerole`):**
 
 ```json
 {
@@ -414,10 +414,10 @@ This RCP restricts ECR repository access to organization principals and explicit
 
 **Fail-Fast Validation:** If any ECR repository policy contains a Federated principal (or other unsupported principal types), the check immediately fails with a clear error message, as these would break when the RCP is deployed.
 
-### Pattern 5a: `enforce_assume_role_org_identities`
+### Pattern 5a: `deny_sts_third_party_assumerole`
 
 **Terraform:** `test_environment/modules/rcps/locals.tf` lines 27-51
-**Variable:** `deny_sts_third_party_assumerole_account_ids_allowlist`
+**Variable:** `sts_third_party_assumerole_account_ids_allowlist`
 
 This RCP restricts role assumptions to organization principals and explicitly allowlisted third-party account IDs. It uses `aws:PrincipalOrgID` and `aws:PrincipalAccount` conditions.
 
@@ -427,7 +427,7 @@ This RCP restricts role assumptions to organization principals and explicitly al
 
 **Check:** `headroom/checks/rcps/deny_aoss_third_party_access.py`
 **Terraform:** `test_environment/modules/rcps/locals.tf` lines 28-52
-**Variable:** `aoss_third_party_account_ids_allowlist`
+**Variable:** `aoss_third_party_access_account_ids_allowlist`
 
 This RCP restricts OpenSearch Serverless (AOSS) access to organization principals and explicitly allowlisted third-party account IDs. It blocks all `aoss:*` actions for principals outside the organization unless explicitly allowed.
 
@@ -442,7 +442,7 @@ This RCP restricts OpenSearch Serverless (AOSS) access to organization principal
 
 **Check:** `headroom/checks/rcps/deny_sqs_third_party_access.py`
 **Terraform:** `test_environment/modules/rcps/locals.tf`
-**Variable:** `sqs_third_party_account_ids_allowlist`
+**Variable:** `sqs_third_party_access_account_ids_allowlist`
 
 This RCP restricts SQS queue access to organization principals and explicitly allowlisted third-party account IDs. It analyzes SQS queue resource policies to identify external account access patterns.
 
@@ -461,7 +461,7 @@ This RCP restricts SQS queue access to organization principals and explicitly al
 
 **Check:** `headroom/checks/scps/deny_iam_user_creation.py`
 **Terraform:** `test_environment/modules/scps/locals.tf` lines 39-49
-**Variable:** `allowed_iam_users`
+**Variable:** `iam_allowed_users`
 
 This check lists all IAM users in accounts. The SCP uses `NotResource` to deny `iam:CreateUser` except for explicitly allowed user ARN patterns.
 
@@ -471,7 +471,7 @@ This check lists all IAM users in accounts. The SCP uses `NotResource` to deny `
 
 **Check:** `headroom/checks/scps/deny_ec2_ami_owner.py`
 **Terraform:** `test_environment/modules/scps/locals.tf` lines 3-20
-**Variable:** `allowed_ami_owners`
+**Variable:** `ec2_allowed_ami_owners`
 
 This check identifies EC2 instances and determines the owner of the AMI used to launch each instance. The SCP denies `ec2:RunInstances` unless the AMI owner is in the allowlist.
 
