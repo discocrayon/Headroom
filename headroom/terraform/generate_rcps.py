@@ -109,7 +109,7 @@ def parse_rcp_result_files(
     accounts_with_wildcards: Set[str] = set()
 
     if not check_dir.exists():
-        raise RuntimeError(f"Third-party AssumeRole check directory does not exist: {check_dir}")
+        raise RuntimeError(f"STS third-party AssumeRole check directory does not exist: {check_dir}")
 
     for result_file in check_dir.glob("*.json"):
         rcp_result = _parse_single_rcp_result_file(

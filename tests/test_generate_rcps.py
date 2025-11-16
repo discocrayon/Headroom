@@ -144,7 +144,7 @@ class TestParseRcpResultFiles:
 
     def test_parse_nonexistent_directory(self, sample_org_hierarchy: OrganizationHierarchy) -> None:
         """Test parsing when directory doesn't exist."""
-        with pytest.raises(RuntimeError, match="Third-party AssumeRole check directory does not exist"):
+        with pytest.raises(RuntimeError, match="STS third-party AssumeRole check directory does not exist"):
             parse_rcp_result_files("/nonexistent/path", sample_org_hierarchy)
 
     def test_parse_empty_directory(

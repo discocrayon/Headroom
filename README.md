@@ -115,7 +115,7 @@ See [full examples](documentation/EXAMPLES.md).
 - **RDS Encryption**: Block unencrypted databases
 
 ### RCP Checks
-- **Third-Party AssumeRole**: Control external AWS account access
+- **STS Third-Party AssumeRole**: Control external AWS account access
 - **S3 Third-Party Access**: Manage cross-account S3 permissions
 - **AOSS Third-Party Access**: OpenSearch Serverless access control
 - **ECR Third-Party Access**: Container registry sharing controls
