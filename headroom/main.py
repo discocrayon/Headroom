@@ -1,9 +1,10 @@
 from typing import Any, Callable, Dict, List, Union
 import argparse
-import boto3
 import logging
-from botocore.exceptions import ClientError
 from pathlib import Path
+
+from boto3.session import Session
+from botocore.exceptions import ClientError
 
 from .config import HeadroomConfig
 from .usage import load_yaml_config, parse_cli_args, merge_configs
@@ -71,8 +72,8 @@ def process_policy_recommendations(
 
 def setup_organization_context(
     final_config: HeadroomConfig,
-    security_session: boto3.Session
-) -> tuple[boto3.Session, OrganizationHierarchy]:
+    security_session: Session
+) -> tuple[Session, OrganizationHierarchy]:
     """
     Set up organization context for policy analysis.
 

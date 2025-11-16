@@ -8,7 +8,7 @@ using the AWS Organizations API.
 import logging
 from typing import Dict, List, Optional
 
-import boto3
+from boto3.session import Session
 from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 
@@ -97,7 +97,7 @@ def _build_ou_hierarchy(
         raise RuntimeError(f"Failed to list OUs for parent {parent_ou_id}: {e}")
 
 
-def analyze_organization_structure(session: boto3.Session) -> OrganizationHierarchy:
+def analyze_organization_structure(session: Session) -> OrganizationHierarchy:
     """
     Analyze AWS Organizations structure including root, OUs, and account relationships.
 
@@ -144,7 +144,7 @@ def analyze_organization_structure(session: boto3.Session) -> OrganizationHierar
     )
 
 
-def create_account_ou_mapping(session: boto3.Session) -> Dict[str, str]:
+def create_account_ou_mapping(session: Session) -> Dict[str, str]:
     """
     Create mapping of account IDs to their direct parent OU IDs.
 

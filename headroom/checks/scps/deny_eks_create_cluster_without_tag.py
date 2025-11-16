@@ -2,7 +2,7 @@
 
 from typing import List
 
-import boto3
+from boto3.session import Session
 
 from ...aws.eks import (
     DenyEksCreateClusterWithoutTag,
@@ -28,7 +28,7 @@ class DenyEksCreateClusterWithoutTagCheck(BaseCheck[DenyEksCreateClusterWithoutT
 
     def analyze(
         self,
-        session: boto3.Session
+        session: Session
     ) -> List[DenyEksCreateClusterWithoutTag]:
         """
         Analyze EKS clusters for PavedRoad tag presence.

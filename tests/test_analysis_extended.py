@@ -7,7 +7,7 @@ Tests for get_relevant_subaccounts, get_headroom_session, and run_checks functio
 import pytest
 import tempfile
 import shutil
-import boto3
+from boto3.session import Session
 from unittest.mock import MagicMock, patch
 from typing import List, Generator
 
@@ -118,26 +118,19 @@ class TestGetHeadroomSession:
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
         # Mock boto3.Session
-        with patch("headroom.analysis.boto3.Session") as mock_session_class:
+        with patch("headroom.analysis.assume_role") as mock_assume_role:
             mock_session = MagicMock()
-            mock_session_class.return_value = mock_session
+            mock_assume_role.return_value = mock_session
 
             result = get_headroom_session(mock_config, mock_security_session, "111111111111")
 
-            # Verify STS assume_role call
-            mock_sts.assume_role.assert_called_once_with(
-                RoleArn="arn:aws:iam::111111111111:role/Headroom",
-                RoleSessionName="HeadroomAnalysisSession"
+            mock_assume_role.assert_called_once_with(
+                "arn:aws:iam::111111111111:role/Headroom",
+                "HeadroomAnalysisSession",
+                mock_security_session
             )
 
-            # Verify session creation
-            mock_session_class.assert_called_once_with(
-                aws_access_key_id="FAKE_ACCESS_KEY_ID",
-                aws_secret_access_key="FAKE_SECRET_ACCESS_KEY",
-                aws_session_token="FAKE_SESSION_TOKEN"
-            )
-
-            assert result == mock_session
+            assert result is mock_session
 
     def test_get_headroom_session_assume_role_failure(self, mock_config: HeadroomConfig) -> None:
         """Test get_headroom_session when assume_role fails."""
@@ -172,7 +165,7 @@ class TestGetHeadroomSession:
         }
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
-        with patch("headroom.analysis.boto3.Session"):
+        with patch("headroom.analysis.Session"):
             # Test different account ID formats
             get_headroom_session(mock_config, mock_security_session, "111111111111")
             mock_sts.assume_role.assert_called_with(
@@ -425,7 +418,7 @@ class TestRunChecks:
         sample_account_infos: List[AccountInfo]
     ) -> None:
         """Test run_checks_for_type skips individual checks when results exist."""
-        mock_session = MagicMock(spec=boto3.Session)
+        mock_session = MagicMock(spec=Session)
         account_info = sample_account_infos[0]
 
         # Create two mock check classes
@@ -467,22 +460,6 @@ class TestGetAllOrganizationAccountIds:
         mock_config.management_account_id = "999999999999"
 
         mock_session = MagicMock()
-        mock_sts = MagicMock()
-
-        def mock_client_factory(service_name: str) -> MagicMock:
-            if service_name == "sts":
-                return mock_sts
-            return MagicMock()  # pragma: no cover
-
-        mock_session.client.side_effect = mock_client_factory
-
-        mock_sts.assume_role.return_value = {
-            "Credentials": {
-                "AccessKeyId": "FAKE_ACCESS_KEY_ID",
-                "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
-                "SessionToken": "FAKE_SESSION_TOKEN"
-            }
-        }
 
         mock_mgmt_session = MagicMock()
         mock_org_client = MagicMock()
@@ -505,14 +482,11 @@ class TestGetAllOrganizationAccountIds:
             }
         ]
 
-        with patch("headroom.analysis.boto3.Session", return_value=mock_mgmt_session):
+        with patch("headroom.analysis.get_management_account_session", return_value=mock_mgmt_session) as mock_get_mgmt_session:
             result = get_all_organization_account_ids(mock_config, mock_session)
 
         assert result == {"111111111111", "222222222222", "333333333333"}
-        mock_sts.assume_role.assert_called_once_with(
-            RoleArn="arn:aws:iam::999999999999:role/OrgAndAccountInfoReader",
-            RoleSessionName="HeadroomOrgAndAccountInfoReaderSession"
-        )
+        mock_get_mgmt_session.assert_called_once_with(mock_config, mock_session)
 
     def test_get_all_organization_account_ids_missing_management_account_id(self) -> None:
         """Test that missing management_account_id raises ValueError."""

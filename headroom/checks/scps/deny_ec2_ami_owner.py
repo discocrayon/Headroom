@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List
 
-import boto3
+from boto3.session import Session
 
 from ...aws.ec2 import DenyEc2AmiOwner, get_ec2_ami_owner_analysis
 from ...constants import DENY_EC2_AMI_OWNER
@@ -22,7 +22,7 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
     - Overall compliance status for the account
     """
 
-    def analyze(self, session: boto3.Session) -> List[DenyEc2AmiOwner]:
+    def analyze(self, session: Session) -> List[DenyEc2AmiOwner]:
         """
         Analyze EC2 instances to determine AMI owner for each.
 

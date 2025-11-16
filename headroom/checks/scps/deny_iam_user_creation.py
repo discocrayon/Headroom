@@ -2,7 +2,7 @@
 
 from typing import List
 
-import boto3
+from boto3.session import Session
 
 from ...aws.iam.users import IamUserAnalysis, get_iam_users_analysis
 from ...constants import DENY_IAM_USER_CREATION
@@ -21,7 +21,7 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
     which users are allowed to be created based on the Terraform configuration.
     """
 
-    def analyze(self, session: boto3.Session) -> List[IamUserAnalysis]:
+    def analyze(self, session: Session) -> List[IamUserAnalysis]:
         """
         Analyze IAM users in the account.
 

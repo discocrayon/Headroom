@@ -7,7 +7,7 @@ from accounts outside the organization to access them.
 
 from typing import Any, Dict, List, Set
 
-import boto3
+from boto3.session import Session
 
 from ...aws.s3 import S3BucketPolicyAnalysis, analyze_s3_bucket_policies
 from ...constants import DENY_S3_THIRD_PARTY_ACCESS
@@ -64,7 +64,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         self.actions_by_account: Dict[str, Set[str]] = {}
         self.buckets_by_account: Dict[str, Set[str]] = {}
 
-    def analyze(self, session: boto3.Session) -> List[S3BucketPolicyAnalysis]:
+    def analyze(self, session: Session) -> List[S3BucketPolicyAnalysis]:
         """
         Analyze S3 bucket policies for third-party access.
 
@@ -161,7 +161,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             "buckets_by_third_party_account": buckets_by_account_serializable,
         }
 
-    def execute(self, session: boto3.Session) -> None:
+    def execute(self, session: Session) -> None:
         """
         Execute the check.
 

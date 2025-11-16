@@ -2,7 +2,7 @@
 
 from typing import List
 
-import boto3
+from boto3.session import Session
 
 from ...aws.rds import DenyRdsUnencrypted, get_rds_unencrypted_analysis
 from ...constants import DENY_RDS_UNENCRYPTED
@@ -23,7 +23,7 @@ class DenyRdsUnencryptedCheck(BaseCheck[DenyRdsUnencrypted]):
     - Overall compliance status for the account
     """
 
-    def analyze(self, session: boto3.Session) -> List[DenyRdsUnencrypted]:
+    def analyze(self, session: Session) -> List[DenyRdsUnencrypted]:
         """
         Analyze RDS databases for encryption configuration.
 

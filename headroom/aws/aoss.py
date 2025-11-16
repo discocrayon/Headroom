@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from typing import List, Set
 
-import boto3
+from boto3.session import Session
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class AossResourcePolicyAnalysis:
 
 
 def analyze_aoss_resource_policies(
-    session: boto3.Session,
+    session: Session,
     org_account_ids: Set[str],
 ) -> List[AossResourcePolicyAnalysis]:
     """
