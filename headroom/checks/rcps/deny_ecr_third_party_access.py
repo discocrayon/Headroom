@@ -7,10 +7,11 @@ principals from accounts outside the organization to access them.
 
 from typing import Any, Dict, List, Set
 
-import boto3
+from boto3.session import Session
 
 from ...aws.ecr import ECRRepositoryPolicyAnalysis, analyze_ecr_repository_policies
 from ...constants import DENY_ECR_THIRD_PARTY_ACCESS
+from ...enums import CheckCategory
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -61,7 +62,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
         self.all_third_party_accounts: Set[str] = set()
         self.all_actions_by_account: Dict[str, Set[str]] = {}
 
-    def analyze(self, session: boto3.Session) -> List[ECRRepositoryPolicyAnalysis]:
+    def analyze(self, session: Session) -> List[ECRRepositoryPolicyAnalysis]:
         """
         Analyze ECR repository policies for third-party access.
 
@@ -83,7 +84,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
     def categorize_result(
         self,
         result: ECRRepositoryPolicyAnalysis
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, Dict[str, Any]]:
         """
         Categorize a single repository policy analysis result.
 
@@ -91,9 +92,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
             result: Single ECRRepositoryPolicyAnalysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is:
-            - "violation": Repository has wildcard principal (blocks RCP deployment)
-            - "compliant": Repository has third-party access but no wildcard
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
         result_dict = {
             "repository_name": result.repository_name,
@@ -115,9 +114,8 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
             self.all_actions_by_account[account_id].update(actions)
 
         if result.has_wildcard_principal:
-            return ("violation", result_dict)
-        else:
-            return ("compliant", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,
@@ -157,7 +155,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
             "actions_by_account": actions_by_account_sorted,
         }
 
-    def execute(self, session: boto3.Session) -> None:
+    def execute(self, session: Session) -> None:
         """
         Execute the check.
 

@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
 
-import boto3
+from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_s3.client import S3Client
 
@@ -163,7 +163,7 @@ def _normalize_actions(action: Any) -> Set[str]:
 
 
 def analyze_s3_bucket_policies(
-    session: boto3.Session,
+    session: Session,
     org_account_ids: Set[str]
 ) -> List[S3BucketPolicyAnalysis]:
     """

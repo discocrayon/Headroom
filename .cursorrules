@@ -1,3 +1,4 @@
+Never care about compatibility with historical callers
 Always put data sources in a separate data.tf file
 Never do except Exception, always catch the specific exceptions that the code can raise
 Try and search online first rather than try to use the AWS CLI to figure something out.

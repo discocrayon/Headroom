@@ -7,7 +7,7 @@ Tests for get_relevant_subaccounts, get_headroom_session, and run_checks functio
 import pytest
 import tempfile
 import shutil
-import boto3
+from boto3.session import Session
 from unittest.mock import MagicMock, patch
 from typing import List, Generator
 
@@ -118,26 +118,19 @@ class TestGetHeadroomSession:
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
         # Mock boto3.Session
-        with patch("headroom.analysis.boto3.Session") as mock_session_class:
+        with patch("headroom.analysis.assume_role") as mock_assume_role:
             mock_session = MagicMock()
-            mock_session_class.return_value = mock_session
+            mock_assume_role.return_value = mock_session
 
             result = get_headroom_session(mock_config, mock_security_session, "111111111111")
 
-            # Verify STS assume_role call
-            mock_sts.assume_role.assert_called_once_with(
-                RoleArn="arn:aws:iam::111111111111:role/Headroom",
-                RoleSessionName="HeadroomAnalysisSession"
+            mock_assume_role.assert_called_once_with(
+                "arn:aws:iam::111111111111:role/Headroom",
+                "HeadroomAnalysisSession",
+                mock_security_session
             )
 
-            # Verify session creation
-            mock_session_class.assert_called_once_with(
-                aws_access_key_id="FAKE_ACCESS_KEY_ID",
-                aws_secret_access_key="FAKE_SECRET_ACCESS_KEY",
-                aws_session_token="FAKE_SESSION_TOKEN"
-            )
-
-            assert result == mock_session
+            assert result is mock_session
 
     def test_get_headroom_session_assume_role_failure(self, mock_config: HeadroomConfig) -> None:
         """Test get_headroom_session when assume_role fails."""
@@ -172,7 +165,7 @@ class TestGetHeadroomSession:
         }
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
-        with patch("headroom.analysis.boto3.Session"):
+        with patch("headroom.analysis.Session"):
             # Test different account ID formats
             get_headroom_session(mock_config, mock_security_session, "111111111111")
             mock_sts.assume_role.assert_called_with(
@@ -327,19 +320,18 @@ class TestRunChecks:
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute") as mock_check3,
             patch("headroom.checks.scps.deny_ec2_ami_owner.DenyEc2AmiOwnerCheck.execute") as mock_check4,
             patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
-            patch("headroom.checks.rcps.deny_aoss_third_party_access.DenyAossThirdPartyAccessCheck.execute"),
             patch("headroom.checks.rcps.deny_ecr_third_party_access.DenyECRThirdPartyAccessCheck.execute"),
             patch("headroom.checks.rcps.deny_s3_third_party_access.DenyS3ThirdPartyAccessCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
             # Mock that results exist for first account but not second
-            # Call pattern now (with 5 SCP checks and 4 RCP checks):
-            # Account 1: all_scp_results_exist (5 calls for 5 SCP checks) → all True, all_rcp_results_exist (4 calls) → True, skip
-            # Account 2: all_scp_results_exist (5 calls) → any False, all_rcp_results_exist (4 calls) → False
+            # Call pattern now (with 5 SCP checks and 3 RCP checks):
+            # Account 1: all_scp_results_exist (5 calls for 5 SCP checks) → all True, all_rcp_results_exist (3 calls) → True, skip
+            # Account 2: all_scp_results_exist (5 calls) → any False, all_rcp_results_exist (3 calls) → False
             #   Then run_scp_checks calls results_exist per check (5 calls) → False, runs checks
-            #   Then run_rcp_checks calls results_exist per check (4 calls) → False, runs checks
-            # Total: 9 (Account 1) + 9 (Account 2 initial) + 5 (Account 2 SCP) + 4 (Account 2 RCP) = 27 calls
+            #   Then run_rcp_checks calls results_exist per check (3 calls) → False, runs checks
+            # Total: 8 (Account 1) + 8 (Account 2 initial) + 5 (Account 2 SCP) + 3 (Account 2 RCP) = 24 calls
             mock_check_results.return_value = True  # Default
             mock_check_results.side_effect = [
                 True,   # Account 1 - SCP check 1 exists
@@ -350,7 +342,6 @@ class TestRunChecks:
                 True,   # Account 1 - RCP check 1 exists
                 True,   # Account 1 - RCP check 2 exists
                 True,   # Account 1 - RCP check 3 exists
-                True,   # Account 1 - RCP check 4 exists
                 False,  # Account 2 - SCP check 1 exists check
                 False,  # Account 2 - SCP check 2 exists check
                 False,  # Account 2 - SCP check 3 exists check
@@ -359,7 +350,6 @@ class TestRunChecks:
                 False,  # Account 2 - RCP check 1 exists check
                 False,  # Account 2 - RCP check 2 exists check
                 False,  # Account 2 - RCP check 3 exists check
-                False,  # Account 2 - RCP check 4 exists check
                 False,  # Account 2 - run_scp_checks internal check for check 1
                 False,  # Account 2 - run_scp_checks internal check for check 2
                 False,  # Account 2 - run_scp_checks internal check for check 3
@@ -367,8 +357,7 @@ class TestRunChecks:
                 False,  # Account 2 - run_scp_checks internal check for check 5
                 False,  # Account 2 - run_rcp_checks internal check for check 1
                 False,  # Account 2 - run_rcp_checks internal check for check 2
-                False,  # Account 2 - run_rcp_checks internal check for check 3
-                False   # Account 2 - run_rcp_checks internal check for check 4
+                False   # Account 2 - run_rcp_checks internal check for check 3
             ]
 
             mock_headroom_session = MagicMock()
@@ -429,7 +418,7 @@ class TestRunChecks:
         sample_account_infos: List[AccountInfo]
     ) -> None:
         """Test run_checks_for_type skips individual checks when results exist."""
-        mock_session = MagicMock(spec=boto3.Session)
+        mock_session = MagicMock(spec=Session)
         account_info = sample_account_infos[0]
 
         # Create two mock check classes
@@ -471,22 +460,6 @@ class TestGetAllOrganizationAccountIds:
         mock_config.management_account_id = "999999999999"
 
         mock_session = MagicMock()
-        mock_sts = MagicMock()
-
-        def mock_client_factory(service_name: str) -> MagicMock:
-            if service_name == "sts":
-                return mock_sts
-            return MagicMock()  # pragma: no cover
-
-        mock_session.client.side_effect = mock_client_factory
-
-        mock_sts.assume_role.return_value = {
-            "Credentials": {
-                "AccessKeyId": "FAKE_ACCESS_KEY_ID",
-                "SecretAccessKey": "FAKE_SECRET_ACCESS_KEY",
-                "SessionToken": "FAKE_SESSION_TOKEN"
-            }
-        }
 
         mock_mgmt_session = MagicMock()
         mock_org_client = MagicMock()
@@ -509,14 +482,11 @@ class TestGetAllOrganizationAccountIds:
             }
         ]
 
-        with patch("headroom.analysis.boto3.Session", return_value=mock_mgmt_session):
+        with patch("headroom.analysis.get_management_account_session", return_value=mock_mgmt_session) as mock_get_mgmt_session:
             result = get_all_organization_account_ids(mock_config, mock_session)
 
         assert result == {"111111111111", "222222222222", "333333333333"}
-        mock_sts.assume_role.assert_called_once_with(
-            RoleArn="arn:aws:iam::999999999999:role/OrgAndAccountInfoReader",
-            RoleSessionName="HeadroomOrgAndAccountInfoReaderSession"
-        )
+        mock_get_mgmt_session.assert_called_once_with(mock_config, mock_session)
 
     def test_get_all_organization_account_ids_missing_management_account_id(self) -> None:
         """Test that missing management_account_id raises ValueError."""

@@ -2,10 +2,11 @@
 
 from typing import List
 
-import boto3
+from boto3.session import Session
 
 from ...aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
 from ...constants import DENY_IMDS_V1_EC2
+from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
@@ -22,7 +23,7 @@ class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
     - Overall compliance status for the account
     """
 
-    def analyze(self, session: boto3.Session) -> List[DenyImdsV1Ec2]:
+    def analyze(self, session: Session) -> List[DenyImdsV1Ec2]:
         """
         Analyze EC2 instances for IMDS v1 configuration.
 
@@ -34,7 +35,7 @@ class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
         """
         return get_imds_v1_ec2_analysis(session)
 
-    def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, JsonDict]:
+    def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single IMDS v1 analysis result.
 
@@ -42,10 +43,7 @@ class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
             result: Single DenyImdsV1Ec2 analysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is:
-            - "violation": IMDSv1 allowed without exemption tag
-            - "exemption": IMDSv1 allowed but has exemption tag
-            - "compliant": IMDSv1 not allowed
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
         result_dict = {
             "region": result.region,
@@ -56,11 +54,11 @@ class DenyImdsV1Ec2Check(BaseCheck[DenyImdsV1Ec2]):
 
         if result.imdsv1_allowed:
             if result.exemption_tag_present:
-                return ("exemption", result_dict)
+                return (CheckCategory.EXEMPTION, result_dict)
             else:
-                return ("violation", result_dict)
+                return (CheckCategory.VIOLATION, result_dict)
         else:
-            return ("compliant", result_dict)
+            return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """

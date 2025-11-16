@@ -7,10 +7,11 @@ from accounts outside the organization to assume them.
 
 from typing import Any, List, Set
 
-import boto3
+from boto3.session import Session
 
 from ...aws.iam.roles import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
 from ...constants import THIRD_PARTY_ASSUMEROLE
+from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
@@ -60,7 +61,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
         self.org_account_ids = org_account_ids
         self.all_third_party_accounts: Set[str] = set()
 
-    def analyze(self, session: boto3.Session) -> List[TrustPolicyAnalysis]:
+    def analyze(self, session: Session) -> List[TrustPolicyAnalysis]:
         """
         Analyze IAM role trust policies for third-party access.
 
@@ -79,7 +80,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             if result.has_wildcard_principal or result.third_party_account_ids
         ]
 
-    def categorize_result(self, result: TrustPolicyAnalysis) -> tuple[str, JsonDict]:
+    def categorize_result(self, result: TrustPolicyAnalysis) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single trust policy analysis result.
 
@@ -87,9 +88,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             result: Single TrustPolicyAnalysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is:
-            - "violation": Role has wildcard principal (blocks RCP deployment)
-            - "compliant": Role has third-party access but no wildcard
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
         result_dict = {
             "role_name": result.role_name,
@@ -101,9 +100,8 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
         self.all_third_party_accounts.update(result.third_party_account_ids)
 
         if result.has_wildcard_principal:
-            return ("violation", result_dict)
-        else:
-            return ("compliant", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
@@ -132,7 +130,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             "third_party_account_count": len(self.all_third_party_accounts),
         }
 
-    def execute(self, session: boto3.Session) -> None:
+    def execute(self, session: Session) -> None:
         """
         Execute the check.
 

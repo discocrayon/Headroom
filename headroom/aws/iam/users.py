@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import List
 
-import boto3
+from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
@@ -32,7 +32,7 @@ class IamUserAnalysis:
     path: str
 
 
-def get_iam_users_analysis(session: boto3.Session) -> List[IamUserAnalysis]:
+def get_iam_users_analysis(session: Session) -> List[IamUserAnalysis]:
     """
     Get all IAM users in an account.
 

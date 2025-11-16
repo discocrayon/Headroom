@@ -346,6 +346,64 @@ class TestAnalyzeECRRepositoryPolicies:
 
         assert len(results) == 0
 
+    def test_actions_deduplicated_per_account(self) -> None:
+        """Ensure duplicate actions are not repeated for an account."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {
+                "repositories": [
+                    {
+                        "repositoryName": "dedup-repo",
+                        "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/dedup-repo"
+                    }
+                ]
+            }
+        ]
+
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": "arn:aws:iam::999999999999:root"
+                    },
+                    "Action": [
+                        "ecr:BatchGetImage",
+                        "ecr:BatchGetImage"
+                    ]
+                }
+            ]
+        }
+
+        import json
+        mock_ecr_client.get_repository_policy.return_value = {
+            "policyText": json.dumps(policy)
+        }
+
+        org_account_ids = {"111111111111"}
+
+        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+
+        assert len(results) == 1
+        actions = results[0].actions_by_account["999999999999"]
+        assert actions == ["ecr:BatchGetImage"]
+
     def test_multiple_repositories_multiple_regions(self) -> None:
         """Test analysis across multiple repositories and regions."""
         mock_session = MagicMock()
