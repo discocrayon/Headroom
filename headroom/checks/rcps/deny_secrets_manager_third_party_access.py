@@ -5,13 +5,14 @@ This check identifies Secrets Manager secrets with resource policies that allow
 principals from accounts outside the organization to access them.
 """
 
-from typing import Any, Dict, List, Set
+from typing import Dict, List, Set
 
 from boto3.session import Session
 
 from ...aws.secretsmanager import SecretsPolicyAnalysis, analyze_secrets_manager_policies
 from ...constants import DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS
 from ...enums import CheckCategory
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -37,7 +38,6 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
         results_dir: str,
         org_account_ids: Set[str],
         exclude_account_ids: bool = False,
-        **kwargs: Any,
     ) -> None:
         """
         Initialize the Secrets Manager third-party access check.
@@ -49,7 +49,6 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
             results_dir: Base directory for results
             org_account_ids: Set of all account IDs in the organization
             exclude_account_ids: If True, exclude account ID from results
-            **kwargs: Additional parameters (ignored)
         """
         super().__init__(
             check_name=check_name,
@@ -57,7 +56,6 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
             account_id=account_id,
             results_dir=results_dir,
             exclude_account_ids=exclude_account_ids,
-            **kwargs,
         )
         self.org_account_ids = org_account_ids
         self.all_third_party_accounts: Set[str] = set()
@@ -83,7 +81,7 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
             if result.has_wildcard_principal or result.has_non_account_principals or result.third_party_account_ids
         ]
 
-    def categorize_result(self, result: SecretsPolicyAnalysis) -> tuple[CheckCategory, Dict[str, Any]]:
+    def categorize_result(self, result: SecretsPolicyAnalysis) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single secret policy analysis result.
 
@@ -122,7 +120,7 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build Secrets Manager third-party access check-specific summary fields.
 
@@ -170,7 +168,7 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
         """
         super().execute(session)
 
-    def _build_results_data(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def _build_results_data(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build results data in the format expected by this check.
 
