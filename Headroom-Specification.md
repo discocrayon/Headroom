@@ -56,7 +56,7 @@
 - **Testing Requirements:** Unit tests for AWS enumeration helper, check categorization covering compliant, excess AWSSSO, and non-AWSSSO cases; generator tests confirming Terraform statement, and integration test ensuring placement logic handles new check
 
 ### 4. RCP Compliance Analysis
-- **Third-Party AssumeRole Check:** IAM trust policy analysis across organization
+- **STS Third-Party AssumeRole Check:** IAM trust policy analysis across organization
 - **S3 Third-Party Access Check:** S3 bucket policy analysis for third-party access
 - Third-party account detection and wildcard principal identification
 - Principal type validation (AWS, Service, Federated, CanonicalUser)
@@ -935,7 +935,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
 }
 ```
 
-### Third-Party AssumeRole
+### STS Third-Party AssumeRole
 
 **Purpose:** Analyze IAM role trust policies to identify third-party (non-org) account access and wildcard principals.
 
@@ -1430,7 +1430,7 @@ def parse_rcp_result_files(
     organization_hierarchy: OrganizationHierarchy
 ) -> RCPParseResult:
     """
-    Parse RCP check result files for third-party AssumeRole check.
+    Parse RCP check result files for STS third-party AssumeRole check.
 
     Algorithm:
     1. Get check directory using get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
@@ -2653,7 +2653,7 @@ allowed_iam_users = [
 ]
 ```
 
-#### Third-Party AssumeRole Test (`test_deny_deny_sts_third_party_assumerole.tf`)
+#### STS Third-Party AssumeRole Test (`test_deny_deny_sts_third_party_assumerole.tf`)
 
 Creates IAM roles with diverse trust policy patterns to test RCP third-party detection.
 

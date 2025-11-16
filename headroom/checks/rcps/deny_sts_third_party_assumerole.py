@@ -39,7 +39,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
         **kwargs: Any,
     ) -> None:
         """
-        Initialize the third-party AssumeRole check.
+        Initialize the STS third-party AssumeRole check.
 
         Args:
             check_name: Name of the check
@@ -105,7 +105,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
 
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
-        Build third-party AssumeRole check-specific summary fields.
+        Build STS third-party AssumeRole check-specific summary fields.
 
         Args:
             check_result: Categorized check result
