@@ -180,101 +180,271 @@ def parse_scp_result_files(
     return check_results
 
 
-def determine_scp_placement(
-    results_data: List[SCPCheckResult],
-    organization_hierarchy: OrganizationHierarchy
-) -> List[SCPPlacementRecommendations]:
-    """
-    Analyze compliance results to determine optimal SCP/RCP placement level.
-
-    Finds the highest organizational level where ALL accounts have zero violations.
-    Ensures safe deployment without breaking existing violations that would cause operational issues.
-    """
-    recommendations: List[SCPPlacementRecommendations] = []
-    analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
-
+def _group_results_by_check_name(
+    results_data: List[SCPCheckResult]
+) -> Dict[str, List[SCPCheckResult]]:
+    """Group check results by check name."""
     check_groups: Dict[str, List[SCPCheckResult]] = {}
     for result in results_data:
         if result.check_name not in check_groups:
             check_groups[result.check_name] = []
         check_groups[result.check_name].append(result)
+    return check_groups
+
+
+def _get_safe_results(
+    check_results: List[SCPCheckResult]
+) -> List[SCPCheckResult]:
+    """Filter results to only those with zero violations."""
+    return [r for r in check_results if r.violations == 0]
+
+
+def _ensure_account_ids_present(
+    check_results: List[SCPCheckResult],
+    organization_hierarchy: OrganizationHierarchy
+) -> None:
+    """
+    Ensure all check results have account IDs populated.
+
+    Looks up missing account IDs by account name in the organization hierarchy.
+    Modifies check_results in place.
+    """
+    for result in check_results:
+        if not result.account_id:
+            result.account_id = lookup_account_id_by_name(
+                result.account_name,
+                organization_hierarchy,
+                "SCP check result"
+            )
+
+
+def _create_no_deployment_recommendation(
+    check_name: str
+) -> SCPPlacementRecommendations:
+    """
+    Create recommendation for check that cannot be deployed.
+
+    Returns a recommendation with level='none' when no accounts have zero violations.
+    """
+    return SCPPlacementRecommendations(
+        check_name=check_name,
+        recommended_level="none",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=0.0,
+        reasoning="No accounts have zero violations - SCP deployment would break existing violations"
+    )
+
+
+def _build_iam_user_arns_for_recommendation(
+    check_name: str,
+    check_results: List[SCPCheckResult],
+    affected_accounts: List[str]
+) -> List[str]:
+    """
+    Build list of allowed IAM user ARNs for deny_iam_user_creation check.
+
+    Returns a sorted list of unique IAM user ARNs from all affected accounts.
+    Returns empty list if check is not deny_iam_user_creation or no ARNs found.
+    """
+    if check_name != "deny_iam_user_creation":
+        return []
+
+    iam_user_arns_set = set()
+    for result in check_results:
+        if result.account_id in affected_accounts and result.iam_user_arns:
+            iam_user_arns_set.update(result.iam_user_arns)
+
+    return sorted(list(iam_user_arns_set)) if iam_user_arns_set else []
+
+
+def _build_root_recommendation(
+    check_name: str,
+    affected_accounts: List[str],
+    check_results: List[SCPCheckResult]
+) -> SCPPlacementRecommendations:
+    """
+    Build root-level placement recommendation.
+
+    Creates recommendation for deploying SCP at organization root level.
+    Includes allowed IAM user ARNs if applicable.
+    """
+    allowed_iam_user_arns = _build_iam_user_arns_for_recommendation(
+        check_name,
+        check_results,
+        affected_accounts
+    )
+
+    recommendation = SCPPlacementRecommendations(
+        check_name=check_name,
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=affected_accounts,
+        compliance_percentage=100.0,
+        reasoning="All accounts in organization have zero violations - safe to deploy at root level"
+    )
+
+    if allowed_iam_user_arns:
+        recommendation.allowed_iam_user_arns = allowed_iam_user_arns
+
+    return recommendation
+
+
+def _build_ou_recommendation(
+    check_name: str,
+    target_ou_id: str,
+    affected_accounts: List[str],
+    check_results: List[SCPCheckResult],
+    organization_hierarchy: OrganizationHierarchy
+) -> SCPPlacementRecommendations:
+    """
+    Build OU-level placement recommendation.
+
+    Creates recommendation for deploying SCP at organizational unit level.
+    Includes OU name in reasoning and allowed IAM user ARNs if applicable.
+    """
+    ou_name = organization_hierarchy.organizational_units.get(
+        target_ou_id,
+        OrganizationalUnit("", "", None, [], [])
+    ).name
+
+    allowed_iam_user_arns = _build_iam_user_arns_for_recommendation(
+        check_name,
+        check_results,
+        affected_accounts
+    )
+
+    return SCPPlacementRecommendations(
+        check_name=check_name,
+        recommended_level="ou",
+        target_ou_id=target_ou_id,
+        affected_accounts=affected_accounts,
+        compliance_percentage=100.0,
+        reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level",
+        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None
+    )
+
+
+def _build_account_recommendation(
+    check_name: str,
+    safe_check_results: List[SCPCheckResult],
+    total_results: int
+) -> SCPPlacementRecommendations:
+    """
+    Build account-level placement recommendation.
+
+    Creates recommendation for deploying SCP at individual account level.
+    Calculates compliance percentage and includes allowed IAM user ARNs if applicable.
+    """
+    affected_accounts = [r.account_id for r in safe_check_results]
+    compliance_pct = len(safe_check_results) / total_results * 100.0
+
+    allowed_iam_user_arns = _build_iam_user_arns_for_recommendation(
+        check_name,
+        safe_check_results,
+        affected_accounts
+    )
+
+    return SCPPlacementRecommendations(
+        check_name=check_name,
+        recommended_level="account",
+        target_ou_id=None,
+        affected_accounts=affected_accounts,
+        compliance_percentage=compliance_pct,
+        reasoning=f"Only {len(safe_check_results)} out of {total_results} accounts have zero violations - deploy at individual account level",
+        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None
+    )
+
+
+def _determine_check_placement(
+    check_name: str,
+    check_results: List[SCPCheckResult],
+    analyzer: HierarchyPlacementAnalyzer,
+    organization_hierarchy: OrganizationHierarchy
+) -> List[SCPPlacementRecommendations]:
+    """
+    Determine placement recommendations for a single check.
+
+    Analyzes check results to find the highest safe organizational level
+    for SCP deployment. Returns list of recommendations (may be multiple
+    for account-level deployments across different OUs).
+    """
+    safe_check_results = _get_safe_results(check_results)
+
+    if not safe_check_results:
+        return [_create_no_deployment_recommendation(check_name)]
+
+    candidates = analyzer.determine_placement(
+        check_results=check_results,
+        is_safe_for_root=lambda results: all(r.violations == 0 for r in results),
+        is_safe_for_ou=lambda ou_id, results: all(r.violations == 0 for r in results),
+        get_account_id=lambda r: r.account_id
+    )
+
+    recommendations = []
+    for candidate in candidates:
+        if candidate.level == "root":
+            rec = _build_root_recommendation(
+                check_name,
+                candidate.affected_accounts,
+                check_results
+            )
+            recommendations.append(rec)
+        elif candidate.level == "ou" and candidate.target_id is not None:
+            rec = _build_ou_recommendation(
+                check_name,
+                candidate.target_id,
+                candidate.affected_accounts,
+                check_results,
+                organization_hierarchy
+            )
+            recommendations.append(rec)
+        elif candidate.level == "account":
+            rec = _build_account_recommendation(
+                check_name,
+                safe_check_results,
+                len(check_results)
+            )
+            recommendations.append(rec)
+            break
+
+    return recommendations
+
+
+def determine_scp_placement(
+    results_data: List[SCPCheckResult],
+    organization_hierarchy: OrganizationHierarchy
+) -> List[SCPPlacementRecommendations]:
+    """
+    Analyze compliance results to determine optimal SCP placement level.
+
+    Finds the highest organizational level where ALL accounts have zero violations.
+    Ensures safe deployment without breaking existing violations that would cause operational issues.
+
+    Args:
+        results_data: List of SCP check results from all accounts
+        organization_hierarchy: Organization structure for placement analysis
+
+    Returns:
+        List of placement recommendations for each check
+    """
+    recommendations: List[SCPPlacementRecommendations] = []
+    analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
+
+    check_groups = _group_results_by_check_name(results_data)
 
     for check_name, check_results in check_groups.items():
         logger.info(f"Analyzing placement for check: {check_name}")
 
-        for result in check_results:
-            if not result.account_id:
-                result.account_id = lookup_account_id_by_name(
-                    result.account_name,
-                    organization_hierarchy,
-                    "SCP check result"
-                )
+        _ensure_account_ids_present(check_results, organization_hierarchy)
 
-        safe_check_results = [r for r in check_results if r.violations == 0]
-
-        if not safe_check_results:
-            recommendations.append(SCPPlacementRecommendations(
-                check_name=check_name,
-                recommended_level="none",
-                target_ou_id=None,
-                affected_accounts=[],
-                compliance_percentage=0.0,
-                reasoning="No accounts have zero violations - SCP deployment would break existing violations"
-            ))
-            continue
-
-        candidates = analyzer.determine_placement(
-            check_results=check_results,
-            is_safe_for_root=lambda results: all(r.violations == 0 for r in results),
-            is_safe_for_ou=lambda ou_id, results: all(r.violations == 0 for r in results),
-            get_account_id=lambda r: r.account_id
+        check_recommendations = _determine_check_placement(
+            check_name,
+            check_results,
+            analyzer,
+            organization_hierarchy
         )
-
-        for candidate in candidates:
-            # Union IAM user ARNs from affected accounts if this is deny_iam_user_creation check
-            allowed_iam_user_arns = None
-            if check_name == "deny_iam_user_creation":
-                iam_user_arns_set = set()
-                for result in check_results:
-                    if result.account_id in candidate.affected_accounts and result.iam_user_arns:
-                        iam_user_arns_set.update(result.iam_user_arns)
-                allowed_iam_user_arns = sorted(list(iam_user_arns_set)) if iam_user_arns_set else []
-
-            if candidate.level == "root":
-                recommendations.append(SCPPlacementRecommendations(
-                    check_name=check_name,
-                    recommended_level="root",
-                    target_ou_id=None,
-                    affected_accounts=candidate.affected_accounts,
-                    compliance_percentage=100.0,
-                    reasoning="All accounts in organization have zero violations - safe to deploy at root level",
-                    allowed_iam_user_arns=allowed_iam_user_arns
-                ))
-            elif candidate.level == "ou" and candidate.target_id is not None:
-                ou_name = organization_hierarchy.organizational_units.get(
-                    candidate.target_id,
-                    OrganizationalUnit("", "", None, [], [])
-                ).name
-                recommendations.append(SCPPlacementRecommendations(
-                    check_name=check_name,
-                    recommended_level="ou",
-                    target_ou_id=candidate.target_id,
-                    affected_accounts=candidate.affected_accounts,
-                    compliance_percentage=100.0,
-                    reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level",
-                    allowed_iam_user_arns=allowed_iam_user_arns
-                ))
-            elif candidate.level == "account":
-                recommendations.append(SCPPlacementRecommendations(
-                    check_name=check_name,
-                    recommended_level="account",
-                    target_ou_id=None,
-                    affected_accounts=[r.account_id for r in safe_check_results],
-                    compliance_percentage=len(safe_check_results) / len(check_results) * 100.0,
-                    reasoning=f"Only {len(safe_check_results)} out of {len(check_results)} accounts have zero violations - deploy at individual account level",
-                    allowed_iam_user_arns=allowed_iam_user_arns
-                ))
-                break
+        recommendations.extend(check_recommendations)
 
     return recommendations
 
@@ -332,12 +502,12 @@ def print_policy_recommendations(
             print("  " + "-" * 38)
 
 
-def parse_scp_results(
+def analyze_scp_compliance(
     config: HeadroomConfig,
     organization_hierarchy: OrganizationHierarchy
 ) -> List[SCPPlacementRecommendations]:
     """
-    Parse SCP results and determine optimal placement recommendations.
+    Analyze SCP compliance results and determine optimal placement recommendations.
 
     Main orchestration function that coordinates:
     1. Result file parsing

@@ -33,7 +33,6 @@ resource "aws_iam_policy" "org_and_account_info_reader_policy" {
           "organizations:ListOrganizationalUnitsForParent",
           "organizations:ListParents",
           "organizations:ListRoots",
-          "organizations:ListOrganizationalUnitsForParent",
           "organizations:ListTagsForResource"
         ],
         Resource = "*"

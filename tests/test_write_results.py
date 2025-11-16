@@ -19,14 +19,138 @@ from headroom.write_results import (
     get_results_path,
     results_exist,
     _redact_account_ids_from_arns,
+    ResultFilePathResolver,
 )
+
+
+class TestResultFilePathResolver:
+    """Test ResultFilePathResolver class."""
+
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_check_directory_for_scp(self, mock_get_check_type_map: MagicMock) -> None:
+        """Test getting directory for SCP check."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
+        results_resolver = ResultFilePathResolver(
+            check_name="deny_imds_v1_ec2",
+            results_base_dir="/tmp/results",
+            account_name="test-account",
+            account_id="123456789012"
+        )
+        assert results_resolver.get_check_directory() == "/tmp/results/scps/deny_imds_v1_ec2"
+
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_check_directory_for_rcp(self, mock_get_check_type_map: MagicMock) -> None:
+        """Test getting directory for RCP check."""
+        mock_get_check_type_map.return_value = {"deny_third_party_assumerole": "rcps"}
+        results_resolver = ResultFilePathResolver(
+            check_name="deny_third_party_assumerole",
+            results_base_dir="/tmp/results",
+            account_name="test-account",
+            account_id="123456789012"
+        )
+        assert results_resolver.get_check_directory() == "/tmp/results/rcps/deny_third_party_assumerole"
+
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_check_directory_unknown_check_raises(self, mock_get_check_type_map: MagicMock) -> None:
+        """Test that unknown check name raises ValueError."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
+        results_resolver = ResultFilePathResolver(
+            check_name="unknown_check",
+            results_base_dir="/tmp/results",
+            account_name="test-account",
+            account_id="123456789012"
+        )
+        with pytest.raises(ValueError, match="Unknown check name: unknown_check"):
+            results_resolver.get_check_directory()
+
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_file_path_with_account_id(self, mock_get_check_type_map: MagicMock) -> None:
+        """Test getting file path with account ID included."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
+        results_resolver = ResultFilePathResolver(
+            check_name="deny_imds_v1_ec2",
+            results_base_dir="/tmp/results",
+            account_name="test-account",
+            account_id="123456789012",
+            exclude_account_ids=False
+        )
+        expected = Path("/tmp/results/scps/deny_imds_v1_ec2/test-account_123456789012.json")
+        assert results_resolver.get_file_path() == expected
+
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_file_path_without_account_id(self, mock_get_check_type_map: MagicMock) -> None:
+        """Test getting file path with account ID excluded."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
+        results_resolver = ResultFilePathResolver(
+            check_name="deny_imds_v1_ec2",
+            results_base_dir="/tmp/results",
+            account_name="test-account",
+            account_id="123456789012",
+            exclude_account_ids=True
+        )
+        expected = Path("/tmp/results/scps/deny_imds_v1_ec2/test-account.json")
+        assert results_resolver.get_file_path() == expected
+
+    @patch('headroom.write_results.get_check_type_map')
+    def test_exists_returns_true_when_file_exists(self, mock_get_check_type_map: MagicMock) -> None:
+        """Test exists() returns True when file exists."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_imds_v1_ec2"
+            check_dir.mkdir(parents=True)
+            result_file = check_dir / "test-account_123456789012.json"
+            result_file.write_text("{}")
+
+            results_resolver = ResultFilePathResolver(
+                check_name="deny_imds_v1_ec2",
+                results_base_dir=temp_dir,
+                account_name="test-account",
+                account_id="123456789012"
+            )
+            assert results_resolver.exists() is True
+
+    @patch('headroom.write_results.get_check_type_map')
+    def test_exists_returns_false_when_file_missing(self, mock_get_check_type_map: MagicMock) -> None:
+        """Test exists() returns False when file doesn't exist."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results_resolver = ResultFilePathResolver(
+                check_name="deny_imds_v1_ec2",
+                results_base_dir=temp_dir,
+                account_name="test-account",
+                account_id="123456789012"
+            )
+            assert results_resolver.exists() is False
+
+    @patch('headroom.write_results.get_check_type_map')
+    def test_exists_checks_alternate_format(self, mock_get_check_type_map: MagicMock) -> None:
+        """Test exists() checks alternate filename format for backward compatibility."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_imds_v1_ec2"
+            check_dir.mkdir(parents=True)
+            # Create file with account ID excluded
+            result_file = check_dir / "test-account.json"
+            result_file.write_text("{}")
+
+            # Try to find it with account ID included
+            results_resolver = ResultFilePathResolver(
+                check_name="deny_imds_v1_ec2",
+                results_base_dir=temp_dir,
+                account_name="test-account",
+                account_id="123456789012",
+                exclude_account_ids=False
+            )
+            assert results_resolver.exists() is True
 
 
 class TestWriteCheckResults:
     """Test write_check_results function."""
 
-    def test_write_check_results_creates_file(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_creates_file(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that write_check_results creates the expected file."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -62,8 +186,10 @@ class TestWriteCheckResults:
                 loaded_data = json.load(f)
                 assert loaded_data == results_data
 
-    def test_write_check_results_creates_directory(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_creates_directory(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that write_check_results creates necessary directories."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -85,8 +211,10 @@ class TestWriteCheckResults:
             assert check_dir.exists()
             assert check_dir.is_dir()
 
-    def test_write_check_results_json_formatting(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_json_formatting(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that JSON is written with proper formatting."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -111,8 +239,10 @@ class TestWriteCheckResults:
                 assert "  " in content
                 assert "{\n" in content
 
-    def test_write_check_results_overwrites_existing(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_overwrites_existing(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that write_check_results overwrites existing files."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -143,8 +273,10 @@ class TestWriteCheckResults:
                 loaded_data = json.load(f)
                 assert loaded_data["summary"]["version"] == 2
 
-    def test_write_check_results_handles_special_characters(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_handles_special_characters(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that account names with special characters are handled correctly."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account-with-dashes"
@@ -162,8 +294,10 @@ class TestWriteCheckResults:
             expected_path = Path(temp_dir) / "scps" / check_name / f"{account_name}_{account_id}.json"
             assert expected_path.exists()
 
-    def test_write_check_results_raises_on_io_error(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_raises_on_io_error(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that IOError is raised when file writing fails."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
         account_id = "111111111111"
@@ -189,8 +323,10 @@ class TestWriteCheckResults:
                     results_base_dir="/some/dir",
                 )
 
-    def test_write_check_results_excludes_account_id_from_json(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_excludes_account_id_from_json(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that account_id is excluded from JSON when exclude_account_ids=True."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -221,8 +357,10 @@ class TestWriteCheckResults:
                 assert "account_id" not in loaded_data["summary"]
                 assert loaded_data["summary"]["account_name"] == account_name
 
-    def test_write_check_results_excludes_account_id_from_filename(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_excludes_account_id_from_filename(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that filename excludes account_id when exclude_account_ids=True."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -250,16 +388,20 @@ class TestWriteCheckResults:
 class TestGetResultsDir:
     """Test get_results_dir function."""
 
-    def test_get_results_dir_returns_correct_path(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_results_dir_returns_correct_path(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that get_results_dir returns the correct directory path."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         check_name = "deny_imds_v1_ec2"
         results_base_dir = "/path/to/results"
 
         result = get_results_dir(check_name, results_base_dir)
         assert result == "/path/to/results/scps/deny_imds_v1_ec2"
 
-    def test_get_results_dir_with_trailing_slash(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_results_dir_with_trailing_slash(self, mock_get_check_type_map: MagicMock) -> None:
         """Test get_results_dir handles trailing slashes."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         check_name = "deny_imds_v1_ec2"
         results_base_dir = "/path/to/results/"
 
@@ -268,8 +410,10 @@ class TestGetResultsDir:
         assert check_name in result
         assert "scps" in result
 
-    def test_get_results_dir_unknown_check_name(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_results_dir_unknown_check_name(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that get_results_dir raises ValueError for unknown check names."""
+        mock_get_check_type_map.return_value = {}
         check_name = "unknown_check"
         results_base_dir = "/path/to/results"
 
@@ -280,8 +424,10 @@ class TestGetResultsDir:
 class TestGetResultsPath:
     """Test get_results_path function."""
 
-    def test_get_results_path_returns_correct_path(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_results_path_returns_correct_path(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that get_results_path returns the correct file path."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
         account_id = "111111111111"
@@ -291,13 +437,17 @@ class TestGetResultsPath:
         expected = Path("/path/to/results/scps/deny_imds_v1_ec2/test-account_111111111111.json")
         assert result == expected
 
-    def test_get_results_path_returns_path_object(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_results_path_returns_path_object(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that get_results_path returns a Path object."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         result = get_results_path("deny_imds_v1_ec2", "account", "123", "/base")
         assert isinstance(result, Path)
 
-    def test_get_results_path_excludes_account_id_when_flag_set(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_get_results_path_excludes_account_id_when_flag_set(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that get_results_path excludes account_id from filename when exclude_account_ids=True."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
         account_id = "111111111111"
@@ -317,8 +467,10 @@ class TestGetResultsPath:
 class TestResultsExist:
     """Test results_exist function."""
 
-    def test_results_exist_returns_true_when_file_exists(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_results_exist_returns_true_when_file_exists(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that results_exist returns True when file exists."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -337,8 +489,10 @@ class TestResultsExist:
             # Check if it exists
             assert results_exist(check_name, account_name, account_id, temp_dir) is True
 
-    def test_results_exist_returns_false_when_file_missing(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_results_exist_returns_false_when_file_missing(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that results_exist returns False when file doesn't exist."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -346,8 +500,10 @@ class TestResultsExist:
 
             assert results_exist(check_name, account_name, account_id, temp_dir) is False
 
-    def test_results_exist_returns_false_when_directory_missing(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_results_exist_returns_false_when_directory_missing(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that results_exist returns False when directory doesn't exist."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         check_name = "deny_imds_v1_ec2"
         account_name = "test-account"
         account_id = "111111111111"
@@ -355,8 +511,10 @@ class TestResultsExist:
 
         assert results_exist(check_name, account_name, account_id, results_base_dir) is False
 
-    def test_results_exist_finds_file_without_account_id(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_results_exist_finds_file_without_account_id(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that results_exist finds files without account_id in filename."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -382,8 +540,10 @@ class TestResultsExist:
                 exclude_account_ids=True,
             ) is True
 
-    def test_results_exist_backward_compatibility(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_results_exist_backward_compatibility(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that results_exist finds old format files when using new format."""
+        mock_get_check_type_map.return_value = {"deny_imds_v1_ec2": "scps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_imds_v1_ec2"
             account_name = "test-account"
@@ -525,8 +685,10 @@ class TestRedactAccountIdsFromArns:
         assert result["some_number"] == "111111111111"
         assert result["role_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
 
-    def test_write_check_results_redacts_arns_when_exclude_account_ids(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_redacts_arns_when_exclude_account_ids(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that ARNs are redacted when exclude_account_ids=True."""
+        mock_get_check_type_map.return_value = {"third_party_assumerole": "rcps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "third_party_assumerole"
             account_name = "test-account"
@@ -563,8 +725,10 @@ class TestRedactAccountIdsFromArns:
                 assert "account_id" not in loaded_data["summary"]
                 assert loaded_data["roles_third_parties_can_access"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/ThirdPartyRole"
 
-    def test_write_check_results_preserves_arns_when_exclude_account_ids_false(self) -> None:
+    @patch('headroom.write_results.get_check_type_map')
+    def test_write_check_results_preserves_arns_when_exclude_account_ids_false(self, mock_get_check_type_map: MagicMock) -> None:
         """Test that ARNs are NOT redacted when exclude_account_ids=False."""
+        mock_get_check_type_map.return_value = {"third_party_assumerole": "rcps"}
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "third_party_assumerole"
             account_name = "test-account"

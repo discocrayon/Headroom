@@ -6,7 +6,12 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   # EC2
+  deny_ec2_ami_owner = true
+  allowed_ami_owners = []
   deny_imds_v1_ec2 = false
+
+  # EKS
+  deny_eks_create_cluster_without_tag = true
 
   # IAM
   deny_iam_user_creation = true

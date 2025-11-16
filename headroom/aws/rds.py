@@ -1,9 +1,15 @@
 """AWS RDS analysis functions for Headroom checks."""
 
 import logging
-import boto3
 from dataclasses import dataclass
-from typing import List
+from typing import List, Sequence
+from typing import cast
+
+from boto3.session import Session
+from mypy_boto3_rds.client import RDSClient
+from mypy_boto3_rds.type_defs import DBClusterTypeDef, DBInstanceTypeDef
+
+from .helpers import get_all_regions, paginate
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +37,7 @@ class DenyRdsUnencrypted:
 
 
 def get_rds_unencrypted_analysis(
-    session: boto3.Session
+    session: Session
 ) -> List[DenyRdsUnencrypted]:
     """
     Analyze RDS instances and clusters for encryption configuration.
@@ -54,13 +60,11 @@ def get_rds_unencrypted_analysis(
     Raises:
         ClientError: If AWS API calls fail
     """
-    ec2_client = session.client("ec2")
     all_results = []
 
     # Get all regions (including opt-in regions that may be disabled)
     # We intentionally scan all regions to detect resources in any region
-    regions_response = ec2_client.describe_regions()
-    regions = [region["RegionName"] for region in regions_response["Regions"]]
+    regions = get_all_regions(session)
 
     for region in regions:
         logger.info(f"Analyzing RDS resources in {region}")
@@ -75,7 +79,7 @@ def get_rds_unencrypted_analysis(
 
 
 def _analyze_rds_in_region(
-    session: boto3.Session,
+    session: Session,
     region: str
 ) -> List[DenyRdsUnencrypted]:
     """
@@ -91,20 +95,20 @@ def _analyze_rds_in_region(
     Raises:
         ClientError: If AWS API calls fail
     """
-    rds_client = session.client("rds", region_name=region)
+    rds_client: RDSClient = session.client("rds", region_name=region)
     results = []
 
     # Analyze RDS instances
-    instance_paginator = rds_client.get_paginator("describe_db_instances")
-    for page in instance_paginator.paginate():
-        for instance in page.get("DBInstances", []):
+    for instance_page in paginate(rds_client, "describe_db_instances"):
+        instances = cast(Sequence[DBInstanceTypeDef], instance_page.get("DBInstances", []))
+        for instance in instances:
             result = _analyze_rds_instance(instance, region)
             results.append(result)
 
     # Analyze Aurora clusters
-    cluster_paginator = rds_client.get_paginator("describe_db_clusters")
-    for page in cluster_paginator.paginate():
-        for cluster in page.get("DBClusters", []):
+    for cluster_page in paginate(rds_client, "describe_db_clusters"):
+        clusters = cast(Sequence[DBClusterTypeDef], cluster_page.get("DBClusters", []))
+        for cluster in clusters:
             result = _analyze_rds_cluster(cluster, region)
             results.append(result)
 
@@ -112,7 +116,7 @@ def _analyze_rds_in_region(
 
 
 def _analyze_rds_instance(
-    instance: dict,
+    instance: DBInstanceTypeDef,
     region: str
 ) -> DenyRdsUnencrypted:
     """
@@ -141,7 +145,7 @@ def _analyze_rds_instance(
 
 
 def _analyze_rds_cluster(
-    cluster: dict,
+    cluster: DBClusterTypeDef,
     region: str
 ) -> DenyRdsUnencrypted:
     """

@@ -1,8 +1,9 @@
 import logging
-import boto3
-from botocore.exceptions import ClientError
 from typing import Dict, List, Set
 from dataclasses import dataclass
+
+from boto3.session import Session
+from botocore.exceptions import ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 from mypy_boto3_organizations.type_defs import AccountTypeDef
 
@@ -10,6 +11,7 @@ from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
 from .write_results import results_exist
 from .aws.sessions import assume_role
+from .utils import format_account_identifier
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -24,17 +26,17 @@ class AccountInfo:
     owner: str
 
 
-def get_security_analysis_session(config: HeadroomConfig) -> boto3.Session:
+def get_security_analysis_session(config: HeadroomConfig) -> Session:
     """Assume OrganizationAccountAccessRole in the security analysis account and return a boto3 session."""
     account_id = config.security_analysis_account_id
     if not account_id:
         logger.debug("No security_analysis_account_id provided, assuming already in security analysis account")
-        return boto3.Session()
+        return Session()
     role_arn = f"arn:aws:iam::{account_id}:role/OrganizationAccountAccessRole"
     return assume_role(role_arn, "HeadroomSecurityAnalysisSession")
 
 
-def get_management_account_session(config: HeadroomConfig, security_session: boto3.Session) -> boto3.Session:
+def get_management_account_session(config: HeadroomConfig, security_session: Session) -> Session:
     """
     Assume OrgAndAccountInfoReader role in the management account and return a boto3 session.
 
@@ -72,7 +74,17 @@ def _fetch_account_tags(org_client: OrganizationsClient, account_id: str, accoun
         tags_resp = org_client.list_tags_for_resource(ResourceId=account_id)
         return {tag["Key"]: tag["Value"] for tag in tags_resp.get("Tags", [])}
     except ClientError as e:
-        logger.warning(f"Could not fetch tags for account {account_name} ({account_id}): {e}")
+        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        if error_code == 'AccessDenied':
+            logger.warning(
+                f"Access denied fetching tags for account {account_name} ({account_id}). "
+                f"Account will use default values."
+            )
+        else:
+            logger.error(
+                f"Unexpected error fetching tags for account {account_name} ({account_id}): {e}",
+                exc_info=True
+            )
         return {}
 
 
@@ -134,7 +146,7 @@ def _build_account_info_from_account_dict(
     )
 
 
-def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -> List[AccountInfo]:
+def get_subaccount_information(config: HeadroomConfig, session: Session) -> List[AccountInfo]:
     """
     Get subaccount information from the management account.
 
@@ -170,7 +182,7 @@ def get_subaccount_information(config: HeadroomConfig, session: boto3.Session) -
     return accounts
 
 
-def get_all_organization_account_ids(config: HeadroomConfig, session: boto3.Session) -> Set[str]:
+def get_all_organization_account_ids(config: HeadroomConfig, session: Session) -> Set[str]:
     """
     Get all account IDs in the organization (including management account).
 
@@ -210,7 +222,7 @@ def get_relevant_subaccounts(account_infos: List[AccountInfo]) -> List[AccountIn
     return account_infos
 
 
-def get_headroom_session(config: HeadroomConfig, security_session: boto3.Session, account_id: str) -> boto3.Session:
+def get_headroom_session(config: HeadroomConfig, security_session: Session, account_id: str) -> Session:
     """Assume Headroom role in the target account and return a boto3 session."""
     role_arn = f"arn:aws:iam::{account_id}:role/Headroom"
     return assume_role(role_arn, "HeadroomAnalysisSession", security_session)
@@ -243,7 +255,7 @@ def all_check_results_exist(check_type: str, account_info: AccountInfo, config: 
 
 def run_checks_for_type(
     check_type: str,
-    headroom_session: boto3.Session,
+    headroom_session: Session,
     account_info: AccountInfo,
     config: HeadroomConfig,
     org_account_ids: Set[str]
@@ -284,8 +296,55 @@ def run_checks_for_type(
         check.execute(headroom_session)
 
 
+def _get_account_identifier(account_info: AccountInfo) -> str:
+    """Get display identifier for an account."""
+    return format_account_identifier(account_info.name, account_info.account_id)
+
+
+def _all_checks_complete(
+    account_info: AccountInfo,
+    config: HeadroomConfig
+) -> bool:
+    """Check if all checks are complete for an account."""
+    return all_check_results_exist("scps", account_info, config) and all_check_results_exist("rcps", account_info, config)
+
+
+def _run_checks_for_account(
+    account_info: AccountInfo,
+    security_session: Session,
+    config: HeadroomConfig,
+    org_account_ids: Set[str]
+) -> None:
+    """
+    Run all checks for a single account.
+
+    Assumes the Headroom role in the target account and runs any missing
+    SCP and RCP checks.
+
+    Args:
+        account_info: Information about the target account
+        security_session: boto3 Session for security analysis account
+        config: Headroom configuration
+        org_account_ids: Set of all account IDs in the organization
+    """
+    account_identifier = _get_account_identifier(account_info)
+    logger.info(f"Running checks for account: {account_identifier}")
+
+    headroom_session = get_headroom_session(config, security_session, account_info.account_id)
+
+    scp_exist = all_check_results_exist("scps", account_info, config)
+    if not scp_exist:
+        run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
+
+    rcp_exist = all_check_results_exist("rcps", account_info, config)
+    if not rcp_exist:
+        run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
+
+    logger.info(f"Checks completed for account: {account_identifier}")
+
+
 def run_checks(
-    security_session: boto3.Session,
+    security_session: Session,
     relevant_account_infos: List[AccountInfo],
     config: HeadroomConfig,
     org_account_ids: Set[str]
@@ -306,26 +365,12 @@ def run_checks(
         org_account_ids: Set of all account IDs in the organization
     """
     for account_info in relevant_account_infos:
-        account_identifier = f"{account_info.name}_{account_info.account_id}"
-
-        scp_exist = all_check_results_exist("scps", account_info, config)
-        rcp_exist = all_check_results_exist("rcps", account_info, config)
-
-        if scp_exist and rcp_exist:
+        if _all_checks_complete(account_info, config):
+            account_identifier = _get_account_identifier(account_info)
             logger.info(f"All results already exist for account {account_identifier}, skipping checks")
             continue
 
-        logger.info(f"Running checks for account: {account_identifier}")
-
-        headroom_session = get_headroom_session(config, security_session, account_info.account_id)
-
-        if not scp_exist:
-            run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
-
-        if not rcp_exist:
-            run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
-
-        logger.info(f"Checks completed for account: {account_identifier}")
+        _run_checks_for_account(account_info, security_session, config, org_account_ids)
 
 
 def perform_analysis(config: HeadroomConfig) -> None:

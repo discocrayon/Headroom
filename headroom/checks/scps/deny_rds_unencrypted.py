@@ -1,11 +1,13 @@
 """Check for RDS databases that violate the deny_rds_unencrypted SCP."""
 
-from typing import Any, Dict, List
+from typing import List
 
-import boto3
+from boto3.session import Session
 
 from ...aws.rds import DenyRdsUnencrypted, get_rds_unencrypted_analysis
 from ...constants import DENY_RDS_UNENCRYPTED
+from ...enums import CheckCategory
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -21,7 +23,7 @@ class DenyRdsUnencryptedCheck(BaseCheck[DenyRdsUnencrypted]):
     - Overall compliance status for the account
     """
 
-    def analyze(self, session: boto3.Session) -> List[DenyRdsUnencrypted]:
+    def analyze(self, session: Session) -> List[DenyRdsUnencrypted]:
         """
         Analyze RDS databases for encryption configuration.
 
@@ -36,7 +38,7 @@ class DenyRdsUnencryptedCheck(BaseCheck[DenyRdsUnencrypted]):
     def categorize_result(
         self,
         result: DenyRdsUnencrypted
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single RDS encryption result.
 
@@ -44,9 +46,7 @@ class DenyRdsUnencryptedCheck(BaseCheck[DenyRdsUnencrypted]):
             result: Single DenyRdsUnencrypted analysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is:
-            - "violation": Unencrypted database
-            - "compliant": Encryption enabled
+            Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
         result_dict = {
             "db_identifier": result.db_identifier,
@@ -58,14 +58,14 @@ class DenyRdsUnencryptedCheck(BaseCheck[DenyRdsUnencrypted]):
         }
 
         if not result.encrypted:
-            return ("violation", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
 
-        return ("compliant", result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build RDS encryption check-specific summary fields.
 
