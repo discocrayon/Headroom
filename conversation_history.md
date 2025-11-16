@@ -14403,3 +14403,108 @@ Future check implementations can reference these lessons to avoid repeating mist
 - Amazon Linux 2023 AMI
 - Uses default VPC in each account
 - Remember to destroy test resources after testing to avoid charges
+
+## 2025-11-16 - Merge Conflict Resolution Plan: cursor/implement-deny-ec2-public-ip-check-76a9 → main
+
+**Current Situation:**
+- Branch: `cursor/implement-deny-ec2-public-ip-check-76a9` (1 commit ahead)
+- Main: 39 commits ahead with significant refactoring and new checks
+- 7 files with merge conflicts
+
+**Commits on Branch:**
+- `7470b5b feat: Add deny_ec2_public_ip SCP check`
+
+**Major Changes on Main:**
+- Refactored Terraform typing and AWS analyzers
+- Refactored Terraform generation with data models and improved naming consistency
+- Broke up large functions into smaller, focused helpers
+- Consolidated path resolution with ResultFilePathResolver class
+- Implemented Quick Wins refactoring and achieved 100% test coverage
+- Added multiple new checks: deny_ec2_ami_owner, deny_s3_third_party_access, deny_ecr_third_party_access, deny_eks_create_cluster_without_tag
+- Dropped AOSS RCP check
+
+**Conflicting Files:**
+1. `conversation_history.md` - Different history entries
+2. `headroom/aws/ec2.py` - Branch has `DenyEc2PublicIp`, main has `DenyEc2AmiOwner`
+3. `headroom/constants.py` - Branch has `DENY_EC2_PUBLIC_IP`, main has `DENY_EC2_AMI_OWNER`
+4. `headroom/terraform/generate_scps.py` - Branch has direct generation, main has model-based refactored code
+5. `test_environment/modules/scps/locals.tf` - Branch has deny_ec2_public_ip policy, main has deny_ec2_ami_owner policy
+6. `test_environment/modules/scps/variables.tf` - Branch has deny_ec2_public_ip variable, main has deny_ec2_ami_owner and allowed_ami_owners variables
+7. `tests/test_aws_ec2.py` - Branch has DenyEc2PublicIp tests, main has DenyEc2AmiOwner tests
+
+**Resolution Strategy:**
+
+### Phase 1: Preparation
+1. Create a backup branch: `cursor/implement-deny-ec2-public-ip-check-76a9-backup`
+2. Ensure clean working directory
+
+### Phase 2: Merge and Resolve Conflicts
+3. Execute merge: `git merge main`
+4. Resolve each conflict by keeping BOTH implementations:
+
+   **File 1: `conversation_history.md`**
+   - Keep both history entries (merge chronologically)
+
+   **File 2: `headroom/aws/ec2.py`**
+   - Keep BOTH dataclasses: `DenyImdsV1Ec2`, `DenyEc2AmiOwner`, AND `DenyEc2PublicIp`
+   - Keep BOTH functions: `get_imds_v1_ec2_analysis`, `get_ec2_ami_owner_analysis`, AND `get_ec2_public_ip_analysis`
+   - Ensure proper imports: include `Dict` in typing imports (from main)
+   - Use `Session` type hint (from main) instead of `boto3.Session`
+   - Order: IMDSv1, AmiOwner, PublicIp (alphabetical by check name)
+
+   **File 3: `headroom/constants.py`**
+   - Keep BOTH constants: `DENY_EC2_AMI_OWNER` AND `DENY_EC2_PUBLIC_IP`
+   - Maintain alphabetical order within EC2 section
+
+   **File 4: `headroom/terraform/generate_scps.py`**
+   - Use main's refactored structure (model-based with TerraformElement)
+   - Add `deny_ec2_public_ip` parameter to `_build_ec2_terraform_parameters` function
+   - Insert after `deny_ec2_ami_owner` logic, before `deny_imds_v1_ec2`
+   - Follow main's pattern: no complex conditional logic in generation
+
+   **File 5: `test_environment/modules/scps/locals.tf`**
+   - Keep BOTH policy statements in `possible_scp_1_denies` list
+   - Order: deny_ec2_ami_owner, deny_ec2_public_ip, deny_imds_v1_ec2
+   - Maintain consistent comment style from main
+
+   **File 6: `test_environment/modules/scps/variables.tf`**
+   - Keep BOTH variable declarations under # EC2 section
+   - Order: deny_ec2_ami_owner (with allowed_ami_owners), deny_ec2_public_ip, deny_imds_v1_ec2
+   - Follow main's variable style (explicit descriptions)
+
+   **File 7: `tests/test_aws_ec2.py`**
+   - Keep BOTH test classes: `TestDenyEc2AmiOwner` AND `TestDenyEc2PublicIp`
+   - Keep BOTH function test classes: `TestGetEc2AmiOwnerAnalysis` AND `TestGetEc2PublicIpAnalysis`
+   - Ensure imports include both dataclasses and functions
+   - Order: IMDSv1 tests, AmiOwner tests, PublicIp tests
+
+### Phase 3: Verification
+5. Run linter: `tox -e flake8,mypy`
+6. Run tests: `tox -e py312` (or your Python version)
+7. Verify no circular imports or type issues
+8. Check all files compile and execute correctly
+
+### Phase 4: Testing
+9. Run full test suite to ensure integration works
+10. Verify both checks work independently and together
+11. Test Terraform generation produces valid output
+
+### Phase 5: Commit and Push
+12. Commit with message: `Merge main into cursor/implement-deny-ec2-public-ip-check-76a9`
+13. Add details about conflict resolution in commit body
+14. Push to remote branch
+15. Create/update pull request
+
+**Key Principles:**
+- Preserve ALL functionality from both branches
+- Follow main's refactored patterns and code style
+- Maintain alphabetical ordering where applicable
+- Keep comprehensive test coverage
+- Ensure type safety and linter compliance
+
+**Expected Outcome:**
+- Branch includes both deny_ec2_public_ip (from branch) and deny_ec2_ami_owner (from main)
+- Code follows main's refactored structure (model-based, modular)
+- All tests pass with 100% coverage maintained
+- No functionality lost from either branch
+- Clean merge ready for PR review
