@@ -5,7 +5,16 @@ module "rcps_security_tooling" {
   source = "../modules/rcps"
   target_id = local.security_tooling_account_id
 
-  third_party_assumerole_account_ids_allowlist = [
-  ]
+  # ECR
+  deny_ecr_third_party_access = false
+
+  # IAM
+  third_party_assumerole_account_ids_allowlist = []
   enforce_assume_role_org_identities = true
+
+  # OpenSearch Serverless
+  deny_aoss_third_party_access = false
+
+  # S3
+  deny_s3_third_party_access = false
 }

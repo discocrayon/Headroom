@@ -1,12 +1,12 @@
 {
   "summary": {
-    "account_name": "security-tooling",
-    "check": "deny_imds_v1_ec2",
+    "account_name": "acme-co",
+    "check": "deny_ec2_ami_owner",
     "total_instances": 0,
     "violations": 0,
-    "exemptions": 0,
     "compliant": 0,
-    "compliance_percentage": 100
+    "compliance_percentage": 100,
+    "unique_ami_owners": []
   },
   "violations": [],
   "exemptions": [],

@@ -1,0 +1,16 @@
+{
+  "summary": {
+    "account_name": "security-tooling",
+    "check": "deny_s3_third_party_access",
+    "total_buckets_analyzed": 0,
+    "buckets_third_parties_can_access": 0,
+    "buckets_with_wildcards": 0,
+    "violations": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_third_party_account": {},
+    "buckets_by_third_party_account": {}
+  },
+  "buckets_third_parties_can_access": [],
+  "buckets_with_wildcards": []
+}

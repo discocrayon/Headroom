@@ -55,7 +55,7 @@ sequenceDiagram
   participant Orgs as boto3 Organizations
   participant Registry as headroom.checks.registry
   participant BaseCheck as headroom.checks.base.BaseCheck
-  participant SCPCheck as SCP Check (e.g., deny_imds_v1_ec2)
+  participant SCPCheck as SCP Check (e.g., deny_ec2_imds_v1)
   participant RCPCheck as RCP Check (e.g., third_party_assumerole)
   participant WriteResults as headroom.write_results
   participant FS as filesystem

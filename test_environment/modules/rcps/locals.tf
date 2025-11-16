@@ -1,5 +1,30 @@
 locals {
   possible_rcp_1_statements = [
+    # var.deny_ecr_third_party_access
+    # -->
+    # Sid: DenyECRThirdPartyAccess
+    # Restricts ECR access to organization accounts and allowlisted third parties
+    {
+      include   = var.deny_ecr_third_party_access,
+      statement = {
+        "Sid"    = "DenyECRThirdPartyAccess"
+        "Principal" = "*"
+        "Action" = [
+          "ecr:*",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount" = var.deny_ecr_third_party_access_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
+          }
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
     # var.enforce_assume_role_org_identities
     # -->
     # Sid: EnforceOrgIdentities
@@ -17,6 +42,43 @@ locals {
           "StringNotEqualsIfExists" = {
             "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
             "aws:PrincipalAccount" = var.third_party_assumerole_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
+          }
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
+    # var.deny_s3_third_party_access
+    # -->
+    # Sid: DenyS3ThirdPartyAccess
+    # Denies S3 access from accounts outside the organization except allowlisted accounts
+    {
+      include   = var.deny_s3_third_party_access,
+      statement = {
+        "Sid"    = "DenyS3ThirdPartyAccess"
+        "Principal" = "*"
+        "Action" = "s3:*"
+    # var.deny_aoss_third_party_access
+    # -->
+    # Sid: DenyAossThirdPartyAccess
+    # Restricts AOSS access to organization accounts and allowlisted third-party accounts
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonopensearchserverless.html
+    {
+      include   = var.deny_aoss_third_party_access,
+      statement = {
+        "Sid"    = "DenyAossThirdPartyAccess"
+        "Principal" = "*"
+        "Action" = [
+          "aoss:*",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount" = var.third_party_s3_access_account_ids_allowlist
+            "aws:PrincipalAccount" = var.aoss_third_party_account_ids_allowlist
             "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {

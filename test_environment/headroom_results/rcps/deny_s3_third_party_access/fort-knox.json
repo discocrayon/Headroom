@@ -1,0 +1,34 @@
+{
+  "summary": {
+    "account_name": "fort-knox",
+    "check": "deny_s3_third_party_access",
+    "total_buckets_analyzed": 1,
+    "buckets_third_parties_can_access": 0,
+    "buckets_with_wildcards": 1,
+    "violations": 1,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_third_party_account": {},
+    "buckets_by_third_party_account": {}
+  },
+  "buckets_third_parties_can_access": [
+    {
+      "bucket_name": "headroom-test-wildcard-093113290897",
+      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-093113290897",
+      "third_party_account_ids": [],
+      "has_wildcard_principal": true,
+      "has_non_account_principals": false,
+      "actions_by_account": {}
+    }
+  ],
+  "buckets_with_wildcards": [
+    {
+      "bucket_name": "headroom-test-wildcard-093113290897",
+      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-093113290897",
+      "third_party_account_ids": [],
+      "has_wildcard_principal": true,
+      "has_non_account_principals": false,
+      "actions_by_account": {}
+    }
+  ]
+}

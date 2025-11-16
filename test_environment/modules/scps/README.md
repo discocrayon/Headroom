@@ -10,14 +10,19 @@ Intention is to eventually have this Terraform module in the Terraform registry 
 module "scps" {
   source = "./modules/scps"
 
-  target_id               = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
-  deny_imds_v1_ec2        = true
-  deny_iam_user_creation  = true
-  deny_saml_provider_not_aws_sso = true
-  allowed_iam_users       = [
+  target_id                          = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
+  deny_ec2_ami_owner                 = true
+  allowed_ami_owners                 = ["amazon", "444444444444"]
+  deny_ec2_imds_v1                   = true
+  deny_ec2_public_ip                 = true
+  deny_eks_create_cluster_without_tag = true
+  deny_iam_user_creation             = true
+  deny_saml_provider_not_aws_sso     = true
+  allowed_iam_users                  = [
     "arn:aws:iam::444444444444:user/terraform-user",
     "arn:aws:iam::444444444444:user/github-actions",
   ]
+  deny_rds_unencrypted               = true
 }
 ```
 
@@ -31,10 +36,15 @@ module "scps" {
 
 ### Security Policy Variables
 
-- **`deny_imds_v1_ec2`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
+- **`deny_ec2_ami_owner`** (bool): Deny EC2 instances from launching with AMIs not from approved owners
+- **`allowed_ami_owners`** (list(string)): List of allowed AMI owner account IDs or aliases (e.g., "amazon", "self")
+- **`deny_ec2_imds_v1`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
+- **`deny_ec2_public_ip`** (bool): Deny EC2 instances from being launched with public IP addresses
+- **`deny_eks_create_cluster_without_tag`** (bool): Deny EKS cluster creation unless PavedRoad=true tag is present
 - **`deny_iam_user_creation`** (bool): Deny creation of IAM users not on the allowed list
 - **`deny_saml_provider_not_aws_sso`** (bool): Deny creation of IAM SAML providers so only AWS IAM Identity Center (AWS SSO) managed providers remain
 - **`allowed_iam_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
+- **`deny_rds_unencrypted`** (bool): Deny creation of unencrypted RDS databases
 
 ## Architecture
 
@@ -60,7 +70,7 @@ Policy statements are conditionally included using the pattern in `locals.tf`:
 
 ## Security Policies
 
-### IMDSv2 Enforcement (`deny_imds_v1_ec2`)
+### IMDSv2 Enforcement (`deny_ec2_imds_v1`)
 
 When enabled, this policy enforces IMDSv2 (Instance Metadata Service version 2) for EC2 instances through two statements:
 
@@ -72,6 +82,49 @@ When enabled, this policy enforces IMDSv2 (Instance Metadata Service version 2) 
 Resources can be exempted from IMDSv2 enforcement using the tag `ExemptFromIMDSv2: "true"`:
 - IAM roles: Tag the role with `ExemptFromIMDSv2 = "true"` to exempt all instances using that role
 - EC2 instances: Include `ExemptFromIMDSv2 = "true"` in request tags when launching instances
+
+### EKS Paved Road Enforcement (`deny_eks_create_cluster_without_tag`)
+
+When enabled, this policy enforces the "paved road" approach for EKS cluster creation, encouraging use of blessed automation and infrastructure-as-code:
+
+**DenyEksCreateClusterWithoutTag**: Denies `eks:CreateCluster` action unless `aws:RequestTag/PavedRoad` equals "true"
+
+#### Purpose
+
+This policy implements a "Module Tag / Paved Road Pattern" to:
+- Encourage use of approved automation and infrastructure-as-code tools
+- Discourage manual cluster creation via AWS Console or ad-hoc CLI commands
+- Maintain consistency in cluster configuration and security posture
+- Enable tracking of which clusters were created via approved methods
+
+#### Configuration
+
+To create EKS clusters when this policy is enabled, your automation must include the tag in the creation request:
+
+```bash
+aws eks create-cluster --name my-cluster \
+  --tags PavedRoad=true \
+  ...
+```
+
+In Terraform:
+
+```hcl
+resource "aws_eks_cluster" "example" {
+  name = "my-cluster"
+
+  tags = {
+    PavedRoad = "true"
+  }
+  ...
+}
+```
+
+#### Tag Matching
+
+- The condition uses `StringNotEquals`, requiring exact match: `PavedRoad` (case-sensitive) must equal `"true"` (string)
+- Missing tag or incorrect value (e.g., `"True"`, `"TRUE"`, `"yes"`) will be denied
+- The tag must be present in the request tags at cluster creation time
 
 ### IAM User Creation Restriction (`deny_iam_user_creation`)
 
@@ -95,6 +148,10 @@ When enabled, this absolute deny control removes the ability to create new IAM S
 - Prevents shadow SAML integrations that bypass centralized access management
 - Complements detection checks that verify only a single AWS SSO-managed provider exists
 - `AWSServiceRoleForSSO` continues to provision the official provider in new accounts and is not affected by SCPs, so denying `iam:CreateSAMLProvider` to all principals blocks only custom provider creation
+
+### Root LeaveOrganization Protection
+
+When the module target is the organization root (values such as `r-root`), a guardrail statement is always included that denies `organizations:LeaveOrganization` for all principals. This prevents detaching the root from the organization, even when no optional checks are enabled.
 
 ## Resources Created
 

@@ -1,11 +1,13 @@
 """Check for IAM users that exist in accounts with the deny_iam_user_creation SCP."""
 
-from typing import Any, Dict, List
+from typing import List
 
-import boto3
+from boto3.session import Session
 
 from ...aws.iam.users import IamUserAnalysis, get_iam_users_analysis
 from ...constants import DENY_IAM_USER_CREATION
+from ...enums import CheckCategory
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -19,7 +21,7 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
     which users are allowed to be created based on the Terraform configuration.
     """
 
-    def analyze(self, session: boto3.Session) -> List[IamUserAnalysis]:
+    def analyze(self, session: Session) -> List[IamUserAnalysis]:
         """
         Analyze IAM users in the account.
 
@@ -31,7 +33,7 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
         """
         return get_iam_users_analysis(session)
 
-    def categorize_result(self, result: IamUserAnalysis) -> tuple[str, Dict[str, Any]]:
+    def categorize_result(self, result: IamUserAnalysis) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single IAM user analysis result.
 
@@ -39,18 +41,18 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
             result: Single IamUserAnalysis analysis result
 
         Returns:
-            Tuple of (category, result_dict) where category is "compliant"
+            Tuple of (category, result_dict) where category is CheckCategory.COMPLIANT
             (we're just listing users, not evaluating them)
         """
-        result_dict = {
+        result_dict: JsonDict = {
             "user_name": result.user_name,
             "user_arn": result.user_arn,
             "path": result.path,
         }
 
-        return ("compliant", result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build IAM user check-specific summary fields.
 
