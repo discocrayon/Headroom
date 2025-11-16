@@ -1252,7 +1252,7 @@ class TestGenerateRcpTerraform:
         assert "local.root_ou_id" in content
         assert "999999999999" in content
         assert "888888888888" in content
-        assert "enforce_assume_role_org_identities = true" in content
+        assert "deny_sts_third_party_assumerole = true" in content
 
     def test_generate_ou_level_terraform(
         self,
@@ -1280,7 +1280,7 @@ class TestGenerateRcpTerraform:
         assert "module \"rcps_production_ou\"" in content
         assert "local.top_level_production_ou_id" in content
         assert "999999999999" in content
-        assert "enforce_assume_role_org_identities = true" in content
+        assert "deny_sts_third_party_assumerole = true" in content
 
     def test_generate_account_level_terraform(
         self,
@@ -1308,7 +1308,7 @@ class TestGenerateRcpTerraform:
         assert "module \"rcps_prod_account_1\"" in content
         assert "local.prod_account_1_account_id" in content
         assert "999999999999" in content
-        assert "enforce_assume_role_org_identities = true" in content
+        assert "deny_sts_third_party_assumerole = true" in content
 
     def test_generate_skips_missing_ou(
         self,
@@ -1371,11 +1371,11 @@ class TestGenerateRcpTerraform:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """
-        Test that wildcard in third_party_account_ids sets enforce_assume_role_org_identities to false.
+        Test that wildcard in third_party_account_ids sets deny_sts_third_party_assumerole to false.
 
         When a wildcard is present, it means trusting all account IDs which could cause
         outages if the RCP is deployed, so enforcement should be disabled.
-        The deny_sts_third_party_assumerole_account_ids_allowlist parameter should not be passed when enforcement is false.
+        The sts_third_party_assumerole_account_ids_allowlist parameter should not be passed when enforcement is false.
         """
         recommendations = [
             RCPPlacementRecommendations(
@@ -1394,8 +1394,8 @@ class TestGenerateRcpTerraform:
         assert root_file.exists()
 
         content = root_file.read_text()
-        assert "enforce_assume_role_org_identities = false" in content
-        assert "deny_sts_third_party_assumerole_account_ids_allowlist" not in content
+        assert "deny_sts_third_party_assumerole = false" in content
+        assert "sts_third_party_assumerole_account_ids_allowlist" not in content
 
     def test_no_symlink_created_by_generate_rcp_terraform(
         self,
@@ -1525,10 +1525,10 @@ class TestBuildRcpTerraformModule:
 
         assert 'module "rcps_test_account"' in result
         assert "target_id = local.test_account_account_id" in result
-        assert "deny_sts_third_party_assumerole_account_ids_allowlist" in result
+        assert "sts_third_party_assumerole_account_ids_allowlist" in result
         assert '"111111111111"' in result
         assert '"222222222222"' in result
-        assert "enforce_assume_role_org_identities = true" in result
+        assert "deny_sts_third_party_assumerole = true" in result
 
     def test_build_module_with_wildcard(self) -> None:
         """Should generate module without allowlist when wildcard present."""
@@ -1549,7 +1549,7 @@ class TestBuildRcpTerraformModule:
 
         assert 'module "rcps_test"' in result
         assert "third_party_assumerole_account_ids_allowlist" not in result
-        assert "enforce_assume_role_org_identities = false" in result
+        assert "deny_sts_third_party_assumerole = false" in result
 
     def test_build_module_includes_comment(self) -> None:
         """Should include comment in generated content."""
@@ -1570,10 +1570,11 @@ class TestBuildRcpTerraformModule:
 
         assert "# Auto-generated RCP Terraform configuration for Organization Root" in result
         # Verify section comments are present
+        assert "  # AOSS" in result
         assert "  # ECR" in result
-        assert "  # IAM" in result
-        assert "  # OpenSearch Serverless" in result
         assert "  # S3" in result
+        assert "  # SQS" in result
+        assert "  # STS" in result
         # Verify blank lines separate sections (not '  #' lines)
         assert "  #\n" not in result, "Should not have '  #' comment lines, only blank lines for spacing"
 
@@ -1601,20 +1602,23 @@ module "rcps_test" {
   source = "../modules/rcps"
   target_id = local.test_ou_id
 
+  # AOSS
+  deny_aoss_third_party_access = false
+
   # ECR
   deny_ecr_third_party_access = false
 
-  # IAM
-  deny_sts_third_party_assumerole_account_ids_allowlist = [
-    "749430749651",
-  ]
-  enforce_assume_role_org_identities = true
-
-  # OpenSearch Serverless
-  deny_aoss_third_party_access = false
-
   # S3
   deny_s3_third_party_access = false
+
+  # SQS
+  deny_sqs_third_party_access = false
+
+  # STS
+  deny_sts_third_party_assumerole = true
+  sts_third_party_assumerole_account_ids_allowlist = [
+    "749430749651",
+  ]
 }
 '''
         assert result == expected
@@ -1637,7 +1641,7 @@ module "rcps_test" {
         )
 
         assert 'module "rcps_test_account"' in result
-        assert "third_party_s3_access_account_ids_allowlist" in result
+        assert "s3_third_party_access_account_ids_allowlist" in result
         assert '"333333333333"' in result
         assert '"444444444444"' in result
         assert "deny_s3_third_party_access = true" in result
@@ -1652,7 +1656,7 @@ module "rcps_test" {
         )
 
         assert 'module "rcps_test"' in result
-        assert "third_party_s3_access_account_ids_allowlist" not in result
+        assert "s3_third_party_access_account_ids_allowlist" not in result
         assert "deny_s3_third_party_access = false" in result
 
     def test_build_module_with_ecr_recommendations(self) -> None:
@@ -1672,11 +1676,11 @@ module "rcps_test" {
             comment="Test"
         )
 
-        assert "deny_ecr_third_party_access_account_ids_allowlist" in result
+        assert "ecr_third_party_access_account_ids_allowlist" in result
         assert '"464622532012"' in result
         assert '"198449067068"' in result
         assert "deny_ecr_third_party_access = true" in result
-        assert "enforce_assume_role_org_identities = false" in result
+        assert "deny_sts_third_party_assumerole = false" in result
 
     def test_build_module_with_both_ecr_and_iam(self) -> None:
         """Should generate module with both ECR and IAM RCP recommendations."""
@@ -1703,12 +1707,12 @@ module "rcps_test" {
             comment="Test"
         )
 
-        assert "deny_ecr_third_party_access_account_ids_allowlist" in result
+        assert "ecr_third_party_access_account_ids_allowlist" in result
         assert '"464622532012"' in result
         assert "deny_ecr_third_party_access = true" in result
-        assert "deny_sts_third_party_assumerole_account_ids_allowlist" in result
+        assert "sts_third_party_assumerole_account_ids_allowlist" in result
         assert '"999999999999"' in result
-        assert "enforce_assume_role_org_identities = true" in result
+        assert "deny_sts_third_party_assumerole = true" in result
 
 
 class TestGenerateAccountRcpTerraform:
@@ -1941,7 +1945,31 @@ class TestGenerateRootRcpTerraform:
         assert "222222222222" in terraform
         assert "333333333333" in terraform
         assert "deny_aoss_third_party_access = true" in terraform
-        assert "aoss_third_party_account_ids_allowlist" in terraform
+        assert "aoss_third_party_access_account_ids_allowlist" in terraform
+
+    def test_build_module_with_sqs_third_party_accounts(self) -> None:
+        """Test building Terraform module with SQS third-party accounts."""
+        sqs_rec = RCPPlacementRecommendations(
+            check_name="deny_sqs_third_party_access",
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["444444444444", "555555555555"],
+            reasoning="Test SQS"
+        )
+        terraform = _build_rcp_terraform_module(
+            module_name="test_module",
+            target_id_reference="local.account_id",
+            recommendations=[sqs_rec],
+            comment="Test Account"
+        )
+
+        assert "test_module" in terraform
+        assert "local.account_id" in terraform
+        assert "444444444444" in terraform
+        assert "555555555555" in terraform
+        assert "deny_sqs_third_party_access = true" in terraform
+        assert "sqs_third_party_access_account_ids_allowlist" in terraform
 
     def test_empty_recommendations_returns_early(self) -> None:
         """Should return early when recommendations list is empty."""

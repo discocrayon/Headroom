@@ -85,6 +85,16 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 - All mypy type checks MUST pass with strict mode
 - Use `typing` module for complex types (List, Dict, Optional, Set, etc.)
 - No use of `Any` type (makes code worse, not better)
+- **Use proper type aliases** (e.g., `JsonDict` instead of `Dict[str, Any]`)
+- **The only acceptable use of `Any`** is for `**kwargs` when matching a base class signature
+- **For union types**, be specific about what types are allowed:
+  ```python
+  # Good: Specific union type with recursive definition
+  PrincipalType = Union[str, List["PrincipalType"], Dict[str, Union[str, List[str]]]]
+
+  # Bad: Using Any
+  def process_principal(principal: Any) -> Set[str]:  # Don't do this
+  ```
 
 **Imports:**
 - ALL imports at top of file (never inside functions)
@@ -95,6 +105,44 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 - NEVER use bare `except:` or `except Exception:`
 - Always catch specific exceptions (ClientError, ValueError, KeyError, etc.)
 - Fail-loud philosophy: let exceptions propagate with context
+- **Avoid nested exception handlers for the same exception type**
+- **Only wrap the specific lines that can raise each exception**
+- **FAIL FAST: Never add defensive code that silently returns empty values**
+- **FAIL FAST: Do not check types and return empty set/list for unexpected types**
+- **Example of GOOD exception handling:**
+  ```python
+  # Separate try/except blocks for different operations
+  try:
+      paginator = client.get_paginator("list_queues")
+  except ClientError as e:
+      logger.warning(f"Access denied listing queues: {e}")
+      return []
+
+  for page in paginator.paginate():
+      for item in page.get("Items", []):
+          try:
+              attrs = client.get_attributes(Item=item)
+          except ClientError as e:
+              logger.warning(f"Failed to get attributes: {e}")
+              continue  # Skip this item, continue with others
+  ```
+
+- **Example of BAD defensive code (NEVER DO THIS):**
+  ```python
+  # BAD: Silently returns empty set for unexpected types
+  def normalize_actions(actions):
+      if isinstance(actions, str):
+          return {actions}
+      if isinstance(actions, list):
+          return set(actions)
+      return set()  # DON'T DO THIS - let it fail instead!
+
+  # GOOD: Fails fast on unexpected types
+  def normalize_actions(actions):
+      if isinstance(actions, str):
+          return {actions}
+      return set(actions)  # Will raise TypeError if wrong type - that's good!
+  ```
 
 ### Code Structure Standards
 
@@ -103,6 +151,17 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 - No copy-paste of logic across functions
 - Use helper functions for repeated patterns
 - After implementation, analyze for DRY violations
+- **Use constants for repeated values** (regex patterns, strings, etc.)
+- **Use existing helper functions** (like `get_all_regions()`) instead of duplicating AWS API calls
+- **Example:** Instead of duplicating regex patterns across files, add them to `constants.py`:
+  ```python
+  # constants.py
+  AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+
+  # sqs.py, s3.py, etc.
+  from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+  arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+  ```
 
 **Function Design:**
 - Single Responsibility Principle: one function = one purpose
@@ -250,12 +309,18 @@ def analyze_databases(
 Before considering implementation complete:
 
 1. **DRY Analysis:** Search for duplicate code, extract to functions
+   - Check for duplicated regex patterns → add to constants.py
+   - Check for repeated AWS API calls → use or add to helpers.py
+   - Look for copy-paste code blocks → extract to shared functions
 2. **Indentation Review:** Look for opportunities to reduce nesting
-3. **Edge Case Verification:** Confirm all edge cases have tests
-4. **Naming Consistency:** Ensure all names are clear and follow conventions
-5. **Type Coverage:** Verify every function has complete type annotations
-6. **Documentation:** Check all docstrings follow PEP 257
-7. **Tool Validation:** Run tox and confirm all checks pass
+3. **Exception Handling Review:** Check for nested exception handlers of same type
+4. **Edge Case Verification:** Confirm all edge cases have tests
+5. **Naming Consistency:** Ensure all names are clear and follow conventions
+6. **Type Coverage:** Verify every function has complete type annotations
+   - Check for unnecessary `Any` usage → replace with specific types or `JsonDict`
+   - Verify use of type aliases from `types.py`
+7. **Documentation:** Check all docstrings follow PEP 257
+8. **Tool Validation:** Run tox and confirm all checks pass
 
 ---
 
@@ -813,12 +878,60 @@ variable "deny_rds_unencrypted" {
 - Add descriptive documentation
 - Be consistent with existing check variables (no `nullable` attribute for booleans)
 
+**Variable Naming Convention:**
+- **ALWAYS start with service name:** `ec2_`, `iam_`, `rds_`, `s3_`, `sts_`, etc.
+- Format: `<service>_<descriptor>` for allowlists (e.g., `ec2_allowed_ami_owners`, `iam_allowed_users`)
+- Format: `deny_<service>_<action>` for boolean flags (e.g., `deny_rds_unencrypted`)
+
+**Variable Ordering Convention:**
+1. **Alphabetically by service** (AOSS, ECR, S3, SQS, STS for RCPs; EC2, EKS, IAM, RDS for SCPs)
+2. **Within each service:**
+   - Required boolean argument first
+   - Optional allowlist argument immediately after (if applicable)
+3. **Example for EC2:**
+   ```hcl
+   # EC2
+   variable "deny_ec2_ami_owner" {
+     type = bool
+   }
+
+   variable "ec2_allowed_ami_owners" {  # Immediately after
+     type    = list(string)
+     default = []
+   }
+
+   variable "deny_ec2_imds_v1" {  # Next deny flag
+     type = bool
+   }
+   ```
+
 **For Allowlist Variables (Pattern 5b):**
 ```hcl
-variable "allowed_rds_databases" {
+variable "ec2_allowed_ami_owners" {
   type        = list(string)
   default     = []
-  description = "List of RDS database ARNs that are allowed to exist unencrypted"
+  description = "List of allowed AMI owner account IDs or aliases (e.g., 'amazon', 'aws-marketplace', '123456789012')"
+}
+
+variable "iam_allowed_users" {
+  type        = list(string)
+  default     = []
+  description = "List of IAM user ARNs that are allowed to be created. Format: arn:aws:iam::ACCOUNT_ID:user/USERNAME"
+}
+```
+
+**For RCPs with Third-Party Account Allowlists:**
+```hcl
+# STS
+variable "deny_sts_third_party_assumerole" {
+  type        = bool
+  description = "Deny STS AssumeRole from third-party accounts except those in the allowlist."
+}
+
+variable "sts_third_party_assumerole_account_ids_allowlist" {
+  type        = list(string)
+  default     = []
+  description = "Allowlist of third-party AWS account IDs that are permitted to assume roles in this target ID."
 }
 ```
 
@@ -900,17 +1013,26 @@ def _build_scp_terraform_module(...):
 
     # EC2
     terraform_content += "  # EC2\n"
+    deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_checks
+    terraform_content += f"  deny_ec2_ami_owner = {str(deny_ec2_ami_owner).lower()}\n"
+    if deny_ec2_ami_owner:
+        ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
+        terraform_content += f"  ec2_allowed_ami_owners = {ec2_allowed_ami_owners}\n"
+
     deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_checks
     terraform_content += f"  deny_ec2_imds_v1 = {str(deny_ec2_imds_v1).lower()}\n"
     terraform_content += "\n"
 
     # IAM
     terraform_content += "  # IAM\n"
+    deny_iam_saml_provider_not_aws_sso = "deny_iam_saml_provider_not_aws_sso" in enabled_checks
+    terraform_content += f"  deny_iam_saml_provider_not_aws_sso = {str(deny_iam_saml_provider_not_aws_sso).lower()}\n"
+
     deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks
     terraform_content += f"  deny_iam_user_creation = {str(deny_iam_user_creation).lower()}\n"
-
     if deny_iam_user_creation:
         # ... IAM user allowlist logic ...
+        terraform_content += f"  iam_allowed_users = [...]\n"
 
     terraform_content += "\n"
 
@@ -927,8 +1049,31 @@ def _build_scp_terraform_module(...):
 - Add service category comment (e.g., `# RDS`)
 - Check if check name is in `enabled_checks` set
 - Generate boolean variable assignment
-- Maintain alphabetical category ordering (EC2, IAM, RDS, S3, etc.)
+- **CRITICAL ORDERING RULES:**
+  1. **Alphabetically by service** (EC2, EKS, IAM, RDS, S3, etc.)
+  2. **Within each service:** Boolean flag first, then allowlist immediately after (if applicable)
+  3. **Example:** `deny_ec2_ami_owner` → `ec2_allowed_ami_owners` → `deny_ec2_imds_v1`
 - Add blank line between categories for readability
+
+**Ordering Example:**
+```python
+# EC2
+parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
+if deny_ec2_ami_owner:
+    parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
+
+parameters.append(TerraformParameter("deny_ec2_imds_v1", deny_ec2_imds_v1))
+parameters.append(TerraformParameter("deny_ec2_public_ip", deny_ec2_public_ip))
+
+# EKS
+parameters.append(TerraformParameter("deny_eks_create_cluster_without_tag", ...))
+
+# IAM
+parameters.append(TerraformParameter("deny_iam_saml_provider_not_aws_sso", ...))
+parameters.append(TerraformParameter("deny_iam_user_creation", ...))
+if deny_iam_user_creation:
+    parameters.append(TerraformParameter("iam_allowed_users", ...))
+```
 
 **For Checks with Allowlists:**
 ```python
@@ -1824,18 +1969,28 @@ Use this checklist when adding any new check:
 ### Terraform Modules
 - [ ] Added boolean variable to `test_environment/modules/{scps|rcps}/variables.tf`
 - [ ] Added allowlist variable (if Pattern 5)
+- [ ] **Verified variable naming convention:**
+  - [ ] Variable names start with service name (e.g., `ec2_`, `iam_`, `rds_`, `sts_`)
+  - [ ] Boolean flags use `deny_<service>_<action>` format
+  - [ ] Allowlist variables use `<service>_<descriptor>` format (e.g., `ec2_allowed_ami_owners`)
+- [ ] **Verified variable ordering:**
+  - [ ] Variables ordered alphabetically by service
+  - [ ] Within each service: required boolean first, then optional allowlist immediately after
 - [ ] Added policy statement to `test_environment/modules/{scps|rcps}/locals.tf`:
   - [ ] Used `include` field tied to variable
   - [ ] Verified policy syntax matches AWS format
   - [ ] Tested condition logic
   - [ ] Added descriptive comments
+  - [ ] Policy statements ordered alphabetically by service (matching variables.tf)
 
 ### Terraform Generation
 - [ ] Updated `headroom/terraform/generate_scps.py` or `generate_rcps.py`:
   - [ ] Added service category comment
   - [ ] Added check boolean generation
   - [ ] Added allowlist generation (if applicable)
-  - [ ] Maintained alphabetical category ordering
+  - [ ] **Verified ordering convention:**
+    - [ ] Services ordered alphabetically (AOSS, ECR, S3, SQS, STS for RCPs; EC2, EKS, IAM, RDS for SCPs)
+    - [ ] Within each service: boolean flag first, then allowlist immediately after
   - [ ] Added blank lines between categories
 
 ### Unit Tests
@@ -2126,8 +2281,26 @@ for page in paginator.paginate():
 ### 9. Category Placement in Terraform Generation
 
 **Symptom:** Generated Terraform has checks in wrong/inconsistent order
-**Issue:** Not following alphabetical service ordering
-**Fix:** Maintain this order: EC2, IAM, RDS, S3, VPC, etc.
+**Issue:** Not following alphabetical service ordering and required-before-optional convention
+**Fix:**
+- **Service Order:** Alphabetically by service name (EC2, EKS, IAM, RDS, S3, STS, etc.)
+- **Within Service:** Required boolean flag first, then optional allowlist immediately after
+- **Example:**
+  ```python
+  # EC2
+  deny_ec2_ami_owner = ...
+  ec2_allowed_ami_owners = ...  # Immediately after corresponding boolean
+  deny_ec2_imds_v1 = ...         # Next boolean flag
+  deny_ec2_public_ip = ...
+
+  # EKS (alphabetically after EC2)
+  deny_eks_create_cluster_without_tag = ...
+
+  # IAM (alphabetically after EKS)
+  deny_iam_saml_provider_not_aws_sso = ...
+  deny_iam_user_creation = ...
+  iam_allowed_users = ...        # Immediately after corresponding boolean
+  ```
 
 ### 10. Test Environment Resource Naming Conflicts
 
@@ -2145,22 +2318,28 @@ identifier = "headroom-test-${var.purpose}-${data.aws_caller_identity.current.ac
 ### 11. Forgetting Multi-Region Support
 
 **Symptom:** Only finding resources in default region
-**Issue:** Not iterating through all regions
+**Issue:** Not iterating through all regions or not using the existing helper function
 **Fix:**
 ```python
+# BEST: Use the existing helper function
+from .helpers import get_all_regions
+
+regions = get_all_regions(session)
+for region in regions:
+    regional_client = session.client("rds", region_name=region)
+    # ... analysis ...
+
+# ACCEPTABLE if helper doesn't fit your needs:
 # Get all regions (including opt-in regions that may be disabled)
 # We intentionally scan all regions to detect resources in any region
 ec2_client = session.client("ec2")
 regions_response = ec2_client.describe_regions()
 regions = [r["RegionName"] for r in regions_response["Regions"]]
-
-# Analyze in each region
-for region in regions:
-    regional_client = session.client("rds", region_name=region)
-    # ... analysis ...
 ```
 
 **Note:** Do NOT filter regions by opt-in-status. We intentionally scan all regions to ensure complete visibility, even if some API calls may fail for disabled regions.
+
+**DRY Reminder:** Always check `headroom/aws/helpers.py` for existing helper functions before writing AWS API calls. The `get_all_regions()` helper is specifically designed for this purpose.
 
 ### 12. Incorrect Summary Field Calculation
 
@@ -2207,11 +2386,567 @@ compliance_pct = (compliant_count / total * 100) if total > 0 else 100.0  # Hand
 - Set up billing alerts
 - Consider using separate test account
 
+### 16. Nested Exception Handlers for Same Exception Type
+
+**Symptom:** Confusing exception handling flow, difficult to debug, code smells
+**Issue:** One `ClientError` exception handler inside another `ClientError` exception handler
+**Example of BAD code:**
+```python
+# BAD: Nested ClientError handlers
+try:
+    paginator = client.get_paginator("list_queues")
+    for page in paginator.paginate():
+        for queue_url in page.get("QueueUrls", []):
+            try:
+                attrs = client.get_queue_attributes(QueueUrl=queue_url)
+                # ... process ...
+            except ClientError as e:
+                logger.warning(f"Failed to get attributes: {e}")
+                continue
+except ClientError as e:
+    logger.error(f"Failed to list queues: {e}")
+    return []
+```
+
+**Fix:** Separate exception handling into distinct blocks:
+```python
+# GOOD: Separate ClientError handlers
+try:
+    paginator = client.get_paginator("list_queues")
+except ClientError as e:
+    error_code = e.response.get("Error", {}).get("Code", "")
+    if error_code == "AccessDenied":
+        logger.warning(f"Access denied listing queues in region {region}")
+    else:
+        logger.error(f"Failed to list queues in region {region}: {e}")
+    return []
+
+for page in paginator.paginate():
+    queue_urls = page.get("QueueUrls", [])
+
+    for queue_url in queue_urls:
+        try:
+            attrs = client.get_queue_attributes(QueueUrl=queue_url)
+        except ClientError as e:
+            logger.warning(f"Failed to get attributes for {queue_url}: {e}")
+            continue
+
+        # Process attributes...
+```
+
+**Key Principles:**
+- Each `try/except` block should wrap ONLY the lines that can raise that specific exception
+- Separate exception handlers for different operations (pagination setup vs. per-item processing)
+- Makes error handling clearer and easier to debug
+
+### 17. Not Using Existing Helper Functions
+
+**Symptom:** Duplicated AWS API calls, inconsistent patterns across codebase
+**Issue:** Writing AWS API calls directly instead of using existing helpers in `headroom/aws/helpers.py`
+**Example:**
+```python
+# BAD: Duplicating region discovery logic
+ec2_client = session.client("ec2")
+regions_response = ec2_client.describe_regions()
+regions = [region["RegionName"] for region in regions_response["Regions"]]
+
+# GOOD: Using existing helper
+from .helpers import get_all_regions
+regions = get_all_regions(session)
+```
+
+**Available Helpers in `headroom/aws/helpers.py`:**
+- `get_all_regions(session)` - Get all available AWS regions
+- `paginate(client, operation_name, **kwargs)` - Generic pagination helper
+
+**Fix:**
+1. Always check `headroom/aws/helpers.py` before writing AWS API calls
+2. Use existing helpers when available
+3. If you need a new pattern repeatedly, add it to `helpers.py`
+
+### 18. Duplicated Regex Patterns
+
+**Symptom:** Same regex pattern string repeated across multiple files
+**Issue:** Not using constants for repeated patterns
+**Example of BAD code:**
+```python
+# sqs.py
+arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+
+# s3.py
+arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+
+# ecr.py
+arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+```
+
+**Fix:** Add constant to `headroom/constants.py`:
+```python
+# constants.py
+AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+
+# sqs.py, s3.py, ecr.py, etc.
+from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+```
+
+**Benefits:**
+- Single source of truth for regex patterns
+- Easier to update if pattern needs to change
+- Self-documenting through constant name
+- Reduces chance of typos/inconsistencies
+
+### 19. Using `Any` When Specific Types Are Available
+
+**Symptom:** mypy can't catch type errors, poor IDE autocomplete
+**Issue:** Using `Dict[str, Any]` or other `Any` types when specific types exist
+**Example of BAD code:**
+```python
+# BAD: Using Any when JsonDict exists
+def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, Dict[str, Any]]:
+    ...
+
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    ...
+```
+
+**Fix:** Use the existing type aliases:
+```python
+# GOOD: Using JsonDict type alias
+from ...types import JsonDict
+
+def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, JsonDict]:
+    ...
+
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
+    ...
+```
+
+**When `Any` IS Acceptable:**
+- In `**kwargs: Any` when matching a base class signature that uses `Any`
+- This is the ONLY acceptable use case in the codebase
+
+**Always Remember:**
+- Check `headroom/types.py` for existing type aliases
+- Use `Union[]` for parameters that can be multiple specific types
+- Define recursive types when needed (e.g., `PrincipalType`)
+
+### 20. Defensive Code That Silently Returns Empty Values
+
+**Symptom:** Bugs are hidden, malformed data is silently ignored, production failures are hard to debug
+**Issue:** Adding defensive branches that return empty sets/lists/None when data is unexpected
+
+**Example of BAD code:**
+```python
+# BAD: Defensive code that hides problems
+def normalize_actions(actions: ActionsType) -> Set[str]:
+    if isinstance(actions, str):
+        return {actions}
+    if isinstance(actions, list):
+        return set(actions)
+    return set()  # Silently returns empty for malformed data
+
+# BAD: Defensive code in data extraction
+def extract_account_ids(principal: PrincipalType) -> Set[str]:
+    if isinstance(principal, str):
+        return _extract_from_string(principal)
+    if isinstance(principal, list):
+        return _extract_from_list(principal)
+    if isinstance(principal, dict):
+        return _extract_from_dict(principal)
+    return set()  # Hides unexpected principal formats
+```
+
+**Issues:**
+- Malformed AWS data is silently ignored instead of failing
+- Bugs are hard to diagnose because code "works" but returns empty
+- AWS API changes are not detected
+- Type errors are hidden until production
+
+**Fix - FAIL FAST:**
+```python
+# GOOD: Fails fast on unexpected types
+def normalize_actions(actions: ActionsType) -> Set[str]:
+    if isinstance(actions, str):
+        return {actions}
+    return set(actions)  # TypeError if wrong type - good!
+
+# GOOD: Let Python raise natural exceptions
+def extract_account_ids(principal: PrincipalType) -> Set[str]:
+    if isinstance(principal, str):
+        return _extract_from_string(principal)
+    if isinstance(principal, list):
+        return _extract_from_list(principal)
+    # If dict, it will be handled here or raise AttributeError - good!
+    return _extract_from_dict(principal)
+```
+
+**Key Principles:**
+- **Let it crash:** If data is unexpected, raising an exception is GOOD
+- **No silent failures:** Empty sets/lists should mean "truly empty", not "error occurred"
+- **Type hints should be accurate:** If the type says `str | list[str]`, don't handle other types
+- **Tests will catch it:** If AWS changes data format, tests will fail immediately
+- **Clear errors in production:** TypeError/AttributeError with stack trace is better than empty results
+
+**When Defensive Code IS Okay:**
+- Handling documented optional fields: `policy.get("Statement", [])`
+- Paginated results with no items: `for item in page.get("Items", [])`
+- Known AWS API variations that are documented
+
+**When Defensive Code is BAD:**
+- After type checking: `if isinstance(...) ... else: return []`
+- "Just in case" fallbacks: `except Exception: return []`
+- Catching all edge cases: `try: ... except: pass`
+
+**Real Example from Codebase:**
+```python
+# REMOVED - This was BAD:
+def _normalize_actions(actions: ActionsType) -> Set[str]:
+    if isinstance(actions, str):
+        return {actions}
+    if isinstance(actions, list):
+        return set(actions)
+    return set()  # type: ignore[unreachable]  # This hid bugs!
+
+# NOW - This is GOOD:
+def _normalize_actions(actions: ActionsType) -> Set[str]:
+    if isinstance(actions, str):
+        return {actions}
+    return set(actions)  # Crashes on unexpected types!
+```
+
+**Prevention:**
+- Question every `return []` or `return set()` that isn't at the start of a function
+- Remove any `else: return empty` branches after type checks
+- Trust your type hints - if it says `str | list[str]`, don't handle other types
+- Write tests that verify exceptions are raised for bad data
+
 ---
 
-## Lessons Learned from deny_rds_unencrypted Implementation
+## Lessons Learned from Implementation
 
-These lessons were learned during the implementation of the `deny_rds_unencrypted` check (November 2025). Study these to avoid common mistakes.
+These lessons were learned during actual check implementations. Study these to avoid common mistakes.
+
+### Lessons from deny_sqs_third_party_access Implementation (November 2025)
+
+#### Lesson A: DRY - Regex Pattern Duplication
+
+**Problem:** The AWS ARN account ID regex pattern `r'^arn:aws:[^:]+:[^:]*:(\d{12}):'` was duplicated across multiple files (`sqs.py`, `s3.py`).
+
+**Impact:**
+- Code maintenance burden (updating pattern requires changes in multiple files)
+- Risk of inconsistencies if pattern is updated in one place but not others
+- Harder to search/replace
+- Violates DRY principle
+
+**Solution:**
+1. Added constant to `headroom/constants.py`:
+   ```python
+   # AWS ARN Regex Pattern
+   # Pattern to extract 12-digit account ID from AWS ARN
+   # Format: arn:aws:service:region:account-id:resource
+   AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+   ```
+
+2. Updated all files to use the constant:
+   ```python
+   from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+   arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+   ```
+
+**Prevention:**
+- Before adding any hardcoded string/pattern used in multiple places, add it to `constants.py`
+- Search codebase for similar patterns before writing new code
+- During code review, look for duplicated values and extract to constants
+
+#### Lesson B: Nested Exception Handlers
+
+**Problem:** The `_analyze_queues_in_region` function had nested `ClientError` exception handlers - one wrapping the pagination loop, and another inside the loop for per-queue operations.
+
+**Code Smell:**
+```python
+# BAD: Nested ClientError handlers
+try:
+    paginator = client.get_paginator("list_queues")
+    for page in paginator.paginate():
+        for queue_url in page.get("QueueUrls", []):
+            try:
+                attrs = client.get_queue_attributes(QueueUrl=queue_url)
+                result = _analyze_queue_policy(...)
+                results.append(result)
+            except UnsupportedPrincipalTypeError:
+                raise
+            except (ClientError, json.JSONDecodeError) as e:
+                logger.warning(f"Failed to analyze queue: {e}")
+                continue
+except ClientError as e:
+    logger.error(f"Failed to list queues: {e}")
+    return []
+```
+
+**Issues:**
+- Confusing exception flow
+- Hard to debug which exception handler catches what
+- Violates "single responsibility" principle for exception handling
+- The inner handler catches ALL ClientErrors, including ones from `get_paginator()`
+
+**Solution:**
+Separate exception handlers by operation:
+```python
+# GOOD: Separate exception handlers
+try:
+    paginator = client.get_paginator("list_queues")
+except ClientError as e:
+    error_code = e.response.get("Error", {}).get("Code", "")
+    if error_code == "AccessDenied":
+        logger.warning(f"Access denied listing queues in region {region}")
+    else:
+        logger.error(f"Failed to list queues in region {region}: {e}")
+    return []
+
+for page in paginator.paginate():
+    queue_urls = page.get("QueueUrls", [])
+
+    for queue_url in queue_urls:
+        try:
+            attrs = client.get_queue_attributes(QueueUrl=queue_url)
+        except ClientError as e:
+            logger.warning(f"Failed to get attributes for {queue_url}: {e}")
+            continue
+
+        # ... rest of processing ...
+
+        try:
+            result = _analyze_queue_policy(...)
+            results.append(result)
+        except UnsupportedPrincipalTypeError:
+            raise
+        except (json.JSONDecodeError, UnknownPrincipalTypeError) as e:
+            logger.warning(f"Failed to analyze queue {queue_url}: {e}")
+            continue
+```
+
+**Key Principles:**
+- Each `try/except` wraps ONLY the operation that can raise the exception
+- Separate exception handlers for different operations (setup vs. iteration)
+- Clear error messages indicating which operation failed
+- No nesting of same exception type
+
+**Prevention:**
+- Draw a mental map of what each exception handler protects
+- If you have nested handlers for the same exception type, refactor
+- Only wrap the specific lines that can raise each exception
+
+#### Lesson C: Not Using Existing Helper Functions
+
+**Problem:** The `analyze_sqs_queue_policies` function directly called `ec2_client.describe_regions()` instead of using the existing `get_all_regions()` helper function.
+
+**Original Code:**
+```python
+def analyze_sqs_queue_policies(session, org_account_ids):
+    ec2_client = session.client("ec2")
+    all_results = []
+
+    regions_response = ec2_client.describe_regions()
+    regions = [region["RegionName"] for region in regions_response["Regions"]]
+
+    for region in regions:
+        # ...
+```
+
+**Issues:**
+- Code duplication (this pattern existed in multiple files)
+- Inconsistent with other parts of codebase that use the helper
+- Missed opportunity to use well-tested utility function
+- Harder to maintain (changes to region discovery need updates in multiple places)
+
+**Solution:**
+```python
+from .helpers import get_all_regions
+
+def analyze_sqs_queue_policies(session, org_account_ids):
+    all_results = []
+    regions = get_all_regions(session)
+
+    for region in regions:
+        # ...
+```
+
+**Prevention:**
+- ALWAYS check `headroom/aws/helpers.py` before writing AWS API calls
+- Search codebase for similar patterns before implementing
+- When reviewing code, look for opportunities to use existing helpers
+- If you find yourself writing the same AWS API call pattern twice, add it to helpers
+
+**Available Helpers:**
+- `get_all_regions(session)` - Get all AWS regions
+- `paginate(client, operation_name, **kwargs)` - Generic pagination
+
+#### Lesson D: Using `Any` When Specific Types Exist
+
+**Problem:** The `deny_sqs_third_party_access.py` check used `Dict[str, Any]` for return types instead of the existing `JsonDict` type alias.
+
+**Original Code:**
+```python
+from typing import Any, Dict, List, Set
+
+def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, Dict[str, Any]]:
+    ...
+
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    ...
+```
+
+**Issues:**
+- `Any` defeats the purpose of type checking
+- Mypy can't catch type errors in return values
+- Poor IDE autocomplete/type hints
+- Inconsistent with base class which uses `JsonDict`
+- The type alias exists specifically to avoid using `Any`
+
+**Solution:**
+```python
+from typing import Any, Dict, List, Set
+from ...types import JsonDict
+
+def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, JsonDict]:
+    ...
+
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
+    ...
+```
+
+**Note:** The `**kwargs: Any` parameter IS acceptable because it matches the base class signature.
+
+**Prevention:**
+- Check `headroom/types.py` for existing type aliases before using `Dict[str, Any]`
+- Use `JsonDict` for JSON-serializable dictionaries
+- Only use `Any` for `**kwargs` when matching base class signatures
+- For complex types, define proper Union types or recursive types
+
+**Remember:** The codebase standard is that `Any` makes code worse, not better. The only exception is `**kwargs: Any` when matching a base class.
+
+### Lessons from Terraform Variable Standardization (November 2025)
+
+#### Lesson 0: Terraform Variable Naming and Ordering Conventions
+
+**Problem:** Terraform module variables had inconsistent naming and ordering:
+- Some variables didn't start with service name (e.g., `allowed_ami_owners` instead of `ec2_allowed_ami_owners`)
+- Variables named `deny_<service>_*_allowlist` when allowlists shouldn't have `deny_` prefix
+- Variables not consistently ordered alphabetically
+- Allowlist variables not immediately following their corresponding boolean flags
+
+**Impact:**
+- Harder to discover related variables (all EC2 variables should be adjacent)
+- Inconsistent API makes module harder to learn and use
+- Manual sorting needed when reviewing large module configurations
+- Unclear which allowlist corresponds to which boolean flag
+
+**Solution:**
+1. **Naming Convention:**
+   - ALL variables start with service name: `ec2_`, `iam_`, `rds_`, `s3_`, `sts_`, `aoss_`, `ecr_`, `sqs_`
+   - Boolean flags: `deny_<service>_<action>` (e.g., `deny_rds_unencrypted`, `deny_sts_third_party_assumerole`)
+   - Allowlists: `<service>_<descriptor>` (e.g., `ec2_allowed_ami_owners`, `iam_allowed_users`)
+   - RCP allowlists: `<service>_<action>_account_ids_allowlist` (e.g., `sts_third_party_assumerole_account_ids_allowlist`)
+
+2. **Ordering Convention:**
+   - Services ordered alphabetically (AOSS → ECR → S3 → SQS → STS for RCPs; EC2 → EKS → IAM → RDS for SCPs)
+   - Within each service: required boolean first, then optional allowlist immediately after
+   - Makes it immediately clear which allowlist belongs to which boolean
+
+**Examples:**
+
+**SCPs Module:**
+```hcl
+# EC2 (alphabetically first)
+variable "deny_ec2_ami_owner" {
+  type = bool
+}
+
+variable "ec2_allowed_ami_owners" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+
+variable "deny_ec2_imds_v1" {  # Next EC2 flag
+  type = bool
+}
+
+variable "deny_ec2_public_ip" {
+  type = bool
+}
+
+# EKS (alphabetically after EC2)
+variable "deny_eks_create_cluster_without_tag" {
+  type = bool
+}
+
+# IAM (alphabetically after EKS)
+variable "deny_iam_saml_provider_not_aws_sso" {
+  type = bool
+}
+
+variable "deny_iam_user_creation" {
+  type = bool
+}
+
+variable "iam_allowed_users" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+```
+
+**RCPs Module:**
+```hcl
+# AOSS (alphabetically first)
+variable "deny_aoss_third_party_access" {
+  type = bool
+}
+
+variable "aoss_third_party_access_account_ids_allowlist" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+
+# ECR (alphabetically after AOSS)
+variable "deny_ecr_third_party_access" {
+  type = bool
+}
+
+variable "ecr_third_party_access_account_ids_allowlist" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+
+# S3 (alphabetically after ECR)
+variable "deny_s3_third_party_access" {
+  type = bool
+}
+
+variable "s3_third_party_access_account_ids_allowlist" {  # Immediately after
+  type    = list(string)
+  default = []
+}
+```
+
+**Prevention:**
+- Always start variable names with service name
+- Order variables alphabetically by service
+- Place allowlist immediately after its corresponding boolean flag
+- Update Python code generators to output in the same order
+- Apply convention to both variables.tf and locals.tf
+- Apply convention to module usage files in test_environment/
+
+**Files Affected in Standardization:**
+- `test_environment/modules/rcps/variables.tf` - 6 renames
+- `test_environment/modules/scps/variables.tf` - 2 renames
+- All module usage files
+- Python code generators (generate_rcps.py, generate_scps.py)
+- Type definitions (types.py)
+- All tests
+- All documentation
+
+### Lessons from deny_rds_unencrypted Implementation (November 2025)
 
 ### Lesson 1: Test Environment Pollution
 
@@ -2394,14 +3129,17 @@ The `[^:]*:` allows for optional region field (zero or more non-colon characters
 5. **Type Everything:** Add type hints as you write code, not as an afterthought
 6. **DRY Continuously:** Refactor duplicate code immediately when you see it
 7. **Minimize Nesting:** Use early returns and continue statements liberally
-8. **Read Errors Carefully:** Error messages often point directly to the issue
-9. **Log Appropriately:** Helps debug issues in production
-10. **Document As You Go:** Write docstrings as you write functions
-11. **Test Edge Cases:** Think about what could go wrong and test it
-12. **Clean Up:** Remove test resources, commit clean git state
-13. **Review Your Code:** Use the Code Quality Verification checklist before submitting
-14. **Ask for Review:** Get feedback on design before implementing everything
-15. **Celebrate:** Adding a check is a significant contribution!
+8. **Check for Helpers First:** Before writing AWS API calls, check `headroom/aws/helpers.py` for existing utilities
+9. **Use Constants for Patterns:** Add repeated values (regex, strings) to `constants.py` immediately
+10. **Avoid Nested Exception Handlers:** Separate exception handling by operation
+11. **Read Errors Carefully:** Error messages often point directly to the issue
+12. **Log Appropriately:** Helps debug issues in production
+13. **Document As You Go:** Write docstrings as you write functions
+14. **Test Edge Cases:** Think about what could go wrong and test it
+15. **Clean Up:** Remove test resources, commit clean git state
+16. **Review Your Code:** Use the Code Quality Verification checklist before submitting
+17. **Ask for Review:** Get feedback on design before implementing everything
+18. **Celebrate:** Adding a check is a significant contribution!
 
 **Final Quality Pass:**
 After completing implementation, do a quality review:

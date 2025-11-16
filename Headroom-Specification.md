@@ -1706,7 +1706,7 @@ module "scps_root" {
 
   # IAM
   deny_iam_user_creation = true
-  allowed_iam_users = [
+  iam_allowed_users = [
     "arn:aws:iam::${local.fort_knox_account_id}:user/terraform-user",
     "arn:aws:iam::${local.security_tooling_account_id}:user/cicd-user"
   ]
@@ -1725,7 +1725,7 @@ variable "deny_iam_user_creation" {
   type = bool
 }
 
-variable "allowed_iam_users" {
+variable "iam_allowed_users" {
   type        = list(string)
   default     = []
   description = "IAM user ARNs allowed to be created"
@@ -1785,7 +1785,7 @@ def generate_rcp_terraform(
        - Account: {account_name}_rcps.tf
     3. For each file:
        - Generate module call with target_id reference
-       - Add deny_sts_third_party_assumerole_account_ids_allowlist
+       - Add sts_third_party_assumerole_account_ids_allowlist
        - Third-party IDs are already unioned by placement logic
     4. Write to {rcps_dir}/
     """
@@ -1800,7 +1800,7 @@ module "rcps_root" {
   source = "../modules/rcps"
   target_id = local.root_ou_id
 
-  deny_sts_third_party_assumerole_account_ids_allowlist = [
+  sts_third_party_assumerole_account_ids_allowlist = [
     "999999999999",
     "888888888888"
   ]
@@ -1811,7 +1811,7 @@ module "rcps_root" {
 ```hcl
 # modules/rcps/variables.tf
 
-variable "deny_sts_third_party_assumerole_account_ids_allowlist" {
+variable "sts_third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
   default     = []
   description = "Third-party account IDs approved for AssumeRole"
@@ -1835,7 +1835,7 @@ locals {
             "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
           }
           StringNotEqualsIfExists = {
-            "aws:PrincipalAccount" = var.deny_sts_third_party_assumerole_account_ids_allowlist
+            "aws:PrincipalAccount" = var.sts_third_party_assumerole_account_ids_allowlist
           }
           StringNotEquals = {
             "aws:PrincipalType" = "Service"
@@ -2644,7 +2644,7 @@ Creates IAM users across accounts to test `deny_iam_user_creation` SCP check and
 
 **Example Generated Allowlist:**
 ```hcl
-allowed_iam_users = [
+iam_allowed_users = [
   "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",
   "arn:aws:iam::${local.acme_co_account_id}:user/terraform-user",
   "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
@@ -2812,7 +2812,7 @@ variable "deny_iam_user_creation" {
   default = false
 }
 
-variable "allowed_iam_users" {
+variable "iam_allowed_users" {
   type        = list(string)
   default     = []
   description = "IAM user ARNs allowed to be created"
@@ -2867,12 +2867,12 @@ variable "target_id" {
   description = "OU ID or account ID to attach RCP"
 }
 
-variable "enforce_assume_role_org_identities" {
+variable "deny_sts_third_party_assumerole" {
   type    = bool
   default = false
 }
 
-variable "deny_sts_third_party_assumerole_account_ids_allowlist" {
+variable "sts_third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
   default     = []
   description = "Third-party account IDs approved for AssumeRole"
@@ -2964,7 +2964,7 @@ module "scps_root" {
 
   # IAM
   deny_iam_user_creation = true
-  allowed_iam_users = [
+  iam_allowed_users = [
     "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
     "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
     "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",
@@ -3036,8 +3036,8 @@ module "rcps_acme_acquisition_ou" {
   target_id = local.top_level_acme_acquisition_ou_id
 
   # deny_sts_third_party_assumerole
-  enforce_assume_role_org_identities = true
-  deny_sts_third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole = true
+  sts_third_party_assumerole_account_ids_allowlist = [
     "749430749651",
   ]
 }
@@ -3058,8 +3058,8 @@ module "rcps_shared_foo_bar" {
   target_id = local.shared_foo_bar_account_id
 
   # deny_sts_third_party_assumerole
-  enforce_assume_role_org_identities = true
-  deny_sts_third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole = true
+  sts_third_party_assumerole_account_ids_allowlist = [
     "062897671886",
     "081802104111",
     "151784055945",
