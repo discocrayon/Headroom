@@ -85,6 +85,16 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 - All mypy type checks MUST pass with strict mode
 - Use `typing` module for complex types (List, Dict, Optional, Set, etc.)
 - No use of `Any` type (makes code worse, not better)
+- **Use proper type aliases** (e.g., `JsonDict` instead of `Dict[str, Any]`)
+- **The only acceptable use of `Any`** is for `**kwargs` when matching a base class signature
+- **For union types**, be specific about what types are allowed:
+  ```python
+  # Good: Specific union type with recursive definition
+  PrincipalType = Union[str, List["PrincipalType"], Dict[str, Union[str, List[str]]]]
+  
+  # Bad: Using Any
+  def process_principal(principal: Any) -> Set[str]:  # Don't do this
+  ```
 
 **Imports:**
 - ALL imports at top of file (never inside functions)
@@ -95,6 +105,25 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 - NEVER use bare `except:` or `except Exception:`
 - Always catch specific exceptions (ClientError, ValueError, KeyError, etc.)
 - Fail-loud philosophy: let exceptions propagate with context
+- **Avoid nested exception handlers for the same exception type**
+- **Only wrap the specific lines that can raise each exception**
+- **Example of good exception handling:**
+  ```python
+  # Separate try/except blocks for different operations
+  try:
+      paginator = client.get_paginator("list_queues")
+  except ClientError as e:
+      logger.warning(f"Access denied listing queues: {e}")
+      return []
+  
+  for page in paginator.paginate():
+      for item in page.get("Items", []):
+          try:
+              attrs = client.get_attributes(Item=item)
+          except ClientError as e:
+              logger.warning(f"Failed to get attributes: {e}")
+              continue  # Skip this item, continue with others
+  ```
 
 ### Code Structure Standards
 
@@ -103,6 +132,17 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 - No copy-paste of logic across functions
 - Use helper functions for repeated patterns
 - After implementation, analyze for DRY violations
+- **Use constants for repeated values** (regex patterns, strings, etc.)
+- **Use existing helper functions** (like `get_all_regions()`) instead of duplicating AWS API calls
+- **Example:** Instead of duplicating regex patterns across files, add them to `constants.py`:
+  ```python
+  # constants.py
+  AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+  
+  # sqs.py, s3.py, etc.
+  from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+  arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+  ```
 
 **Function Design:**
 - Single Responsibility Principle: one function = one purpose
@@ -250,12 +290,18 @@ def analyze_databases(
 Before considering implementation complete:
 
 1. **DRY Analysis:** Search for duplicate code, extract to functions
+   - Check for duplicated regex patterns → add to constants.py
+   - Check for repeated AWS API calls → use or add to helpers.py
+   - Look for copy-paste code blocks → extract to shared functions
 2. **Indentation Review:** Look for opportunities to reduce nesting
-3. **Edge Case Verification:** Confirm all edge cases have tests
-4. **Naming Consistency:** Ensure all names are clear and follow conventions
-5. **Type Coverage:** Verify every function has complete type annotations
-6. **Documentation:** Check all docstrings follow PEP 257
-7. **Tool Validation:** Run tox and confirm all checks pass
+3. **Exception Handling Review:** Check for nested exception handlers of same type
+4. **Edge Case Verification:** Confirm all edge cases have tests
+5. **Naming Consistency:** Ensure all names are clear and follow conventions
+6. **Type Coverage:** Verify every function has complete type annotations
+   - Check for unnecessary `Any` usage → replace with specific types or `JsonDict`
+   - Verify use of type aliases from `types.py`
+7. **Documentation:** Check all docstrings follow PEP 257
+8. **Tool Validation:** Run tox and confirm all checks pass
 
 ---
 
@@ -2145,22 +2191,28 @@ identifier = "headroom-test-${var.purpose}-${data.aws_caller_identity.current.ac
 ### 11. Forgetting Multi-Region Support
 
 **Symptom:** Only finding resources in default region
-**Issue:** Not iterating through all regions
+**Issue:** Not iterating through all regions or not using the existing helper function
 **Fix:**
 ```python
+# BEST: Use the existing helper function
+from .helpers import get_all_regions
+
+regions = get_all_regions(session)
+for region in regions:
+    regional_client = session.client("rds", region_name=region)
+    # ... analysis ...
+
+# ACCEPTABLE if helper doesn't fit your needs:
 # Get all regions (including opt-in regions that may be disabled)
 # We intentionally scan all regions to detect resources in any region
 ec2_client = session.client("ec2")
 regions_response = ec2_client.describe_regions()
 regions = [r["RegionName"] for r in regions_response["Regions"]]
-
-# Analyze in each region
-for region in regions:
-    regional_client = session.client("rds", region_name=region)
-    # ... analysis ...
 ```
 
 **Note:** Do NOT filter regions by opt-in-status. We intentionally scan all regions to ensure complete visibility, even if some API calls may fail for disabled regions.
+
+**DRY Reminder:** Always check `headroom/aws/helpers.py` for existing helper functions before writing AWS API calls. The `get_all_regions()` helper is specifically designed for this purpose.
 
 ### 12. Incorrect Summary Field Calculation
 
@@ -2207,11 +2259,357 @@ compliance_pct = (compliant_count / total * 100) if total > 0 else 100.0  # Hand
 - Set up billing alerts
 - Consider using separate test account
 
+### 16. Nested Exception Handlers for Same Exception Type
+
+**Symptom:** Confusing exception handling flow, difficult to debug, code smells
+**Issue:** One `ClientError` exception handler inside another `ClientError` exception handler
+**Example of BAD code:**
+```python
+# BAD: Nested ClientError handlers
+try:
+    paginator = client.get_paginator("list_queues")
+    for page in paginator.paginate():
+        for queue_url in page.get("QueueUrls", []):
+            try:
+                attrs = client.get_queue_attributes(QueueUrl=queue_url)
+                # ... process ...
+            except ClientError as e:
+                logger.warning(f"Failed to get attributes: {e}")
+                continue
+except ClientError as e:
+    logger.error(f"Failed to list queues: {e}")
+    return []
+```
+
+**Fix:** Separate exception handling into distinct blocks:
+```python
+# GOOD: Separate ClientError handlers
+try:
+    paginator = client.get_paginator("list_queues")
+except ClientError as e:
+    error_code = e.response.get("Error", {}).get("Code", "")
+    if error_code == "AccessDenied":
+        logger.warning(f"Access denied listing queues in region {region}")
+    else:
+        logger.error(f"Failed to list queues in region {region}: {e}")
+    return []
+
+for page in paginator.paginate():
+    queue_urls = page.get("QueueUrls", [])
+    
+    for queue_url in queue_urls:
+        try:
+            attrs = client.get_queue_attributes(QueueUrl=queue_url)
+        except ClientError as e:
+            logger.warning(f"Failed to get attributes for {queue_url}: {e}")
+            continue
+        
+        # Process attributes...
+```
+
+**Key Principles:**
+- Each `try/except` block should wrap ONLY the lines that can raise that specific exception
+- Separate exception handlers for different operations (pagination setup vs. per-item processing)
+- Makes error handling clearer and easier to debug
+
+### 17. Not Using Existing Helper Functions
+
+**Symptom:** Duplicated AWS API calls, inconsistent patterns across codebase
+**Issue:** Writing AWS API calls directly instead of using existing helpers in `headroom/aws/helpers.py`
+**Example:**
+```python
+# BAD: Duplicating region discovery logic
+ec2_client = session.client("ec2")
+regions_response = ec2_client.describe_regions()
+regions = [region["RegionName"] for region in regions_response["Regions"]]
+
+# GOOD: Using existing helper
+from .helpers import get_all_regions
+regions = get_all_regions(session)
+```
+
+**Available Helpers in `headroom/aws/helpers.py`:**
+- `get_all_regions(session)` - Get all available AWS regions
+- `paginate(client, operation_name, **kwargs)` - Generic pagination helper
+
+**Fix:**
+1. Always check `headroom/aws/helpers.py` before writing AWS API calls
+2. Use existing helpers when available
+3. If you need a new pattern repeatedly, add it to `helpers.py`
+
+### 18. Duplicated Regex Patterns
+
+**Symptom:** Same regex pattern string repeated across multiple files
+**Issue:** Not using constants for repeated patterns
+**Example of BAD code:**
+```python
+# sqs.py
+arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+
+# s3.py
+arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+
+# ecr.py
+arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+```
+
+**Fix:** Add constant to `headroom/constants.py`:
+```python
+# constants.py
+AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+
+# sqs.py, s3.py, ecr.py, etc.
+from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+```
+
+**Benefits:**
+- Single source of truth for regex patterns
+- Easier to update if pattern needs to change
+- Self-documenting through constant name
+- Reduces chance of typos/inconsistencies
+
+### 19. Using `Any` When Specific Types Are Available
+
+**Symptom:** mypy can't catch type errors, poor IDE autocomplete
+**Issue:** Using `Dict[str, Any]` or other `Any` types when specific types exist
+**Example of BAD code:**
+```python
+# BAD: Using Any when JsonDict exists
+def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, Dict[str, Any]]:
+    ...
+
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    ...
+```
+
+**Fix:** Use the existing type aliases:
+```python
+# GOOD: Using JsonDict type alias
+from ...types import JsonDict
+
+def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, JsonDict]:
+    ...
+
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
+    ...
+```
+
+**When `Any` IS Acceptable:**
+- In `**kwargs: Any` when matching a base class signature that uses `Any`
+- This is the ONLY acceptable use case in the codebase
+
+**Always Remember:**
+- Check `headroom/types.py` for existing type aliases
+- Use `Union[]` for parameters that can be multiple specific types
+- Define recursive types when needed (e.g., `PrincipalType`)
+
 ---
 
-## Lessons Learned from deny_rds_unencrypted Implementation
+## Lessons Learned from Implementation
 
-These lessons were learned during the implementation of the `deny_rds_unencrypted` check (November 2025). Study these to avoid common mistakes.
+These lessons were learned during actual check implementations. Study these to avoid common mistakes.
+
+### Lessons from deny_sqs_third_party_access Implementation (November 2025)
+
+#### Lesson A: DRY - Regex Pattern Duplication
+
+**Problem:** The AWS ARN account ID regex pattern `r'^arn:aws:[^:]+:[^:]*:(\d{12}):'` was duplicated across multiple files (`sqs.py`, `s3.py`).
+
+**Impact:**
+- Code maintenance burden (updating pattern requires changes in multiple files)
+- Risk of inconsistencies if pattern is updated in one place but not others
+- Harder to search/replace
+- Violates DRY principle
+
+**Solution:**
+1. Added constant to `headroom/constants.py`:
+   ```python
+   # AWS ARN Regex Pattern
+   # Pattern to extract 12-digit account ID from AWS ARN
+   # Format: arn:aws:service:region:account-id:resource
+   AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+   ```
+
+2. Updated all files to use the constant:
+   ```python
+   from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+   arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+   ```
+
+**Prevention:**
+- Before adding any hardcoded string/pattern used in multiple places, add it to `constants.py`
+- Search codebase for similar patterns before writing new code
+- During code review, look for duplicated values and extract to constants
+
+#### Lesson B: Nested Exception Handlers
+
+**Problem:** The `_analyze_queues_in_region` function had nested `ClientError` exception handlers - one wrapping the pagination loop, and another inside the loop for per-queue operations.
+
+**Code Smell:**
+```python
+# BAD: Nested ClientError handlers
+try:
+    paginator = client.get_paginator("list_queues")
+    for page in paginator.paginate():
+        for queue_url in page.get("QueueUrls", []):
+            try:
+                attrs = client.get_queue_attributes(QueueUrl=queue_url)
+                result = _analyze_queue_policy(...)
+                results.append(result)
+            except UnsupportedPrincipalTypeError:
+                raise
+            except (ClientError, json.JSONDecodeError) as e:
+                logger.warning(f"Failed to analyze queue: {e}")
+                continue
+except ClientError as e:
+    logger.error(f"Failed to list queues: {e}")
+    return []
+```
+
+**Issues:**
+- Confusing exception flow
+- Hard to debug which exception handler catches what
+- Violates "single responsibility" principle for exception handling
+- The inner handler catches ALL ClientErrors, including ones from `get_paginator()`
+
+**Solution:**
+Separate exception handlers by operation:
+```python
+# GOOD: Separate exception handlers
+try:
+    paginator = client.get_paginator("list_queues")
+except ClientError as e:
+    error_code = e.response.get("Error", {}).get("Code", "")
+    if error_code == "AccessDenied":
+        logger.warning(f"Access denied listing queues in region {region}")
+    else:
+        logger.error(f"Failed to list queues in region {region}: {e}")
+    return []
+
+for page in paginator.paginate():
+    queue_urls = page.get("QueueUrls", [])
+    
+    for queue_url in queue_urls:
+        try:
+            attrs = client.get_queue_attributes(QueueUrl=queue_url)
+        except ClientError as e:
+            logger.warning(f"Failed to get attributes for {queue_url}: {e}")
+            continue
+        
+        # ... rest of processing ...
+        
+        try:
+            result = _analyze_queue_policy(...)
+            results.append(result)
+        except UnsupportedPrincipalTypeError:
+            raise
+        except (json.JSONDecodeError, UnknownPrincipalTypeError) as e:
+            logger.warning(f"Failed to analyze queue {queue_url}: {e}")
+            continue
+```
+
+**Key Principles:**
+- Each `try/except` wraps ONLY the operation that can raise the exception
+- Separate exception handlers for different operations (setup vs. iteration)
+- Clear error messages indicating which operation failed
+- No nesting of same exception type
+
+**Prevention:**
+- Draw a mental map of what each exception handler protects
+- If you have nested handlers for the same exception type, refactor
+- Only wrap the specific lines that can raise each exception
+
+#### Lesson C: Not Using Existing Helper Functions
+
+**Problem:** The `analyze_sqs_queue_policies` function directly called `ec2_client.describe_regions()` instead of using the existing `get_all_regions()` helper function.
+
+**Original Code:**
+```python
+def analyze_sqs_queue_policies(session, org_account_ids):
+    ec2_client = session.client("ec2")
+    all_results = []
+    
+    regions_response = ec2_client.describe_regions()
+    regions = [region["RegionName"] for region in regions_response["Regions"]]
+    
+    for region in regions:
+        # ...
+```
+
+**Issues:**
+- Code duplication (this pattern existed in multiple files)
+- Inconsistent with other parts of codebase that use the helper
+- Missed opportunity to use well-tested utility function
+- Harder to maintain (changes to region discovery need updates in multiple places)
+
+**Solution:**
+```python
+from .helpers import get_all_regions
+
+def analyze_sqs_queue_policies(session, org_account_ids):
+    all_results = []
+    regions = get_all_regions(session)
+    
+    for region in regions:
+        # ...
+```
+
+**Prevention:**
+- ALWAYS check `headroom/aws/helpers.py` before writing AWS API calls
+- Search codebase for similar patterns before implementing
+- When reviewing code, look for opportunities to use existing helpers
+- If you find yourself writing the same AWS API call pattern twice, add it to helpers
+
+**Available Helpers:**
+- `get_all_regions(session)` - Get all AWS regions
+- `paginate(client, operation_name, **kwargs)` - Generic pagination
+
+#### Lesson D: Using `Any` When Specific Types Exist
+
+**Problem:** The `deny_sqs_third_party_access.py` check used `Dict[str, Any]` for return types instead of the existing `JsonDict` type alias.
+
+**Original Code:**
+```python
+from typing import Any, Dict, List, Set
+
+def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, Dict[str, Any]]:
+    ...
+
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    ...
+```
+
+**Issues:**
+- `Any` defeats the purpose of type checking
+- Mypy can't catch type errors in return values
+- Poor IDE autocomplete/type hints
+- Inconsistent with base class which uses `JsonDict`
+- The type alias exists specifically to avoid using `Any`
+
+**Solution:**
+```python
+from typing import Any, Dict, List, Set
+from ...types import JsonDict
+
+def categorize_result(self, result: SQSQueuePolicyAnalysis) -> tuple[CheckCategory, JsonDict]:
+    ...
+
+def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
+    ...
+```
+
+**Note:** The `**kwargs: Any` parameter IS acceptable because it matches the base class signature.
+
+**Prevention:**
+- Check `headroom/types.py` for existing type aliases before using `Dict[str, Any]`
+- Use `JsonDict` for JSON-serializable dictionaries
+- Only use `Any` for `**kwargs` when matching base class signatures
+- For complex types, define proper Union types or recursive types
+
+**Remember:** The codebase standard is that `Any` makes code worse, not better. The only exception is `**kwargs: Any` when matching a base class.
+
+### Lessons from deny_rds_unencrypted Implementation (November 2025)
 
 ### Lesson 1: Test Environment Pollution
 
@@ -2394,14 +2792,17 @@ The `[^:]*:` allows for optional region field (zero or more non-colon characters
 5. **Type Everything:** Add type hints as you write code, not as an afterthought
 6. **DRY Continuously:** Refactor duplicate code immediately when you see it
 7. **Minimize Nesting:** Use early returns and continue statements liberally
-8. **Read Errors Carefully:** Error messages often point directly to the issue
-9. **Log Appropriately:** Helps debug issues in production
-10. **Document As You Go:** Write docstrings as you write functions
-11. **Test Edge Cases:** Think about what could go wrong and test it
-12. **Clean Up:** Remove test resources, commit clean git state
-13. **Review Your Code:** Use the Code Quality Verification checklist before submitting
-14. **Ask for Review:** Get feedback on design before implementing everything
-15. **Celebrate:** Adding a check is a significant contribution!
+8. **Check for Helpers First:** Before writing AWS API calls, check `headroom/aws/helpers.py` for existing utilities
+9. **Use Constants for Patterns:** Add repeated values (regex, strings) to `constants.py` immediately
+10. **Avoid Nested Exception Handlers:** Separate exception handling by operation
+11. **Read Errors Carefully:** Error messages often point directly to the issue
+12. **Log Appropriately:** Helps debug issues in production
+13. **Document As You Go:** Write docstrings as you write functions
+14. **Test Edge Cases:** Think about what could go wrong and test it
+15. **Clean Up:** Remove test resources, commit clean git state
+16. **Review Your Code:** Use the Code Quality Verification checklist before submitting
+17. **Ask for Review:** Get feedback on design before implementing everything
+18. **Celebrate:** Adding a check is a significant contribution!
 
 **Final Quality Pass:**
 After completing implementation, do a quality review:

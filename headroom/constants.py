@@ -11,6 +11,11 @@ from typing import Dict
 # Reference: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
 BASE_PRINCIPAL_TYPES = frozenset({"AWS", "Service", "Federated"})
 
+# AWS ARN Regex Pattern
+# Pattern to extract 12-digit account ID from AWS ARN
+# Format: arn:aws:service:region:account-id:resource
+AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+
 # Check name constants
 
 # SCP Checks (alphabetical by service)

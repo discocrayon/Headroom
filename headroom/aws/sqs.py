@@ -9,15 +9,20 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Set
+from typing import Dict, List, Set, Union
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_sqs.client import SQSClient
 
-from ..constants import BASE_PRINCIPAL_TYPES
+from .helpers import get_all_regions
+from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
 logger = logging.getLogger(__name__)
+
+
+PrincipalType = Union[str, List["PrincipalType"], Dict[str, Union[str, List[str]]]]
+ActionsType = Union[str, List[str]]
 
 
 class UnknownPrincipalTypeError(Exception):
@@ -59,7 +64,7 @@ class SQSQueuePolicyAnalysis:
     actions_by_account: Dict[str, Set[str]]
 
 
-def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
+def _extract_account_ids_from_principal(principal: PrincipalType) -> Set[str]:
     """
     Extract AWS account IDs from an SQS policy principal.
 
@@ -74,7 +79,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     if isinstance(principal, str):
         if principal == "*":
             return set()
-        arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
         if arn_match:
             account_ids.add(arn_match.group(1))
         else:
@@ -102,7 +107,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     return account_ids
 
 
-def _check_for_wildcard_principal(principal: Any) -> bool:
+def _check_for_wildcard_principal(principal: PrincipalType) -> bool:
     """
     Check if principal contains wildcard (*) access.
 
@@ -126,7 +131,7 @@ def _check_for_wildcard_principal(principal: Any) -> bool:
     return False
 
 
-def _check_for_non_account_principals(principal: Any) -> bool:
+def _check_for_non_account_principals(principal: PrincipalType) -> bool:
     """
     Check if principal contains Federated or other non-account principal types.
 
@@ -144,7 +149,7 @@ def _check_for_non_account_principals(principal: Any) -> bool:
     return False
 
 
-def _normalize_actions(actions: Any) -> Set[str]:
+def _normalize_actions(actions: ActionsType) -> Set[str]:
     """
     Normalize action field to a set of action strings.
 
@@ -258,37 +263,6 @@ def _analyze_queues_in_region(
 
     try:
         paginator = sqs_client.get_paginator("list_queues")
-        for page in paginator.paginate():
-            queue_urls = page.get("QueueUrls", [])
-
-            for queue_url in queue_urls:
-                try:
-                    attrs = sqs_client.get_queue_attributes(
-                        QueueUrl=queue_url,
-                        AttributeNames=["Policy", "QueueArn"]
-                    )
-                    attributes = attrs.get("Attributes", {})
-                    policy_json = attributes.get("Policy")
-                    queue_arn = attributes.get("QueueArn", "")
-
-                    if not policy_json:
-                        continue
-
-                    result = _analyze_queue_policy(
-                        queue_url=queue_url,
-                        queue_arn=queue_arn,
-                        region=region,
-                        policy_json=policy_json,
-                        org_account_ids=org_account_ids
-                    )
-                    results.append(result)
-
-                except UnsupportedPrincipalTypeError:
-                    raise
-                except (ClientError, json.JSONDecodeError, UnknownPrincipalTypeError) as e:
-                    logger.warning(f"Failed to analyze queue {queue_url} in {region}: {e}")
-                    continue
-
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")
         if error_code == "AccessDenied":
@@ -296,6 +270,41 @@ def _analyze_queues_in_region(
         else:
             logger.error(f"Failed to list SQS queues in region {region}: {e}")
         return []
+
+    for page in paginator.paginate():
+        queue_urls = page.get("QueueUrls", [])
+
+        for queue_url in queue_urls:
+            try:
+                attrs = sqs_client.get_queue_attributes(
+                    QueueUrl=queue_url,
+                    AttributeNames=["Policy", "QueueArn"]
+                )
+            except ClientError as e:
+                logger.warning(f"Failed to get attributes for queue {queue_url} in {region}: {e}")
+                continue
+
+            attributes = attrs.get("Attributes", {})
+            policy_json = attributes.get("Policy")
+            queue_arn = attributes.get("QueueArn", "")
+
+            if not policy_json:
+                continue
+
+            try:
+                result = _analyze_queue_policy(
+                    queue_url=queue_url,
+                    queue_arn=queue_arn,
+                    region=region,
+                    policy_json=policy_json,
+                    org_account_ids=org_account_ids
+                )
+                results.append(result)
+            except UnsupportedPrincipalTypeError:
+                raise
+            except (json.JSONDecodeError, UnknownPrincipalTypeError) as e:
+                logger.warning(f"Failed to analyze queue {queue_url} in {region}: {e}")
+                continue
 
     return results
 
@@ -331,11 +340,8 @@ def analyze_sqs_queue_policies(
     Raises:
         UnsupportedPrincipalTypeError: If Federated principals found in any queue
     """
-    ec2_client = session.client("ec2")
     all_results: List[SQSQueuePolicyAnalysis] = []
-
-    regions_response = ec2_client.describe_regions()
-    regions = [region["RegionName"] for region in regions_response["Regions"]]
+    regions = get_all_regions(session)
 
     for region in regions:
         logger.info(f"Analyzing SQS queues in {region}")
