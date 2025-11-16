@@ -7,7 +7,7 @@ module "scps_acme_acquisition_ou" {
 
   # EC2
   deny_ec2_ami_owner = false
-  deny_imds_v1_ec2 = true
+  deny_ec2_imds_v1 = true
 
   # EKS
   deny_eks_create_cluster_without_tag = false

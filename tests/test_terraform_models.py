@@ -262,7 +262,7 @@ module "scps_root" {
             parameters=[
                 TerraformParameter("deny_ec2_ami_owner", True),
                 TerraformParameter("allowed_ami_owners", ["123456789012"]),
-                TerraformParameter("deny_imds_v1_ec2", False),
+                TerraformParameter("deny_ec2_imds_v1", False),
                 TerraformParameter("deny_eks_create_cluster_without_tag", True),
                 TerraformParameter("deny_iam_user_creation", True),
                 TerraformParameter("allowed_iam_users", []),
@@ -278,7 +278,7 @@ module "scps_root" {
         assert "target_id = local.top_level_security_tooling_ou_id" in result
         assert "deny_ec2_ami_owner = true" in result
         assert '"123456789012"' in result
-        assert "deny_imds_v1_ec2 = false" in result
+        assert "deny_ec2_imds_v1 = false" in result
         assert "deny_eks_create_cluster_without_tag = true" in result
         assert "deny_iam_user_creation = true" in result
         assert "allowed_iam_users = []" in result

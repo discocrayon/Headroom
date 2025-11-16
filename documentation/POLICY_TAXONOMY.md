@@ -140,7 +140,7 @@ This document categorizes the different patterns of Service Control Policies (SC
 - Allow IMDSv1 for legacy workloads tagged `ExemptFromIMDSv2=true`
 - Allow specific security group rules for resources tagged `NetworkExemption=legacy-app`
 
-**Implementation Example (from `deny_imds_v1_ec2`):**
+**Implementation Example (from `deny_ec2_imds_v1`):**
 
 ```json
 {
@@ -383,9 +383,9 @@ This check identifies RDS databases (instances and Aurora clusters) without encr
 
 **Note:** The policy enforces encryption for new RDS instances and Aurora/DocumentDB clusters. `rds:CreateDBInstance` is included as a special exception despite not being documented in the AWS Service Authorization Reference, as manual testing confirmed it works.
 
-### Pattern 4: `deny_imds_v1_ec2`
+### Pattern 4: `deny_ec2_imds_v1`
 
-**Check:** `headroom/checks/scps/deny_imds_v1_ec2.py`
+**Check:** `headroom/checks/scps/deny_ec2_imds_v1.py`
 **Terraform:** `test_environment/modules/scps/locals.tf` lines 3-37
 **Tag:** `ExemptFromIMDSv2`
 

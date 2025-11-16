@@ -18,6 +18,42 @@ locals {
         }
       }
     },
+    # var.deny_ec2_imds_v1
+    # -->
+    # Sid: DenyRoleDeliveryLessThan2
+    # Exempts IAM roles tagged with {"ExemptFromIMDSv2": "true"}
+    {
+      include = var.deny_ec2_imds_v1,
+      statement = {
+        Action   = "*"
+        Resource = "*"
+        Condition = {
+          "NumericLessThan" = {
+            "ec2:RoleDelivery" = "2.0"
+          },
+          "StringNotEquals" = {
+            "aws:PrincipalTag/ExemptFromIMDSv2" = "true"
+          }
+        }
+      }
+    },
+    # var.deny_ec2_imds_v1
+    # -->
+    # Sid: DenyRunInstancesMetadataHttpTokensOptional
+    # Exempts requests tagged with {"ExemptFromIMDSv2": "true"}
+    {
+      include = var.deny_ec2_imds_v1,
+      statement = {
+        Action   = "ec2:RunInstances"
+        Resource = "arn:aws:ec2:*:*:instance/*"
+        Condition = {
+          "StringNotEquals" = {
+            "ec2:MetadataHttpTokens"          = "required",
+            "aws:RequestTag/ExemptFromIMDSv2" = "true"
+          },
+        }
+      }
+    },
     # var.deny_ec2_public_ip
     # -->
     # Sid: DenyEc2PublicIp
@@ -32,42 +68,6 @@ locals {
           "Bool" = {
             "ec2:AssociatePublicIpAddress" = "true"
           }
-        }
-      }
-    },
-    # var.deny_imds_v1_ec2
-    # -->
-    # Sid: DenyRoleDeliveryLessThan2
-    # Exempts IAM roles tagged with {"ExemptFromIMDSv2": "true"}
-    {
-      include = var.deny_imds_v1_ec2,
-      statement = {
-        Action   = "*"
-        Resource = "*"
-        Condition = {
-          "NumericLessThan" = {
-            "ec2:RoleDelivery" = "2.0"
-          },
-          "StringNotEquals" = {
-            "aws:PrincipalTag/ExemptFromIMDSv2" = "true"
-          }
-        }
-      }
-    },
-    # var.deny_imds_v1_ec2
-    # -->
-    # Sid: DenyRunInstancesMetadataHttpTokensOptional
-    # Exempts requests tagged with {"ExemptFromIMDSv2": "true"}
-    {
-      include = var.deny_imds_v1_ec2,
-      statement = {
-        Action   = "ec2:RunInstances"
-        Resource = "arn:aws:ec2:*:*:instance/*"
-        Condition = {
-          "StringNotEquals" = {
-            "ec2:MetadataHttpTokens"          = "required",
-            "aws:RequestTag/ExemptFromIMDSv2" = "true"
-          },
         }
       }
     },
