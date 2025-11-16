@@ -20,7 +20,7 @@ from ..types import (
     RCPPlacementRecommendations,
 )
 from ..constants import (
-    THIRD_PARTY_ASSUMEROLE,
+    DENY_STS_THIRD_PARTY_ASSUMEROLE,
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
     DENY_AOSS_THIRD_PARTY_ACCESS,
@@ -75,7 +75,7 @@ def _parse_single_rcp_result_file(
     return RCPCheckResult(
         account_id=account_id,
         account_name=summary.get("account_name", ""),
-        check_name=summary.get("check", THIRD_PARTY_ASSUMEROLE),
+        check_name=summary.get("check", DENY_STS_THIRD_PARTY_ASSUMEROLE),
         third_party_account_ids=third_party_accounts,
         has_wildcard=has_wildcards,
         total_roles_analyzed=summary.get("total_roles_analyzed")
@@ -87,9 +87,9 @@ def parse_rcp_result_files(
     organization_hierarchy: OrganizationHierarchy
 ) -> RCPParseResult:
     """
-    Parse third_party_assumerole check result files.
+    Parse deny_sts_third_party_assumerole check result files.
 
-    Results are organized as: {results_dir}/rcps/third_party_assumerole/*.json
+    Results are organized as: {results_dir}/rcps/deny_sts_third_party_assumerole/*.json
 
     Args:
         results_dir: Directory containing check result files
@@ -103,14 +103,14 @@ def parse_rcp_result_files(
           (cannot have RCPs deployed)
     """
     # Use centralized function to get check directory path
-    check_dir_str = get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
+    check_dir_str = get_results_dir(DENY_STS_THIRD_PARTY_ASSUMEROLE, results_dir)
     check_dir = Path(check_dir_str)
 
     account_third_party_map: AccountThirdPartyMap = {}
     accounts_with_wildcards: Set[str] = set()
 
     if not check_dir.exists():
-        raise RuntimeError(f"Third-party AssumeRole check directory does not exist: {check_dir}")
+        raise RuntimeError(f"STS third-party AssumeRole check directory does not exist: {check_dir}")
 
     for result_file in check_dir.glob("*.json"):
         rcp_result = _parse_single_rcp_result_file(
@@ -184,7 +184,7 @@ def _create_root_level_rcp_recommendation(
     all_account_ids = list(organization_hierarchy.accounts.keys())
 
     return RCPPlacementRecommendations(
-        check_name=THIRD_PARTY_ASSUMEROLE,
+        check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=all_account_ids,
@@ -226,7 +226,7 @@ def _create_ou_level_rcp_recommendations(
 
         unioned_third_party = sorted(list(ou_third_party_accounts))
         recommendations.append(RCPPlacementRecommendations(
-            check_name=THIRD_PARTY_ASSUMEROLE,
+            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
             recommended_level="ou",
             target_ou_id=candidate.target_id,
             affected_accounts=candidate.affected_accounts,
@@ -259,7 +259,7 @@ def _create_account_level_rcp_recommendations(
             continue
 
         recommendations.append(RCPPlacementRecommendations(
-            check_name=THIRD_PARTY_ASSUMEROLE,
+            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=[account_id],
@@ -416,7 +416,7 @@ def _build_rcp_terraform_module(
     for rec in recommendations:
         recs_by_check[rec.check_name] = rec
 
-    assume_role_rec = recs_by_check.get(THIRD_PARTY_ASSUMEROLE)
+    assume_role_rec = recs_by_check.get(DENY_STS_THIRD_PARTY_ASSUMEROLE)
     ecr_rec = recs_by_check.get(DENY_ECR_THIRD_PARTY_ACCESS)
     s3_rec = recs_by_check.get(DENY_S3_THIRD_PARTY_ACCESS)
     aoss_rec = recs_by_check.get(DENY_AOSS_THIRD_PARTY_ACCESS)
@@ -437,7 +437,7 @@ def _build_rcp_terraform_module(
         has_wildcard = "*" in assume_role_rec.third_party_account_ids
         enforce_assume_role_org_identities = not has_wildcard
         if enforce_assume_role_org_identities:
-            parameters.append(TerraformParameter("third_party_assumerole_account_ids_allowlist", assume_role_rec.third_party_account_ids))
+            parameters.append(TerraformParameter("deny_sts_third_party_assumerole_account_ids_allowlist", assume_role_rec.third_party_account_ids))
         parameters.append(TerraformParameter("enforce_assume_role_org_identities", enforce_assume_role_org_identities))
     else:
         parameters.append(TerraformParameter("enforce_assume_role_org_identities", False))

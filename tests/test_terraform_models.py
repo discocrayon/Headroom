@@ -299,7 +299,7 @@ module "scps_root" {
                 TerraformParameter("deny_ecr_third_party_access", True),
                 TerraformParameter("deny_ecr_third_party_access_account_ids_allowlist", ["123456789012", "234567890123"]),
                 TerraformParameter("enforce_assume_role_org_identities", True),
-                TerraformParameter("third_party_assumerole_account_ids_allowlist", ["123456789012"]),
+                TerraformParameter("deny_sts_third_party_assumerole_account_ids_allowlist", ["123456789012"]),
                 TerraformParameter("deny_aoss_third_party_access", False),
                 TerraformParameter("deny_s3_third_party_access", True),
                 TerraformParameter("third_party_s3_access_account_ids_allowlist", ["123456789012"]),

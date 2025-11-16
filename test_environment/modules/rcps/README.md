@@ -18,7 +18,7 @@ RCPs are AWS Organizations policies that help you enforce security controls on r
 The `enforce_assume_role_org_identities` RCP denies `sts:AssumeRole` actions unless one of the following conditions is met:
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
-2. The principal account is in the `third_party_assumerole_account_ids_allowlist`
+2. The principal account is in the `deny_sts_third_party_assumerole_account_ids_allowlist`
 3. The resource is tagged with `dp:exclude:identity: true`
 4. The principal is an AWS service
 
@@ -49,7 +49,7 @@ module "account_rcp" {
 
   # IAM AssumeRole
   enforce_assume_role_org_identities = true
-  third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole_account_ids_allowlist = [
     "111111111111",
     "222222222222"
   ]
@@ -82,7 +82,7 @@ module "account_rcp" {
 ### Optional
 
 - `deny_ecr_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access ECR repositories
-- `third_party_assumerole_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs that are permitted to assume roles
+- `deny_sts_third_party_assumerole_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs that are permitted to assume roles
 - `aoss_third_party_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access AOSS resources
 - `third_party_s3_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access S3 buckets
 - `sqs_third_party_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access SQS queues
