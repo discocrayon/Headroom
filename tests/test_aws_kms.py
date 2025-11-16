@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
 from headroom.aws.kms import (
-    KMSKeyPolicyAnalysis,
     analyze_kms_key_policies,
     UnsupportedPrincipalTypeError,
+    UnknownPrincipalTypeError,
     _extract_account_ids_from_principal,
     _has_wildcard_principal,
 )
@@ -239,7 +239,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_paginator.return_value = keys_paginator
 
         error_response = {"Error": {"Code": "NotFoundException"}}
-        mock_kms_client.get_key_policy.side_effect = ClientError(error_response, "GetKeyPolicy")
+        mock_kms_client.get_key_policy.side_effect = ClientError(error_response, "GetKeyPolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"111111111111"}
         results = analyze_kms_key_policies(mock_session, org_account_ids)
@@ -409,3 +409,212 @@ class TestAnalyzeKmsKeyPolicies:
         with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
             analyze_kms_key_policies(mock_session, org_account_ids)
         assert "Federated" in str(exc_info.value)
+
+    def test_analyze_kms_policies_unknown_principal_type(self) -> None:
+        """Test analyze_kms_key_policies with unknown principal type."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        def mock_client(service: str, **kwargs: str) -> MagicMock:
+            clients = {
+                "ec2": mock_ec2_client,
+                "kms": mock_kms_client,
+            }
+            return clients[service]
+
+        mock_session.client = mock_client
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.return_value = [
+            {
+                "Keys": [
+                    {
+                        "KeyId": "key-unknown",
+                        "KeyArn": "arn:aws:kms:us-east-1:111111111111:key/key-unknown"
+                    }
+                ]
+            }
+        ]
+
+        mock_kms_client.get_paginator.return_value = keys_paginator
+
+        policy_response = {
+            "Policy": '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"UnknownType":"value"},"Action":"kms:Decrypt","Resource":"*"}]}'
+        }
+        mock_kms_client.get_key_policy.return_value = policy_response
+
+        org_account_ids = {"111111111111"}
+
+        with pytest.raises(UnknownPrincipalTypeError) as exc_info:
+            analyze_kms_key_policies(mock_session, org_account_ids)
+        assert "UnknownType" in str(exc_info.value)
+
+    def test_analyze_kms_policies_deny_statement(self) -> None:
+        """Test analyze_kms_key_policies with Deny statement (should be skipped)."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        def mock_client(service: str, **kwargs: str) -> MagicMock:
+            clients = {
+                "ec2": mock_ec2_client,
+                "kms": mock_kms_client,
+            }
+            return clients[service]
+
+        mock_session.client = mock_client
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.return_value = [
+            {
+                "Keys": [
+                    {
+                        "KeyId": "key-deny",
+                        "KeyArn": "arn:aws:kms:us-east-1:111111111111:key/key-deny"
+                    }
+                ]
+            }
+        ]
+
+        mock_kms_client.get_paginator.return_value = keys_paginator
+
+        policy_response = {
+            "Policy": '{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":"*","Action":"kms:Decrypt","Resource":"*"}]}'
+        }
+        mock_kms_client.get_key_policy.return_value = policy_response
+
+        org_account_ids = {"111111111111"}
+
+        results = analyze_kms_key_policies(mock_session, org_account_ids)
+
+        # Keys with only Deny statements don't have third-party access or wildcards, so no result
+        assert len(results) == 0
+
+    def test_analyze_kms_policies_no_principal(self) -> None:
+        """Test analyze_kms_key_policies with statement missing Principal field."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        def mock_client(service: str, **kwargs: str) -> MagicMock:
+            clients = {
+                "ec2": mock_ec2_client,
+                "kms": mock_kms_client,
+            }
+            return clients[service]
+
+        mock_session.client = mock_client
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.return_value = [
+            {
+                "Keys": [
+                    {
+                        "KeyId": "key-no-principal",
+                        "KeyArn": "arn:aws:kms:us-east-1:111111111111:key/key-no-principal"
+                    }
+                ]
+            }
+        ]
+
+        mock_kms_client.get_paginator.return_value = keys_paginator
+
+        policy_response = {
+            "Policy": '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"kms:Decrypt","Resource":"*"}]}'
+        }
+        mock_kms_client.get_key_policy.return_value = policy_response
+
+        org_account_ids = {"111111111111"}
+
+        results = analyze_kms_key_policies(mock_session, org_account_ids)
+
+        # Keys without Principal don't have third-party access or wildcards, so no result
+        assert len(results) == 0
+
+    def test_analyze_kms_policies_client_error(self) -> None:
+        """Test analyze_kms_key_policies with ClientError during analysis."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        def mock_client(service: str, **kwargs: str) -> MagicMock:
+            clients = {
+                "ec2": mock_ec2_client,
+                "kms": mock_kms_client,
+            }
+            return clients[service]
+
+        mock_session.client = mock_client
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}},
+            "ListKeys"
+        )
+
+        mock_kms_client.get_paginator.return_value = keys_paginator
+
+        org_account_ids = {"111111111111"}
+
+        with pytest.raises(ClientError):
+            analyze_kms_key_policies(mock_session, org_account_ids)
+
+    def test_analyze_kms_policies_get_policy_error(self) -> None:
+        """Test analyze_kms_key_policies with ClientError when getting key policy."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        def mock_client(service: str, **kwargs: str) -> MagicMock:
+            clients = {
+                "ec2": mock_ec2_client,
+                "kms": mock_kms_client,
+            }
+            return clients[service]
+
+        mock_session.client = mock_client
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.return_value = [
+            {
+                "Keys": [
+                    {
+                        "KeyId": "key-error",
+                        "KeyArn": "arn:aws:kms:us-east-1:111111111111:key/key-error"
+                    }
+                ]
+            }
+        ]
+
+        mock_kms_client.get_paginator.return_value = keys_paginator
+        mock_kms_client.get_key_policy.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}},
+            "GetKeyPolicy"
+        )
+
+        org_account_ids = {"111111111111"}
+
+        with pytest.raises(ClientError) as exc_info:
+            analyze_kms_key_policies(mock_session, org_account_ids)
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
