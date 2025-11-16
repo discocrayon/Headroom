@@ -6,9 +6,9 @@ locals {
     # Restricts AOSS access to organization accounts and allowlisted third-party accounts
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonopensearchserverless.html
     {
-      include   = var.deny_aoss_third_party_access,
+      include = var.deny_aoss_third_party_access,
       statement = {
-        "Sid"    = "DenyAossThirdPartyAccess"
+        "Sid"       = "DenyAossThirdPartyAccess"
         "Principal" = "*"
         "Action" = [
           "aoss:*",
@@ -16,8 +16,8 @@ locals {
         "Resource" = "*"
         "Condition" = {
           "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount" = var.aoss_third_party_access_account_ids_allowlist
+            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount"                = var.aoss_third_party_access_account_ids_allowlist
             "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {
@@ -31,9 +31,9 @@ locals {
     # Sid: DenyECRThirdPartyAccess
     # Restricts ECR access to organization accounts and allowlisted third parties
     {
-      include   = var.deny_ecr_third_party_access,
+      include = var.deny_ecr_third_party_access,
       statement = {
-        "Sid"    = "DenyECRThirdPartyAccess"
+        "Sid"       = "DenyECRThirdPartyAccess"
         "Principal" = "*"
         "Action" = [
           "ecr:*",
@@ -41,8 +41,34 @@ locals {
         "Resource" = "*"
         "Condition" = {
           "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount" = var.ecr_third_party_access_account_ids_allowlist
+            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount"                = var.ecr_third_party_access_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
+          }
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
+    # var.deny_kms_third_party_access
+    # -->
+    # Sid: DenyKMSThirdPartyAccess
+    # Restricts KMS access to organization accounts and allowlisted third parties
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awskeymanagementservice.html
+    {
+      include = var.deny_kms_third_party_access,
+      statement = {
+        "Sid"       = "DenyKMSThirdPartyAccess"
+        "Principal" = "*"
+        "Action" = [
+          "kms:*",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount"                = var.kms_third_party_access_account_ids_allowlist
             "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {
@@ -54,18 +80,18 @@ locals {
     # var.deny_s3_third_party_access
     # -->
     # Sid: DenyS3ThirdPartyAccess
-    # Denies S3 access from accounts outside the organization except allowlisted accounts
+    # Restricts S3 access to organization accounts and allowlisted third-party accounts
     {
-      include   = var.deny_s3_third_party_access,
+      include = var.deny_s3_third_party_access,
       statement = {
-        "Sid"    = "DenyS3ThirdPartyAccess"
+        "Sid"       = "DenyS3ThirdPartyAccess"
         "Principal" = "*"
-        "Action" = "s3:*"
-        "Resource" = "*"
+        "Action"    = "s3:*"
+        "Resource"  = "*"
         "Condition" = {
           "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount" = var.s3_third_party_access_account_ids_allowlist
+            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount"                = var.s3_third_party_access_account_ids_allowlist
             "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {
@@ -80,9 +106,9 @@ locals {
     # Restricts SQS access to organization accounts and allowlisted third-party accounts
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonsqs.html
     {
-      include   = var.deny_sqs_third_party_access,
+      include = var.deny_sqs_third_party_access,
       statement = {
-        "Sid"    = "DenySQSThirdPartyAccess"
+        "Sid"       = "DenySQSThirdPartyAccess"
         "Principal" = "*"
         "Action" = [
           "sqs:*",
@@ -90,8 +116,8 @@ locals {
         "Resource" = "*"
         "Condition" = {
           "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount" = var.sqs_third_party_access_account_ids_allowlist
+            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount"                = var.sqs_third_party_access_account_ids_allowlist
             "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {
@@ -105,9 +131,9 @@ locals {
     # Sid: DenySTSThirdPartyAssumeRole
     # Restricts STS AssumeRole to organization identities and specified third-party accounts
     {
-      include   = var.deny_sts_third_party_assumerole,
+      include = var.deny_sts_third_party_assumerole,
       statement = {
-        "Sid"    = "DenySTSThirdPartyAssumeRole"
+        "Sid"       = "DenySTSThirdPartyAssumeRole"
         "Principal" = "*"
         "Action" = [
           "sts:AssumeRole",
@@ -115,8 +141,8 @@ locals {
         "Resource" = "*"
         "Condition" = {
           "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount" = var.sts_third_party_assumerole_account_ids_allowlist
+            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount"                = var.sts_third_party_assumerole_account_ids_allowlist
             "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {
@@ -128,17 +154,17 @@ locals {
   ]
   # Included RCP 1 Deny Statements
   included_rcp_1_deny_statements = [
-      for rcp_1_deny_statement in local.possible_rcp_1_statements:
-      rcp_1_deny_statement.statement if rcp_1_deny_statement.include
+    for rcp_1_deny_statement in local.possible_rcp_1_statements :
+    rcp_1_deny_statement.statement if rcp_1_deny_statement.include
   ]
   # This was done to meet the following constraints:
   # - Conditionally include statements depending on variables
   # - Conditionally include `Action`/`Condition`/`NotAction`/`NotResource` etc. inside of statements
   rcp_1_policy = {
-    "Version"   = "2012-10-17"
+    "Version" = "2012-10-17"
     "Statement" = [
       for statement in local.included_rcp_1_deny_statements :
-        merge(statement, { Effect = "Deny" })
+      merge(statement, { Effect = "Deny" })
     ]
   }
   # See https://ramimac.me/terraform-minimized-scps for why jsonencode() is needed
