@@ -60,13 +60,13 @@ def _get_safe_to_enable_checks(
     return enabled_checks
 
 
-def _get_allowed_ami_owners(
+def _get_ec2_allowed_ami_owners(
     recommendations: List[SCPPlacementRecommendations]
 ) -> List[str]:
     """Extract allowed AMI owners from deny_ec2_ami_owner recommendations."""
     for rec in recommendations:
-        if rec.check_name.replace("-", "_") == "deny_ec2_ami_owner" and rec.allowed_ami_owners:
-            return rec.allowed_ami_owners
+        if rec.check_name.replace("-", "_") == "deny_ec2_ami_owner" and rec.ec2_allowed_ami_owners:
+            return rec.ec2_allowed_ami_owners
     return []
 
 
@@ -95,10 +95,9 @@ def _build_ec2_terraform_parameters(
     parameters.append(TerraformComment("EC2"))
     deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_checks
     parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
-
     if deny_ec2_ami_owner:
-        allowed_ami_owners = _get_allowed_ami_owners(recommendations)
-        parameters.append(TerraformParameter("allowed_ami_owners", allowed_ami_owners))
+        ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
+        parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
 
     deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_checks
     parameters.append(TerraformParameter("deny_ec2_imds_v1", deny_ec2_imds_v1))
@@ -139,16 +138,18 @@ def _build_iam_terraform_parameters(
     parameters: List[TerraformElement] = []
 
     parameters.append(TerraformComment("IAM"))
+    deny_iam_saml_provider_not_aws_sso = "deny_iam_saml_provider_not_aws_sso" in enabled_checks
+    parameters.append(TerraformParameter("deny_iam_saml_provider_not_aws_sso", deny_iam_saml_provider_not_aws_sso))
+
     deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks
     parameters.append(TerraformParameter("deny_iam_user_creation", deny_iam_user_creation))
-
     if deny_iam_user_creation:
         allowed_iam_user_arns = _get_allowed_iam_user_arns(recommendations)
         transformed_arns = [
             _replace_account_id_in_arn(arn, organization_hierarchy)
             for arn in allowed_iam_user_arns
         ]
-        parameters.append(TerraformParameter("allowed_iam_users", transformed_arns))
+        parameters.append(TerraformParameter("iam_allowed_users", transformed_arns))
 
     return parameters
 

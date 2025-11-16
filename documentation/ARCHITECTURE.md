@@ -55,7 +55,7 @@ headroom/
 │   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
 │   │   └── deny_rds_unencrypted.py  # RDS encryption check
 │   └── rcps/      # Resource Control Policy checks
-│       ├── deny_third_party_assumerole.py  # Third-party IAM AssumeRole check
+│       ├── deny_deny_sts_third_party_assumerole.py  # Third-party IAM AssumeRole check
 │       ├── deny_s3_third_party_access.py  # Third-party S3 bucket access check
 │       ├── deny_aoss_third_party_access.py  # Third-party AOSS access check
 │       └── deny_ecr_third_party_access.py  # ECR third-party access check

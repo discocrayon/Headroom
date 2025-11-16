@@ -148,9 +148,9 @@ Unless `rds:StorageEncrypted` condition key is true.
 
 ## RCP (Resource Control Policy) Checks
 
-### Third-Party AssumeRole Check
+### STS Third-Party AssumeRole Check
 
-**Check Name**: `third_party_assumerole` (also `deny_third_party_assumerole` for enforcement)
+**Check Name**: `deny_sts_third_party_assumerole` (also `deny_deny_sts_third_party_assumerole` for enforcement)
 
 **Purpose**: Identifies IAM roles with trust policies allowing external AWS account access.
 

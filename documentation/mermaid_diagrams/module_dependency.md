@@ -31,10 +31,10 @@ graph TD
   headroom.checks.scps.deny_ec2_imds_v1 --> headroom.aws.ec2
   headroom.checks.scps.deny_ec2_imds_v1 --> headroom.constants
 
-  headroom.checks.rcps.check_third_party_assumerole --> headroom.checks.base
-  headroom.checks.rcps.check_third_party_assumerole --> headroom.checks.registry
-  headroom.checks.rcps.check_third_party_assumerole --> headroom.aws.iam
-  headroom.checks.rcps.check_third_party_assumerole --> headroom.constants
+  headroom.checks.rcps.check_deny_sts_third_party_assumerole --> headroom.checks.base
+  headroom.checks.rcps.check_deny_sts_third_party_assumerole --> headroom.checks.registry
+  headroom.checks.rcps.check_deny_sts_third_party_assumerole --> headroom.aws.iam
+  headroom.checks.rcps.check_deny_sts_third_party_assumerole --> headroom.constants
 
   headroom.parse_results --> headroom.analysis
   headroom.parse_results --> headroom.config

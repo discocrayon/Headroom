@@ -181,7 +181,7 @@ module "test_module" {
             target_id="local.root_ou_id",
             parameters=[
                 TerraformParameter("deny_ec2_ami_owner", True),
-                TerraformParameter("allowed_ami_owners", ["123456789012", "234567890123"]),
+                TerraformParameter("ec2_allowed_ami_owners", ["123456789012", "234567890123"]),
             ],
             comment="Organization Root"
         )
@@ -193,7 +193,7 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   deny_ec2_ami_owner = true
-  allowed_ami_owners = [
+  ec2_allowed_ami_owners = [
     "123456789012",
     "234567890123",
   ]
@@ -261,11 +261,11 @@ module "scps_root" {
             target_id="local.top_level_security_tooling_ou_id",
             parameters=[
                 TerraformParameter("deny_ec2_ami_owner", True),
-                TerraformParameter("allowed_ami_owners", ["123456789012"]),
+                TerraformParameter("ec2_allowed_ami_owners", ["123456789012"]),
                 TerraformParameter("deny_ec2_imds_v1", False),
                 TerraformParameter("deny_eks_create_cluster_without_tag", True),
                 TerraformParameter("deny_iam_user_creation", True),
-                TerraformParameter("allowed_iam_users", []),
+                TerraformParameter("iam_allowed_users", []),
                 TerraformParameter("deny_rds_unencrypted", True),
             ],
             comment="OU Security Tooling"
@@ -281,7 +281,7 @@ module "scps_root" {
         assert "deny_ec2_imds_v1 = false" in result
         assert "deny_eks_create_cluster_without_tag = true" in result
         assert "deny_iam_user_creation = true" in result
-        assert "allowed_iam_users = []" in result
+        assert "iam_allowed_users = []" in result
         assert "deny_rds_unencrypted = true" in result
         assert "# Auto-generated SCP Terraform configuration for OU Security Tooling" in result
 
@@ -297,12 +297,12 @@ module "scps_root" {
             target_id="local.root_ou_id",
             parameters=[
                 TerraformParameter("deny_ecr_third_party_access", True),
-                TerraformParameter("deny_ecr_third_party_access_account_ids_allowlist", ["123456789012", "234567890123"]),
-                TerraformParameter("enforce_assume_role_org_identities", True),
-                TerraformParameter("third_party_assumerole_account_ids_allowlist", ["123456789012"]),
+                TerraformParameter("ecr_third_party_access_account_ids_allowlist", ["123456789012", "234567890123"]),
+                TerraformParameter("deny_sts_third_party_assumerole", True),
+                TerraformParameter("sts_third_party_assumerole_account_ids_allowlist", ["123456789012"]),
                 TerraformParameter("deny_aoss_third_party_access", False),
                 TerraformParameter("deny_s3_third_party_access", True),
-                TerraformParameter("third_party_s3_access_account_ids_allowlist", ["123456789012"]),
+                TerraformParameter("s3_third_party_access_account_ids_allowlist", ["123456789012"]),
             ],
             comment="Organization Root",
             policy_type="RCP"
@@ -314,8 +314,8 @@ module "scps_root" {
         assert 'source = "../modules/rcps"' in result
         assert "target_id = local.root_ou_id" in result
         assert "deny_ecr_third_party_access = true" in result
-        assert "deny_ecr_third_party_access_account_ids_allowlist" in result
-        assert "enforce_assume_role_org_identities = true" in result
+        assert "ecr_third_party_access_account_ids_allowlist" in result
+        assert "deny_sts_third_party_assumerole = true" in result
         assert "deny_aoss_third_party_access = false" in result
         assert "deny_s3_third_party_access = true" in result
         assert "# Auto-generated RCP Terraform configuration for Organization Root" in result

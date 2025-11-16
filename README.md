@@ -92,7 +92,7 @@ python -m headroom --config config.yaml
 **JSON reports** in `test_environment/headroom_results/`:
 - `scps/deny_ec2_imds_v1/{account}.json` - EC2 IMDSv1 violations
 - `scps/deny_iam_user_creation/{account}.json` - IAM users found
-- `rcps/third_party_assumerole/{account}.json` - External account access
+- `rcps/deny_sts_third_party_assumerole/{account}.json` - External account access
 - `rcps/deny_s3_third_party_access/{account}.json` - S3 third-party access
 - And more...
 
@@ -107,15 +107,18 @@ See [full examples](documentation/EXAMPLES.md).
 
 ### SCP Checks
 - **EC2 IMDSv1**: Enforce IMDSv2 on all instances (supports exemption tags)
+- **EC2 AMI Owner**: Restrict AMI usage to approved owners
+- **EC2 Public IP**: Block public IP allocation on instances
 - **EKS Paved Road**: Require `PavedRoad=true` tag on clusters
 - **IAM User Creation**: Restrict to approved users (auto-generates allowlists)
+- **IAM SAML Provider**: Enforce AWS IAM Identity Center SAML providers only
 - **RDS Encryption**: Block unencrypted databases
 
 ### RCP Checks
-- **Third-Party AssumeRole**: Control external AWS account access
-- **S3 Third-Party Access**: Manage cross-account S3 permissions
-- **AOSS Third-Party Access**: OpenSearch Serverless access control
-- **ECR Third-Party Access**: Container registry sharing controls
+- **STS Third-Party AssumeRole Allowlist**
+- **S3 Third-Party Access Allowlist**
+- **ECR Third-Party Access Allowlist**
+- **AOSS Third-Party Access Allowlist**
 
 [View detailed check documentation](documentation/CHECKS.md)
 
@@ -167,7 +170,7 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   deny_iam_user_creation = true
-  allowed_iam_users = [
+  iam_allowed_users = [
     "arn:aws:iam::${local.security_account_id}:user/automation/cicd",
     "arn:aws:iam::${local.prod_account_id}:user/terraform-user",
   ]
@@ -180,8 +183,8 @@ module "scps_root" {
 
 ✅ **Working**:
 - Multi-account AWS Organizations scanning
-- SCP checks: EC2 IMDSv1, IAM users, EKS tags, RDS encryption
-- RCP checks: IAM trust policies, S3/AOSS/ECR third-party access
+- SCP checks: EC2 IMDSv1, EC2 AMI owner, EC2 public IP, IAM users, IAM SAML providers, EKS tags, RDS encryption
+- RCP checks: IAM trust policies, S3/ECR third-party access
 - Terraform auto-generation with allowlists
 - JSON violation reports
 - Smart placement recommendations

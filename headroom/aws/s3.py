@@ -15,7 +15,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_s3.client import S3Client
 
-from ..constants import BASE_PRINCIPAL_TYPES
+from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     if isinstance(principal, str):
         if principal == "*":
             return set()
-        arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
         if arn_match:
             account_ids.add(arn_match.group(1))
         else:

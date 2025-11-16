@@ -1,7 +1,7 @@
 {
   "summary": {
     "account_name": "fort-knox",
-    "check": "third_party_assumerole",
+    "check": "deny_sts_third_party_assumerole",
     "total_roles_analyzed": 1,
     "roles_third_parties_can_access": 0,
     "roles_with_wildcards": 1,
