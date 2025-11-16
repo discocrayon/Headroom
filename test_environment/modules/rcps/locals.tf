@@ -1,5 +1,32 @@
 locals {
   possible_rcp_1_statements = [
+    # var.deny_aoss_third_party_access
+    # -->
+    # Sid: DenyAossThirdPartyAccess
+    # Restricts AOSS access to organization accounts and allowlisted third-party accounts
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonopensearchserverless.html
+    {
+      include   = var.deny_aoss_third_party_access,
+      statement = {
+        "Sid"    = "DenyAossThirdPartyAccess"
+        "Principal" = "*"
+        "Action" = [
+          "aoss:*",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount" = var.third_party_s3_access_account_ids_allowlist
+            "aws:PrincipalAccount" = var.aoss_third_party_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
+          }
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
     # var.deny_ecr_third_party_access
     # -->
     # Sid: DenyECRThirdPartyAccess
@@ -68,33 +95,6 @@ locals {
           "StringNotEqualsIfExists" = {
             "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
             "aws:PrincipalAccount" = var.deny_kms_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
-          "BoolIfExists" = {
-            "aws:PrincipalIsAWSService" = "false"
-          }
-        }
-      }
-    },
-    # var.deny_aoss_third_party_access
-    # -->
-    # Sid: DenyAossThirdPartyAccess
-    # Restricts AOSS access to organization accounts and allowlisted third-party accounts
-    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonopensearchserverless.html
-    {
-      include   = var.deny_aoss_third_party_access,
-      statement = {
-        "Sid"    = "DenyAossThirdPartyAccess"
-        "Principal" = "*"
-        "Action" = [
-          "aoss:*",
-        ]
-        "Resource" = "*"
-        "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount" = var.third_party_s3_access_account_ids_allowlist
-            "aws:PrincipalAccount" = var.aoss_third_party_account_ids_allowlist
             "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {

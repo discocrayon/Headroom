@@ -151,9 +151,7 @@ def _normalize_actions(action: Any) -> List[str]:
     """
     if isinstance(action, str):
         return [action]
-    elif isinstance(action, list):
-        return action
-    return []
+    return list(action)
 
 
 def _analyze_key_in_region(
@@ -295,8 +293,8 @@ def analyze_kms_key_policies(
                     if analysis.third_party_account_ids or analysis.has_wildcard_principal:
                         results.append(analysis)
 
-        except ClientError as e:
-            logger.error(f"Failed to analyze KMS in region {region}: {e}")
+        except ClientError:
+            logger.error(f"Failed to analyze KMS in region {region}")
             raise
 
     logger.info(
