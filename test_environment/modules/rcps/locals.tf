@@ -41,7 +41,7 @@ locals {
         "Condition" = {
           "StringNotEqualsIfExists" = {
             "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount" = var.third_party_assumerole_account_ids_allowlist
+            "aws:PrincipalAccount" = var.deny_sts_third_party_assumerole_account_ids_allowlist
             "aws:ResourceTag/dp:exclude:identity" = "true"
           }
           "BoolIfExists" = {

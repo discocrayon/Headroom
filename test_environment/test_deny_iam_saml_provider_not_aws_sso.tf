@@ -1,5 +1,5 @@
 /*
-Terraform fixtures for deny_saml_provider_not_aws_sso check.
+Terraform fixtures for deny_iam_saml_provider_not_aws_sso check.
 
 Creates SAML provider combinations across accounts to exercise compliant and violating scenarios:
 - acme-co: single AWS SSO provider (compliant)

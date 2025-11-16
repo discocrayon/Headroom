@@ -62,7 +62,7 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 - Review existing checks:
   - `headroom/checks/scps/deny_ec2_imds_v1.py`
   - `headroom/checks/scps/deny_iam_user_creation.py`
-  - `headroom/checks/rcps/deny_third_party_assumerole.py`
+  - `headroom/checks/rcps/deny_deny_sts_third_party_assumerole.py`
 - Understand `headroom/checks/base.py` (BaseCheck pattern)
 - Review `documentation/POLICY_TAXONOMY.md` for policy patterns
 
@@ -431,7 +431,7 @@ Add your check name to the constants module:
 # Check name constants
 DENY_IMDS_V1_EC2 = "deny_ec2_imds_v1"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
-THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"  # ADD THIS LINE
 ```
 

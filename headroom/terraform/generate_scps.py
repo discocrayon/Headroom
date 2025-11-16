@@ -150,8 +150,8 @@ def _build_iam_terraform_parameters(
         ]
         parameters.append(TerraformParameter("allowed_iam_users", transformed_arns))
 
-    deny_saml_provider_not_aws_sso = "deny_saml_provider_not_aws_sso" in enabled_checks
-    parameters.append(TerraformParameter("deny_saml_provider_not_aws_sso", deny_saml_provider_not_aws_sso))
+    deny_iam_saml_provider_not_aws_sso = "deny_iam_saml_provider_not_aws_sso" in enabled_checks
+    parameters.append(TerraformParameter("deny_iam_saml_provider_not_aws_sso", deny_iam_saml_provider_not_aws_sso))
 
     return parameters
 

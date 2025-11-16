@@ -1,5 +1,5 @@
 """
-Check for IAM SAML providers that violate the deny_saml_provider_not_aws_sso policy.
+Check for IAM SAML providers that violate the deny_iam_saml_provider_not_aws_sso policy.
 
 This SCP check enforces an absolute deny guardrail by identifying accounts that contain
 more than one SAML provider or any provider that is not managed by AWS SSO (`AWSSSO_`
@@ -12,7 +12,7 @@ from typing import Any, List
 import boto3
 
 from ...aws.iam import SamlProviderAnalysis, get_saml_providers_analysis
-from ...constants import DENY_SAML_PROVIDER_NOT_AWS_SSO
+from ...constants import DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO
 from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
@@ -32,10 +32,10 @@ def _is_awssso_provider(provider_name: str) -> bool:
     return provider_name.startswith("AWSSSO_")
 
 
-@register_check("scps", DENY_SAML_PROVIDER_NOT_AWS_SSO)
+@register_check("scps", DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO)
 class DenySamlProviderNotAwsSsoCheck(BaseCheck[SamlProviderAnalysis]):
     """
-    Check for IAM SAML providers that would violate deny_saml_provider_not_aws_sso.
+    Check for IAM SAML providers that would violate deny_iam_saml_provider_not_aws_sso.
 
     Account is considered compliant only when zero providers exist or exactly one
     AWS SSO-managed provider is present. All other combinations produce violations.

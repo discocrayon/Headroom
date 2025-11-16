@@ -17,7 +17,7 @@ module "scps" {
   deny_ec2_public_ip                 = true
   deny_eks_create_cluster_without_tag = true
   deny_iam_user_creation             = true
-  deny_saml_provider_not_aws_sso     = true
+  deny_iam_saml_provider_not_aws_sso     = true
   allowed_iam_users                  = [
     "arn:aws:iam::444444444444:user/terraform-user",
     "arn:aws:iam::444444444444:user/github-actions",
@@ -42,7 +42,7 @@ module "scps" {
 - **`deny_ec2_public_ip`** (bool): Deny EC2 instances from being launched with public IP addresses
 - **`deny_eks_create_cluster_without_tag`** (bool): Deny EKS cluster creation unless PavedRoad=true tag is present
 - **`deny_iam_user_creation`** (bool): Deny creation of IAM users not on the allowed list
-- **`deny_saml_provider_not_aws_sso`** (bool): Deny creation of IAM SAML providers so only AWS IAM Identity Center (AWS SSO) managed providers remain
+- **`deny_iam_saml_provider_not_aws_sso`** (bool): Deny creation of IAM SAML providers so only AWS IAM Identity Center (AWS SSO) managed providers remain
 - **`allowed_iam_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
 - **`deny_rds_unencrypted`** (bool): Deny creation of unencrypted RDS databases
 
@@ -140,7 +140,7 @@ Specify allowed IAM user ARNs using the format: `arn:aws:iam::ACCOUNT_ID:user/US
 
 Example: `arn:aws:iam::444444444444:user/terraform-user`
 
-### AWS SSO SAML Guardrail (`deny_saml_provider_not_aws_sso`)
+### AWS SSO SAML Guardrail (`deny_iam_saml_provider_not_aws_sso`)
 
 When enabled, this absolute deny control removes the ability to create new IAM SAML providers by denying `iam:CreateSAMLProvider` with no conditions.
 

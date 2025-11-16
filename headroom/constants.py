@@ -23,15 +23,15 @@ DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG = "deny_eks_create_cluster_without_tag"
 # IAM
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 # IAM SAML
-DENY_SAML_PROVIDER_NOT_AWS_SSO = "deny_saml_provider_not_aws_sso"
+DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO = "deny_iam_saml_provider_not_aws_sso"
 # RDS
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 
 # RCP Checks (alphabetical by service)
 # ECR
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
-# IAM
-THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+# STS
+DENY_STS_THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 # S3
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
 # OpenSearch Serverless

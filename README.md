@@ -92,7 +92,7 @@ python -m headroom --config config.yaml
 **JSON reports** in `test_environment/headroom_results/`:
 - `scps/deny_ec2_imds_v1/{account}.json` - EC2 IMDSv1 violations
 - `scps/deny_iam_user_creation/{account}.json` - IAM users found
-- `rcps/third_party_assumerole/{account}.json` - External account access
+- `rcps/deny_sts_third_party_assumerole/{account}.json` - External account access
 - `rcps/deny_s3_third_party_access/{account}.json` - S3 third-party access
 - And more...
 

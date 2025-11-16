@@ -9,7 +9,7 @@ module "rcps_security_tooling" {
   deny_ecr_third_party_access = false
 
   # IAM
-  third_party_assumerole_account_ids_allowlist = []
+  deny_sts_third_party_assumerole_account_ids_allowlist = []
   enforce_assume_role_org_identities = true
 
   # OpenSearch Serverless

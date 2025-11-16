@@ -41,7 +41,7 @@
 - Modular check framework with self-registration pattern
 - JSON result generation with detailed compliance metrics
 
-#### Check: `deny_saml_provider_not_aws_sso`
+#### Check: `deny_iam_saml_provider_not_aws_sso`
 
 - **Objective:** Eliminate custom IAM SAML providers so the companion SCP can unconditionally deny `iam:CreateSAMLProvider`
 - **Allowed State:** Zero SAML providers or exactly one AWS SSO-managed provider whose ARN matches `arn:aws:iam::<ACCOUNT_ID>:saml-provider/AWSSSO_<INSTANCE_ID>_<REGION>`
@@ -122,7 +122,7 @@ headroom/
 │   │   ├── deny_iam_user_creation.py
 │   │   └── deny_rds_unencrypted.py
 │   └── rcps/
-│       ├── deny_third_party_assumerole.py
+│       ├── deny_deny_sts_third_party_assumerole.py
 │       ├── deny_s3_third_party_access.py
 │       └── deny_ecr_third_party_access.py
 ├── placement/
@@ -1013,7 +1013,7 @@ class InvalidFederatedPrincipalError(Exception):
 
 **Check Implementation:**
 ```python
-# checks/rcps/check_third_party_assumerole.py
+# checks/rcps/check_deny_sts_third_party_assumerole.py
 
 class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
     def __init__(self, org_account_ids: Set[str], **kwargs):
@@ -1049,7 +1049,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
   "summary": {
     "account_name": "string",
     "account_id": "string",
-    "check": "third_party_assumerole",
+    "check": "deny_sts_third_party_assumerole",
     "total_roles_analyzed": 0,
     "roles_third_parties_can_access": 0,
     "roles_with_wildcards": 0,
@@ -1326,7 +1326,7 @@ Both SCP and RCP parsers share these patterns:
 
 Examples:
 - {results_dir}/scps/deny_ec2_imds_v1/account-name_111111111111.json
-- {results_dir}/rcps/third_party_assumerole/account-name_111111111111.json
+- {results_dir}/rcps/deny_sts_third_party_assumerole/account-name_111111111111.json
 ```
 
 **JSON Parsing:**
@@ -1785,7 +1785,7 @@ def generate_rcp_terraform(
        - Account: {account_name}_rcps.tf
     3. For each file:
        - Generate module call with target_id reference
-       - Add third_party_assumerole_account_ids_allowlist
+       - Add deny_sts_third_party_assumerole_account_ids_allowlist
        - Third-party IDs are already unioned by placement logic
     4. Write to {rcps_dir}/
     """
@@ -1800,7 +1800,7 @@ module "rcps_root" {
   source = "../modules/rcps"
   target_id = local.root_ou_id
 
-  third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole_account_ids_allowlist = [
     "999999999999",
     "888888888888"
   ]
@@ -1811,7 +1811,7 @@ module "rcps_root" {
 ```hcl
 # modules/rcps/variables.tf
 
-variable "third_party_assumerole_account_ids_allowlist" {
+variable "deny_sts_third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
   default     = []
   description = "Third-party account IDs approved for AssumeRole"
@@ -1835,7 +1835,7 @@ locals {
             "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
           }
           StringNotEqualsIfExists = {
-            "aws:PrincipalAccount" = var.third_party_assumerole_account_ids_allowlist
+            "aws:PrincipalAccount" = var.deny_sts_third_party_assumerole_account_ids_allowlist
           }
           StringNotEquals = {
             "aws:PrincipalType" = "Service"
@@ -2191,7 +2191,7 @@ DENY_IMDS_V1_EC2 = "deny_ec2_imds_v1"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
-THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
 DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 
@@ -2428,7 +2428,7 @@ test_environment/
 ├── org_and_account_info_reader.tf       # Management account IAM role
 ├── headroom_roles.tf                    # Headroom roles in all accounts
 ├── test_deny_iam_user_creation.tf       # IAM users for testing
-├── test_deny_third_party_assumerole.tf  # IAM roles with trust policies
+├── test_deny_deny_sts_third_party_assumerole.tf  # IAM roles with trust policies
 ├── account_scps.tf                      # Account-level SCP attachments (if any)
 ├── modules/
 │   ├── headroom_role/                   # Reusable Headroom role module
@@ -2454,7 +2454,7 @@ test_environment/
 │   └── rcps/
 │       ├── deny_aoss_third_party_access/
 │       │   └── {account_name}.json
-│       └── third_party_assumerole/
+│       └── deny_sts_third_party_assumerole/
 │           └── {account_name}.json
 ├── test_deny_ec2_imds_v1/               # EC2 instances (expensive, separate directory)
 │   ├── README.md                        # Cost warnings and usage
@@ -2653,7 +2653,7 @@ allowed_iam_users = [
 ]
 ```
 
-#### Third-Party AssumeRole Test (`test_deny_third_party_assumerole.tf`)
+#### Third-Party AssumeRole Test (`test_deny_deny_sts_third_party_assumerole.tf`)
 
 Creates IAM roles with diverse trust policy patterns to test RCP third-party detection.
 
@@ -2872,7 +2872,7 @@ variable "enforce_assume_role_org_identities" {
   default = false
 }
 
-variable "third_party_assumerole_account_ids_allowlist" {
+variable "deny_sts_third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
   default     = []
   description = "Third-party account IDs approved for AssumeRole"
@@ -3035,9 +3035,9 @@ module "rcps_acme_acquisition_ou" {
   source = "../modules/rcps"
   target_id = local.top_level_acme_acquisition_ou_id
 
-  # third_party_assumerole
+  # deny_sts_third_party_assumerole
   enforce_assume_role_org_identities = true
-  third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole_account_ids_allowlist = [
     "749430749651",
   ]
 }
@@ -3057,9 +3057,9 @@ module "rcps_shared_foo_bar" {
   source = "../modules/rcps"
   target_id = local.shared_foo_bar_account_id
 
-  # third_party_assumerole
+  # deny_sts_third_party_assumerole
   enforce_assume_role_org_identities = true
-  third_party_assumerole_account_ids_allowlist = [
+  deny_sts_third_party_assumerole_account_ids_allowlist = [
     "062897671886",
     "081802104111",
     "151784055945",
@@ -3094,7 +3094,7 @@ headroom_results/
 │       ├── security-tooling.json
 │       └── shared-foo-bar.json
 └── rcps/
-    └── third_party_assumerole/
+    └── deny_sts_third_party_assumerole/
         ├── acme-co.json
         ├── fort-knox.json
         ├── security-tooling.json
@@ -3157,12 +3157,12 @@ headroom_results/
 
 **Note:** ARNs show `REDACTED` because example results were generated with `exclude_account_ids: true` in config.
 
-**Example: `rcps/third_party_assumerole/shared-foo-bar.json`**
+**Example: `rcps/deny_sts_third_party_assumerole/shared-foo-bar.json`**
 ```json
 {
   "summary": {
     "account_name": "shared-foo-bar",
-    "check": "third_party_assumerole",
+    "check": "deny_sts_third_party_assumerole",
     "total_roles_analyzed": 11,
     "roles_third_parties_can_access": 10,
     "roles_with_wildcards": 1,
@@ -3283,7 +3283,7 @@ Compliance: 100.0%
 Reasoning: All accounts in organization have zero violations - safe to deploy at root level
 ----------------------------------------
 
-Check: third_party_assumerole
+Check: deny_sts_third_party_assumerole
 Recommended Level: OU
 Affected Target: acme_acquisition (ou-xxxx-xxxxxxxx)
 Affected Accounts: 1
@@ -3566,7 +3566,7 @@ The test environment serves as executable documentation:
 │       ├── account-name_111111111111.json
 │       └── ...
 └── rcps/
-    └── third_party_assumerole/
+    └── deny_sts_third_party_assumerole/
         ├── account-name_111111111111.json
         └── ...
 ```

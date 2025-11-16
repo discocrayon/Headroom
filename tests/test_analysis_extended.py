@@ -221,8 +221,8 @@ class TestRunChecks:
             patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute") as mock_scp_execute,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute"),
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute"),
-            patch("headroom.checks.scps.deny_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute"),
-            patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
+            patch("headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute"),
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist", return_value=False)
         ):
@@ -268,8 +268,8 @@ class TestRunChecks:
             patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute") as mock_check,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute"),
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute"),
-            patch("headroom.checks.scps.deny_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute"),
-            patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
+            patch("headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute"),
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.results_exist", return_value=False)
         ):
             mock_headroom_session = MagicMock()
@@ -296,8 +296,8 @@ class TestRunChecks:
             patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute"),
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute"),
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute"),
-            patch("headroom.checks.scps.deny_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute"),
-            patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
+            patch("headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute"),
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.analysis.results_exist", return_value=False),
             pytest.raises(RuntimeError, match="Failed to assume Headroom role")
         ):
@@ -322,9 +322,9 @@ class TestRunChecks:
             patch("headroom.checks.scps.deny_ec2_public_ip.DenyEc2PublicIpCheck.execute") as mock_check_public_ip,
             patch("headroom.checks.scps.deny_eks_create_cluster_without_tag.DenyEksCreateClusterWithoutTagCheck.execute") as mock_check_eks,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute") as mock_check2,
-            patch("headroom.checks.scps.deny_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute") as mock_check_saml,
+            patch("headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute") as mock_check_saml,
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute") as mock_check3,
-            patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.checks.rcps.deny_ecr_third_party_access.DenyECRThirdPartyAccessCheck.execute"),
             patch("headroom.checks.rcps.deny_s3_third_party_access.DenyS3ThirdPartyAccessCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
@@ -383,6 +383,7 @@ class TestRunChecks:
 
             # Verify check execute methods were only called for the second account
             # (check parameters are passed to constructor, not execute)
+            # Order: ami(0), imds_v1(1), public_ip(2), eks(3), iam_saml(4), iam_user(5), rds(6)
             assert mock_check_ami.call_count == 1
             mock_check_ami.assert_called_with(mock_headroom_session)
             assert mock_check.call_count == 1
@@ -391,10 +392,10 @@ class TestRunChecks:
             mock_check_public_ip.assert_called_with(mock_headroom_session)
             assert mock_check_eks.call_count == 1
             mock_check_eks.assert_called_with(mock_headroom_session)
-            assert mock_check2.call_count == 1
-            mock_check2.assert_called_with(mock_headroom_session)
             assert mock_check_saml.call_count == 1
             mock_check_saml.assert_called_with(mock_headroom_session)
+            assert mock_check2.call_count == 1
+            mock_check2.assert_called_with(mock_headroom_session)
             assert mock_check3.call_count == 1
             mock_check3.assert_called_with(mock_headroom_session)
 
@@ -417,8 +418,8 @@ class TestRunChecks:
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
             patch("headroom.checks.scps.deny_ec2_imds_v1.DenyEc2ImdsV1Check.execute") as mock_check,
-            patch("headroom.checks.scps.deny_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute") as mock_saml_check,
-            patch("headroom.checks.rcps.deny_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute") as mock_rcp_check
+            patch("headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute") as mock_saml_check,
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute") as mock_rcp_check
         ):
             org_account_ids: set[str] = set()
             run_checks(mock_security_session, account_infos, mock_config, org_account_ids)

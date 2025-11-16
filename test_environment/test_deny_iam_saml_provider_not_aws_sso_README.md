@@ -1,6 +1,6 @@
-## Test IAM SAML Providers for deny_saml_provider_not_aws_sso SCP
+## Test IAM SAML Providers for deny_iam_saml_provider_not_aws_sso SCP
 
-This Terraform file provisions sample IAM SAML providers across the test accounts to exercise the `deny_saml_provider_not_aws_sso` check.
+This Terraform file provisions sample IAM SAML providers across the test accounts to exercise the `deny_iam_saml_provider_not_aws_sso` check.
 
 ### Accounts & Providers
 
