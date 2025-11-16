@@ -424,47 +424,47 @@ def _build_rcp_terraform_module(
 
     parameters: List[TerraformElement] = []
 
-    parameters.append(TerraformComment("ECR"))
-    if ecr_rec:
-        parameters.append(TerraformParameter("deny_ecr_third_party_access_account_ids_allowlist", ecr_rec.third_party_account_ids))
-        parameters.append(TerraformParameter("deny_ecr_third_party_access", True))
-    else:
-        parameters.append(TerraformParameter("deny_ecr_third_party_access", False))
-
-    parameters.append(TerraformComment(""))
-    parameters.append(TerraformComment("IAM"))
-    if assume_role_rec:
-        has_wildcard = "*" in assume_role_rec.third_party_account_ids
-        enforce_assume_role_org_identities = not has_wildcard
-        if enforce_assume_role_org_identities:
-            parameters.append(TerraformParameter("deny_sts_third_party_assumerole_account_ids_allowlist", assume_role_rec.third_party_account_ids))
-        parameters.append(TerraformParameter("enforce_assume_role_org_identities", enforce_assume_role_org_identities))
-    else:
-        parameters.append(TerraformParameter("enforce_assume_role_org_identities", False))
-
-    parameters.append(TerraformComment(""))
-    parameters.append(TerraformComment("OpenSearch Serverless"))
+    parameters.append(TerraformComment("AOSS"))
     if aoss_rec:
-        parameters.append(TerraformParameter("aoss_third_party_account_ids_allowlist", aoss_rec.third_party_account_ids))
         parameters.append(TerraformParameter("deny_aoss_third_party_access", True))
+        parameters.append(TerraformParameter("aoss_third_party_access_account_ids_allowlist", aoss_rec.third_party_account_ids))
     else:
         parameters.append(TerraformParameter("deny_aoss_third_party_access", False))
 
     parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("ECR"))
+    if ecr_rec:
+        parameters.append(TerraformParameter("deny_ecr_third_party_access", True))
+        parameters.append(TerraformParameter("ecr_third_party_access_account_ids_allowlist", ecr_rec.third_party_account_ids))
+    else:
+        parameters.append(TerraformParameter("deny_ecr_third_party_access", False))
+
+    parameters.append(TerraformComment(""))
     parameters.append(TerraformComment("S3"))
     if s3_rec:
-        parameters.append(TerraformParameter("third_party_s3_access_account_ids_allowlist", s3_rec.third_party_account_ids))
         parameters.append(TerraformParameter("deny_s3_third_party_access", True))
+        parameters.append(TerraformParameter("s3_third_party_access_account_ids_allowlist", s3_rec.third_party_account_ids))
     else:
         parameters.append(TerraformParameter("deny_s3_third_party_access", False))
 
     parameters.append(TerraformComment(""))
     parameters.append(TerraformComment("SQS"))
     if sqs_rec:
-        parameters.append(TerraformParameter("sqs_third_party_account_ids_allowlist", sqs_rec.third_party_account_ids))
         parameters.append(TerraformParameter("deny_sqs_third_party_access", True))
+        parameters.append(TerraformParameter("sqs_third_party_access_account_ids_allowlist", sqs_rec.third_party_account_ids))
     else:
         parameters.append(TerraformParameter("deny_sqs_third_party_access", False))
+
+    parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("STS"))
+    if assume_role_rec:
+        has_wildcard = "*" in assume_role_rec.third_party_account_ids
+        deny_sts_third_party_assumerole = not has_wildcard
+        parameters.append(TerraformParameter("deny_sts_third_party_assumerole", deny_sts_third_party_assumerole))
+        if deny_sts_third_party_assumerole:
+            parameters.append(TerraformParameter("sts_third_party_assumerole_account_ids_allowlist", assume_role_rec.third_party_account_ids))
+    else:
+        parameters.append(TerraformParameter("deny_sts_third_party_assumerole", False))
 
     module = TerraformModule(
         name=module_name,

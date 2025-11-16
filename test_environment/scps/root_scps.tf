@@ -7,16 +7,16 @@ module "scps_root" {
 
   # EC2
   deny_ec2_ami_owner = true
-  allowed_ami_owners = []
+  ec2_allowed_ami_owners = []
   deny_ec2_imds_v1 = false
 
   # EKS
   deny_eks_create_cluster_without_tag = true
 
   # IAM
-  deny_iam_user_creation = true
   deny_iam_saml_provider_not_aws_sso = true
-  allowed_iam_users = [
+  deny_iam_user_creation = true
+  iam_allowed_users = [
     "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
     "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
     "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",

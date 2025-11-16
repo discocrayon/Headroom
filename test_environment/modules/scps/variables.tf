@@ -19,7 +19,7 @@ variable "deny_ec2_ami_owner" {
   description = "Deny launching EC2 instances from untrusted AMI owners"
 }
 
-variable "allowed_ami_owners" {
+variable "ec2_allowed_ami_owners" {
   type        = list(string)
   default     = []
   description = "List of allowed AMI owner account IDs or aliases (e.g., 'amazon', 'aws-marketplace', '123456789012')"
@@ -44,16 +44,16 @@ variable "deny_eks_create_cluster_without_tag" {
 
 # IAM
 
-variable "deny_iam_user_creation" {
-  type = bool
-}
-
 variable "deny_iam_saml_provider_not_aws_sso" {
   type        = bool
   description = "Deny creation of IAM SAML providers so environments rely solely on AWS IAM Identity Center (AWS SSO)"
 }
 
-variable "allowed_iam_users" {
+variable "deny_iam_user_creation" {
+  type = bool
+}
+
+variable "iam_allowed_users" {
   type        = list(string)
   default     = []
   description = "List of IAM user ARNs that are allowed to be created. Format: arn:aws:iam::ACCOUNT_ID:user/USERNAME"

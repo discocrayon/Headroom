@@ -12,13 +12,13 @@ module "scps" {
 
   target_id                          = "444444444444"  # AWS account ID, OU ID (ou-xxxx), or root ID (r-xxxx)
   deny_ec2_ami_owner                 = true
-  allowed_ami_owners                 = ["amazon", "444444444444"]
+  ec2_allowed_ami_owners             = ["amazon", "444444444444"]
   deny_ec2_imds_v1                   = true
   deny_ec2_public_ip                 = true
   deny_eks_create_cluster_without_tag = true
   deny_iam_user_creation             = true
   deny_iam_saml_provider_not_aws_sso     = true
-  allowed_iam_users                  = [
+  iam_allowed_users                  = [
     "arn:aws:iam::444444444444:user/terraform-user",
     "arn:aws:iam::444444444444:user/github-actions",
   ]
@@ -37,13 +37,13 @@ module "scps" {
 ### Security Policy Variables
 
 - **`deny_ec2_ami_owner`** (bool): Deny EC2 instances from launching with AMIs not from approved owners
-- **`allowed_ami_owners`** (list(string)): List of allowed AMI owner account IDs or aliases (e.g., "amazon", "self")
+- **`ec2_allowed_ami_owners`** (list(string)): List of allowed AMI owner account IDs or aliases (e.g., "amazon", "self")
 - **`deny_ec2_imds_v1`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
 - **`deny_ec2_public_ip`** (bool): Deny EC2 instances from being launched with public IP addresses
 - **`deny_eks_create_cluster_without_tag`** (bool): Deny EKS cluster creation unless PavedRoad=true tag is present
 - **`deny_iam_user_creation`** (bool): Deny creation of IAM users not on the allowed list
 - **`deny_iam_saml_provider_not_aws_sso`** (bool): Deny creation of IAM SAML providers so only AWS IAM Identity Center (AWS SSO) managed providers remain
-- **`allowed_iam_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
+- **`iam_allowed_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
 - **`deny_rds_unencrypted`** (bool): Deny creation of unencrypted RDS databases
 
 ## Architecture
@@ -130,7 +130,7 @@ resource "aws_eks_cluster" "example" {
 
 When enabled, this policy denies the creation of IAM users that are not on the allowed list through:
 
-**DenyIamUserCreation**: Denies `iam:CreateUser` action for all IAM user ARNs not specified in `allowed_iam_users`
+**DenyIamUserCreation**: Denies `iam:CreateUser` action for all IAM user ARNs not specified in `iam_allowed_users`
 
 This policy uses the `NotResource` element to explicitly allow creation of only the IAM users specified in the allowed list. Any attempt to create IAM users not on the allowed list will be denied.
 
