@@ -161,9 +161,7 @@ def _normalize_actions(actions: ActionsType) -> Set[str]:
     """
     if isinstance(actions, str):
         return {actions}
-    if isinstance(actions, list):
-        return set(actions)
-    return set()
+    return set(actions)
 
 
 def _analyze_queue_policy(
@@ -271,7 +269,17 @@ def _analyze_queues_in_region(
             logger.error(f"Failed to list SQS queues in region {region}: {e}")
         return []
 
-    for page in paginator.paginate():
+    try:
+        pages = list(paginator.paginate())
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "")
+        if error_code == "AccessDenied":
+            logger.warning(f"Access denied listing SQS queues in region {region}")
+        else:
+            logger.error(f"Failed to paginate SQS queues in region {region}: {e}")
+        return []
+
+    for page in pages:
         queue_urls = page.get("QueueUrls", [])
 
         for queue_url in queue_urls:

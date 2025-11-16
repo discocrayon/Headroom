@@ -136,11 +136,10 @@ class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
         """
         total_queues = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
 
-        queues_with_wildcards_and_third_party = sum(
-            1 for queue in check_result.violations
-            if queue.get("third_party_account_ids")
-        )
-        queues_with_third_party_access = queues_with_wildcards_and_third_party + len(check_result.compliant)
+        # Count queues accessible to third parties:
+        # - Violations (wildcards or non-account principals means third parties can access)
+        # - Compliant (specific third-party account IDs)
+        queues_with_third_party_access = len(check_result.violations) + len(check_result.compliant)
 
         actions_by_account_serializable = {
             account_id: sorted(list(actions))

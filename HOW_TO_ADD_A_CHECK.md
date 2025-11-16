@@ -91,7 +91,7 @@ This guide walks you through adding a new compliance check to Headroom, from ini
   ```python
   # Good: Specific union type with recursive definition
   PrincipalType = Union[str, List["PrincipalType"], Dict[str, Union[str, List[str]]]]
-  
+
   # Bad: Using Any
   def process_principal(principal: Any) -> Set[str]:  # Don't do this
   ```
@@ -107,7 +107,9 @@ This guide walks you through adding a new compliance check to Headroom, from ini
 - Fail-loud philosophy: let exceptions propagate with context
 - **Avoid nested exception handlers for the same exception type**
 - **Only wrap the specific lines that can raise each exception**
-- **Example of good exception handling:**
+- **FAIL FAST: Never add defensive code that silently returns empty values**
+- **FAIL FAST: Do not check types and return empty set/list for unexpected types**
+- **Example of GOOD exception handling:**
   ```python
   # Separate try/except blocks for different operations
   try:
@@ -115,7 +117,7 @@ This guide walks you through adding a new compliance check to Headroom, from ini
   except ClientError as e:
       logger.warning(f"Access denied listing queues: {e}")
       return []
-  
+
   for page in paginator.paginate():
       for item in page.get("Items", []):
           try:
@@ -123,6 +125,23 @@ This guide walks you through adding a new compliance check to Headroom, from ini
           except ClientError as e:
               logger.warning(f"Failed to get attributes: {e}")
               continue  # Skip this item, continue with others
+  ```
+
+- **Example of BAD defensive code (NEVER DO THIS):**
+  ```python
+  # BAD: Silently returns empty set for unexpected types
+  def normalize_actions(actions):
+      if isinstance(actions, str):
+          return {actions}
+      if isinstance(actions, list):
+          return set(actions)
+      return set()  # DON'T DO THIS - let it fail instead!
+
+  # GOOD: Fails fast on unexpected types
+  def normalize_actions(actions):
+      if isinstance(actions, str):
+          return {actions}
+      return set(actions)  # Will raise TypeError if wrong type - that's good!
   ```
 
 ### Code Structure Standards
@@ -138,7 +157,7 @@ This guide walks you through adding a new compliance check to Headroom, from ini
   ```python
   # constants.py
   AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
-  
+
   # sqs.py, s3.py, etc.
   from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
   arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
@@ -875,12 +894,12 @@ variable "deny_rds_unencrypted" {
    variable "deny_ec2_ami_owner" {
      type = bool
    }
-   
+
    variable "ec2_allowed_ami_owners" {  # Immediately after
      type    = list(string)
      default = []
    }
-   
+
    variable "deny_ec2_imds_v1" {  # Next deny flag
      type = bool
    }
@@ -999,7 +1018,7 @@ def _build_scp_terraform_module(...):
     if deny_ec2_ami_owner:
         ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
         terraform_content += f"  ec2_allowed_ami_owners = {ec2_allowed_ami_owners}\n"
-    
+
     deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_checks
     terraform_content += f"  deny_ec2_imds_v1 = {str(deny_ec2_imds_v1).lower()}\n"
     terraform_content += "\n"
@@ -1008,7 +1027,7 @@ def _build_scp_terraform_module(...):
     terraform_content += "  # IAM\n"
     deny_iam_saml_provider_not_aws_sso = "deny_iam_saml_provider_not_aws_sso" in enabled_checks
     terraform_content += f"  deny_iam_saml_provider_not_aws_sso = {str(deny_iam_saml_provider_not_aws_sso).lower()}\n"
-    
+
     deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks
     terraform_content += f"  deny_iam_user_creation = {str(deny_iam_user_creation).lower()}\n"
     if deny_iam_user_creation:
@@ -2263,7 +2282,7 @@ for page in paginator.paginate():
 
 **Symptom:** Generated Terraform has checks in wrong/inconsistent order
 **Issue:** Not following alphabetical service ordering and required-before-optional convention
-**Fix:** 
+**Fix:**
 - **Service Order:** Alphabetically by service name (EC2, EKS, IAM, RDS, S3, STS, etc.)
 - **Within Service:** Required boolean flag first, then optional allowlist immediately after
 - **Example:**
@@ -2273,10 +2292,10 @@ for page in paginator.paginate():
   ec2_allowed_ami_owners = ...  # Immediately after corresponding boolean
   deny_ec2_imds_v1 = ...         # Next boolean flag
   deny_ec2_public_ip = ...
-  
+
   # EKS (alphabetically after EC2)
   deny_eks_create_cluster_without_tag = ...
-  
+
   # IAM (alphabetically after EKS)
   deny_iam_saml_provider_not_aws_sso = ...
   deny_iam_user_creation = ...
@@ -2404,14 +2423,14 @@ except ClientError as e:
 
 for page in paginator.paginate():
     queue_urls = page.get("QueueUrls", [])
-    
+
     for queue_url in queue_urls:
         try:
             attrs = client.get_queue_attributes(QueueUrl=queue_url)
         except ClientError as e:
             logger.warning(f"Failed to get attributes for {queue_url}: {e}")
             continue
-        
+
         # Process attributes...
 ```
 
@@ -2512,6 +2531,96 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict
 - Use `Union[]` for parameters that can be multiple specific types
 - Define recursive types when needed (e.g., `PrincipalType`)
 
+### 20. Defensive Code That Silently Returns Empty Values
+
+**Symptom:** Bugs are hidden, malformed data is silently ignored, production failures are hard to debug
+**Issue:** Adding defensive branches that return empty sets/lists/None when data is unexpected
+
+**Example of BAD code:**
+```python
+# BAD: Defensive code that hides problems
+def normalize_actions(actions: ActionsType) -> Set[str]:
+    if isinstance(actions, str):
+        return {actions}
+    if isinstance(actions, list):
+        return set(actions)
+    return set()  # Silently returns empty for malformed data
+
+# BAD: Defensive code in data extraction
+def extract_account_ids(principal: PrincipalType) -> Set[str]:
+    if isinstance(principal, str):
+        return _extract_from_string(principal)
+    if isinstance(principal, list):
+        return _extract_from_list(principal)
+    if isinstance(principal, dict):
+        return _extract_from_dict(principal)
+    return set()  # Hides unexpected principal formats
+```
+
+**Issues:**
+- Malformed AWS data is silently ignored instead of failing
+- Bugs are hard to diagnose because code "works" but returns empty
+- AWS API changes are not detected
+- Type errors are hidden until production
+
+**Fix - FAIL FAST:**
+```python
+# GOOD: Fails fast on unexpected types
+def normalize_actions(actions: ActionsType) -> Set[str]:
+    if isinstance(actions, str):
+        return {actions}
+    return set(actions)  # TypeError if wrong type - good!
+
+# GOOD: Let Python raise natural exceptions
+def extract_account_ids(principal: PrincipalType) -> Set[str]:
+    if isinstance(principal, str):
+        return _extract_from_string(principal)
+    if isinstance(principal, list):
+        return _extract_from_list(principal)
+    # If dict, it will be handled here or raise AttributeError - good!
+    return _extract_from_dict(principal)
+```
+
+**Key Principles:**
+- **Let it crash:** If data is unexpected, raising an exception is GOOD
+- **No silent failures:** Empty sets/lists should mean "truly empty", not "error occurred"
+- **Type hints should be accurate:** If the type says `str | list[str]`, don't handle other types
+- **Tests will catch it:** If AWS changes data format, tests will fail immediately
+- **Clear errors in production:** TypeError/AttributeError with stack trace is better than empty results
+
+**When Defensive Code IS Okay:**
+- Handling documented optional fields: `policy.get("Statement", [])`
+- Paginated results with no items: `for item in page.get("Items", [])`
+- Known AWS API variations that are documented
+
+**When Defensive Code is BAD:**
+- After type checking: `if isinstance(...) ... else: return []`
+- "Just in case" fallbacks: `except Exception: return []`
+- Catching all edge cases: `try: ... except: pass`
+
+**Real Example from Codebase:**
+```python
+# REMOVED - This was BAD:
+def _normalize_actions(actions: ActionsType) -> Set[str]:
+    if isinstance(actions, str):
+        return {actions}
+    if isinstance(actions, list):
+        return set(actions)
+    return set()  # type: ignore[unreachable]  # This hid bugs!
+
+# NOW - This is GOOD:
+def _normalize_actions(actions: ActionsType) -> Set[str]:
+    if isinstance(actions, str):
+        return {actions}
+    return set(actions)  # Crashes on unexpected types!
+```
+
+**Prevention:**
+- Question every `return []` or `return set()` that isn't at the start of a function
+- Remove any `else: return empty` branches after type checks
+- Trust your type hints - if it says `str | list[str]`, don't handle other types
+- Write tests that verify exceptions are raised for bad data
+
 ---
 
 ## Lessons Learned from Implementation
@@ -2597,16 +2706,16 @@ except ClientError as e:
 
 for page in paginator.paginate():
     queue_urls = page.get("QueueUrls", [])
-    
+
     for queue_url in queue_urls:
         try:
             attrs = client.get_queue_attributes(QueueUrl=queue_url)
         except ClientError as e:
             logger.warning(f"Failed to get attributes for {queue_url}: {e}")
             continue
-        
+
         # ... rest of processing ...
-        
+
         try:
             result = _analyze_queue_policy(...)
             results.append(result)
@@ -2637,10 +2746,10 @@ for page in paginator.paginate():
 def analyze_sqs_queue_policies(session, org_account_ids):
     ec2_client = session.client("ec2")
     all_results = []
-    
+
     regions_response = ec2_client.describe_regions()
     regions = [region["RegionName"] for region in regions_response["Regions"]]
-    
+
     for region in regions:
         # ...
 ```
@@ -2658,7 +2767,7 @@ from .helpers import get_all_regions
 def analyze_sqs_queue_policies(session, org_account_ids):
     all_results = []
     regions = get_all_regions(session)
-    
+
     for region in regions:
         # ...
 ```

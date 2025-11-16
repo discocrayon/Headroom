@@ -29,3 +29,6 @@ Always import at the top of the file.
 Never use dynamic imports
 Do not add extra defensive checks or try/catch blocks
 Only specify the value of keyword arguments if the value being passed is different from the default
+FAIL FAST: Never add defensive code that silently returns empty sets, empty lists, or default values when data is unexpected. If the data is wrong, let it fail with a clear error. Do not check "if isinstance" and then return empty set/list for the "else" case - just let the code crash.
+FAIL FAST: Do not add "else: return set()" or "else: return []" branches after type checks. If the type is wrong, the code should raise an exception, not silently return empty.
+FAIL FAST: Never add fallback branches like "return set()", "return []", or "return None" after checking expected types. Let Python raise TypeError/AttributeError naturally.
