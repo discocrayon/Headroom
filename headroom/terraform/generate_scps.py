@@ -103,6 +103,9 @@ def _build_ec2_terraform_parameters(
     deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_checks
     parameters.append(TerraformParameter("deny_ec2_imds_v1", deny_ec2_imds_v1))
 
+    deny_ec2_public_ip = "deny_ec2_public_ip" in enabled_checks
+    parameters.append(TerraformParameter("deny_ec2_public_ip", deny_ec2_public_ip))
+
     return parameters
 
 
