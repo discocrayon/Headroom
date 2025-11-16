@@ -1570,10 +1570,11 @@ class TestBuildRcpTerraformModule:
 
         assert "# Auto-generated RCP Terraform configuration for Organization Root" in result
         # Verify section comments are present
+        assert "  # AOSS" in result
         assert "  # ECR" in result
-        assert "  # IAM" in result
-        assert "  # OpenSearch Serverless" in result
         assert "  # S3" in result
+        assert "  # SQS" in result
+        assert "  # STS" in result
         # Verify blank lines separate sections (not '  #' lines)
         assert "  #\n" not in result, "Should not have '  #' comment lines, only blank lines for spacing"
 
@@ -1601,20 +1602,23 @@ module "rcps_test" {
   source = "../modules/rcps"
   target_id = local.test_ou_id
 
+  # AOSS
+  deny_aoss_third_party_access = false
+
   # ECR
   deny_ecr_third_party_access = false
 
-  # IAM
+  # S3
+  deny_s3_third_party_access = false
+
+  # SQS
+  deny_sqs_third_party_access = false
+
+  # STS
+  deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
     "749430749651",
   ]
-  deny_sts_third_party_assumerole = true
-
-  # OpenSearch Serverless
-  deny_aoss_third_party_access = false
-
-  # S3
-  deny_s3_third_party_access = false
 }
 '''
         assert result == expected
@@ -1942,6 +1946,30 @@ class TestGenerateRootRcpTerraform:
         assert "333333333333" in terraform
         assert "deny_aoss_third_party_access = true" in terraform
         assert "aoss_third_party_access_account_ids_allowlist" in terraform
+
+    def test_build_module_with_sqs_third_party_accounts(self) -> None:
+        """Test building Terraform module with SQS third-party accounts."""
+        sqs_rec = RCPPlacementRecommendations(
+            check_name="deny_sqs_third_party_access",
+            recommended_level="account",
+            target_ou_id=None,
+            affected_accounts=["123456789012"],
+            third_party_account_ids=["444444444444", "555555555555"],
+            reasoning="Test SQS"
+        )
+        terraform = _build_rcp_terraform_module(
+            module_name="test_module",
+            target_id_reference="local.account_id",
+            recommendations=[sqs_rec],
+            comment="Test Account"
+        )
+
+        assert "test_module" in terraform
+        assert "local.account_id" in terraform
+        assert "444444444444" in terraform
+        assert "555555555555" in terraform
+        assert "deny_sqs_third_party_access = true" in terraform
+        assert "sqs_third_party_access_account_ids_allowlist" in terraform
 
     def test_empty_recommendations_returns_early(self) -> None:
         """Should return early when recommendations list is empty."""

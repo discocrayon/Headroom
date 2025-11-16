@@ -12,11 +12,11 @@ packaging==25.0
 platformdirs==4.3.8
 pluggy==1.6.0
 pre_commit==4.2.0
-pydantic==2.11.7
-pydantic_core==2.33.2
+pydantic==2.12
+pydantic_core==2.41.1
 pyproject-api==1.9.1
 PyYAML==6.0.2
 tox==4.27.0
-typing-inspection==0.4.1
-typing_extensions==4.14.0
+typing-inspection==0.4.2
+typing_extensions==4.14.1
 virtualenv==20.31.2

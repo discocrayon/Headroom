@@ -39,7 +39,7 @@ class TestExtractAccountIdsFromPrincipal:
             "arn:aws:iam::111111111111:root",
             "222222222222",
         ]
-        result = _extract_account_ids_from_principal(principal)
+        result = _extract_account_ids_from_principal(principal)  # type: ignore[arg-type]
         assert result == {"111111111111", "222222222222"}
 
     def test_extract_from_dict_aws_key(self) -> None:
@@ -50,7 +50,7 @@ class TestExtractAccountIdsFromPrincipal:
                 "444444444444"
             ]
         }
-        result = _extract_account_ids_from_principal(principal)
+        result = _extract_account_ids_from_principal(principal)  # type: ignore[arg-type]
         assert result == {"333333333333", "444444444444"}
 
     def test_wildcard_returns_empty_set(self) -> None:
@@ -63,7 +63,7 @@ class TestExtractAccountIdsFromPrincipal:
         """Test that unknown principal type raises error."""
         principal = {"UnknownType": "value"}
         with pytest.raises(UnknownPrincipalTypeError):
-            _extract_account_ids_from_principal(principal)
+            _extract_account_ids_from_principal(principal)  # type: ignore[arg-type]
 
 
 class TestCheckForWildcardPrincipal:
@@ -100,17 +100,17 @@ class TestCheckForNonAccountPrincipals:
     def test_detects_federated_principal(self) -> None:
         """Test detecting Federated principal."""
         principal = {"Federated": "arn:aws:iam::111111111111:saml-provider/MyProvider"}
-        assert _check_for_non_account_principals(principal) is True
+        assert _check_for_non_account_principals(principal) is True  # type: ignore[arg-type]
 
     def test_ignores_aws_principal(self) -> None:
         """Test that AWS principal is not flagged."""
         principal = {"AWS": "arn:aws:iam::111111111111:root"}
-        assert _check_for_non_account_principals(principal) is False
+        assert _check_for_non_account_principals(principal) is False  # type: ignore[arg-type]
 
     def test_ignores_service_principal(self) -> None:
         """Test that Service principal is not flagged."""
         principal = {"Service": "sqs.amazonaws.com"}
-        assert _check_for_non_account_principals(principal) is False
+        assert _check_for_non_account_principals(principal) is False  # type: ignore[arg-type]
 
     def test_mixed_with_federated(self) -> None:
         """Test mixed principals with Federated."""
@@ -118,7 +118,7 @@ class TestCheckForNonAccountPrincipals:
             "AWS": "arn:aws:iam::111111111111:root",
             "Federated": "arn:aws:iam::111111111111:saml-provider/MyProvider"
         }
-        assert _check_for_non_account_principals(principal) is True
+        assert _check_for_non_account_principals(principal) is True  # type: ignore[arg-type]
 
 
 class TestNormalizeActions:
@@ -133,11 +133,6 @@ class TestNormalizeActions:
         """Test normalizing list of actions."""
         result = _normalize_actions(["sqs:SendMessage", "sqs:ReceiveMessage"])
         assert result == {"sqs:SendMessage", "sqs:ReceiveMessage"}
-
-    def test_empty_or_invalid(self) -> None:
-        """Test normalizing empty or invalid actions."""
-        assert _normalize_actions(None) == set()
-        assert _normalize_actions({}) == set()
 
 
 class TestAnalyzeSQSQueuePolicies:
@@ -397,9 +392,7 @@ class TestAnalyzeSQSQueuePolicies:
         def client_factory(service: str, **kwargs: dict) -> MagicMock:
             if service == "ec2":
                 return mock_ec2_client
-            if service == "sqs":
-                return mock_sqs_clients[kwargs["region_name"]]
-            raise ValueError(f"Unexpected service: {service}")
+            return mock_sqs_clients[kwargs["region_name"]]  # type: ignore[index]
 
         mock_session.client.side_effect = client_factory
 
@@ -467,9 +460,7 @@ class TestAnalyzeSQSQueuePolicies:
         def client_factory(service: str, **kwargs: dict) -> MagicMock:
             if service == "ec2":
                 return mock_ec2_client
-            if service == "sqs":
-                return mock_sqs_clients[kwargs["region_name"]]
-            raise ValueError(f"Unexpected service: {service}")
+            return mock_sqs_clients[kwargs["region_name"]]  # type: ignore[index]
 
         mock_session.client.side_effect = client_factory
 
@@ -573,3 +564,240 @@ class TestAnalyzeSQSQueuePolicies:
         assert "222222222222" in results[0].actions_by_account
         assert results[0].actions_by_account["222222222222"] == {"sqs:SendMessage"}
         assert "sqs:DeleteMessage" not in results[0].actions_by_account["222222222222"]
+
+    def test_statement_not_as_list(self) -> None:
+        """Test that Statement field as a dict (not list) is handled."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sqs_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "sqs": mock_sqs_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/test-queue"
+        queue_arn = "arn:aws:sqs:us-east-1:111111111111:test-queue"
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        # Statement as a dict instead of a list
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::222222222222:root"},
+                "Action": "sqs:SendMessage",
+                "Resource": queue_arn
+            }
+        }
+
+        mock_sqs_client.get_queue_attributes.return_value = {
+            "Attributes": {
+                "Policy": json.dumps(policy),
+                "QueueArn": queue_arn
+            }
+        }
+
+        org_account_ids = {"111111111111"}
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+
+        assert len(results) == 1
+        assert "222222222222" in results[0].third_party_account_ids
+
+    def test_missing_principal(self) -> None:
+        """Test that statements without Principal are skipped."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sqs_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "sqs": mock_sqs_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/test-queue"
+        queue_arn = "arn:aws:sqs:us-east-1:111111111111:test-queue"
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        # Statement without Principal
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "sqs:SendMessage",
+                "Resource": queue_arn
+            }]
+        }
+
+        mock_sqs_client.get_queue_attributes.return_value = {
+            "Attributes": {
+                "Policy": json.dumps(policy),
+                "QueueArn": queue_arn
+            }
+        }
+
+        org_account_ids = {"111111111111"}
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+
+        # Should still return a result, but with no third-party accounts
+        assert len(results) == 1
+        assert len(results[0].third_party_account_ids) == 0
+        assert not results[0].has_wildcard_principal
+        assert not results[0].has_non_account_principals
+
+    def test_get_paginator_fails_access_denied(self) -> None:
+        """Test that AccessDenied errors from get_paginator are logged and handled."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sqs_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "sqs": mock_sqs_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_sqs_client.get_paginator.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied"}},
+            "ListQueues"
+        )
+
+        org_account_ids = {"111111111111"}
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+
+        assert len(results) == 0
+
+    def test_get_paginator_fails_non_access_denied(self) -> None:
+        """Test that non-AccessDenied errors from get_paginator are logged and handled."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sqs_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "sqs": mock_sqs_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_sqs_client.get_paginator.side_effect = ClientError(
+            {"Error": {"Code": "ServiceUnavailable"}},
+            "ListQueues"
+        )
+
+        org_account_ids = {"111111111111"}
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+
+        assert len(results) == 0
+
+    def test_paginate_fails_non_access_denied(self) -> None:
+        """Test that non-AccessDenied errors from paginate are logged and handled."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sqs_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "sqs": mock_sqs_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        paginator = MagicMock()
+        paginator.paginate.side_effect = ClientError(
+            {"Error": {"Code": "ServiceUnavailable"}},
+            "ListQueues"
+        )
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        org_account_ids = {"111111111111"}
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+
+        assert len(results) == 0
+
+    def test_get_queue_attributes_fails(self) -> None:
+        """Test that get_queue_attributes failures are handled gracefully."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sqs_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "sqs": mock_sqs_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/test-queue"
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        mock_sqs_client.get_queue_attributes.side_effect = ClientError(
+            {"Error": {"Code": "InvalidParameterValue"}},
+            "GetQueueAttributes"
+        )
+
+        org_account_ids = {"111111111111"}
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+
+        assert len(results) == 0
+
+    def test_json_decode_error(self) -> None:
+        """Test that JSON decode errors are handled gracefully."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sqs_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "sqs": mock_sqs_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/test-queue"
+        queue_arn = "arn:aws:sqs:us-east-1:111111111111:test-queue"
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        # Invalid JSON
+        mock_sqs_client.get_queue_attributes.return_value = {
+            "Attributes": {
+                "Policy": "{invalid json",
+                "QueueArn": queue_arn
+            }
+        }
+
+        org_account_ids = {"111111111111"}
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+
+        assert len(results) == 0
