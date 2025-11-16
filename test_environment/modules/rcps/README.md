@@ -6,7 +6,10 @@ This module creates and attaches Resource Control Policies (RCPs) to AWS Organiz
 
 RCPs are AWS Organizations policies that help you enforce security controls on resources across your organization. This module implements RCPs for:
 1. Enforcing organization identity for IAM role assumptions
-2. Restricting OpenSearch Serverless (AOSS) access to organization principals
+2. Restricting ECR repository access to organization principals
+3. Restricting KMS key access to organization principals
+4. Restricting OpenSearch Serverless (AOSS) access to organization principals
+5. Restricting S3 bucket access to organization principals
 
 ## Policy Details
 
@@ -16,6 +19,15 @@ The `enforce_assume_role_org_identities` RCP denies `sts:AssumeRole` actions unl
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `third_party_assumerole_account_ids_allowlist`
+3. The resource is tagged with `dp:exclude:identity: true`
+4. The principal is an AWS service
+
+### KMS Key Access Restriction
+
+The `deny_kms_third_party_access` RCP denies all `kms:*` actions unless one of the following conditions is met:
+
+1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
+2. The principal account is in the `deny_kms_third_party_access_account_ids_allowlist`
 3. The resource is tagged with `dp:exclude:identity: true`
 4. The principal is an AWS service
 
@@ -42,10 +54,16 @@ module "account_rcp" {
     "222222222222"
   ]
 
+  # KMS
+  deny_kms_third_party_access = true
+  deny_kms_third_party_access_account_ids_allowlist = [
+    "333333333333"
+  ]
+
   # OpenSearch Serverless
   deny_aoss_third_party_access = true
   aoss_third_party_account_ids_allowlist = [
-    "333333333333"
+    "444444444444"
   ]
 }
 ```
@@ -55,13 +73,19 @@ module "account_rcp" {
 ### Required
 
 - `target_id` (string): The AWS Organizations target ID (account ID, OU ID, or root ID)
+- `deny_ecr_third_party_access` (bool): Whether to deny ECR access to accounts outside the organization
 - `enforce_assume_role_org_identities` (bool): Whether to enforce role assumptions to organization identities and specified third-party accounts
+- `deny_kms_third_party_access` (bool): Whether to deny KMS access to accounts outside the organization
 - `deny_aoss_third_party_access` (bool): Whether to deny third-party account access to OpenSearch Serverless resources
+- `deny_s3_third_party_access` (bool): Whether to deny S3 access from third-party accounts
 
 ### Optional
 
+- `deny_ecr_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access ECR repositories
 - `third_party_assumerole_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs that are permitted to assume roles
+- `deny_kms_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access KMS keys
 - `aoss_third_party_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access AOSS resources
+- `third_party_s3_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access S3 buckets
 
 ## Notes
 

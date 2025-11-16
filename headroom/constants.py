@@ -30,6 +30,8 @@ DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 # IAM
 THIRD_PARTY_ASSUMEROLE = "third_party_assumerole"
+# KMS
+DENY_KMS_THIRD_PARTY_ACCESS = "deny_kms_third_party_access"
 # S3
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
 # OpenSearch Serverless

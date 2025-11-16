@@ -50,16 +50,32 @@ locals {
         }
       }
     },
-    # var.deny_s3_third_party_access
+    # var.deny_kms_third_party_access
     # -->
-    # Sid: DenyS3ThirdPartyAccess
-    # Denies S3 access from accounts outside the organization except allowlisted accounts
+    # Sid: DenyKMSThirdPartyAccess
+    # Restricts KMS access to organization accounts and allowlisted third parties
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awskeymanagementservice.html
     {
-      include   = var.deny_s3_third_party_access,
+      include   = var.deny_kms_third_party_access,
       statement = {
-        "Sid"    = "DenyS3ThirdPartyAccess"
+        "Sid"    = "DenyKMSThirdPartyAccess"
         "Principal" = "*"
-        "Action" = "s3:*"
+        "Action" = [
+          "kms:*",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount" = var.deny_kms_third_party_access_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
+          }
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
     # var.deny_aoss_third_party_access
     # -->
     # Sid: DenyAossThirdPartyAccess
