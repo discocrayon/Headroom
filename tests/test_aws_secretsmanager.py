@@ -289,8 +289,8 @@ class TestAnalyzeSecretPolicy:
 
         assert result is None
 
-    def test_action_as_dict_normalized_to_empty(self) -> None:
-        """Test that action as dict gets normalized to empty set."""
+    def test_action_as_dict_raises_type_error(self) -> None:
+        """Test that action as dict raises TypeError (fail fast)."""
         policy = {
             "Statement": [
                 {
@@ -302,16 +302,13 @@ class TestAnalyzeSecretPolicy:
         }
         org_account_ids = {"111111111111"}
 
-        result = _analyze_secret_policy(
-            "dict-action-secret",
-            "arn:aws:secretsmanager:us-east-1:111111111111:secret:dict-action-secret",
-            policy,  # type: ignore[arg-type]
-            org_account_ids
-        )
-
-        assert result is not None
-        assert result.third_party_account_ids == {"999999999999"}
-        assert result.actions_by_account["999999999999"] == set()
+        with pytest.raises(TypeError, match="Unexpected action type: dict"):
+            _analyze_secret_policy(
+                "dict-action-secret",
+                "arn:aws:secretsmanager:us-east-1:111111111111:secret:dict-action-secret",
+                policy,  # type: ignore[arg-type]
+                org_account_ids
+            )
 
     def test_statement_not_a_list(self) -> None:
         """Test that policy with Statement as non-list is handled."""
