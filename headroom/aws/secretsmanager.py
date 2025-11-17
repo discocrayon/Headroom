@@ -15,7 +15,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_secretsmanager.client import SecretsManagerClient
 
-from ..constants import BASE_PRINCIPAL_TYPES
+from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ def _extract_account_ids_from_principal(
     if isinstance(principal, str):
         if principal == "*":
             return set()
-        arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
+        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
         if arn_match:
             account_ids.add(arn_match.group(1))
         else:
@@ -163,8 +163,7 @@ def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
         return {action}
     if isinstance(action, list):
         return set(action)
-    # Fallback for unexpected types (e.g., dict, None)
-    return set()  # type: ignore[unreachable]
+    raise TypeError(f"Unexpected action type: {type(action).__name__}. Expected str or list.")
 
 
 def analyze_secrets_manager_policies(
