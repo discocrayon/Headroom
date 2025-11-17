@@ -25,6 +25,7 @@ from ..constants import (
     DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
     DENY_AOSS_THIRD_PARTY_ACCESS,
+    DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
     DENY_SQS_THIRD_PARTY_ACCESS,
 )
 from ..write_results import get_results_dir
@@ -422,6 +423,7 @@ def _build_rcp_terraform_module(
     kms_rec = recs_by_check.get(DENY_KMS_THIRD_PARTY_ACCESS)
     s3_rec = recs_by_check.get(DENY_S3_THIRD_PARTY_ACCESS)
     aoss_rec = recs_by_check.get(DENY_AOSS_THIRD_PARTY_ACCESS)
+    secrets_manager_rec = recs_by_check.get(DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS)
     sqs_rec = recs_by_check.get(DENY_SQS_THIRD_PARTY_ACCESS)
 
     parameters: List[TerraformElement] = []
@@ -456,6 +458,14 @@ def _build_rcp_terraform_module(
         parameters.append(TerraformParameter("s3_third_party_access_account_ids_allowlist", s3_rec.third_party_account_ids))
     else:
         parameters.append(TerraformParameter("deny_s3_third_party_access", False))
+
+    parameters.append(TerraformComment(""))
+    parameters.append(TerraformComment("Secrets Manager"))
+    if secrets_manager_rec:
+        parameters.append(TerraformParameter("deny_secrets_manager_third_party_access", True))
+        parameters.append(TerraformParameter("secrets_manager_third_party_account_ids_allowlist", secrets_manager_rec.third_party_account_ids))
+    else:
+        parameters.append(TerraformParameter("deny_secrets_manager_third_party_access", False))
 
     parameters.append(TerraformComment(""))
     parameters.append(TerraformComment("SQS"))
