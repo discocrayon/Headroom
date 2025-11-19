@@ -43,21 +43,21 @@ def _replace_account_id_in_arn(
     return arn
 
 
-def _get_safe_to_enable_checks(
+def _get_safe_to_enable_policies(
     recommendations: List[SCPPlacementRecommendations]
 ) -> set[str]:
     """
-    Get set of checks that are safe to enable from recommendations.
+    Get set of policies that are safe to enable from recommendations.
 
-    Only includes checks with 100% compliance.
-    Converts check names from kebab-case to snake_case.
+    Only includes policies with 100% compliance.
+    Converts policy names from kebab-case to snake_case.
     """
-    enabled_checks = set()
+    enabled_policies = set()
     for rec in recommendations:
         if rec.compliance_percentage == 100.0:
             check_name_terraform = rec.check_name.replace("-", "_")
-            enabled_checks.add(check_name_terraform)
-    return enabled_checks
+            enabled_policies.add(check_name_terraform)
+    return enabled_policies
 
 
 def _get_ec2_allowed_ami_owners(
@@ -81,51 +81,51 @@ def _get_allowed_iam_user_arns(
 
 
 def _build_ec2_terraform_parameters(
-    enabled_checks: set[str],
+    enabled_policies: set[str],
     recommendations: List[SCPPlacementRecommendations]
 ) -> List[TerraformElement]:
     """
     Build EC2 parameters for Terraform configuration.
 
     Returns:
-        List of TerraformElement objects for EC2 checks
+        List of TerraformElement objects for EC2 policies
     """
     parameters: List[TerraformElement] = []
 
     parameters.append(TerraformComment("EC2"))
-    deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_checks
+    deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_policies
     parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
     if deny_ec2_ami_owner:
         ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
         parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
 
-    deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_checks
+    deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_policies
     parameters.append(TerraformParameter("deny_ec2_imds_v1", deny_ec2_imds_v1))
 
-    deny_ec2_public_ip = "deny_ec2_public_ip" in enabled_checks
+    deny_ec2_public_ip = "deny_ec2_public_ip" in enabled_policies
     parameters.append(TerraformParameter("deny_ec2_public_ip", deny_ec2_public_ip))
 
     return parameters
 
 
-def _build_eks_terraform_parameters(enabled_checks: set[str]) -> List[TerraformElement]:
+def _build_eks_terraform_parameters(enabled_policies: set[str]) -> List[TerraformElement]:
     """
     Build EKS parameters for Terraform configuration.
 
     Returns:
-        List of TerraformElement objects for EKS checks
+        List of TerraformElement objects for EKS policies
     """
     parameters: List[TerraformElement] = []
 
     parameters.append(TerraformComment("EKS"))
-    deny_eks_create_cluster_without_tag = "deny_eks_create_cluster_without_tag" in enabled_checks
+    deny_eks_create_cluster_without_tag = "deny_eks_create_cluster_without_tag" in enabled_policies
     parameters.append(TerraformParameter("deny_eks_create_cluster_without_tag", deny_eks_create_cluster_without_tag))
 
     return parameters
 
 
 def _build_iam_terraform_parameters(
-    enabled_checks: set[str],
+    enabled_policies: set[str],
     recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy
 ) -> List[TerraformElement]:
@@ -133,15 +133,15 @@ def _build_iam_terraform_parameters(
     Build IAM parameters for Terraform configuration.
 
     Returns:
-        List of TerraformElement objects for IAM checks
+        List of TerraformElement objects for IAM policies
     """
     parameters: List[TerraformElement] = []
 
     parameters.append(TerraformComment("IAM"))
-    deny_iam_saml_provider_not_aws_sso = "deny_iam_saml_provider_not_aws_sso" in enabled_checks
+    deny_iam_saml_provider_not_aws_sso = "deny_iam_saml_provider_not_aws_sso" in enabled_policies
     parameters.append(TerraformParameter("deny_iam_saml_provider_not_aws_sso", deny_iam_saml_provider_not_aws_sso))
 
-    deny_iam_user_creation = "deny_iam_user_creation" in enabled_checks
+    deny_iam_user_creation = "deny_iam_user_creation" in enabled_policies
     parameters.append(TerraformParameter("deny_iam_user_creation", deny_iam_user_creation))
     if deny_iam_user_creation:
         allowed_iam_user_arns = _get_allowed_iam_user_arns(recommendations)
@@ -154,17 +154,33 @@ def _build_iam_terraform_parameters(
     return parameters
 
 
-def _build_rds_terraform_parameters(enabled_checks: set[str]) -> List[TerraformElement]:
+def _build_lambda_terraform_parameters(enabled_policies: set[str]) -> List[TerraformElement]:
+    """
+    Build Lambda parameters for Terraform configuration.
+
+    Returns:
+        List of TerraformElement objects for Lambda policies
+    """
+    parameters: List[TerraformElement] = []
+
+    parameters.append(TerraformComment("Lambda"))
+    deny_lambda_auth_type_none = "deny_lambda_auth_type_none" in enabled_policies
+    parameters.append(TerraformParameter("deny_lambda_auth_type_none", deny_lambda_auth_type_none))
+
+    return parameters
+
+
+def _build_rds_terraform_parameters(enabled_policies: set[str]) -> List[TerraformElement]:
     """
     Build RDS parameters for Terraform configuration.
 
     Returns:
-        List of TerraformElement objects for RDS checks
+        List of TerraformElement objects for RDS policies
     """
     parameters: List[TerraformElement] = []
 
     parameters.append(TerraformComment("RDS"))
-    deny_rds_unencrypted = "deny_rds_unencrypted" in enabled_checks
+    deny_rds_unencrypted = "deny_rds_unencrypted" in enabled_policies
     parameters.append(TerraformParameter("deny_rds_unencrypted", deny_rds_unencrypted))
 
     return parameters
@@ -190,16 +206,18 @@ def _build_scp_terraform_module(
     Returns:
         Complete Terraform module block as a string
     """
-    enabled_checks = _get_safe_to_enable_checks(recommendations)
+    enabled_policies = _get_safe_to_enable_policies(recommendations)
 
     parameters: List[TerraformElement] = []
-    parameters.extend(_build_ec2_terraform_parameters(enabled_checks, recommendations))
+    parameters.extend(_build_ec2_terraform_parameters(enabled_policies, recommendations))
     parameters.append(TerraformComment(""))
-    parameters.extend(_build_eks_terraform_parameters(enabled_checks))
+    parameters.extend(_build_eks_terraform_parameters(enabled_policies))
     parameters.append(TerraformComment(""))
-    parameters.extend(_build_iam_terraform_parameters(enabled_checks, recommendations, organization_hierarchy))
+    parameters.extend(_build_iam_terraform_parameters(enabled_policies, recommendations, organization_hierarchy))
     parameters.append(TerraformComment(""))
-    parameters.extend(_build_rds_terraform_parameters(enabled_checks))
+    parameters.extend(_build_lambda_terraform_parameters(enabled_policies))
+    parameters.append(TerraformComment(""))
+    parameters.extend(_build_rds_terraform_parameters(enabled_policies))
 
     module = TerraformModule(
         name=module_name,

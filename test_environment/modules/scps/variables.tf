@@ -59,6 +59,13 @@ variable "iam_allowed_users" {
   description = "List of IAM user ARNs that are allowed to be created. Format: arn:aws:iam::ACCOUNT_ID:user/USERNAME"
 }
 
+# Lambda
+
+variable "deny_lambda_auth_type_none" {
+  type        = bool
+  description = "Deny Lambda function URLs with no authentication (auth type NONE)"
+}
+
 # RDS
 
 variable "deny_rds_unencrypted" {

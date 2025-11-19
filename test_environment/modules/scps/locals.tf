@@ -113,6 +113,27 @@ locals {
         Resource = "*"
       }
     },
+    # var.deny_lambda_auth_type_none
+    # -->
+    # Sid: DenyPublicFunctionUrls
+    # Denies Lambda function URLs with no authentication (auth type NONE)
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awslambda.html
+    {
+      include = var.deny_lambda_auth_type_none,
+      statement = {
+        Action = [
+          "lambda:CreateFunctionUrlConfig",
+          "lambda:UpdateFunctionUrlConfig",
+          "lambda:AddPermission"
+        ]
+        Resource = "*"
+        Condition = {
+          "StringEquals" = {
+            "lambda:FunctionUrlAuthType" = "NONE"
+          }
+        }
+      }
+    },
     # var.deny_rds_unencrypted
     # -->
     # Sid: DenyRdsUnencrypted
