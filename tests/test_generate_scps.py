@@ -122,6 +122,9 @@ module "scps_test_ou" {
   deny_iam_saml_provider_not_aws_sso = false
   deny_iam_user_creation = false
 
+  # Lambda
+  deny_lambda_auth_type_none = false
+
   # RDS
   deny_rds_unencrypted = true
 }
