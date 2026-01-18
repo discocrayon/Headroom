@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Code Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](tests/)
 
-**Audit mode for AWS SCPs and RCPs** - Analyze your AWS Organization, identify policy violations, and auto-generate enforcement policies that won't disrupt operations.
+**Audit mode for AWS SCPs and RCPs** - Analyze your AWS Organization, identify policy violations, and **auto-generate** enforcement policies that won't disrupt operations.
 
 > ⚠️ **Status**: Proof-of-concept. Review all output before deploying to production.
 
