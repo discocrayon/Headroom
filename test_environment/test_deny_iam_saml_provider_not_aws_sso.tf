@@ -9,46 +9,6 @@ Creates SAML provider combinations across accounts to exercise compliant and vio
 Resources use static metadata documents; they incur no costs.
 */
 
-terraform {
-  required_version = ">= 1.5.0"
-}
-
-provider "aws" {
-  alias  = "acme_co"
-  region = "us-east-1"
-
-  default_tags {
-    tags = {
-      Environment = "production"
-      Account     = "acme-co"
-    }
-  }
-}
-
-provider "aws" {
-  alias  = "shared_foo_bar"
-  region = "us-east-1"
-
-  default_tags {
-    tags = {
-      Environment = "production"
-      Account     = "shared-foo-bar"
-    }
-  }
-}
-
-provider "aws" {
-  alias  = "fort_knox"
-  region = "us-east-1"
-
-  default_tags {
-    tags = {
-      Environment = "production"
-      Account     = "fort-knox"
-    }
-  }
-}
-
 locals {
   dummy_saml_document = <<-XML
     <?xml version="1.0" encoding="UTF-8"?>
