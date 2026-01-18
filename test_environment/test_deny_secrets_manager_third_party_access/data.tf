@@ -1,0 +1,1 @@
+../test_deny_kms_third_party_access/data.tf
