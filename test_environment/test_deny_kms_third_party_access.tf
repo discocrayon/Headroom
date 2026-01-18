@@ -207,16 +207,3 @@ resource "aws_kms_alias" "service_principal" {
   name          = "alias/headroom-test-service-principal"
   target_key_id = aws_kms_key.service_principal.key_id
 }
-
-# Data sources for account IDs (needed for policy document references)
-data "aws_caller_identity" "acme_co" {
-  provider = aws.acme_co
-}
-
-data "aws_caller_identity" "shared_foo_bar" {
-  provider = aws.shared_foo_bar
-}
-
-data "aws_caller_identity" "fort_knox" {
-  provider = aws.fort_knox
-}

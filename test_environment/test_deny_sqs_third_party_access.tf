@@ -1,12 +1,5 @@
 # Test SQS queues for deny_sqs_third_party_access RCP functionality testing
 
-# Third-party account IDs used for testing (common security vendors)
-locals {
-  test_third_party_crowdstrike = "749430749651"  # CrowdStrike
-  test_third_party_barracuda   = "758245563457"  # Barracuda
-  test_third_party_checkpoint  = "517716713836"  # Check Point
-}
-
 # Queue 1: Single third-party account access (compliant)
 resource "aws_sqs_queue" "single_third_party" {
   provider = aws.acme_co
@@ -218,23 +211,6 @@ resource "aws_sqs_queue_policy" "org_only" {
       }
     ]
   })
-}
-
-# Data sources for account IDs (already defined in main test_environment, but repeated for clarity)
-data "aws_caller_identity" "acme_co" {
-  provider = aws.acme_co
-}
-
-data "aws_caller_identity" "shared_foo_bar" {
-  provider = aws.shared_foo_bar
-}
-
-data "aws_caller_identity" "fort_knox" {
-  provider = aws.fort_knox
-}
-
-data "aws_caller_identity" "security_tooling" {
-  provider = aws.security_tooling
 }
 
 # Note: SQS queues are free (charges only for API requests)
