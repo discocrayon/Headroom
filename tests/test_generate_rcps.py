@@ -1575,7 +1575,6 @@ class TestBuildRcpTerraformModule:
 
         assert "# Auto-generated RCP Terraform configuration for Organization Root" in result
         # Verify section comments are present
-        assert "  # AOSS" in result
         assert "  # ECR" in result
         assert "  # S3" in result
         assert "  # SQS" in result
@@ -1606,9 +1605,6 @@ class TestBuildRcpTerraformModule:
 module "rcps_test" {
   source = "../modules/rcps"
   target_id = local.test_ou_id
-
-  # AOSS
-  deny_aoss_third_party_access = false
 
   # ECR
   deny_ecr_third_party_access = false
@@ -1967,39 +1963,6 @@ class TestGenerateRootRcpTerraform:
         assert "Organization Root" in content
         expected_file.unlink()
         output_path.rmdir()
-
-    def test_build_module_with_aoss_third_party_accounts(self) -> None:
-        """Test building Terraform module with AOSS third-party accounts."""
-        iam_rec = RCPPlacementRecommendations(
-            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            recommended_level="account",
-            target_ou_id=None,
-            affected_accounts=["123456789012"],
-            third_party_account_ids=["111111111111"],
-            reasoning="Test IAM"
-        )
-        aoss_rec = RCPPlacementRecommendations(
-            check_name="deny_aoss_third_party_access",
-            recommended_level="account",
-            target_ou_id=None,
-            affected_accounts=["123456789012"],
-            third_party_account_ids=["222222222222", "333333333333"],
-            reasoning="Test AOSS"
-        )
-        terraform = _build_rcp_terraform_module(
-            module_name="test_module",
-            target_id_reference="local.account_id",
-            recommendations=[iam_rec, aoss_rec],
-            comment="Test Account"
-        )
-
-        assert "test_module" in terraform
-        assert "local.account_id" in terraform
-        assert "111111111111" in terraform
-        assert "222222222222" in terraform
-        assert "333333333333" in terraform
-        assert "deny_aoss_third_party_access = true" in terraform
-        assert "aoss_third_party_access_account_ids_allowlist" in terraform
 
     def test_build_module_with_sqs_third_party_accounts(self) -> None:
         """Test building Terraform module with SQS third-party accounts."""

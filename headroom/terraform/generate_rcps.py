@@ -24,7 +24,6 @@ from ..constants import (
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
-    DENY_AOSS_THIRD_PARTY_ACCESS,
     DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
     DENY_SQS_THIRD_PARTY_ACCESS,
 )
@@ -422,20 +421,11 @@ def _build_rcp_terraform_module(
     ecr_rec = recs_by_check.get(DENY_ECR_THIRD_PARTY_ACCESS)
     kms_rec = recs_by_check.get(DENY_KMS_THIRD_PARTY_ACCESS)
     s3_rec = recs_by_check.get(DENY_S3_THIRD_PARTY_ACCESS)
-    aoss_rec = recs_by_check.get(DENY_AOSS_THIRD_PARTY_ACCESS)
     secrets_manager_rec = recs_by_check.get(DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS)
     sqs_rec = recs_by_check.get(DENY_SQS_THIRD_PARTY_ACCESS)
 
     parameters: List[TerraformElement] = []
 
-    parameters.append(TerraformComment("AOSS"))
-    if aoss_rec:
-        parameters.append(TerraformParameter("deny_aoss_third_party_access", True))
-        parameters.append(TerraformParameter("aoss_third_party_access_account_ids_allowlist", aoss_rec.third_party_account_ids))
-    else:
-        parameters.append(TerraformParameter("deny_aoss_third_party_access", False))
-
-    parameters.append(TerraformComment(""))
     parameters.append(TerraformComment("ECR"))
     if ecr_rec:
         parameters.append(TerraformParameter("deny_ecr_third_party_access", True))

@@ -14,7 +14,6 @@ Deploy a `Headroom` role in **every account** you want to analyze. This role nee
 - Describe RDS instances (all regions)
 - Read S3 bucket policies
 - Read ECR repository policies
-- Read OpenSearch Serverless access policies
 
 **Example Terraform**: See [`test_environment/headroom_roles.tf`](https://github.com/discocrayon/Headroom/blob/main/test_environment/headroom_roles.tf)
 
