@@ -1,7 +1,7 @@
 """
 Tests for headroom.aws.ec2 module.
 
-Tests for DenyImdsV1Ec2 dataclass and get_imds_v1_ec2_analysis function.
+Tests for DenyEc2ImdsV1 dataclass and get_ec2_imds_v1_analysis function.
 """
 
 import pytest
@@ -10,21 +10,21 @@ from typing import List, Optional
 
 from botocore.exceptions import ClientError
 from headroom.aws.ec2 import (
-    DenyImdsV1Ec2,
+    DenyEc2ImdsV1,
     DenyEc2AmiOwner,
     DenyEc2PublicIp,
-    get_imds_v1_ec2_analysis,
+    get_ec2_imds_v1_analysis,
     get_ec2_ami_owner_analysis,
     get_ec2_public_ip_analysis
 )
 
 
-class TestDenyImdsV1Ec2:
-    """Test DenyImdsV1Ec2 dataclass with various configurations."""
+class TestDenyEc2ImdsV1:
+    """Test DenyEc2ImdsV1 dataclass with various configurations."""
 
     def test_deny_ec2_imds_v1_creation(self) -> None:
-        """Test creating DenyImdsV1Ec2 with valid data."""
-        result = DenyImdsV1Ec2(
+        """Test creating DenyEc2ImdsV1 with valid data."""
+        result = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
@@ -37,8 +37,8 @@ class TestDenyImdsV1Ec2:
         assert result.exemption_tag_present is False
 
     def test_deny_ec2_imds_v1_with_exemption(self) -> None:
-        """Test DenyImdsV1Ec2 with exemption tag present."""
-        result = DenyImdsV1Ec2(
+        """Test DenyEc2ImdsV1 with exemption tag present."""
+        result = DenyEc2ImdsV1(
             region="us-west-2",
             instance_id="i-0987654321fedcba0",
             imdsv1_allowed=True,
@@ -51,8 +51,8 @@ class TestDenyImdsV1Ec2:
         assert result.exemption_tag_present is True
 
     def test_deny_ec2_imds_v1_imdsv2_enforced(self) -> None:
-        """Test DenyImdsV1Ec2 with IMDSv2 enforced."""
-        result = DenyImdsV1Ec2(
+        """Test DenyEc2ImdsV1 with IMDSv2 enforced."""
+        result = DenyEc2ImdsV1(
             region="eu-west-1",
             instance_id="i-abcdef1234567890",
             imdsv1_allowed=False,
@@ -65,22 +65,22 @@ class TestDenyImdsV1Ec2:
         assert result.exemption_tag_present is False
 
     def test_deny_ec2_imds_v1_equality(self) -> None:
-        """Test DenyImdsV1Ec2 equality comparison."""
-        result1 = DenyImdsV1Ec2(
+        """Test DenyEc2ImdsV1 equality comparison."""
+        result1 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
             exemption_tag_present=False
         )
 
-        result2 = DenyImdsV1Ec2(
+        result2 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
             exemption_tag_present=False
         )
 
-        result3 = DenyImdsV1Ec2(
+        result3 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-different",
             imdsv1_allowed=True,
@@ -91,8 +91,8 @@ class TestDenyImdsV1Ec2:
         assert result1 != result3
 
     def test_deny_ec2_imds_v1_repr(self) -> None:
-        """Test DenyImdsV1Ec2 string representation."""
-        result = DenyImdsV1Ec2(
+        """Test DenyEc2ImdsV1 string representation."""
+        result = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
@@ -100,13 +100,13 @@ class TestDenyImdsV1Ec2:
         )
 
         repr_str = repr(result)
-        assert "DenyImdsV1Ec2" in repr_str
+        assert "DenyEc2ImdsV1" in repr_str
         assert "us-east-1" in repr_str
         assert "i-1234567890abcdef0" in repr_str
 
 
 class TestGetImdsV1Ec2Analysis:
-    """Test get_imds_v1_ec2_analysis function with various scenarios."""
+    """Test get_ec2_imds_v1_analysis function with various scenarios."""
 
     def create_mock_instance(
         self,
@@ -130,7 +130,7 @@ class TestGetImdsV1Ec2Analysis:
             "Tags": tags
         }
 
-    def test_get_imds_v1_ec2_analysis_success(self) -> None:
+    def test_get_ec2_imds_v1_analysis_success(self) -> None:
         """Test successful IMDS v1 analysis across regions."""
         mock_session = MagicMock()
 
@@ -224,7 +224,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify results
         assert len(results) == 4
@@ -253,7 +253,7 @@ class TestGetImdsV1Ec2Analysis:
         assert results[3].imdsv1_allowed is False
         assert results[3].exemption_tag_present is False
 
-    def test_get_imds_v1_ec2_analysis_no_regions_raises_error(self) -> None:
+    def test_get_ec2_imds_v1_analysis_no_regions_raises_error(self) -> None:
         """Test that describe_regions failure raises ClientError."""
         mock_session = MagicMock()
         mock_session.region_name = "us-west-1"
@@ -269,11 +269,11 @@ class TestGetImdsV1Ec2Analysis:
 
         # Execute function - should raise ClientError
         with pytest.raises(ClientError) as exc_info:
-            get_imds_v1_ec2_analysis(mock_session)
+            get_ec2_imds_v1_analysis(mock_session)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
-    def test_get_imds_v1_ec2_analysis_skips_terminated_instances(self) -> None:
+    def test_get_ec2_imds_v1_analysis_skips_terminated_instances(self) -> None:
         """Test that terminated instances are skipped."""
         mock_session = MagicMock()
 
@@ -309,7 +309,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify terminated instance is skipped, but others are included
         assert len(results) == 2
@@ -318,7 +318,7 @@ class TestGetImdsV1Ec2Analysis:
         assert "i-stopped" in instance_ids
         assert "i-terminated" not in instance_ids
 
-    def test_get_imds_v1_ec2_analysis_regional_client_error(self) -> None:
+    def test_get_ec2_imds_v1_analysis_regional_client_error(self) -> None:
         """Test handling of regional client errors."""
         mock_session = MagicMock()
 
@@ -374,9 +374,9 @@ class TestGetImdsV1Ec2Analysis:
 
         # Execute function - should raise exception on first regional failure
         with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances in region us-west-2"):
-            get_imds_v1_ec2_analysis(mock_session)
+            get_ec2_imds_v1_analysis(mock_session)
 
-    def test_get_imds_v1_ec2_analysis_exemption_tag_case_insensitive(self) -> None:
+    def test_get_ec2_imds_v1_analysis_exemption_tag_case_insensitive(self) -> None:
         """Test that exemption tag value is case insensitive."""
         mock_session = MagicMock()
 
@@ -425,7 +425,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify case insensitive matching
         assert len(results) == 4
@@ -436,7 +436,7 @@ class TestGetImdsV1Ec2Analysis:
         assert exemptions["i-true-mixed"] is True
         assert exemptions["i-false"] is False
 
-    def test_get_imds_v1_ec2_analysis_no_instances(self) -> None:
+    def test_get_ec2_imds_v1_analysis_no_instances(self) -> None:
         """Test function with no instances in any region."""
         mock_session = MagicMock()
 
@@ -463,13 +463,13 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify empty results
         assert len(results) == 0
         assert results == []
 
-    def test_get_imds_v1_ec2_analysis_fallback_regions(self) -> None:
+    def test_get_ec2_imds_v1_analysis_fallback_regions(self) -> None:
         """Test function with regions that need fallback client handling."""
         mock_session = MagicMock()
 
@@ -528,7 +528,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify both instances are returned
         assert len(results) == 2

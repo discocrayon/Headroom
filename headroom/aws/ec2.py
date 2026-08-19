@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class DenyImdsV1Ec2:
+class DenyEc2ImdsV1:
     """Data class for EC2 IMDS v1 analysis results."""
     region: str
     instance_id: str
@@ -58,18 +58,18 @@ class DenyEc2PublicIp:
     instance_arn: str
 
 
-def get_imds_v1_ec2_analysis(session: Session) -> List[DenyImdsV1Ec2]:
+def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
     """
     Analyze EC2 instances for IMDS v1 configuration across all regions.
 
     This function calls describe_instances in a paginated, performant way
-    and returns a list of DenyImdsV1Ec2 with the relevant attributes filled in.
+    and returns a list of DenyEc2ImdsV1 with the relevant attributes filled in.
 
     Args:
         session: boto3.Session with appropriate permissions
 
     Returns:
-        List of DenyImdsV1Ec2 objects containing analysis results
+        List of DenyEc2ImdsV1 objects containing analysis results
     """
     results = []
     ec2_client: EC2Client = session.client('ec2')
@@ -109,7 +109,7 @@ def get_imds_v1_ec2_analysis(session: Session) -> List[DenyImdsV1Ec2]:
                                 exemption_tag_present = True
                                 break
 
-                        results.append(DenyImdsV1Ec2(
+                        results.append(DenyEc2ImdsV1(
                             region=region,
                             instance_id=instance_id,
                             imdsv1_allowed=imdsv1_allowed,
