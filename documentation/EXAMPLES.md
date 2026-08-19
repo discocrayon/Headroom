@@ -173,6 +173,7 @@ test_environment/
 │   │   │   ├── development_account_222222222222.json
 │   │   │   └── ...
 │   │   ├── deny_ec2_ami_owner/
+│   │   ├── deny_ec2_imds_hop_limit/
 │   │   ├── deny_ec2_public_ip/
 │   │   ├── deny_eks_create_cluster_without_tag/
 │   │   ├── deny_iam_user_creation/

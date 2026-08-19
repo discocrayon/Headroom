@@ -1,7 +1,7 @@
 """
 Tests for headroom.aws.ec2 module.
 
-Tests for DenyImdsV1Ec2 dataclass and get_imds_v1_ec2_analysis function.
+Tests for DenyEc2ImdsV1 dataclass and get_ec2_imds_v1_analysis function.
 """
 
 import pytest
@@ -10,21 +10,23 @@ from typing import List, Optional
 
 from botocore.exceptions import ClientError
 from headroom.aws.ec2 import (
-    DenyImdsV1Ec2,
+    DenyEc2ImdsV1,
     DenyEc2AmiOwner,
+    DenyEc2ImdsHopLimit,
     DenyEc2PublicIp,
-    get_imds_v1_ec2_analysis,
+    get_ec2_imds_v1_analysis,
     get_ec2_ami_owner_analysis,
+    get_ec2_imds_hop_limit_analysis,
     get_ec2_public_ip_analysis
 )
 
 
-class TestDenyImdsV1Ec2:
-    """Test DenyImdsV1Ec2 dataclass with various configurations."""
+class TestDenyEc2ImdsV1:
+    """Test DenyEc2ImdsV1 dataclass with various configurations."""
 
     def test_deny_ec2_imds_v1_creation(self) -> None:
-        """Test creating DenyImdsV1Ec2 with valid data."""
-        result = DenyImdsV1Ec2(
+        """Test creating DenyEc2ImdsV1 with valid data."""
+        result = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
@@ -37,8 +39,8 @@ class TestDenyImdsV1Ec2:
         assert result.exemption_tag_present is False
 
     def test_deny_ec2_imds_v1_with_exemption(self) -> None:
-        """Test DenyImdsV1Ec2 with exemption tag present."""
-        result = DenyImdsV1Ec2(
+        """Test DenyEc2ImdsV1 with exemption tag present."""
+        result = DenyEc2ImdsV1(
             region="us-west-2",
             instance_id="i-0987654321fedcba0",
             imdsv1_allowed=True,
@@ -51,8 +53,8 @@ class TestDenyImdsV1Ec2:
         assert result.exemption_tag_present is True
 
     def test_deny_ec2_imds_v1_imdsv2_enforced(self) -> None:
-        """Test DenyImdsV1Ec2 with IMDSv2 enforced."""
-        result = DenyImdsV1Ec2(
+        """Test DenyEc2ImdsV1 with IMDSv2 enforced."""
+        result = DenyEc2ImdsV1(
             region="eu-west-1",
             instance_id="i-abcdef1234567890",
             imdsv1_allowed=False,
@@ -65,22 +67,22 @@ class TestDenyImdsV1Ec2:
         assert result.exemption_tag_present is False
 
     def test_deny_ec2_imds_v1_equality(self) -> None:
-        """Test DenyImdsV1Ec2 equality comparison."""
-        result1 = DenyImdsV1Ec2(
+        """Test DenyEc2ImdsV1 equality comparison."""
+        result1 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
             exemption_tag_present=False
         )
 
-        result2 = DenyImdsV1Ec2(
+        result2 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
             exemption_tag_present=False
         )
 
-        result3 = DenyImdsV1Ec2(
+        result3 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-different",
             imdsv1_allowed=True,
@@ -91,8 +93,8 @@ class TestDenyImdsV1Ec2:
         assert result1 != result3
 
     def test_deny_ec2_imds_v1_repr(self) -> None:
-        """Test DenyImdsV1Ec2 string representation."""
-        result = DenyImdsV1Ec2(
+        """Test DenyEc2ImdsV1 string representation."""
+        result = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
@@ -100,13 +102,13 @@ class TestDenyImdsV1Ec2:
         )
 
         repr_str = repr(result)
-        assert "DenyImdsV1Ec2" in repr_str
+        assert "DenyEc2ImdsV1" in repr_str
         assert "us-east-1" in repr_str
         assert "i-1234567890abcdef0" in repr_str
 
 
 class TestGetImdsV1Ec2Analysis:
-    """Test get_imds_v1_ec2_analysis function with various scenarios."""
+    """Test get_ec2_imds_v1_analysis function with various scenarios."""
 
     def create_mock_instance(
         self,
@@ -130,7 +132,7 @@ class TestGetImdsV1Ec2Analysis:
             "Tags": tags
         }
 
-    def test_get_imds_v1_ec2_analysis_success(self) -> None:
+    def test_get_ec2_imds_v1_analysis_success(self) -> None:
         """Test successful IMDS v1 analysis across regions."""
         mock_session = MagicMock()
 
@@ -224,7 +226,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify results
         assert len(results) == 4
@@ -253,7 +255,7 @@ class TestGetImdsV1Ec2Analysis:
         assert results[3].imdsv1_allowed is False
         assert results[3].exemption_tag_present is False
 
-    def test_get_imds_v1_ec2_analysis_no_regions_raises_error(self) -> None:
+    def test_get_ec2_imds_v1_analysis_no_regions_raises_error(self) -> None:
         """Test that describe_regions failure raises ClientError."""
         mock_session = MagicMock()
         mock_session.region_name = "us-west-1"
@@ -269,11 +271,11 @@ class TestGetImdsV1Ec2Analysis:
 
         # Execute function - should raise ClientError
         with pytest.raises(ClientError) as exc_info:
-            get_imds_v1_ec2_analysis(mock_session)
+            get_ec2_imds_v1_analysis(mock_session)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
-    def test_get_imds_v1_ec2_analysis_skips_terminated_instances(self) -> None:
+    def test_get_ec2_imds_v1_analysis_skips_terminated_instances(self) -> None:
         """Test that terminated instances are skipped."""
         mock_session = MagicMock()
 
@@ -309,7 +311,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify terminated instance is skipped, but others are included
         assert len(results) == 2
@@ -318,7 +320,7 @@ class TestGetImdsV1Ec2Analysis:
         assert "i-stopped" in instance_ids
         assert "i-terminated" not in instance_ids
 
-    def test_get_imds_v1_ec2_analysis_regional_client_error(self) -> None:
+    def test_get_ec2_imds_v1_analysis_regional_client_error(self) -> None:
         """Test handling of regional client errors."""
         mock_session = MagicMock()
 
@@ -374,9 +376,9 @@ class TestGetImdsV1Ec2Analysis:
 
         # Execute function - should raise exception on first regional failure
         with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances in region us-west-2"):
-            get_imds_v1_ec2_analysis(mock_session)
+            get_ec2_imds_v1_analysis(mock_session)
 
-    def test_get_imds_v1_ec2_analysis_exemption_tag_case_insensitive(self) -> None:
+    def test_get_ec2_imds_v1_analysis_exemption_tag_case_insensitive(self) -> None:
         """Test that exemption tag value is case insensitive."""
         mock_session = MagicMock()
 
@@ -425,7 +427,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify case insensitive matching
         assert len(results) == 4
@@ -436,7 +438,7 @@ class TestGetImdsV1Ec2Analysis:
         assert exemptions["i-true-mixed"] is True
         assert exemptions["i-false"] is False
 
-    def test_get_imds_v1_ec2_analysis_no_instances(self) -> None:
+    def test_get_ec2_imds_v1_analysis_no_instances(self) -> None:
         """Test function with no instances in any region."""
         mock_session = MagicMock()
 
@@ -463,13 +465,13 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify empty results
         assert len(results) == 0
         assert results == []
 
-    def test_get_imds_v1_ec2_analysis_fallback_regions(self) -> None:
+    def test_get_ec2_imds_v1_analysis_fallback_regions(self) -> None:
         """Test function with regions that need fallback client handling."""
         mock_session = MagicMock()
 
@@ -528,7 +530,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.region_name = "us-east-1"
 
         # Execute function
-        results = get_imds_v1_ec2_analysis(mock_session)
+        results = get_ec2_imds_v1_analysis(mock_session)
 
         # Verify both instances are returned
         assert len(results) == 2
@@ -1383,3 +1385,143 @@ class TestGetEc2PublicIpAnalysis:
 
         assert len(results) == 1
         assert results[0].instance_arn == "arn:aws:ec2:eu-west-1:222222222222:instance/i-test123456789"
+
+
+class TestDenyEc2ImdsHopLimit:
+    """Test DenyEc2ImdsHopLimit dataclass."""
+
+    def test_deny_ec2_imds_hop_limit_creation(self) -> None:
+        """Test creating DenyEc2ImdsHopLimit with valid data."""
+        result = DenyEc2ImdsHopLimit(
+            region="us-east-1",
+            instance_id="i-1234567890abcdef0",
+            hop_limit=2,
+            imds_enabled=True
+        )
+
+        assert result.region == "us-east-1"
+        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.hop_limit == 2
+        assert result.imds_enabled is True
+
+
+class TestGetEc2ImdsHopLimitAnalysis:
+    """Test get_ec2_imds_hop_limit_analysis function."""
+
+    def create_mock_instance(
+        self,
+        instance_id: str,
+        state: str = "running",
+        hop_limit: Optional[int] = 1,
+        http_endpoint: str = "enabled"
+    ) -> dict:
+        """Helper to create mock EC2 instance data with metadata hop limit."""
+        metadata_options: dict = {"HttpEndpoint": http_endpoint}
+        if hop_limit is not None:
+            metadata_options["HttpPutResponseHopLimit"] = hop_limit
+
+        return {
+            "InstanceId": instance_id,
+            "State": {"Name": state},
+            "MetadataOptions": metadata_options,
+        }
+
+    def build_session(self, instances: List[dict]) -> MagicMock:
+        """Build a mock session serving one region with the given instances."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [
+            {"Reservations": [{"Instances": instances}]}
+        ]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+        return mock_session
+
+    def test_reports_hop_limit_above_one(self) -> None:
+        """A hop limit greater than 1 is reported verbatim."""
+        mock_session = self.build_session([
+            self.create_mock_instance("i-aaa", hop_limit=2)
+        ])
+
+        results = get_ec2_imds_hop_limit_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].instance_id == "i-aaa"
+        assert results[0].hop_limit == 2
+        assert results[0].imds_enabled is True
+        assert results[0].region == "us-east-1"
+
+    def test_defaults_missing_hop_limit_to_one(self) -> None:
+        """An absent HttpPutResponseHopLimit defaults to the AWS default of 1."""
+        mock_session = self.build_session([
+            self.create_mock_instance("i-bbb", hop_limit=None)
+        ])
+
+        results = get_ec2_imds_hop_limit_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].hop_limit == 1
+
+    def test_marks_imds_disabled_instances(self) -> None:
+        """An instance with IMDS disabled is reported with imds_enabled False."""
+        mock_session = self.build_session([
+            self.create_mock_instance("i-ccc", hop_limit=3, http_endpoint="disabled")
+        ])
+
+        results = get_ec2_imds_hop_limit_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].imds_enabled is False
+        assert results[0].hop_limit == 3
+
+    def test_skips_terminated_instances(self) -> None:
+        """Terminated instances are excluded from results."""
+        mock_session = self.build_session([
+            self.create_mock_instance("i-ddd", state="terminated", hop_limit=3),
+            self.create_mock_instance("i-eee", hop_limit=1),
+        ])
+
+        results = get_ec2_imds_hop_limit_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].instance_id == "i-eee"
+
+    def test_raises_on_regional_client_error(self) -> None:
+        """A regional API failure is surfaced as RuntimeError."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.side_effect = ClientError(
+            {"Error": {"Code": "UnauthorizedOperation", "Message": "denied"}},
+            "DescribeInstances"
+        )
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances"):
+            get_ec2_imds_hop_limit_analysis(mock_session)

@@ -368,6 +368,23 @@ This check identifies EC2 instances with public IP addresses assigned. The SCP d
 
 **Headroom's Role:** Scans all accounts and reports existing EC2 instances with their public IP status. This informs deployment decisions and identifies resources that would be impacted by the SCP.
 
+### Pattern 2 Example: `deny_ec2_imds_hop_limit`
+
+**Check:** `headroom/checks/scps/deny_ec2_imds_hop_limit.py`
+**Terraform:** `test_environment/modules/scps/locals.tf`
+
+This check identifies EC2 instances whose IMDS hop limit exceeds 1. The SCP denies instance launches that request a higher limit, keeping the metadata response from crossing an extra network hop.
+
+**Policy Structure:**
+- Deny `ec2:RunInstances` on instance resources
+- When `ec2:MetadataHttpPutResponseHopLimit` is numerically greater than 1
+
+**Headroom's Role:** Scans all accounts and reports each instance's configured hop limit and whether its metadata endpoint is enabled. Instances with IMDS disabled are compliant regardless of hop limit, since there is no reachable endpoint.
+
+**Note:** This is the first Pattern 2 policy in the codebase to use a numeric comparison rather than a string or boolean match. The pattern is unchanged -- `NumericGreaterThan` expresses the same "deny unless the condition holds" shape as `StringNotEquals` elsewhere.
+
+**Limitation:** The policy only constrains launches. `ec2:ModifyInstanceMetadataOptions` exposes no condition keys, so the hop limit can still be raised on a running instance. Denying that action is a separate decision and is not covered here.
+
 ### Pattern 2 Example: `deny_rds_unencrypted`
 
 **Check:** `headroom/checks/scps/deny_rds_unencrypted.py`

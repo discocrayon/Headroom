@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class DenyImdsV1Ec2:
+class DenyEc2ImdsV1:
     """Data class for EC2 IMDS v1 analysis results."""
     region: str
     instance_id: str
@@ -40,6 +40,23 @@ class DenyEc2AmiOwner:
 
 
 @dataclass
+class DenyEc2ImdsHopLimit:
+    """
+    Data model for EC2 IMDS hop limit analysis.
+
+    Attributes:
+        region: AWS region where instance exists
+        instance_id: EC2 instance identifier
+        hop_limit: IMDS HttpPutResponseHopLimit (AWS defaults to 1 when unset)
+        imds_enabled: True if the instance metadata endpoint is enabled
+    """
+    region: str
+    instance_id: str
+    hop_limit: int
+    imds_enabled: bool
+
+
+@dataclass
 class DenyEc2PublicIp:
     """
     Data model for EC2 public IP analysis.
@@ -58,18 +75,18 @@ class DenyEc2PublicIp:
     instance_arn: str
 
 
-def get_imds_v1_ec2_analysis(session: Session) -> List[DenyImdsV1Ec2]:
+def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
     """
     Analyze EC2 instances for IMDS v1 configuration across all regions.
 
     This function calls describe_instances in a paginated, performant way
-    and returns a list of DenyImdsV1Ec2 with the relevant attributes filled in.
+    and returns a list of DenyEc2ImdsV1 with the relevant attributes filled in.
 
     Args:
         session: boto3.Session with appropriate permissions
 
     Returns:
-        List of DenyImdsV1Ec2 objects containing analysis results
+        List of DenyEc2ImdsV1 objects containing analysis results
     """
     results = []
     ec2_client: EC2Client = session.client('ec2')
@@ -109,7 +126,7 @@ def get_imds_v1_ec2_analysis(session: Session) -> List[DenyImdsV1Ec2]:
                                 exemption_tag_present = True
                                 break
 
-                        results.append(DenyImdsV1Ec2(
+                        results.append(DenyEc2ImdsV1(
                             region=region,
                             instance_id=instance_id,
                             imdsv1_allowed=imdsv1_allowed,
@@ -283,6 +300,57 @@ def get_ec2_public_ip_analysis(session: Session) -> List[DenyEc2PublicIp]:
                             public_ip_address=public_ip_address,
                             has_public_ip=has_public_ip,
                             instance_arn=instance_arn
+                        ))
+
+        except ClientError as e:
+            raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
+
+    return results
+
+
+def get_ec2_imds_hop_limit_analysis(session: Session) -> List[DenyEc2ImdsHopLimit]:
+    """
+    Analyze EC2 instances for IMDS hop limit configuration across all regions.
+
+    A hop limit above 1 lets the metadata response cross an extra network hop,
+    which is what allows a container or a downstream proxy on the instance to
+    reach IMDS. This function reports the configured limit; deciding what
+    counts as a violation is the check's job.
+
+    Args:
+        session: boto3.Session with appropriate permissions
+
+    Returns:
+        List of DenyEc2ImdsHopLimit objects containing analysis results
+    """
+    results = []
+    ec2_client: EC2Client = session.client('ec2')
+
+    regions_response = ec2_client.describe_regions()
+    regions = [region['RegionName'] for region in regions_response['Regions']]
+
+    for region in regions:
+        try:
+            regional_ec2: EC2Client = session.client('ec2', region_name=region)
+            paginator = regional_ec2.get_paginator('describe_instances')
+
+            for page in paginator.paginate():
+                for reservation in page['Reservations']:
+                    for instance in reservation['Instances']:
+                        # Skip terminated instances
+                        if instance['State']['Name'] == 'terminated':
+                            continue
+
+                        metadata_options = instance.get('MetadataOptions', {})
+                        # AWS defaults the hop limit to 1 when it is not set
+                        hop_limit = metadata_options.get('HttpPutResponseHopLimit', 1)
+                        imds_enabled = metadata_options.get('HttpEndpoint', 'enabled') == 'enabled'
+
+                        results.append(DenyEc2ImdsHopLimit(
+                            region=region,
+                            instance_id=instance['InstanceId'],
+                            hop_limit=hop_limit,
+                            imds_enabled=imds_enabled
                         ))
 
         except ClientError as e:

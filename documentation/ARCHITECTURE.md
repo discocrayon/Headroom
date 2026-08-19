@@ -56,6 +56,7 @@ headroom/
 │   ├── registry.py      # Check registration and discovery
 │   ├── scps/      # Service Control Policy checks
 │   │   ├── deny_ec2_ami_owner.py  # EC2 AMI owner check
+│   │   ├── deny_ec2_imds_hop_limit.py  # EC2 IMDS hop limit check
 │   │   ├── deny_ec2_imds_v1.py  # EC2 IMDS v1 check
 │   │   ├── deny_ec2_public_ip.py  # EC2 public IP check
 │   │   ├── deny_eks_create_cluster_without_tag.py  # EKS paved road check
