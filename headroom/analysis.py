@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
 from boto3.session import Session
@@ -146,6 +146,95 @@ def _build_account_info_from_account_dict(
     )
 
 
+# AWS Organizations lifecycle state in which an account can be analyzed.
+ACTIVE_ACCOUNT_STATE = "ACTIVE"
+
+# Lifecycle states in which an account is not analyzed.
+#
+# CLOSED, SUSPENDED and PENDING_ACTIVATION accounts all reject role assumption,
+# so attempting to analyze one aborts the whole run. PENDING_CLOSURE accounts
+# remain functional, so excluding them is a deliberate policy choice: an account
+# on its way out of the organization should not hold back an organization-wide
+# policy recommendation.
+#
+# AWS retires the `Status` field on 2026-09-09 in favour of `State`, which splits
+# the old catch-all SUSPENDED into distinct SUSPENDED and CLOSED values. Because
+# old-SUSPENDED covers both, this set skips the same accounts under either field.
+INACTIVE_ACCOUNT_STATES = frozenset({
+    "CLOSED",
+    "PENDING_ACTIVATION",
+    "PENDING_CLOSURE",
+    "SUSPENDED",
+})
+
+
+def _get_account_state(account: AccountTypeDef) -> Optional[str]:
+    """
+    Return an account's lifecycle state, preferring `State` over `Status`.
+
+    AWS retires `Status` on 2026-09-09, which makes `State` authoritative. SDKs
+    released before 2025-09-09 do not model `State`, so botocore drops it from
+    the response and only `Status` is available.
+
+    Args:
+        account: Account dictionary from the Organizations API
+
+    Returns:
+        The lifecycle state, or None if the account reports neither field
+    """
+    return account.get("State") or account.get("Status")
+
+
+def _should_skip_account(account: AccountTypeDef, account_id: str) -> bool:
+    """
+    Determine whether an account is excluded from analysis by lifecycle state.
+
+    Only ACTIVE accounts are analyzed.
+
+    An account reporting neither `State` nor `Status` aborts the run. That cause
+    is environment-wide rather than per-account - an SDK too old to model `State`
+    once `Status` has been retired makes every account report nothing - so
+    analyzing anyway would attempt every closed account and then fail inside
+    `assume_role` with an error naming none of the real cause.
+
+    An account reporting a state this code does not recognize is analyzed, with a
+    warning, rather than aborting. AWS adding a sixth state must not break every
+    run for something the operator cannot fix, and if such a state really is
+    unusable then the subsequent role assumption fails loudly on its own.
+
+    Args:
+        account: Account dictionary from the Organizations API
+        account_id: Account identifier, used for logging
+
+    Returns:
+        True if the account should be excluded from analysis
+
+    Raises:
+        RuntimeError: If the account reports neither State nor Status
+    """
+    state = _get_account_state(account)
+
+    if state is None:
+        raise RuntimeError(
+            f"Account {account_id} reports neither State nor Status, so its lifecycle "
+            "state cannot be determined. The AWS SDK is too old to model State, which "
+            "replaced Status on 2026-09-09; upgrade boto3 to continue."
+        )
+
+    if state == ACTIVE_ACCOUNT_STATE:
+        return False
+
+    if state in INACTIVE_ACCOUNT_STATES:
+        logger.info(f"Skipping account {account_id} in lifecycle state {state}")
+        return True
+
+    logger.warning(
+        f"Account {account_id} reports unrecognized lifecycle state {state}; "
+        "analyzing it anyway"
+    )
+    return False
+
+
 def get_subaccount_information(config: HeadroomConfig, session: Session) -> List[AccountInfo]:
     """
     Get subaccount information from the management account.
@@ -153,21 +242,27 @@ def get_subaccount_information(config: HeadroomConfig, session: Session) -> List
     Uses the provided session to assume the OrgAndAccountInfoReader role in the
     management account, then retrieves account information with tags.
 
+    Excludes the management account, which SCPs and RCPs do not affect, and any
+    account that is not in the ACTIVE lifecycle state.
+
     Args:
         config: Headroom configuration
         session: boto3 Session with access to security analysis account
 
     Returns:
-        List of AccountInfo objects for all accounts except the management account
+        List of AccountInfo objects for the ACTIVE accounts, excluding the
+        management account
 
     Raises:
         ValueError: If management_account_id is not set in config
-        RuntimeError: If role assumption or API calls fail
+        RuntimeError: If role assumption or API calls fail, or if an account's
+            lifecycle state cannot be determined
     """
     mgmt_session = get_management_account_session(config, session)
     org_client = mgmt_session.client("organizations")
     paginator = org_client.get_paginator("list_accounts")
     accounts = []
+    skipped_states: Dict[str, int] = {}
 
     for page in paginator.paginate():
         for acct in page.get("Accounts", []):
@@ -176,8 +271,19 @@ def get_subaccount_information(config: HeadroomConfig, session: Session) -> List
             if account_id == config.management_account_id:
                 continue
 
+            if _should_skip_account(acct, account_id):
+                # An account is only skipped for a state in INACTIVE_ACCOUNT_STATES,
+                # so the state is always a known string here.
+                skipped_state = str(_get_account_state(acct))
+                skipped_states[skipped_state] = skipped_states.get(skipped_state, 0) + 1
+                continue
+
             account_info = _build_account_info_from_account_dict(acct, org_client, config)
             accounts.append(account_info)
+
+    if skipped_states:
+        breakdown = ", ".join(f"{count} {state}" for state, count in sorted(skipped_states.items()))
+        logger.info(f"Skipped {sum(skipped_states.values())} non-active account(s): {breakdown}")
 
     return accounts
 

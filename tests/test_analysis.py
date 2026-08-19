@@ -1,5 +1,5 @@
 import pytest
-from typing import cast
+from typing import Any, Dict, List, Tuple, cast
 from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
@@ -131,10 +131,10 @@ class TestGetSubaccountInformation:
         mock_org_client = MagicMock()
         mock_org_client.get_paginator.return_value.paginate.return_value = [
             {"Accounts": [
-                {"Id": "222222222222", "Name": "MgmtAccount"},  # Should be skipped
-                {"Id": "333333333333", "Name": "SubAccount1"},
-                {"Id": "444444444444", "Name": "SubAccount2"},
-                {"Id": "555555555555", "Name": "SubAccount3"},  # No tags
+                {"Id": "222222222222", "Name": "MgmtAccount", "State": "ACTIVE"},  # Should be skipped
+                {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"},
+                {"Id": "444444444444", "Name": "SubAccount2", "State": "ACTIVE"},
+                {"Id": "555555555555", "Name": "SubAccount3", "State": "ACTIVE"},  # No tags
             ]}
         ]
         tag_map = {
@@ -165,8 +165,8 @@ class TestGetSubaccountInformation:
         mock_org_client = MagicMock()
         mock_org_client.get_paginator.return_value.paginate.return_value = [
             {"Accounts": [
-                {"Id": "222222222222", "Name": "MgmtAccount"},
-                {"Id": "333333333333", "Name": "SubAccount1"}
+                {"Id": "222222222222", "Name": "MgmtAccount", "State": "ACTIVE"},
+                {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"}
             ]}
         ]
         mock_org_client.list_tags_for_resource.return_value = {"Tags": [{"Key": "Env", "Value": "prod"}, {"Key": "OwnerTag", "Value": "Alice"}]}
@@ -201,7 +201,7 @@ class TestGetSubaccountInformation:
         mock_org_client = MagicMock()
         mock_org_client.get_paginator.return_value.paginate.return_value = [
             {"Accounts": [
-                {"Id": "333333333333", "Name": "SubAccount1"}
+                {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"}
             ]}
         ]
         mock_org_client.list_tags_for_resource.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "ListTagsForResource")
@@ -230,6 +230,194 @@ class TestGetSubaccountInformation:
             get_subaccount_information(config, session)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+
+
+class TestAccountStateFiltering:
+    """
+    Test that only ACTIVE accounts are analyzed.
+
+    AWS Organizations reports an account's lifecycle position through two
+    fields: `State` (PENDING_ACTIVATION, ACTIVE, SUSPENDED, PENDING_CLOSURE,
+    CLOSED) and the older `Status` (ACTIVE, SUSPENDED, PENDING_CLOSURE), which
+    AWS retires on 2026-09-09. Only an ACTIVE account can have the Headroom
+    role assumed in it, so every other state is skipped.
+    """
+
+    @staticmethod
+    def _config() -> HeadroomConfig:
+        """Build a config whose management account is 222222222222."""
+        return HeadroomConfig(
+            management_account_id="222222222222",
+            security_analysis_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
+        )
+
+    def _run(
+        self,
+        accounts: List[Dict[str, Any]]
+    ) -> Tuple[List[AccountInfo], MagicMock, MagicMock]:
+        """Run get_subaccount_information over raw Organizations account dicts."""
+        mock_org_client = MagicMock()
+        mock_org_client.get_paginator.return_value.paginate.return_value = [{"Accounts": accounts}]
+        mock_org_client.list_tags_for_resource.return_value = {"Tags": []}
+        mgmt_session = MagicMock()
+        mgmt_session.client.return_value = mock_org_client
+
+        with (
+            patch("headroom.analysis.get_management_account_session", return_value=mgmt_session),
+            patch("headroom.analysis.logger") as mock_logger,
+        ):
+            result = get_subaccount_information(self._config(), MagicMock())
+
+        return result, mock_org_client, mock_logger
+
+    def _analyzed_ids(self, accounts: List[Dict[str, Any]]) -> List[str]:
+        """Return the account IDs that survived state filtering."""
+        result, _, _ = self._run(accounts)
+        return [account.account_id for account in result]
+
+    def test_closed_account_is_skipped(self) -> None:
+        """A CLOSED account is excluded; role assumption there is impossible."""
+        analyzed = self._analyzed_ids([
+            {"Id": "333333333333", "Name": "Closed", "State": "CLOSED", "Status": "SUSPENDED"},
+            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE", "Status": "ACTIVE"},
+        ])
+
+        assert analyzed == ["444444444444"]
+
+    def test_suspended_account_is_skipped(self) -> None:
+        """A SUSPENDED account is excluded; AWS has restricted its access."""
+        analyzed = self._analyzed_ids([
+            {"Id": "333333333333", "Name": "Suspended", "State": "SUSPENDED"},
+            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+        ])
+
+        assert analyzed == ["444444444444"]
+
+    def test_pending_closure_account_is_skipped(self) -> None:
+        """
+        A PENDING_CLOSURE account is excluded.
+
+        Unlike the other skipped states this account is still functional, so the
+        exclusion is deliberate policy: an account on its way out of the
+        organization should not hold back an organization-wide recommendation.
+        """
+        analyzed = self._analyzed_ids([
+            {"Id": "333333333333", "Name": "Closing", "State": "PENDING_CLOSURE"},
+            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+        ])
+
+        assert analyzed == ["444444444444"]
+
+    def test_pending_activation_account_is_skipped(self) -> None:
+        """A PENDING_ACTIVATION account is excluded; sign-up never completed."""
+        analyzed = self._analyzed_ids([
+            {"Id": "333333333333", "Name": "Unactivated", "State": "PENDING_ACTIVATION"},
+            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+        ])
+
+        assert analyzed == ["444444444444"]
+
+    def test_active_account_is_analyzed(self) -> None:
+        """An ACTIVE account is analyzed."""
+        analyzed = self._analyzed_ids([
+            {"Id": "333333333333", "Name": "Live", "State": "ACTIVE", "Status": "ACTIVE"},
+        ])
+
+        assert analyzed == ["333333333333"]
+
+    def test_state_takes_precedence_over_status(self) -> None:
+        """
+        `State` wins when the two fields disagree.
+
+        AWS retires `Status` on 2026-09-09, so `State` is the authoritative field.
+        """
+        analyzed = self._analyzed_ids([
+            {"Id": "333333333333", "Name": "Live", "State": "ACTIVE", "Status": "SUSPENDED"},
+        ])
+
+        assert analyzed == ["333333333333"]
+
+    def test_falls_back_to_status_when_state_absent(self) -> None:
+        """
+        `Status` is used when `State` is missing.
+
+        An SDK released before 2025-09-09 does not model `State`, so botocore
+        drops it from the response and only `Status` is available.
+        """
+        analyzed = self._analyzed_ids([
+            {"Id": "333333333333", "Name": "Suspended", "Status": "SUSPENDED"},
+            {"Id": "444444444444", "Name": "Live", "Status": "ACTIVE"},
+        ])
+
+        assert analyzed == ["444444444444"]
+
+    def test_account_with_no_state_or_status_aborts_the_run(self) -> None:
+        """
+        An account reporting neither field aborts the run, with a remediation hint.
+
+        The cause is environment-wide rather than per-account: an SDK too old to
+        model `State` at a point when `Status` has been retired makes every
+        account report nothing. Analyzing anyway would attempt every closed
+        account and then die inside assume_role with an AccessDenied that names
+        none of the real cause, so this fails at the point the information is
+        actually missing.
+        """
+        with pytest.raises(RuntimeError, match="neither State nor Status") as exc_info:
+            self._run([{"Id": "333333333333", "Name": "Unknown"}])
+
+        # The error must be actionable, not merely loud.
+        assert "boto3" in str(exc_info.value)
+
+    def test_account_with_unrecognized_state_is_analyzed(self) -> None:
+        """
+        A state AWS adds in future is analyzed and warned about, not skipped.
+
+        Silently skipping an account is worse than a loud failure for a tool
+        whose purpose is proving a policy will not break an account.
+        """
+        result, _, mock_logger = self._run([
+            {"Id": "333333333333", "Name": "Future", "State": "SOME_FUTURE_STATE"},
+        ])
+
+        assert [account.account_id for account in result] == ["333333333333"]
+        assert mock_logger.warning.called
+
+    def test_skipped_account_does_not_incur_a_tag_api_call(self) -> None:
+        """Filtering happens before tag fetching, so skipped accounts cost no API calls."""
+        _, mock_org_client, _ = self._run([
+            {"Id": "333333333333", "Name": "Closed", "State": "CLOSED"},
+            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+        ])
+
+        tagged_ids = [
+            call.kwargs["ResourceId"]
+            for call in mock_org_client.list_tags_for_resource.call_args_list
+        ]
+        assert tagged_ids == ["444444444444"]
+
+    def test_management_account_is_still_excluded(self) -> None:
+        """State filtering does not disturb the existing management account exclusion."""
+        analyzed = self._analyzed_ids([
+            {"Id": "222222222222", "Name": "Mgmt", "State": "ACTIVE"},
+            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+        ])
+
+        assert analyzed == ["444444444444"]
+
+    def test_skipped_accounts_are_summarized(self) -> None:
+        """A summary line reports how many accounts were skipped in each state."""
+        _, _, mock_logger = self._run([
+            {"Id": "333333333333", "Name": "A", "State": "CLOSED"},
+            {"Id": "444444444444", "Name": "B", "State": "CLOSED"},
+            {"Id": "555555555555", "Name": "C", "State": "SUSPENDED"},
+            {"Id": "666666666666", "Name": "D", "State": "ACTIVE"},
+        ])
+
+        logged = " ".join(str(call) for call in mock_logger.info.call_args_list)
+        assert "2 CLOSED" in logged
+        assert "1 SUSPENDED" in logged
 
 
 class TestBuildAccountInfoFromAccountDict:

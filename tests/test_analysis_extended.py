@@ -530,6 +530,45 @@ class TestGetAllOrganizationAccountIds:
         assert result == {"111111111111", "222222222222", "333333333333"}
         mock_get_mgmt_session.assert_called_once_with(mock_config, mock_session)
 
+    def test_get_all_organization_account_ids_includes_non_active_accounts(self) -> None:
+        """
+        Non-active accounts must stay in the organization membership set.
+
+        This set is the "is this principal inside my organization?" oracle for the
+        third-party RCP checks. A CLOSED or SUSPENDED account remains an
+        organization member until AWS removes it, and organization-based RCP
+        conditions still match it. Filtering it out here would reclassify a
+        recently-closed sibling account as a third party and produce false
+        positive findings, so the lifecycle-state filtering applied in
+        get_subaccount_information deliberately does not apply to this function.
+        """
+        mock_config = MagicMock()
+        mock_config.management_account_id = "999999999999"
+
+        mock_mgmt_session = MagicMock()
+        mock_org_client = MagicMock()
+        mock_mgmt_session.client.return_value = mock_org_client
+        mock_org_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Accounts": [
+                    {"Id": "111111111111", "Name": "Active", "State": "ACTIVE"},
+                    {"Id": "222222222222", "Name": "Closed", "State": "CLOSED"},
+                    {"Id": "333333333333", "Name": "Suspended", "State": "SUSPENDED"},
+                    {"Id": "444444444444", "Name": "Closing", "State": "PENDING_CLOSURE"},
+                ]
+            }
+        ]
+
+        with patch("headroom.analysis.get_management_account_session", return_value=mock_mgmt_session):
+            result = get_all_organization_account_ids(mock_config, MagicMock())
+
+        assert result == {
+            "111111111111",
+            "222222222222",
+            "333333333333",
+            "444444444444",
+        }
+
     def test_get_all_organization_account_ids_missing_management_account_id(self) -> None:
         """Test that missing management_account_id raises ValueError."""
         mock_session = MagicMock()
