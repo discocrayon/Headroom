@@ -235,7 +235,7 @@ def get_results_path(
     Results are organized by check type, then check name, then account.
 
     Args:
-        check_name: Name of the check (e.g., 'deny_imds_v1_ec2')
+        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
         account_name: Account name
         account_id: Account ID
         results_base_dir: Base directory for results

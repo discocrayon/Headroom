@@ -4,7 +4,7 @@
 
 ### EC2 IMDS v1 Check
 
-**Check Name**: `deny_imds_v1_ec2`
+**Check Name**: `deny_ec2_imds_v1`
 
 **Purpose**: Identifies EC2 instances with Instance Metadata Service (IMDS) v1 enabled, which is a security risk.
 
