@@ -90,11 +90,24 @@ python -m headroom --config config.yaml
 ### 4. Review Results
 
 **JSON reports** in `test_environment/headroom_results/`:
+
+**SCP Checks:**
 - `scps/deny_ec2_imds_v1/{account}.json` - EC2 IMDSv1 violations
+- `scps/deny_ec2_ami_owner/{account}.json` - EC2 AMI owner analysis
+- `scps/deny_ec2_public_ip/{account}.json` - EC2 public IP violations
+- `scps/deny_eks_create_cluster_without_tag/{account}.json` - EKS cluster tag violations
 - `scps/deny_iam_user_creation/{account}.json` - IAM users found
-- `rcps/deny_sts_third_party_assumerole/{account}.json` - External account access
+- `scps/deny_iam_saml_provider_not_aws_sso/{account}.json` - IAM SAML provider violations
+- `scps/deny_lambda_auth_type_none/{account}.json` - Lambda function URL violations
+- `scps/deny_rds_unencrypted/{account}.json` - RDS encryption violations
+
+**RCP Checks:**
+- `rcps/deny_sts_third_party_assumerole/{account}.json` - External IAM trust policies
 - `rcps/deny_s3_third_party_access/{account}.json` - S3 third-party access
-- And more...
+- `rcps/deny_ecr_third_party_access/{account}.json` - ECR third-party access
+- `rcps/deny_kms_third_party_access/{account}.json` - KMS third-party access
+- `rcps/deny_secrets_manager_third_party_access/{account}.json` - Secrets Manager third-party access
+- `rcps/deny_sqs_third_party_access/{account}.json` - SQS third-party access
 
 **Terraform configs** in `test_environment/scps/` and `test_environment/rcps/`:
 - `root_scps.tf` - Organization-wide policies
@@ -112,13 +125,16 @@ See [full examples](documentation/EXAMPLES.md).
 - **EKS Paved Road**: Require `PavedRoad=true` tag on clusters
 - **IAM User Creation**: Restrict to approved users (auto-generates allowlists)
 - **IAM SAML Provider**: Enforce AWS IAM Identity Center SAML providers only
+- **Lambda Function URL**: Block Lambda functions with NONE authentication
 - **RDS Encryption**: Block unencrypted databases
 
 ### RCP Checks
 - **STS Third-Party AssumeRole Allowlist**
 - **S3 Third-Party Access Allowlist**
 - **ECR Third-Party Access Allowlist**
-- **AOSS Third-Party Access Allowlist**
+- **KMS Third-Party Access Allowlist**
+- **Secrets Manager Third-Party Access Allowlist**
+- **SQS Third-Party Access Allowlist**
 
 [View detailed check documentation](documentation/CHECKS.md)
 
@@ -183,8 +199,8 @@ module "scps_root" {
 
 ✅ **Working**:
 - Multi-account AWS Organizations scanning
-- SCP checks: EC2 IMDSv1, EC2 AMI owner, EC2 public IP, IAM users, IAM SAML providers, EKS tags, RDS encryption
-- RCP checks: IAM trust policies, S3/ECR third-party access
+- SCP checks: EC2 IMDSv1, EC2 AMI owner, EC2 public IP, IAM users, IAM SAML providers, EKS tags, Lambda function URLs, RDS encryption
+- RCP checks: IAM trust policies, S3, ECR, KMS, Secrets Manager, SQS third-party access
 - Terraform auto-generation with allowlists
 - JSON violation reports
 - Smart placement recommendations

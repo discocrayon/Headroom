@@ -146,6 +146,147 @@ Unless `rds:StorageEncrypted` condition key is true.
 
 ---
 
+### EC2 AMI Owner Check
+
+**Check Name**: `deny_ec2_ami_owner`
+
+**Purpose**: Identifies EC2 instances using AMIs from untrusted or unapproved owners.
+
+**How it Works**:
+- Scans all AWS regions for EC2 instances
+- Retrieves AMI information for each instance
+- Determines AMI owner for each instance
+- Identifies unique AMI owners across all instances
+
+**Policy Coverage**: Denies `ec2:RunInstances` unless the AMI owner is in the approved allowlist (e.g., "amazon", "aws-marketplace", trusted account IDs).
+
+**Allowlist Support**: Generates comprehensive list of unique AMI owners to inform allowlist configuration.
+
+**Output**:
+- Instance IDs and regions
+- AMI IDs and names
+- AMI owners for each instance
+- List of all unique AMI owners
+
+**Example Output**:
+```json
+{
+  "instance_id": "i-1234567890abcdef0",
+  "region": "us-east-1",
+  "ami_id": "ami-0123456789abcdef0",
+  "ami_owner": "amazon",
+  "ami_name": "amzn2-ami-hvm-2.0.20231218.0-x86_64-gp2"
+}
+```
+
+---
+
+### EC2 Public IP Check
+
+**Check Name**: `deny_ec2_public_ip`
+
+**Purpose**: Identifies EC2 instances with public IP addresses assigned.
+
+**How it Works**:
+- Scans all AWS regions for EC2 instances
+- Checks if instances have public IP addresses
+- Categorizes instances as violations or compliant
+
+**Policy Coverage**: Denies `ec2:RunInstances` when a public IP address would be assigned (`ec2:AssociatePublicIpAddress` equals "true").
+
+**Output**:
+- Instance IDs and ARNs
+- Public IP addresses
+- Regions
+- Compliance percentage
+
+**Example Violation**:
+```json
+{
+  "instance_id": "i-0987654321fedcba0",
+  "region": "us-west-2",
+  "public_ip_address": "54.123.45.67",
+  "has_public_ip": true,
+  "instance_arn": "arn:aws:ec2:us-west-2:111111111111:instance/i-0987654321fedcba0"
+}
+```
+
+---
+
+### IAM SAML Provider Check
+
+**Check Name**: `deny_iam_saml_provider_not_aws_sso`
+
+**Purpose**: Enforces use of AWS IAM Identity Center (AWS SSO) for SAML authentication by identifying non-compliant SAML providers.
+
+**How it Works**:
+- Lists all IAM SAML providers in the account
+- Checks if provider names start with `AWSSSO_` prefix
+- Validates that only zero or one AWS SSO provider exists
+
+**Policy Coverage**: Denies `iam:CreateSAMLProvider` unconditionally once all accounts meet the constraint (zero or one AWS SSO provider only).
+
+**Compliance Requirements**:
+- Account is compliant if it has zero SAML providers
+- Account is compliant if it has exactly one provider with `AWSSSO_` prefix
+- Account is non-compliant if it has multiple providers or any non-AWS SSO provider
+
+**Output**:
+- Total SAML provider count
+- AWS SSO provider count
+- Non-AWS SSO provider count
+- Allowed provider ARN (if compliant)
+- Violating provider ARNs
+
+**Example Violation**:
+```json
+{
+  "arn": "arn:aws:iam::111111111111:saml-provider/CustomSAML",
+  "name": "CustomSAML",
+  "create_date": "2024-01-15T10:30:00Z",
+  "valid_until": "2025-01-15T10:30:00Z",
+  "violation_reason": "provider_prefix_not_awssso"
+}
+```
+
+---
+
+### Lambda Function URL Authentication Check
+
+**Check Name**: `deny_lambda_auth_type_none`
+
+**Purpose**: Identifies Lambda functions with function URLs using NONE authentication, which allows unauthenticated public access.
+
+**How it Works**:
+- Scans all AWS regions for Lambda functions
+- Checks for function URLs on each function
+- Identifies functions with NONE authentication type
+
+**Policy Coverage**: Denies `lambda:CreateFunctionUrlConfig`, `lambda:UpdateFunctionUrlConfig`, and
+`lambda:AddPermission` when `lambda:FunctionUrlAuthType` is set to "NONE". `lambda:AddPermission` is
+included because it grants invoke permission on a function URL, which would otherwise leave a path
+to unauthenticated access on URLs that already exist.
+
+**Output**:
+- Function names and ARNs
+- Function URL status
+- Authentication type
+- Regions
+- Compliance percentage
+
+**Example Violation**:
+```json
+{
+  "function_name": "public-api-function",
+  "function_arn": "arn:aws:lambda:us-east-1:111111111111:function:public-api-function",
+  "region": "us-east-1",
+  "has_function_url": true,
+  "function_url_auth_type": "NONE"
+}
+```
+
+---
+
 ## RCP (Resource Control Policy) Checks
 
 ### STS Third-Party AssumeRole Check
@@ -237,45 +378,6 @@ Unless `rds:StorageEncrypted` condition key is true.
 
 ---
 
-### AOSS (OpenSearch Serverless) Third-Party Access Check
-
-**Check Name**: `deny_aoss_third_party_access`
-
-**Purpose**: Analyzes OpenSearch Serverless data access policies to identify third-party account access.
-
-**How it Works**:
-- Lists all AOSS collections
-- Retrieves data access policies
-- Identifies third-party AWS account principals
-- Maps access to collections and indexes
-
-**Detection**:
-- Third-party account IDs from policy principals
-- Wildcard principals
-- Cross-account access patterns
-
-**Output**:
-- Collections with third-party access
-- Third-party account IDs
-- Access levels (read/write)
-- Index-level permissions
-
-**Example Output**:
-```json
-{
-  "third_party_accounts": ["777777777777"],
-  "collections_with_third_party_access": [
-    {
-      "collection_name": "shared-analytics",
-      "collection_arn": "arn:aws:aoss:us-east-1:111111111111:collection/abc123",
-      "third_party_accounts": ["777777777777"]
-    }
-  ]
-}
-```
-
----
-
 ### ECR Third-Party Access Check
 
 **Check Name**: `deny_ecr_third_party_access`
@@ -319,6 +421,157 @@ Unless `rds:StorageEncrypted` condition key is true.
       "allowed_actions": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
     }
   ]
+}
+```
+
+---
+
+### KMS Third-Party Access Check
+
+**Check Name**: `deny_kms_third_party_access`
+
+**Purpose**: Identifies KMS keys with resource policies allowing external account access.
+
+**How it Works**:
+- Scans all AWS regions for KMS keys
+- Retrieves key policies for each key
+- Parses policies for third-party principals
+- Tracks specific KMS actions allowed per account
+
+**Detection**:
+- Third-party AWS account IDs from key policies
+- Wildcard principals (requiring CloudTrail analysis)
+- Specific KMS actions per account and per key
+
+**Actions Tracking**: Records KMS actions like:
+- `kms:Decrypt`
+- `kms:Encrypt`
+- `kms:GenerateDataKey`
+- `kms:DescribeKey`
+- `kms:CreateGrant`
+
+**Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected.
+
+**Output**:
+- Total keys analyzed
+- Keys with third-party access
+- Keys with wildcard principals (violations)
+- Third-party account IDs
+- KMS actions allowed per account
+
+**Example Output**:
+```json
+{
+  "key_id": "1234abcd-12ab-34cd-56ef-1234567890ab",
+  "key_arn": "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+  "region": "us-east-1",
+  "third_party_account_ids": ["999999999999"],
+  "actions_by_account": {
+    "999999999999": ["kms:Decrypt", "kms:DescribeKey"]
+  },
+  "has_wildcard_principal": false
+}
+```
+
+---
+
+### Secrets Manager Third-Party Access Check
+
+**Check Name**: `deny_secrets_manager_third_party_access`
+
+**Purpose**: Identifies Secrets Manager secrets with resource policies allowing external account access.
+
+**How it Works**:
+- Scans all AWS regions for Secrets Manager secrets
+- Retrieves resource policies for each secret
+- Parses policies for third-party principals
+- Tracks specific Secrets Manager actions allowed per account
+- Maps which secrets each third-party account can access
+
+**Detection**:
+- Third-party AWS account IDs from secret policies
+- Wildcard principals (violations)
+- Non-account principals like Federated (violations)
+- Specific actions per account
+
+**Actions Tracking**: Records Secrets Manager actions like:
+- `secretsmanager:GetSecretValue`
+- `secretsmanager:DescribeSecret`
+- `secretsmanager:PutSecretValue`
+
+**Fail-Fast Validation**: If any secret policy contains a Federated principal or other unsupported principal types, these are flagged as violations.
+
+**Output**:
+- Total secrets analyzed
+- Secrets with third-party access
+- Secrets with wildcard principals (violations)
+- Third-party account IDs
+- Actions allowed per third-party account
+- Secrets accessible per third-party account
+
+**Example Output**:
+```json
+{
+  "secret_name": "prod/database/password",
+  "secret_arn": "arn:aws:secretsmanager:us-east-1:111111111111:secret:prod/database/password-AbCdEf",
+  "third_party_account_ids": ["888888888888"],
+  "has_wildcard_principal": false,
+  "has_non_account_principals": false,
+  "actions_by_account": {
+    "888888888888": ["secretsmanager:GetSecretValue"]
+  }
+}
+```
+
+---
+
+### SQS Third-Party Access Check
+
+**Check Name**: `deny_sqs_third_party_access`
+
+**Purpose**: Identifies SQS queues with resource policies allowing external account access.
+
+**How it Works**:
+- Scans all AWS regions for SQS queues
+- Retrieves queue policies for each queue
+- Parses policies for third-party principals
+- Tracks specific SQS actions allowed per account
+- Maps which queues each third-party account can access
+
+**Detection**:
+- Third-party AWS account IDs from queue policies
+- Wildcard principals (violations)
+- Non-account principals (violations)
+- Specific actions per account
+
+**Actions Tracking**: Records SQS actions like:
+- `sqs:SendMessage`
+- `sqs:ReceiveMessage`
+- `sqs:DeleteMessage`
+- `sqs:GetQueueAttributes`
+
+**Fail-Fast Validation**: If any queue policy contains a Federated principal or other unsupported principal types, these are flagged as violations.
+
+**Output**:
+- Total queues analyzed
+- Queues with third-party access
+- Queues with wildcard principals (violations)
+- Third-party account IDs
+- Actions allowed per third-party account
+- Queues accessible per third-party account
+
+**Example Output**:
+```json
+{
+  "queue_url": "https://sqs.us-east-1.amazonaws.com/111111111111/shared-queue",
+  "queue_arn": "arn:aws:sqs:us-east-1:111111111111:shared-queue",
+  "region": "us-east-1",
+  "third_party_account_ids": ["777777777777"],
+  "has_wildcard_principal": false,
+  "has_non_account_principals": false,
+  "actions_by_account": {
+    "777777777777": ["sqs:SendMessage", "sqs:ReceiveMessage"]
+  }
 }
 ```
 
