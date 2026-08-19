@@ -18,6 +18,24 @@ locals {
         }
       }
     },
+    # var.deny_ec2_imds_hop_limit
+    # -->
+    # Sid: MaxImdsHopLimit
+    # Denies launching EC2 instances whose IMDS hop limit exceeds 1
+    # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
+    # A hop limit above 1 lets the metadata response cross an extra network hop
+    {
+      include = var.deny_ec2_imds_hop_limit,
+      statement = {
+        Action   = "ec2:RunInstances"
+        Resource = "arn:aws:ec2:*:*:instance/*"
+        Condition = {
+          "NumericGreaterThan" = {
+            "ec2:MetadataHttpPutResponseHopLimit" = "1"
+          }
+        }
+      }
+    },
     # var.deny_ec2_imds_v1
     # -->
     # Sid: DenyRoleDeliveryLessThan2

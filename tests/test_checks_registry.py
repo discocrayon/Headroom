@@ -37,9 +37,10 @@ class TestGetAllCheckClasses:
     def test_get_all_check_classes_no_filter(self) -> None:
         """Test getting all check classes without filter."""
         all_checks = get_all_check_classes()
-        assert len(all_checks) == 14
+        assert len(all_checks) == 15
         check_names = {cls.CHECK_NAME for cls in all_checks}
         assert "deny_ec2_imds_v1" in check_names
+        assert "deny_ec2_imds_hop_limit" in check_names
         assert "deny_ec2_ami_owner" in check_names
         assert "deny_ec2_public_ip" in check_names
         assert "deny_eks_create_cluster_without_tag" in check_names
@@ -56,9 +57,10 @@ class TestGetAllCheckClasses:
     def test_get_all_check_classes_filter_by_scps(self) -> None:
         """Test getting check classes filtered by scps."""
         scp_checks = get_all_check_classes("scps")
-        assert len(scp_checks) == 8
+        assert len(scp_checks) == 9
         check_names = {cls.CHECK_NAME for cls in scp_checks}
         assert "deny_ec2_imds_v1" in check_names
+        assert "deny_ec2_imds_hop_limit" in check_names
         assert "deny_ec2_ami_owner" in check_names
         assert "deny_ec2_public_ip" in check_names
         assert "deny_eks_create_cluster_without_tag" in check_names
@@ -92,6 +94,7 @@ class TestGetCheckTypeMap:
         assert isinstance(type_map, dict)
         assert type_map["deny_ec2_imds_v1"] == "scps"
         assert type_map["deny_ec2_ami_owner"] == "scps"
+        assert type_map["deny_ec2_imds_hop_limit"] == "scps"
         assert type_map["deny_ec2_public_ip"] == "scps"
         assert type_map["deny_eks_create_cluster_without_tag"] == "scps"
         assert type_map["deny_iam_user_creation"] == "scps"
@@ -104,4 +107,4 @@ class TestGetCheckTypeMap:
         assert type_map["deny_s3_third_party_access"] == "rcps"
         assert type_map["deny_secrets_manager_third_party_access"] == "rcps"
         assert type_map["deny_sqs_third_party_access"] == "rcps"
-        assert len(type_map) == 14
+        assert len(type_map) == 15

@@ -36,6 +36,47 @@
 
 ---
 
+### EC2 IMDS Hop Limit Check
+
+**Check Name**: `deny_ec2_imds_hop_limit`
+
+**Purpose**: Identifies EC2 instances whose IMDS hop limit exceeds 1. A hop limit above 1 lets the metadata response cross an extra network hop, which is what allows a container or a downstream proxy on the instance to reach the metadata endpoint.
+
+**How it Works**:
+- Scans all AWS regions for EC2 instances
+- Reads `MetadataOptions.HttpPutResponseHopLimit`, treating an absent value as the AWS default of 1
+- Reads `MetadataOptions.HttpEndpoint` to determine whether IMDS is reachable at all
+- Skips terminated instances
+
+**Policy Coverage**: Denies `ec2:RunInstances` when `ec2:MetadataHttpPutResponseHopLimit` is greater than 1.
+
+**Compliance Requirements**:
+- An instance at hop limit 1 is compliant
+- An instance with `HttpEndpoint` disabled is compliant whatever its hop limit, because there is no reachable IMDS for a hop to cross
+- Any other instance with a hop limit above 1 is a violation
+
+**Launch-Time Only**: `ec2:ModifyInstanceMetadataOptions` has no fine-grained condition keys, so this SCP cannot prevent the hop limit being raised after launch. Closing that gap requires denying the action outright or restricting it by `aws:PrincipalArn`, which is a separate policy decision and is not part of this check.
+
+**Container Impact**: Containers add a network hop, so workloads on ECS, EKS, or plain Docker generally need a hop limit of at least 2 to reach IMDS. Expect containerized instances to appear as violations; the placement engine will only recommend enabling the SCP once every account reports full compliance.
+
+**Output**:
+- Instance IDs and regions
+- Configured hop limit
+- Whether the metadata endpoint is enabled
+- Compliance percentage
+
+**Example Violation**:
+```json
+{
+  "instance_id": "i-0123456789abcdef0",
+  "region": "us-east-1",
+  "hop_limit": 2,
+  "imds_enabled": true
+}
+```
+
+---
+
 ### IAM User Creation Check
 
 **Check Name**: `deny_iam_user_creation`

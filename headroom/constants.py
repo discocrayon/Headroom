@@ -21,6 +21,7 @@ AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
 # SCP Checks (alphabetical by service)
 # EC2
 DENY_EC2_AMI_OWNER = "deny_ec2_ami_owner"
+DENY_EC2_IMDS_HOP_LIMIT = "deny_ec2_imds_hop_limit"
 DENY_EC2_IMDS_V1 = "deny_ec2_imds_v1"
 DENY_EC2_PUBLIC_IP = "deny_ec2_public_ip"
 # EKS
