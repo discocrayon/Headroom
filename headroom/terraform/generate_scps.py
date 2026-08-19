@@ -99,6 +99,9 @@ def _build_ec2_terraform_parameters(
         ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
         parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
 
+    deny_ec2_imds_hop_limit = "deny_ec2_imds_hop_limit" in enabled_policies
+    parameters.append(TerraformParameter("deny_ec2_imds_hop_limit", deny_ec2_imds_hop_limit))
+
     deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_policies
     parameters.append(TerraformParameter("deny_ec2_imds_v1", deny_ec2_imds_v1))
 

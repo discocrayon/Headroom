@@ -12,9 +12,11 @@ from botocore.exceptions import ClientError
 from headroom.aws.ec2 import (
     DenyEc2ImdsV1,
     DenyEc2AmiOwner,
+    DenyEc2ImdsHopLimit,
     DenyEc2PublicIp,
     get_ec2_imds_v1_analysis,
     get_ec2_ami_owner_analysis,
+    get_ec2_imds_hop_limit_analysis,
     get_ec2_public_ip_analysis
 )
 
@@ -1383,3 +1385,143 @@ class TestGetEc2PublicIpAnalysis:
 
         assert len(results) == 1
         assert results[0].instance_arn == "arn:aws:ec2:eu-west-1:222222222222:instance/i-test123456789"
+
+
+class TestDenyEc2ImdsHopLimit:
+    """Test DenyEc2ImdsHopLimit dataclass."""
+
+    def test_deny_ec2_imds_hop_limit_creation(self) -> None:
+        """Test creating DenyEc2ImdsHopLimit with valid data."""
+        result = DenyEc2ImdsHopLimit(
+            region="us-east-1",
+            instance_id="i-1234567890abcdef0",
+            hop_limit=2,
+            imds_enabled=True
+        )
+
+        assert result.region == "us-east-1"
+        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.hop_limit == 2
+        assert result.imds_enabled is True
+
+
+class TestGetEc2ImdsHopLimitAnalysis:
+    """Test get_ec2_imds_hop_limit_analysis function."""
+
+    def create_mock_instance(
+        self,
+        instance_id: str,
+        state: str = "running",
+        hop_limit: Optional[int] = 1,
+        http_endpoint: str = "enabled"
+    ) -> dict:
+        """Helper to create mock EC2 instance data with metadata hop limit."""
+        metadata_options: dict = {"HttpEndpoint": http_endpoint}
+        if hop_limit is not None:
+            metadata_options["HttpPutResponseHopLimit"] = hop_limit
+
+        return {
+            "InstanceId": instance_id,
+            "State": {"Name": state},
+            "MetadataOptions": metadata_options,
+        }
+
+    def build_session(self, instances: List[dict]) -> MagicMock:
+        """Build a mock session serving one region with the given instances."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [
+            {"Reservations": [{"Instances": instances}]}
+        ]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+        return mock_session
+
+    def test_reports_hop_limit_above_one(self) -> None:
+        """A hop limit greater than 1 is reported verbatim."""
+        mock_session = self.build_session([
+            self.create_mock_instance("i-aaa", hop_limit=2)
+        ])
+
+        results = get_ec2_imds_hop_limit_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].instance_id == "i-aaa"
+        assert results[0].hop_limit == 2
+        assert results[0].imds_enabled is True
+        assert results[0].region == "us-east-1"
+
+    def test_defaults_missing_hop_limit_to_one(self) -> None:
+        """An absent HttpPutResponseHopLimit defaults to the AWS default of 1."""
+        mock_session = self.build_session([
+            self.create_mock_instance("i-bbb", hop_limit=None)
+        ])
+
+        results = get_ec2_imds_hop_limit_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].hop_limit == 1
+
+    def test_marks_imds_disabled_instances(self) -> None:
+        """An instance with IMDS disabled is reported with imds_enabled False."""
+        mock_session = self.build_session([
+            self.create_mock_instance("i-ccc", hop_limit=3, http_endpoint="disabled")
+        ])
+
+        results = get_ec2_imds_hop_limit_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].imds_enabled is False
+        assert results[0].hop_limit == 3
+
+    def test_skips_terminated_instances(self) -> None:
+        """Terminated instances are excluded from results."""
+        mock_session = self.build_session([
+            self.create_mock_instance("i-ddd", state="terminated", hop_limit=3),
+            self.create_mock_instance("i-eee", hop_limit=1),
+        ])
+
+        results = get_ec2_imds_hop_limit_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].instance_id == "i-eee"
+
+    def test_raises_on_regional_client_error(self) -> None:
+        """A regional API failure is surfaced as RuntimeError."""
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.side_effect = ClientError(
+            {"Error": {"Code": "UnauthorizedOperation", "Message": "denied"}},
+            "DescribeInstances"
+        )
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances"):
+            get_ec2_imds_hop_limit_analysis(mock_session)
