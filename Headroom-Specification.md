@@ -2106,6 +2106,14 @@ def run_checks(
        d. Get Headroom session via get_headroom_session()
        e. Run SCP checks via run_checks_for_type("scps", ...)
        f. Run RCP checks via run_checks_for_type("rcps", ...)
+
+    Error handling is deliberately absent: a failure aborts the entire run
+    rather than being logged and skipped. A partial run is more dangerous than no
+    run, because this output drives SCP and RCP deployment and an account skipped
+    for a transient error is indistinguishable in the results from an account
+    with zero violations, so swallowing the error could green-light a policy that
+    breaks it. Accounts that genuinely cannot be analyzed are excluded earlier,
+    by lifecycle state in `get_subaccount_information`.
     """
 ```
 
