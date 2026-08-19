@@ -4,7 +4,7 @@ from typing import List
 
 from boto3.session import Session
 
-from ...aws.ec2 import DenyImdsV1Ec2, get_imds_v1_ec2_analysis
+from ...aws.ec2 import DenyEc2ImdsV1, get_ec2_imds_v1_analysis
 from ...constants import DENY_EC2_IMDS_V1
 from ...enums import CheckCategory
 from ...types import JsonDict
@@ -13,7 +13,7 @@ from ..registry import register_check
 
 
 @register_check("scps", DENY_EC2_IMDS_V1)
-class DenyEc2ImdsV1Check(BaseCheck[DenyImdsV1Ec2]):
+class DenyEc2ImdsV1Check(BaseCheck[DenyEc2ImdsV1]):
     """
     Check for EC2 instances that would be blocked by the deny_ec2_imds_v1 SCP.
 
@@ -23,7 +23,7 @@ class DenyEc2ImdsV1Check(BaseCheck[DenyImdsV1Ec2]):
     - Overall compliance status for the account
     """
 
-    def analyze(self, session: Session) -> List[DenyImdsV1Ec2]:
+    def analyze(self, session: Session) -> List[DenyEc2ImdsV1]:
         """
         Analyze EC2 instances for IMDS v1 configuration.
 
@@ -31,16 +31,16 @@ class DenyEc2ImdsV1Check(BaseCheck[DenyImdsV1Ec2]):
             session: boto3.Session for the target account
 
         Returns:
-            List of DenyImdsV1Ec2 analysis results
+            List of DenyEc2ImdsV1 analysis results
         """
-        return get_imds_v1_ec2_analysis(session)
+        return get_ec2_imds_v1_analysis(session)
 
-    def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[CheckCategory, JsonDict]:
+    def categorize_result(self, result: DenyEc2ImdsV1) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single IMDS v1 analysis result.
 
         Args:
-            result: Single DenyImdsV1Ec2 analysis result
+            result: Single DenyEc2ImdsV1 analysis result
 
         Returns:
             Tuple of (category, result_dict) where category is a CheckCategory enum value
