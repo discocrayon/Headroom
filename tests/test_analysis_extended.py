@@ -282,13 +282,21 @@ class TestRunChecks:
             # (check parameters are passed to constructor, not execute)
             mock_check.assert_called_once_with(mock_headroom_session)
 
-    def test_run_checks_session_failure(
+    def test_run_checks_fails_fast_on_session_failure(
         self,
         mock_config: HeadroomConfig,
         sample_account_infos: List[AccountInfo],
         temp_results_dir: str
     ) -> None:
-        """Test run_checks when get_headroom_session fails."""
+        """
+        A session failure propagates out of run_checks instead of being skipped.
+
+        This is intentional, not a missing feature - do not "fix" it by logging
+        and continuing. See
+        test_run_checks_does_not_swallow_client_errors_or_continue for the full
+        rationale and for the stronger guarantee that no later account is
+        attempted; this test covers only the generic case.
+        """
         mock_security_session = MagicMock()
 
         with (
@@ -305,6 +313,46 @@ class TestRunChecks:
 
             org_account_ids = {"111111111111", "222222222222"}
             run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
+
+    def test_run_checks_does_not_swallow_client_errors_or_continue(
+        self,
+        mock_config: HeadroomConfig,
+        sample_account_infos: List[AccountInfo],
+        temp_results_dir: str
+    ) -> None:
+        """
+        A ClientError from role assumption aborts the whole run, by design.
+
+        Do not add error handling here that logs the failure and continues to the
+        next account. A partial run is more dangerous than no run: Headroom's
+        output drives SCP and RCP deployment, and an account skipped because of a
+        transient credentials error is indistinguishable in the results from an
+        account with zero violations. Swallowing the error could green-light a
+        policy that breaks the account that was never actually examined.
+
+        This pins both halves of the contract that
+        test_run_checks_fails_fast_on_session_failure cannot: the concrete error
+        type `assume_role` raises propagates uncaught, and no later account is
+        attempted once one has failed.
+        """
+        mock_security_session = MagicMock()
+        access_denied = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Not authorized to assume role"}},
+            "AssumeRole"
+        )
+
+        with (
+            patch("headroom.analysis.assume_role", side_effect=access_denied) as mock_assume_role,
+            patch("headroom.analysis.results_exist", return_value=False),
+            pytest.raises(ClientError) as exc_info,
+        ):
+            run_checks(mock_security_session, sample_account_infos, mock_config, {"111111111111"})
+
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+
+        # Fail fast: the first account raised, so the second was never attempted.
+        assert mock_assume_role.call_count == 1
+        assert mock_assume_role.call_args.args[0] == "arn:aws:iam::111111111111:role/Headroom"
 
     def test_run_checks_skip_existing_results(
         self,

@@ -145,7 +145,8 @@ sequenceDiagram
 5. **Hub-and-Spoke Pattern**: Tool runs from one central account, accesses other accounts via AssumeRole
 6. **Flexible Execution**: Can run from either the security analysis account or from the management account (requires `security_analysis_account_id` configuration)
 7. **ACTIVE-Only Analysis**: Only accounts in the `ACTIVE` lifecycle state are analyzed. `CLOSED`, `SUSPENDED` and `PENDING_ACTIVATION` accounts reject role assumption, and `PENDING_CLOSURE` accounts are leaving the organization. Read from the `State` field, falling back to the `Status` field that AWS retires on 2026-09-09; an account whose state cannot be determined at all aborts the run rather than being guessed at. Organization-membership lookups are deliberately **not** filtered, since a closed account stays an organization member and still matches organization-based RCP conditions
-8. **Data Flow**:
+8. **Fail-Fast Analysis**: A failure while analyzing any account aborts the entire run; errors are never logged and skipped. A partial run is more dangerous than no run, because the output drives SCP/RCP deployment and an account skipped for a transient error is indistinguishable from one with zero violations. Accounts that genuinely cannot be analyzed are excluded up front by lifecycle state instead
+9. **Data Flow**:
    - Management account → Organization metadata
    - Member accounts → Compliance data
    - Tool → Aggregated results + Terraform configs

@@ -469,6 +469,18 @@ def run_checks(
         relevant_account_infos: List of accounts to check
         config: Headroom configuration
         org_account_ids: Set of all account IDs in the organization
+
+    Raises:
+        ClientError: If assuming the Headroom role in an account fails
+        RuntimeError: If a check's underlying AWS API calls fail
+
+    Error handling is deliberately absent: a failure aborts the entire run
+    rather than being logged and skipped. A partial run is more dangerous than no
+    run, because this output drives SCP and RCP deployment and an account skipped
+    for a transient error is indistinguishable in the results from an account
+    with zero violations, so swallowing the error could green-light a policy that
+    breaks it. Accounts that genuinely cannot be analyzed are excluded earlier,
+    by lifecycle state in `get_subaccount_information`.
     """
     for account_info in relevant_account_infos:
         if _all_checks_complete(account_info, config):
