@@ -1938,15 +1938,22 @@ account and then fail inside `assume_role` with an `AccessDenied` that names non
 of the real cause, so the failure belongs at the point the information is
 actually missing.
 
-**An unrecognized state is analyzed instead.** A `State` value this code does not
-know is analyzed, with a warning. The asymmetry with the case above is
-deliberate: AWS adding a sixth state must not break every run for something the
-operator cannot fix, and if such a state really is unusable, the subsequent role
-assumption fails loudly on its own. The governing principle is to fail loudly
-when lifecycle state cannot be determined at all, and to degrade toward analyzing
-when a state is readable but unfamiliar - never to silently skip an account,
-which for a tool whose purpose is proving a policy will not break an account is
-the worst outcome of the three.
+**An unrecognized state also aborts the run.** A `State` value absent from both
+`ACTIVE` and the skip set means AWS has added a lifecycle state, and neither
+guess is safe: analyzing an account that turns out to be unusable burns the run
+on a downstream error that explains nothing, while skipping one that is usable
+drops it from the compliance picture that gates policy deployment. The error
+names the offending value and the constant to update.
+
+The governing principle is therefore uniform - **never guess at an account's
+lifecycle state.** A state that is known and analyzable is analyzed, a state that
+is known and unusable is skipped, and anything else stops the run.
+
+The cost of that uniformity is that a state AWS adds would break runs, so
+`test_every_state_aws_defines_is_classified` asserts that `ACTIVE` plus the skip
+set exactly covers `AccountStateType`, the SDK's own enumeration of the field.
+A new AWS state therefore surfaces as a CI failure naming the state when
+`boto3-stubs` is upgraded, rather than as a failed run in production.
 
 **Scope.** This filtering applies only to the account list that drives
 per-account checks. It deliberately does **not** apply to:

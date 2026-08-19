@@ -191,16 +191,23 @@ def _should_skip_account(account: AccountTypeDef, account_id: str) -> bool:
 
     Only ACTIVE accounts are analyzed.
 
-    An account reporting neither `State` nor `Status` aborts the run. That cause
-    is environment-wide rather than per-account - an SDK too old to model `State`
-    once `Status` has been retired makes every account report nothing - so
-    analyzing anyway would attempt every closed account and then fail inside
+    Any state this function cannot classify aborts the run rather than being
+    guessed at, for two distinct causes with two distinct remedies.
+
+    An account reporting neither `State` nor `Status` means the SDK is too old to
+    model `State` at a point when `Status` has been retired. That cause is
+    environment-wide rather than per-account, so every account would report
+    nothing; continuing would attempt every closed account and then fail inside
     `assume_role` with an error naming none of the real cause.
 
-    An account reporting a state this code does not recognize is analyzed, with a
-    warning, rather than aborting. AWS adding a sixth state must not break every
-    run for something the operator cannot fix, and if such a state really is
-    unusable then the subsequent role assumption fails loudly on its own.
+    An account reporting a state absent from both ACTIVE_ACCOUNT_STATE and
+    INACTIVE_ACCOUNT_STATES means AWS has added a lifecycle state. Neither guess
+    is safe there: analyzing an account that turns out to be unusable burns the
+    run on a downstream error that explains nothing, and skipping one that is
+    usable drops it from the compliance picture that gates policy deployment.
+    test_every_state_aws_defines_is_classified is meant to catch this when
+    boto3-stubs is upgraded, so reaching this branch in production means that
+    test was not run.
 
     Args:
         account: Account dictionary from the Organizations API
@@ -210,7 +217,7 @@ def _should_skip_account(account: AccountTypeDef, account_id: str) -> bool:
         True if the account should be excluded from analysis
 
     Raises:
-        RuntimeError: If the account reports neither State nor Status
+        RuntimeError: If the account's lifecycle state cannot be classified
     """
     state = _get_account_state(account)
 
@@ -228,11 +235,14 @@ def _should_skip_account(account: AccountTypeDef, account_id: str) -> bool:
         logger.info(f"Skipping account {account_id} in lifecycle state {state}")
         return True
 
-    logger.warning(
-        f"Account {account_id} reports unrecognized lifecycle state {state}; "
-        "analyzing it anyway"
+    known_states = ", ".join(sorted({ACTIVE_ACCOUNT_STATE} | INACTIVE_ACCOUNT_STATES))
+    raise RuntimeError(
+        f"Account {account_id} reports lifecycle state {state}, which Headroom does "
+        f"not recognize. Known states are {known_states}. If AWS has added a state, "
+        "add it to INACTIVE_ACCOUNT_STATES in headroom/analysis.py when accounts in "
+        "that state cannot be analyzed, or to ACTIVE_ACCOUNT_STATE handling when they "
+        "can."
     )
-    return False
 
 
 def get_subaccount_information(config: HeadroomConfig, session: Session) -> List[AccountInfo]:
