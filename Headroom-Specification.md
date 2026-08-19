@@ -134,7 +134,7 @@ headroom/
 
 1. **Configuration:** Load YAML → merge with CLI args → validate with Pydantic
 2. **AWS Setup:** Assume security analysis role (if specified) → assume OrgAndAccountInfoReader in management account
-3. **Account Discovery:** Query Organizations API → extract account metadata with tags → filter management account
+3. **Account Discovery:** Query Organizations API → extract account metadata with tags → filter management account → filter to ACTIVE accounts only
 4. **Analysis:** For each account:
    - Check if all results already exist (skip if so)
    - Assume Headroom role in target account
@@ -1881,14 +1881,16 @@ def get_account_info(
     Algorithm:
     1. List all accounts via list_accounts()
     2. Filter out management account
-    3. For each account:
+    3. Filter out accounts not in the ACTIVE lifecycle state
+       (see "Account Lifecycle State Filtering" below)
+    4. For each remaining account:
        - Get tags via list_tags_for_resource()
        - Extract environment (default "unknown")
        - Extract owner (default "unknown")
        - Extract name:
          - If use_account_name_from_tags: use tag (default account_id)
          - Else: use account.Name from API (default account_id)
-    4. Return List[AccountInfo]
+    5. Return List[AccountInfo]
     """
 
 @dataclass
@@ -1898,6 +1900,66 @@ class AccountInfo:
     name: str             # From tags/API, default account_id
     owner: str            # From tags, default "unknown"
 ```
+
+#### Account Lifecycle State Filtering
+
+Only accounts in the `ACTIVE` lifecycle state are analyzed. AWS Organizations
+reports an account's lifecycle position through two fields on the `Account`
+object:
+
+| Field | Values | Status |
+|-------|--------|--------|
+| `State` | `PENDING_ACTIVATION`, `ACTIVE`, `SUSPENDED`, `PENDING_CLOSURE`, `CLOSED` | Current |
+| `Status` | `ACTIVE`, `SUSPENDED`, `PENDING_CLOSURE` | Retired 2026-09-09 |
+
+`State` is authoritative; `Status` is a fallback for SDKs released before
+2025-09-09, which do not model `State` (botocore drops unmodeled fields from
+responses). Because the retiring `Status` value `SUSPENDED` covers both of the
+`State` values `SUSPENDED` and `CLOSED`, allowlisting `ACTIVE` skips exactly the
+same accounts under either field, which makes the retirement a non-event.
+
+| State | Analyzed | Reason |
+|-------|----------|--------|
+| `ACTIVE` | Yes | Fully operational |
+| `CLOSED` | No | Role assumption is impossible; AWS removes the account from the organization 90 days after closure |
+| `SUSPENDED` | No | AWS has restricted access, so API calls fail |
+| `PENDING_ACTIVATION` | No | Sign-up was never completed, so the account is unusable |
+| `PENDING_CLOSURE` | No | Still functional, but leaving the organization, so it must not hold back an organization-wide recommendation |
+
+Without this filtering a single closed account aborts an entire run, because
+`run_checks()` does not catch the `ClientError` that `assume_role` raises,
+losing the results of every account later in the list.
+
+**An indeterminate state aborts the run.** An account reporting neither field
+raises `RuntimeError` naming the remediation. That cause is environment-wide
+rather than per-account: an SDK too old to model `State` once `Status` has been
+retired makes every account report nothing. Continuing would attempt every closed
+account and then fail inside `assume_role` with an `AccessDenied` that names none
+of the real cause, so the failure belongs at the point the information is
+actually missing.
+
+**An unrecognized state is analyzed instead.** A `State` value this code does not
+know is analyzed, with a warning. The asymmetry with the case above is
+deliberate: AWS adding a sixth state must not break every run for something the
+operator cannot fix, and if such a state really is unusable, the subsequent role
+assumption fails loudly on its own. The governing principle is to fail loudly
+when lifecycle state cannot be determined at all, and to degrade toward analyzing
+when a state is readable but unfamiliar - never to silently skip an account,
+which for a tool whose purpose is proving a policy will not break an account is
+the worst outcome of the three.
+
+**Scope.** This filtering applies only to the account list that drives
+per-account checks. It deliberately does **not** apply to:
+
+- `get_all_organization_account_ids()`, the organization-membership oracle for
+  the third-party RCP checks. A closed account remains an organization member
+  until AWS removes it, and organization-based RCP conditions still match it, so
+  filtering here would reclassify a recently-closed sibling account as a third
+  party and produce false positive findings.
+- `analyze_organization_structure()`, which resolves account names read back
+  from result files on disk. A result file written before an account closed must
+  still resolve, and placement is driven by the results that exist, which leaves
+  an account with no results already inert.
 
 ### EC2 Integration
 

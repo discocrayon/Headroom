@@ -113,6 +113,7 @@ sequenceDiagram
     Mgmt-->>Tool: Account List with Tags & OU Structure
     Tool->>Mgmt: describe_organizational_units()
     Mgmt-->>Tool: OU Hierarchy
+    Note over Tool: Skip accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)
 
     Note over Tool: Step 2: Analyze Each Account
     Tool->>Prod1: AssumeRole(Headroom)
@@ -143,7 +144,8 @@ sequenceDiagram
 4. **Trust Relationship**: All roles trust the Security Analysis Account as their principal
 5. **Hub-and-Spoke Pattern**: Tool runs from one central account, accesses other accounts via AssumeRole
 6. **Flexible Execution**: Can run from either the security analysis account or from the management account (requires `security_analysis_account_id` configuration)
-7. **Data Flow**:
+7. **ACTIVE-Only Analysis**: Only accounts in the `ACTIVE` lifecycle state are analyzed. `CLOSED`, `SUSPENDED` and `PENDING_ACTIVATION` accounts reject role assumption, and `PENDING_CLOSURE` accounts are leaving the organization. Read from the `State` field, falling back to the `Status` field that AWS retires on 2026-09-09; an account whose state cannot be determined at all aborts the run rather than being guessed at. Organization-membership lookups are deliberately **not** filtered, since a closed account stays an organization member and still matches organization-based RCP conditions
+8. **Data Flow**:
    - Management account → Organization metadata
    - Member accounts → Compliance data
    - Tool → Aggregated results + Terraform configs

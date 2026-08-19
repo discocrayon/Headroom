@@ -16,6 +16,7 @@ sequenceDiagram
     Mgmt-->>Tool: Account List with Tags & OU Structure
     Tool->>Mgmt: describe_organizational_units()
     Mgmt-->>Tool: OU Hierarchy
+    Note over Tool: Skip accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)
 
     Note over Tool: Step 2: Run Checks on Each Account
     Tool->>Prod1: AssumeRole(Headroom)
