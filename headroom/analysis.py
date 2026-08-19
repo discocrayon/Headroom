@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
 from boto3.session import Session
@@ -146,6 +146,105 @@ def _build_account_info_from_account_dict(
     )
 
 
+# AWS Organizations lifecycle state in which an account can be analyzed.
+ACTIVE_ACCOUNT_STATE = "ACTIVE"
+
+# Lifecycle states in which an account is not analyzed.
+#
+# CLOSED, SUSPENDED and PENDING_ACTIVATION accounts all reject role assumption,
+# so attempting to analyze one aborts the whole run. PENDING_CLOSURE accounts
+# remain functional, so excluding them is a deliberate policy choice: an account
+# on its way out of the organization should not hold back an organization-wide
+# policy recommendation.
+#
+# AWS retires the `Status` field on 2026-09-09 in favour of `State`, which splits
+# the old catch-all SUSPENDED into distinct SUSPENDED and CLOSED values. Because
+# old-SUSPENDED covers both, this set skips the same accounts under either field.
+INACTIVE_ACCOUNT_STATES = frozenset({
+    "CLOSED",
+    "PENDING_ACTIVATION",
+    "PENDING_CLOSURE",
+    "SUSPENDED",
+})
+
+
+def _get_account_state(account: AccountTypeDef) -> Optional[str]:
+    """
+    Return an account's lifecycle state, preferring `State` over `Status`.
+
+    AWS retires `Status` on 2026-09-09, which makes `State` authoritative. SDKs
+    released before 2025-09-09 do not model `State`, so botocore drops it from
+    the response and only `Status` is available.
+
+    Args:
+        account: Account dictionary from the Organizations API
+
+    Returns:
+        The lifecycle state, or None if the account reports neither field
+    """
+    return account.get("State") or account.get("Status")
+
+
+def _should_skip_account(account: AccountTypeDef, account_id: str) -> bool:
+    """
+    Determine whether an account is excluded from analysis by lifecycle state.
+
+    Only ACTIVE accounts are analyzed.
+
+    Any state this function cannot classify aborts the run rather than being
+    guessed at, for two distinct causes with two distinct remedies.
+
+    An account reporting neither `State` nor `Status` means the SDK is too old to
+    model `State` at a point when `Status` has been retired. That cause is
+    environment-wide rather than per-account, so every account would report
+    nothing; continuing would attempt every closed account and then fail inside
+    `assume_role` with an error naming none of the real cause.
+
+    An account reporting a state absent from both ACTIVE_ACCOUNT_STATE and
+    INACTIVE_ACCOUNT_STATES means AWS has added a lifecycle state. Neither guess
+    is safe there: analyzing an account that turns out to be unusable burns the
+    run on a downstream error that explains nothing, and skipping one that is
+    usable drops it from the compliance picture that gates policy deployment.
+    test_every_state_aws_defines_is_classified is meant to catch this when
+    boto3-stubs is upgraded, so reaching this branch in production means that
+    test was not run.
+
+    Args:
+        account: Account dictionary from the Organizations API
+        account_id: Account identifier, used for logging
+
+    Returns:
+        True if the account should be excluded from analysis
+
+    Raises:
+        RuntimeError: If the account's lifecycle state cannot be classified
+    """
+    state = _get_account_state(account)
+
+    if state is None:
+        raise RuntimeError(
+            f"Account {account_id} reports neither State nor Status, so its lifecycle "
+            "state cannot be determined. The AWS SDK is too old to model State, which "
+            "replaced Status on 2026-09-09; upgrade boto3 to continue."
+        )
+
+    if state == ACTIVE_ACCOUNT_STATE:
+        return False
+
+    if state in INACTIVE_ACCOUNT_STATES:
+        logger.info(f"Skipping account {account_id} in lifecycle state {state}")
+        return True
+
+    known_states = ", ".join(sorted({ACTIVE_ACCOUNT_STATE} | INACTIVE_ACCOUNT_STATES))
+    raise RuntimeError(
+        f"Account {account_id} reports lifecycle state {state}, which Headroom does "
+        f"not recognize. Known states are {known_states}. If AWS has added a state, "
+        "add it to INACTIVE_ACCOUNT_STATES in headroom/analysis.py when accounts in "
+        "that state cannot be analyzed, or to ACTIVE_ACCOUNT_STATE handling when they "
+        "can."
+    )
+
+
 def get_subaccount_information(config: HeadroomConfig, session: Session) -> List[AccountInfo]:
     """
     Get subaccount information from the management account.
@@ -153,21 +252,27 @@ def get_subaccount_information(config: HeadroomConfig, session: Session) -> List
     Uses the provided session to assume the OrgAndAccountInfoReader role in the
     management account, then retrieves account information with tags.
 
+    Excludes the management account, which SCPs and RCPs do not affect, and any
+    account that is not in the ACTIVE lifecycle state.
+
     Args:
         config: Headroom configuration
         session: boto3 Session with access to security analysis account
 
     Returns:
-        List of AccountInfo objects for all accounts except the management account
+        List of AccountInfo objects for the ACTIVE accounts, excluding the
+        management account
 
     Raises:
         ValueError: If management_account_id is not set in config
-        RuntimeError: If role assumption or API calls fail
+        RuntimeError: If role assumption or API calls fail, or if an account's
+            lifecycle state cannot be determined
     """
     mgmt_session = get_management_account_session(config, session)
     org_client = mgmt_session.client("organizations")
     paginator = org_client.get_paginator("list_accounts")
     accounts = []
+    skipped_states: Dict[str, int] = {}
 
     for page in paginator.paginate():
         for acct in page.get("Accounts", []):
@@ -176,8 +281,19 @@ def get_subaccount_information(config: HeadroomConfig, session: Session) -> List
             if account_id == config.management_account_id:
                 continue
 
+            if _should_skip_account(acct, account_id):
+                # An account is only skipped for a state in INACTIVE_ACCOUNT_STATES,
+                # so the state is always a known string here.
+                skipped_state = str(_get_account_state(acct))
+                skipped_states[skipped_state] = skipped_states.get(skipped_state, 0) + 1
+                continue
+
             account_info = _build_account_info_from_account_dict(acct, org_client, config)
             accounts.append(account_info)
+
+    if skipped_states:
+        breakdown = ", ".join(f"{count} {state}" for state, count in sorted(skipped_states.items()))
+        logger.info(f"Skipped {sum(skipped_states.values())} non-active account(s): {breakdown}")
 
     return accounts
 
@@ -363,6 +479,18 @@ def run_checks(
         relevant_account_infos: List of accounts to check
         config: Headroom configuration
         org_account_ids: Set of all account IDs in the organization
+
+    Raises:
+        ClientError: If assuming the Headroom role in an account fails
+        RuntimeError: If a check's underlying AWS API calls fail
+
+    Error handling is deliberately absent: a failure aborts the entire run
+    rather than being logged and skipped. A partial run is more dangerous than no
+    run, because this output drives SCP and RCP deployment and an account skipped
+    for a transient error is indistinguishable in the results from an account
+    with zero violations, so swallowing the error could green-light a policy that
+    breaks it. Accounts that genuinely cannot be analyzed are excluded earlier,
+    by lifecycle state in `get_subaccount_information`.
     """
     for account_info in relevant_account_infos:
         if _all_checks_complete(account_info, config):

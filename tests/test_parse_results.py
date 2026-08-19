@@ -23,6 +23,7 @@ from headroom.terraform.generate_scps import generate_scp_terraform
 from headroom.aws.organization import (
     analyze_organization_structure,
     create_account_ou_mapping,
+    lookup_account_id_by_name,
 )
 from headroom.types import (
     OrganizationHierarchy,
@@ -101,6 +102,44 @@ class TestOrganizationStructureAnalysis:
         assert prod_ou.name == "Production"
         assert prod_ou.parent_ou_id is None
         assert "222222222222" in prod_ou.accounts
+
+    def test_analyze_organization_structure_retains_non_active_accounts(self) -> None:
+        """
+        Non-active accounts must stay in the OU hierarchy.
+
+        The hierarchy resolves account names read back from result files on disk,
+        so a result file written before an account closed must still resolve;
+        filtering the hierarchy would make lookup_account_id_by_name raise
+        RuntimeError for it. Filtering here is also unnecessary, because
+        placement is driven by the check results that exist, leaving an account
+        with no results already inert. The lifecycle-state filtering applied in
+        get_subaccount_information deliberately does not apply here.
+        """
+        mock_session = Mock()
+        mock_org_client = Mock()
+        mock_session.client.return_value = mock_org_client
+
+        mock_org_client.list_roots.return_value = {"Roots": [{"Id": "r-1234"}]}
+        mock_org_client.list_organizational_units_for_parent.side_effect = [
+            {"OrganizationalUnits": [{"Id": "ou-1234", "Name": "Production"}]},
+            {"OrganizationalUnits": []},
+            {"OrganizationalUnits": []},
+        ]
+        mock_org_client.list_accounts_for_parent.side_effect = [
+            {"Accounts": [
+                {"Id": "222222222222", "Name": "prod-account", "State": "ACTIVE"},
+                {"Id": "333333333333", "Name": "closed-account", "State": "CLOSED"},
+            ]},
+            {"Accounts": [
+                {"Id": "111111111111", "Name": "management-account", "State": "ACTIVE"},
+            ]},
+        ]
+
+        result = analyze_organization_structure(mock_session)
+
+        assert "333333333333" in result.accounts
+        assert "333333333333" in result.organizational_units["ou-1234"].accounts
+        assert lookup_account_id_by_name("closed-account", result) == "333333333333"
 
     def test_analyze_organization_structure_no_roots(self) -> None:
         """Test error handling when no roots found."""
