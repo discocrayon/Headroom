@@ -92,6 +92,7 @@ python -m headroom --config config.yaml
 **JSON reports** in `test_environment/headroom_results/`:
 
 **SCP Checks:**
+- `scps/deny_ec2_imds_hop_limit/{account}.json` - EC2 IMDS hop limit violations
 - `scps/deny_ec2_imds_v1/{account}.json` - EC2 IMDSv1 violations
 - `scps/deny_ec2_ami_owner/{account}.json` - EC2 AMI owner analysis
 - `scps/deny_ec2_public_ip/{account}.json` - EC2 public IP violations
@@ -122,6 +123,7 @@ See [full examples](documentation/EXAMPLES.md).
 - **EC2 IMDSv1**: Enforce IMDSv2 on all instances (supports exemption tags)
 - **EC2 AMI Owner**: Restrict AMI usage to approved owners
 - **EC2 Public IP**: Block public IP allocation on instances
+- **EC2 IMDS Hop Limit**: Block instance launches with an IMDS hop limit above 1
 - **EKS Paved Road**: Require `PavedRoad=true` tag on clusters
 - **IAM User Creation**: Restrict to approved users (auto-generates allowlists)
 - **IAM SAML Provider**: Enforce AWS IAM Identity Center SAML providers only
@@ -199,7 +201,7 @@ module "scps_root" {
 
 ✅ **Working**:
 - Multi-account AWS Organizations scanning
-- SCP checks: EC2 IMDSv1, EC2 AMI owner, EC2 public IP, IAM users, IAM SAML providers, EKS tags, Lambda function URLs, RDS encryption
+- SCP checks: EC2 IMDSv1, EC2 IMDS hop limit, EC2 AMI owner, EC2 public IP, IAM users, IAM SAML providers, EKS tags, Lambda function URLs, RDS encryption
 - RCP checks: IAM trust policies, S3, ECR, KMS, Secrets Manager, SQS third-party access
 - Terraform auto-generation with allowlists
 - JSON violation reports
