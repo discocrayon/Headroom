@@ -168,18 +168,24 @@ locals {
 test_environment/
 ├── headroom_results/
 │   ├── scps/
-│   │   ├── deny_imds_v1_ec2/
+│   │   ├── deny_ec2_imds_v1/
 │   │   │   ├── production_account_111111111111.json
 │   │   │   ├── development_account_222222222222.json
 │   │   │   └── ...
-│   │   ├── deny_iam_user_creation/
+│   │   ├── deny_ec2_ami_owner/
+│   │   ├── deny_ec2_public_ip/
 │   │   ├── deny_eks_create_cluster_without_tag/
+│   │   ├── deny_iam_user_creation/
+│   │   ├── deny_iam_saml_provider_not_aws_sso/
+│   │   ├── deny_lambda_auth_type_none/
 │   │   └── deny_rds_unencrypted/
 │   └── rcps/
 │       ├── deny_sts_third_party_assumerole/
 │       ├── deny_s3_third_party_access/
-│       ├── deny_aoss_third_party_access/
-│       └── deny_ecr_third_party_access/
+│       ├── deny_ecr_third_party_access/
+│       ├── deny_kms_third_party_access/
+│       ├── deny_secrets_manager_third_party_access/
+│       └── deny_sqs_third_party_access/
 ├── scps/
 │   ├── grab_org_info.tf
 │   ├── root_scps.tf
