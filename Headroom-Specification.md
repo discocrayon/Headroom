@@ -1303,22 +1303,24 @@ def lookup_account_id_by_name(
 
 def parse_scp_result_files(
     results_dir: str,
-    exclude_rcp_checks: bool = True
+    organization_hierarchy: OrganizationHierarchy
 ) -> List[SCPCheckResult]:
     """
     Parse all SCP check result files.
+
+    Results are organized as: {results_dir}/scps/{check_name}/*.json
+    RCP results live under rcps/, so there is nothing to filter out here.
 
     Algorithm:
     1. Look for {results_dir}/scps/ subdirectory
     2. Iterate through all check directories in scps/
     3. Skip non-directory files
-    4. If exclude_rcp_checks, skip checks in RCP_CHECK_NAMES
-    5. For each JSON file in check directory:
+    4. For each JSON file in check directory:
        - Parse JSON
        - Extract summary fields
        - Handle missing account_id via lookup
        - Create SCPCheckResult
-    6. Return flat list of all results
+    5. Return flat list of all results
 
     Returns: List[SCPCheckResult]
     """
@@ -1352,7 +1354,7 @@ def parse_rcp_result_files(
     Parse RCP check result files for STS third-party AssumeRole check.
 
     Algorithm:
-    1. Get check directory using get_results_dir(THIRD_PARTY_ASSUMEROLE, results_dir)
+    1. Get check directory using get_results_dir(DENY_STS_THIRD_PARTY_ASSUMEROLE, results_dir)
     2. Verify directory exists (raise RuntimeError if not)
     3. For each JSON file:
        - Parse JSON
@@ -2106,12 +2108,23 @@ def get_results_dir(
 ```python
 # constants.py
 
+# SCP Checks (alphabetical by service)
+DENY_EC2_AMI_OWNER = "deny_ec2_ami_owner"
 DENY_EC2_IMDS_V1 = "deny_ec2_imds_v1"
+DENY_EC2_PUBLIC_IP = "deny_ec2_public_ip"
+DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG = "deny_eks_create_cluster_without_tag"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
+DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO = "deny_iam_saml_provider_not_aws_sso"
+DENY_LAMBDA_AUTH_TYPE_NONE = "deny_lambda_auth_type_none"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
+
+# RCP Checks (alphabetical by service)
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
-THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
+DENY_KMS_THIRD_PARTY_ACCESS = "deny_kms_third_party_access"
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
+DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS = "deny_secrets_manager_third_party_access"
+DENY_SQS_THIRD_PARTY_ACCESS = "deny_sqs_third_party_access"
+DENY_STS_THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 
 _CHECK_TYPE_MAP: Dict[str, str] = {}
 
@@ -2133,10 +2146,9 @@ def get_check_type_map() -> Dict[str, str]:
         import headroom.checks  # noqa: F401
     return _CHECK_TYPE_MAP
 
-# Derived sets
-SCP_CHECK_NAMES = {DENY_EC2_IMDS_V1, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
-RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_S3_THIRD_PARTY_ACCESS}
-RCP_CHECK_NAMES = {DENY_ECR_THIRD_PARTY_ACCESS, THIRD_PARTY_ASSUMEROLE}
+# No static SCP/RCP name sets exist. get_check_type_map() is the single
+# source of truth for which type a check belongs to, populated by
+# @register_check at import time.
 ```
 
 ### Dynamic Registration Flow
