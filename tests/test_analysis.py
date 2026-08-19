@@ -1,8 +1,9 @@
 import pytest
-from typing import Any, Dict, List, Tuple, cast
+from typing import Any, Dict, List, Tuple, cast, get_args
 from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
+from mypy_boto3_organizations.literals import AccountStateType
 from mypy_boto3_organizations.type_defs import AccountTypeDef
 
 from headroom.analysis import (
@@ -10,6 +11,8 @@ from headroom.analysis import (
     perform_analysis,
     get_subaccount_information,
     _build_account_info_from_account_dict,
+    ACTIVE_ACCOUNT_STATE,
+    INACTIVE_ACCOUNT_STATES,
     AccountInfo
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
@@ -370,19 +373,34 @@ class TestAccountStateFiltering:
         # The error must be actionable, not merely loud.
         assert "boto3" in str(exc_info.value)
 
-    def test_account_with_unrecognized_state_is_analyzed(self) -> None:
+    def test_account_with_unrecognized_state_aborts_the_run(self) -> None:
         """
-        A state AWS adds in future is analyzed and warned about, not skipped.
+        A state this code does not classify aborts the run rather than guessing.
 
-        Silently skipping an account is worse than a loud failure for a tool
-        whose purpose is proving a policy will not break an account.
+        Neither guess is safe. Analyzing an account that turns out to be unusable
+        burns the run on a downstream error that explains nothing, and skipping
+        one that is actually usable drops it from the compliance picture that
+        gates SCP deployment. Refusing to guess keeps a human in the loop, so the
+        message has to name both the offending value and the fix.
         """
-        result, _, mock_logger = self._run([
-            {"Id": "333333333333", "Name": "Future", "State": "SOME_FUTURE_STATE"},
-        ])
+        with pytest.raises(RuntimeError, match="does not recognize") as exc_info:
+            self._run([{"Id": "333333333333", "Name": "Future", "State": "SOME_FUTURE_STATE"}])
 
-        assert [account.account_id for account in result] == ["333333333333"]
-        assert mock_logger.warning.called
+        message = str(exc_info.value)
+        assert "SOME_FUTURE_STATE" in message
+        assert "INACTIVE_ACCOUNT_STATES" in message
+
+    def test_every_state_aws_defines_is_classified(self) -> None:
+        """
+        The recognized states must exhaustively cover the AWS enum.
+
+        Because an unrecognized state now aborts the run, a state AWS adds would
+        break Headroom in production. This test moves that discovery to the point
+        where boto3-stubs is upgraded: AccountStateType is the SDK's own
+        enumeration, so if AWS adds a sixth state this fails in CI and names it,
+        instead of a run failing at a customer.
+        """
+        assert set(get_args(AccountStateType)) == {ACTIVE_ACCOUNT_STATE} | INACTIVE_ACCOUNT_STATES
 
     def test_skipped_account_does_not_incur_a_tag_api_call(self) -> None:
         """Filtering happens before tag fetching, so skipped accounts cost no API calls."""
