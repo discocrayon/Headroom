@@ -5,9 +5,6 @@ module "rcps_acme_acquisition_ou" {
   source = "../modules/rcps"
   target_id = local.top_level_acme_acquisition_ou_id
 
-  # AOSS
-  deny_aoss_third_party_access = false
-
   # ECR
   deny_ecr_third_party_access = false
 

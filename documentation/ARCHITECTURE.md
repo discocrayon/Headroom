@@ -38,27 +38,38 @@ headroom/
 │   ├── ec2.py     # EC2 analysis functions
 │   ├── ecr.py     # ECR repository policy analysis
 │   ├── eks.py     # EKS analysis functions
+│   ├── helpers.py # Shared AWS helpers (region enumeration, pagination)
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
+│   │   ├── saml.py    # IAM SAML provider analysis
 │   │   └── users.py   # SCP-focused IAM user enumeration
-│   ├── s3.py      # S3 bucket policy analysis
-│   ├── aoss.py    # OpenSearch Serverless policy analysis
+│   ├── kms.py     # KMS key policy analysis
+│   ├── lambda_functions.py  # Lambda function analysis
 │   ├── organization.py  # Organizations API integration
 │   ├── rds.py     # RDS analysis functions
-│   └── sessions.py      # Session management utilities
+│   ├── s3.py      # S3 bucket policy analysis
+│   ├── secretsmanager.py  # Secrets Manager policy analysis
+│   ├── sessions.py      # Session management utilities
+│   └── sqs.py     # SQS queue policy analysis
 ├── checks/        # Compliance checks (extensible framework)
 │   ├── base.py    # BaseCheck abstract class (Template Method pattern)
 │   ├── registry.py      # Check registration and discovery
 │   ├── scps/      # Service Control Policy checks
+│   │   ├── deny_ec2_ami_owner.py  # EC2 AMI owner check
+│   │   ├── deny_ec2_imds_v1.py  # EC2 IMDS v1 check
+│   │   ├── deny_ec2_public_ip.py  # EC2 public IP check
 │   │   ├── deny_eks_create_cluster_without_tag.py  # EKS paved road check
+│   │   ├── deny_iam_saml_provider_not_aws_sso.py  # IAM SAML provider check
 │   │   ├── deny_iam_user_creation.py  # IAM user creation check
-│   │   ├── deny_imds_v1_ec2.py  # EC2 IMDS v1 check
+│   │   ├── deny_lambda_auth_type_none.py  # Lambda function URL authentication check
 │   │   └── deny_rds_unencrypted.py  # RDS encryption check
 │   └── rcps/      # Resource Control Policy checks
-│       ├── deny_deny_sts_third_party_assumerole.py  # Third-party IAM AssumeRole check
-│       ├── deny_s3_third_party_access.py  # Third-party S3 bucket access check
-│       ├── deny_aoss_third_party_access.py  # Third-party AOSS access check
-│       └── deny_ecr_third_party_access.py  # ECR third-party access check
+│       ├── deny_ecr_third_party_access.py  # ECR third-party access check
+│       ├── deny_kms_third_party_access.py  # KMS third-party access check
+│       ├── deny_s3_third_party_access.py  # S3 third-party access check
+│       ├── deny_secrets_manager_third_party_access.py  # Secrets Manager third-party access check
+│       ├── deny_sqs_third_party_access.py  # SQS third-party access check
+│       └── deny_sts_third_party_assumerole.py  # STS third-party AssumeRole check
 ├── terraform/     # Terraform generation
 │   ├── generate_org_info.py  # Organization data sources
 │   ├── generate_scps.py      # SCP configurations

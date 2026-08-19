@@ -62,13 +62,10 @@
 - Principal type validation (AWS, Service, Federated, CanonicalUser)
 - Federated and CanonicalUser principal detection to prevent breaking SSO/SAML access
 - Action and resource tracking for third-party S3 access patterns
-- **AOSS Third-Party Access Check:** OpenSearch Serverless data access policy analysis
 - **ECR Third-Party Access Check:** ECR repository resource policy analysis across organization
 - Third-party account detection and wildcard principal identification
 - Principal type validation (AWS, Service, Federated) for IAM trust policies
 - Organization baseline comparison for external account detection
-- Multi-region scanning for AOSS collections and indexes
-- Action-level tracking for third-party AOSS permissions
 - Multi-region ECR repository scanning with pagination support
 - ECR actions tracking per third-party account
 
@@ -104,7 +101,6 @@ headroom/
 ├── output.py                # User-facing output
 ├── types.py                 # Shared data models
 ├── aws/
-│   ├── aoss.py             # OpenSearch Serverless analysis
 │   ├── ec2.py              # EC2 analysis
 │   ├── ecr.py              # ECR repository policy analysis
 │   ├── rds.py              # RDS analysis
@@ -301,15 +297,6 @@ class TrustPolicyAnalysis:
     third_party_account_ids: Set[str]   # Non-org account IDs
     has_wildcard_principal: bool        # True if Principal: "*"
 
-# aws/aoss.py
-@dataclass
-class AossResourcePolicyAnalysis:
-    resource_name: str                  # Collection or index name
-    resource_type: str                  # "collection" or "index"
-    resource_arn: str                   # Full ARN of AOSS resource
-    policy_name: str                    # Name of the access policy
-    third_party_account_ids: Set[str]   # Non-org account IDs
-    allowed_actions: List[str]          # AOSS actions allowed for third-parties
 # aws/ecr.py
 @dataclass
 class ECRRepositoryPolicyAnalysis:
@@ -1073,9 +1060,6 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
 ### S3 Third-Party Access
 
 **Purpose:** Analyze S3 bucket policies to identify third-party (non-org) account access, Federated/CanonicalUser principals, and wildcard principals.
-### AOSS Third-Party Access
-
-**Purpose:** Analyze OpenSearch Serverless data access policies to identify third-party (non-org) account access to collections and indexes.
 
 **Data Model:**
 ```python
@@ -1087,13 +1071,6 @@ class S3BucketPolicyAnalysis:
     has_wildcard_principal: bool               # True if Principal: "*"
     has_non_account_principals: bool           # True if Federated or CanonicalUser
     actions_by_account: Dict[str, Set[str]]    # account_id -> allowed S3 actions
-class AossResourcePolicyAnalysis:
-    resource_name: str                  # Collection or index name
-    resource_type: str                  # \"collection\" or \"index\"
-    resource_arn: str                   # Full ARN of AOSS resource
-    policy_name: str                    # Name of the access policy
-    third_party_account_ids: Set[str]   # External to organization
-    allowed_actions: List[str]          # AOSS actions allowed for third-parties
 ```
 
 **Analysis Function:**
@@ -1173,64 +1150,6 @@ class UnsupportedPrincipalTypeError(Exception):
     Federated and CanonicalUser principals don't have account IDs, so the RCP
     (which uses aws:PrincipalAccount for allowlisting) would break their access.
     """
-# aws/aoss.py
-
-def analyze_aoss_resource_policies(
-    session: boto3.Session,
-    org_account_ids: Set[str]
-) -> List[AossResourcePolicyAnalysis]:
-    \"\"\"
-    Analyze AOSS data access policies for third-party access.
-
-    Algorithm:
-    1. Get all enabled regions via describe_regions()
-    2. For each region:
-       a. List all data access policies via list_access_policies()
-       b. Get each policy's details via get_access_policy()
-       c. Parse policy JSON to extract principals and permissions
-       d. Extract account IDs from principals
-       e. Filter to third-party accounts (not in org)
-       f. Track which actions are allowed for each third-party account
-       g. Create AossResourcePolicyAnalysis for each resource
-    3. Return all findings across all regions
-
-    Raises:
-    - ClientError: If AWS API calls fail
-    - ValueError: If ResourceType field is missing from policy rule
-    \"\"\"
-
-def _extract_account_ids_from_principals(principals: List[str]) -> Set[str]:
-    \"\"\"
-    Extract AWS account IDs from AOSS policy principals.
-
-    Handles:
-    - ARN format: arn:aws:iam::123456789012:root
-    - Plain format: 123456789012
-
-    Returns: Set of 12-digit account IDs
-    \"\"\"
-
-def _analyze_access_policy(
-    policy_name: str,
-    policy_document: str,
-    org_account_ids: Set[str],
-    region: str,
-    account_id: str,
-) -> List[AossResourcePolicyAnalysis]:
-    \"\"\"
-    Analyze a single AOSS access policy for third-party access.
-
-    AOSS Policy Structure:
-    - List of policy statements
-    - Each statement has Principal list and Rules list
-    - Each rule has Resource, ResourceType, and Permission fields
-
-    Resource Parsing:
-    - e.g. collection/my-collection --> my-collection
-    - e.g. index/my-collection/* --> my-collection
-
-    Fail-Loud: Raises ValueError if ResourceType field is missing
-    \"\"\"
 ```
 
 **Check Implementation:**
@@ -2187,13 +2106,12 @@ def get_results_dir(
 ```python
 # constants.py
 
-DENY_IMDS_V1_EC2 = "deny_ec2_imds_v1"
+DENY_EC2_IMDS_V1 = "deny_ec2_imds_v1"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
-DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 
 _CHECK_TYPE_MAP: Dict[str, str] = {}
 
@@ -2216,9 +2134,8 @@ def get_check_type_map() -> Dict[str, str]:
     return _CHECK_TYPE_MAP
 
 # Derived sets
-SCP_CHECK_NAMES = {DENY_IMDS_V1_EC2, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
+SCP_CHECK_NAMES = {DENY_EC2_IMDS_V1, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
 RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_S3_THIRD_PARTY_ACCESS}
-RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_AOSS_THIRD_PARTY_ACCESS}
 RCP_CHECK_NAMES = {DENY_ECR_THIRD_PARTY_ACCESS, THIRD_PARTY_ASSUMEROLE}
 ```
 
@@ -2452,8 +2369,6 @@ test_environment/
 │   │   └── deny_rds_unencrypted/
 │   │       └── {account_name}.json
 │   └── rcps/
-│       ├── deny_aoss_third_party_access/
-│       │   └── {account_name}.json
 │       └── deny_sts_third_party_assumerole/
 │           └── {account_name}.json
 ├── test_deny_ec2_imds_v1/               # EC2 instances (expensive, separate directory)
