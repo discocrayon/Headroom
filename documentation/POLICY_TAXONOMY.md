@@ -395,6 +395,44 @@ This check identifies EC2 instances with IMDSv1 enabled. The SCP denies IMDSv1 c
 1. Deny modification of IAM role delivery to less than version 2.0 (unless principal has exemption tag)
 2. Deny launching instances with `MetadataHttpTokens != "required"` (unless request has exemption tag)
 
+### Pattern 1 Example: `deny_iam_saml_provider_not_aws_sso`
+
+**Check:** `headroom/checks/scps/deny_iam_saml_provider_not_aws_sso.py`
+**Terraform:** `test_environment/modules/scps/locals.tf`
+
+This check enforces use of AWS IAM Identity Center (AWS SSO) for SAML authentication by identifying non-compliant SAML providers. It implements an absolute deny guardrail once all accounts meet the constraint.
+
+**Policy Structure:**
+- Deny `iam:CreateSAMLProvider` unconditionally
+- No conditions or exceptions
+
+**Headroom's Role:** Scans all accounts and reports existing SAML providers. Validates that accounts have either zero SAML providers or exactly one AWS SSO-managed provider (with `AWSSSO_` prefix). This informs deployment decisions for the absolute deny policy.
+
+**Compliance Model:** Account is compliant only when:
+- Zero SAML providers exist, OR
+- Exactly one provider exists with `AWSSSO_` prefix
+
+Any other combination (multiple providers or non-AWS SSO providers) is a violation.
+
+---
+
+### Pattern 2 Example: `deny_lambda_auth_type_none`
+
+**Check:** `headroom/checks/scps/deny_lambda_auth_type_none.py`
+**Terraform:** `test_environment/modules/scps/locals.tf`
+
+This check identifies Lambda functions with function URLs using NONE authentication, which allows unauthenticated public access. The SCP denies creating a function URL, updating one, and granting invoke permission on one, unless proper authentication is configured.
+
+**Policy Structure:**
+- Deny `lambda:CreateFunctionUrlConfig`, `lambda:UpdateFunctionUrlConfig`, and `lambda:AddPermission`
+- When `lambda:FunctionUrlAuthType` equals "NONE"
+
+**Note:** `lambda:AddPermission` is included alongside the two function URL config actions because it grants invoke permission on an existing function URL. Denying only creation and update would leave a path to unauthenticated access on URLs that already exist.
+
+**Headroom's Role:** Scans all accounts and reports Lambda functions with their function URL authentication configuration. This informs deployment decisions and identifies functions that would be impacted by the SCP.
+
+---
+
 ### Pattern 5a: `deny_ecr_third_party_access`
 
 **Check:** `headroom/checks/rcps/deny_ecr_third_party_access.py`
@@ -422,21 +460,6 @@ This RCP restricts ECR repository access to organization principals and explicit
 This RCP restricts role assumptions to organization principals and explicitly allowlisted third-party account IDs. It uses `aws:PrincipalOrgID` and `aws:PrincipalAccount` conditions.
 
 **Analysis by:** `headroom/checks/rcps/deny_deny_sts_third_party_assumerole.py`
-
-### Pattern 5a: `deny_aoss_third_party_access`
-
-**Check:** `headroom/checks/rcps/deny_aoss_third_party_access.py`
-**Terraform:** `test_environment/modules/rcps/locals.tf` lines 28-52
-**Variable:** `aoss_third_party_access_account_ids_allowlist`
-
-This RCP restricts OpenSearch Serverless (AOSS) access to organization principals and explicitly allowlisted third-party account IDs. It blocks all `aoss:*` actions for principals outside the organization unless explicitly allowed.
-
-**Policy Structure:**
-- Deny `aoss:*` (all OpenSearch Serverless actions)
-- Unless `aws:PrincipalOrgID` matches organization OR `aws:PrincipalAccount` is in allowlist
-- Excludes AWS service principals via `aws:PrincipalIsAWSService`
-
-**Headroom's Role:** Analyzes AOSS data access policies to identify third-party account access. Reports which collections and indexes grant access to external accounts, along with the specific AOSS actions permitted for each third-party account. This information informs the allowlist configuration.
 
 ### Pattern 5a: `deny_kms_third_party_access`
 
@@ -475,6 +498,31 @@ This RCP restricts SQS queue access to organization principals and explicitly al
 **Key Feature:** Tracks which specific SQS actions (e.g., `sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`) each third-party account is granted on which queues, enabling precise understanding of access patterns.
 
 **Fail-Fast Validation:** If any SQS queue policy contains a Federated principal (or other unsupported principal types), the check immediately fails with a clear error message, as these would break when the RCP is deployed.
+
+---
+
+### Pattern 5a: `deny_secrets_manager_third_party_access`
+
+**Check:** `headroom/checks/rcps/deny_secrets_manager_third_party_access.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf`
+**Variable:** `secrets_manager_third_party_access_account_ids_allowlist`
+
+This RCP restricts Secrets Manager secret access to organization principals and explicitly allowlisted third-party account IDs. It analyzes secret resource policies to identify external account access patterns.
+
+**Policy Structure:**
+- Deny `secretsmanager:*` actions
+- Unless `aws:PrincipalOrgID` matches the organization OR `aws:PrincipalAccount` is in the allowlist
+- Excludes AWS service principals
+
+**Headroom's Role:** Scans all accounts and analyzes Secrets Manager secret policies across all regions, identifying which third-party accounts have access and which Secrets Manager actions they can perform. This informs the allowlist configuration for RCP deployment. The check also detects wildcard principals or non-account principals (like Federated) that would block RCP deployment.
+
+**Key Feature:** Tracks both:
+- Which specific Secrets Manager actions (e.g., `secretsmanager:GetSecretValue`, `secretsmanager:DescribeSecret`) each third-party account is granted
+- Which secrets each third-party account can access
+
+**Fail-Fast Validation:** If any secret policy contains wildcard principals or non-account principals (like Federated), these are flagged as violations that would break when the RCP is deployed.
+
+---
 
 ### Pattern 5b: `deny_iam_user_creation`
 

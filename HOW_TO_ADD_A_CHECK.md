@@ -59,7 +59,7 @@ execution_order:
     file: headroom/constants.py
     action: add_constant
     format: "DENY_{SERVICE}_{DESCRIPTOR}"
-    
+
   phase_2_aws_analysis:
     file: headroom/aws/{service}.py
     create:
@@ -67,7 +67,7 @@ execution_order:
       - analysis function with multi-region support
       - helper functions
     use_template: "aws_analysis_multiregion"
-    
+
   phase_3_check_class:
     file: headroom/checks/{scps|rcps}/{check_name}.py
     create:
@@ -77,7 +77,7 @@ execution_order:
       - categorize_result() method
       - build_summary_fields() method
     use_template: "check_class_scp" or "check_class_rcp"
-    
+
   phase_4_terraform_module:
     files:
       - test_environment/modules/{scps|rcps}/variables.tf
@@ -87,20 +87,20 @@ execution_order:
       - policy statement
     naming: "deny_{service}_{descriptor}"
     ordering: "alphabetical by service"
-    
+
   phase_5_terraform_generation:
     file: headroom/terraform/generate_{scps|rcps}.py
     function: "_build_{scp|rcp}_terraform_module"
     add: parameter generation logic
     ordering: "alphabetical by service"
-    
+
   phase_6_tests:
     files:
       - tests/test_aws_{service}.py
       - tests/test_checks_{check_name}.py
     min_coverage: 100
     scenarios: [mixed, all_compliant, all_violations, empty, edge_cases]
-    
+
   phase_7_validation:
     commands:
       - "mypy headroom/ tests/"
@@ -199,15 +199,15 @@ def categorize_result(self, result: {DataModel}) -> tuple[str, JsonDict]:
         "field": result.field,
         "exemption_tag": result.exemption_tag_value,
     }
-    
+
     # Check exemption FIRST
     if result.has_exemption_tag:
         return ("exemption", result_dict)
-    
+
     # Then check violation
     if {VIOLATION_CONDITION}:
         return ("violation", result_dict)
-    
+
     return ("compliant", result_dict)
 
 def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
@@ -217,11 +217,11 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict
         len(check_result.exemptions) +
         len(check_result.compliant)
     )
-    
+
     # CRITICAL: Include exemptions in compliant count
     compliant_count = len(check_result.compliant) + len(check_result.exemptions)
     compliance_pct = (compliant_count / total * 100) if total else 100
-    
+
     return {
         "total_{resources}": total,
         "violations": len(check_result.violations),
@@ -257,7 +257,7 @@ logger = logging.getLogger(__name__)
 class {DataModel}:
     """
     Data model for {RESOURCE_TYPE} analysis.
-    
+
     Attributes:
         field_name: str  # Description
     """
@@ -269,15 +269,15 @@ def get_{check_name}_analysis(
 ) -> List[{DataModel}]:
     """
     Analyze {RESOURCE_TYPE} across all regions.
-    
+
     Algorithm:
     1. Get all regions via get_all_regions()
     2. For each region: analyze resources via paginator
     3. Return aggregated results
-    
+
     Args:
         session: boto3.Session for target account
-        
+
     Returns:
         List of {DataModel} results
     """
@@ -311,7 +311,7 @@ def _analyze_{resource}_in_region(
     # Process pages
     for page in paginator.paginate():
         items = page.get("{ItemsKey}", [])
-        
+
         for item in items:
             # Separate try/except for per-item processing
             try:
@@ -460,11 +460,11 @@ def analyze_{service}_{resource}_policies(
 ) -> List[{DataModel}]:
     """
     Analyze {resource} policies for third-party access.
-    
+
     Args:
         session: boto3 session
         org_account_ids: Set of organization account IDs
-        
+
     Returns:
         List of policy analysis results
     """
@@ -502,7 +502,7 @@ def _analyze_policies_in_region(
 
     for page in paginator.paginate():
         resources = page.get("{ResourceKey}", [])
-        
+
         for resource in resources:
             try:
                 # Get policy for this resource
@@ -511,13 +511,13 @@ def _analyze_policies_in_region(
                 )
                 policy_str = policy_response.get("{PolicyKey}", "{}")
                 policy = json.loads(policy_str)
-                
+
                 # Extract account IDs from policy
                 all_account_ids = _extract_account_ids_from_policy(policy)
-                
+
                 # Identify third-party (non-org) accounts
                 third_party_ids = all_account_ids - org_account_ids
-                
+
                 result = {DataModel}(
                     resource_arn=resource["{ArnKey}"],
                     all_account_ids=all_account_ids,
@@ -525,7 +525,7 @@ def _analyze_policies_in_region(
                     region=region,
                 )
                 results.append(result)
-                
+
             except ClientError as e:
                 logger.warning(f"Failed to get policy for resource: {e}")
                 continue
@@ -536,17 +536,17 @@ def _analyze_policies_in_region(
 def _extract_account_ids_from_policy(policy: dict) -> Set[str]:
     """
     Extract all AWS account IDs from IAM policy.
-    
+
     Handles various principal formats:
     - String: "arn:aws:iam::123456789012:root"
     - Dict: {"AWS": "arn:aws:iam::123456789012:root"}
     - List: {"AWS": ["arn:aws:iam::123456789012:root"]}
     """
     account_ids = set()
-    
+
     for statement in policy.get("Statement", []):
         principal = statement.get("Principal", {})
-        
+
         if isinstance(principal, str):
             account_ids.update(_extract_from_string(principal))
         elif isinstance(principal, dict):
@@ -556,23 +556,23 @@ def _extract_account_ids_from_policy(policy: dict) -> Set[str]:
                 elif isinstance(value, list):
                     for item in value:
                         account_ids.update(_extract_from_string(item))
-    
+
     return account_ids
 
 
 def _extract_from_string(principal: str) -> Set[str]:
     """Extract account ID from principal string."""
     account_ids = set()
-    
+
     # Match ARN format
     arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
     if arn_match:
         account_ids.add(arn_match.group(1))
-    
+
     # Match raw account ID (12 digits)
     elif re.match(r'^\d{12}$', principal):
         account_ids.add(principal)
-    
+
     return account_ids
 ```
 
@@ -675,7 +675,7 @@ def categorize_result(self, result: T) -> tuple[str, JsonDict]:
 # ❌ BAD
 def analyze():
     from .helpers import get_regions  # WRONG
-    
+
 # ✅ GOOD
 from .helpers import get_regions
 
@@ -821,15 +821,15 @@ must_create:
   - path: headroom/checks/{type}/{check_name}.py
     contains: ["@register_check", "class.*Check", "def analyze", "def categorize_result", "def build_summary_fields"]
     template: check_class_scp or check_class_rcp
-    
+
   - path: headroom/aws/{service}.py
     contains: ["@dataclass", "def get_{check_name}_analysis", "get_all_regions"]
     template: aws_multiregion_analysis
-    
+
   - path: tests/test_checks_{check_name}.py
     min_tests: 5
     must_test: [mixed, all_compliant, all_violations, empty, categorization]
-    
+
   - path: tests/test_aws_{service}.py
     min_tests: 3
     must_test: [success, empty, pagination]
@@ -838,7 +838,7 @@ must_modify:
   - path: headroom/constants.py
     add_line: "{CHECK_CONSTANT} = \"{check_name}\""
     location: "alphabetical order by service"
-    
+
   - path: test_environment/modules/{type}/variables.tf
     add_block: |
       variable "{check_name}" {
@@ -846,7 +846,7 @@ must_modify:
         description = "..."
       }
     location: "alphabetical by service"
-    
+
   - path: test_environment/modules/{type}/locals.tf
     add_to: "possible_{type}_denies list"
     add_block: |
@@ -858,18 +858,18 @@ must_modify:
           Condition = {...}
         }
       },
-      
+
   - path: headroom/terraform/generate_{type}.py
     function: "_build_{type}_terraform_module"
     add_lines: |
-      {check_name} = "{check_name}" in enabled_checks
+      {check_name} = "{check_name}" in enabled_policies
       terraform_content += f"  {check_name} = {{str({check_name}).lower()}}\n"
     location: "alphabetical by service"
 
 optional_modify:
   - path: test_environment/test_{check_name}.tf
     purpose: "Test infrastructure (if needed for E2E)"
-    
+
   - path: test_environment/test_{check_name}/README.md
     purpose: "Document test scenarios and costs"
 ```
@@ -889,12 +889,12 @@ from .helpers import get_all_regions
 def get_analysis(session: boto3.Session) -> List[Model]:
     all_results = []
     regions = get_all_regions(session)
-    
+
     for region in regions:
         logger.info(f"Analyzing in {region}")
         results = _analyze_region(session, region)
         all_results.extend(results)
-    
+
     return all_results
 ```
 
@@ -914,7 +914,7 @@ except ClientError as e:
 # Process pages
 for page in paginator.paginate():
     items = page.get("Items", [])
-    
+
     for item in items:
         # Per-item processing (separate try/except)
         try:
@@ -936,25 +936,25 @@ def categorize_result(self, result: Model) -> tuple[str, JsonDict]:
         "id": result.id,
         "exemption_tag": result.exemption_tag,
     }
-    
+
     # Check exemption FIRST (before violation)
     if result.has_exemption:
         return ("exemption", result_dict)
-    
+
     # Then check violation
     if result.violates_policy:
         return ("violation", result_dict)
-    
+
     # Everything else compliant
     return ("compliant", result_dict)
 
 def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
     total = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
-    
+
     # CRITICAL: Include exemptions in compliant count
     compliant_count = len(check_result.compliant) + len(check_result.exemptions)
     compliance_pct = (compliant_count / total * 100) if total else 100
-    
+
     return {
         "total": total,
         "violations": len(check_result.violations),
@@ -976,20 +976,20 @@ def analyze_policies(
 ) -> List[Result]:
     all_results = []
     regions = get_all_regions(session)
-    
+
     for region in regions:
         client = session.client("service", region_name=region)
-        
+
         # Get resources with policies
         for resource in _get_resources(client, region):
             policy = _get_policy(client, resource)
-            
+
             # Extract account IDs from principals
             all_account_ids = _extract_account_ids(policy)
-            
+
             # Identify third-party (non-org) accounts
             third_party_ids = all_account_ids - org_account_ids
-            
+
             result = Result(
                 resource_arn=resource["Arn"],
                 all_account_ids=all_account_ids,
@@ -997,7 +997,7 @@ def analyze_policies(
                 region=region,
             )
             all_results.append(result)
-    
+
     return all_results
 ```
 
@@ -1021,7 +1021,7 @@ error_type_checking_fails:
     - "Missing type annotations"
     - "Using Dict[str, Any] instead of JsonDict"
     - "Using Any inappropriately"
-  fix: 
+  fix:
     - "Add type hints to ALL functions"
     - "from ...types import JsonDict"
     - "Only use Any in **kwargs"
@@ -1062,7 +1062,7 @@ error_generated_terraform_missing_check:
   symptom: "Generated .tf files don't include new check"
   causes:
     - "Not added to generate_{type}.py"
-    - "Check not in enabled_checks set"
+    - "Check not in enabled_policies set"
   fix:
     - "Add boolean generation in _build_{type}_terraform_module"
     - "Verify check_name matches constant"
@@ -1078,41 +1078,41 @@ test_scenarios_mandatory:
     violations: ">0"
     compliant: ">0"
     verify: "Both categories populated"
-    
+
   all_compliant:
     violations: "0"
     compliant: ">0"
     compliance_percentage: "100.0"
-    
+
   all_violations:
     violations: ">0"
     compliant: "0"
     compliance_percentage: "0.0"
-    
+
   empty_results:
     violations: "0"
     compliant: "0"
     total: "0"
     compliance_percentage: "100.0"  # Default when empty
-    
+
   categorization_paths:
     test: "Each categorization return path"
     verify: "violation, compliant, (exemption if Pattern 4)"
-    
+
 test_data_standards:
   fake_account_ids:
     primary: "111111111111"
     secondary: "222222222222"
     tertiary: "333333333333"
     never_use: "123456789012"  # Old AWS convention
-    
+
   resource_naming:
     format: "descriptive-purpose"
     examples: ["encrypted-db", "unencrypted-violation", "exempted-instance"]
-    
+
   arn_format:
     pattern: "arn:aws:service:region:111111111111:resource-type/resource-name"
-    
+
 test_fixtures:
   temp_results_dir:
     always_use: true
@@ -1143,35 +1143,35 @@ step_1_gather_requirements:
     - pattern: "1-6 from POLICY_TAXONOMY.md"
     - api_calls: ["list operation", "describe operation"]
     - condition_keys: "From AWS Service Authorization Reference"
-    
+
 step_2_create_python:
   sequence:
     - Add constant to headroom/constants.py
     - Create headroom/aws/{service}.py using template
     - Create headroom/checks/{type}/{check_name}.py using template
     - Verify: "python -c 'from headroom.checks.registry import get_check_names; print(get_check_names())'"
-    
+
 step_3_create_tests:
   sequence:
     - Create tests/test_aws_{service}.py
     - Create tests/test_checks_{check_name}.py
     - Run: "pytest tests/test_checks_{check_name}.py tests/test_aws_{service}.py -v --cov"
     - Verify: "100% coverage"
-    
+
 step_4_update_terraform:
   sequence:
     - Add variable to test_environment/modules/{type}/variables.tf
     - Add policy to test_environment/modules/{type}/locals.tf
     - Add generation to headroom/terraform/generate_{type}.py
     - Run: "terraform validate" in test_environment/
-    
+
 step_5_validate:
   sequence:
     - Run: "mypy headroom/ tests/"
     - Run: "pytest tests/ --cov=headroom"
     - Run: "tox"
     - All must pass with no errors
-    
+
 step_6_e2e_optional:
   if_needed:
     - Create test_environment/test_{check_name}.tf
@@ -1191,15 +1191,15 @@ verification_process:
   step_1:
     url: "https://docs.aws.amazon.com/service-authorization/latest/reference/reference_policies_actions-resources-contextkeys.html"
     action: "Find your service (e.g., Amazon RDS, Amazon EC2)"
-    
+
   step_2:
     action: "Look up each action in the Actions table"
     verify: "Condition keys column lists ALL supported keys"
-    
+
   step_3:
     rule: "If condition key is NOT listed for an action, it CANNOT be used"
     do_not: "Assume support based on logic or web searches"
-    
+
   step_4_undocumented:
     if: "You want to include undocumented action"
     requirements:
@@ -1207,7 +1207,7 @@ verification_process:
       - Document as "special exception" in policy comments
       - Mark with "✅ MANUALLY TESTED"
       - Accept AWS could remove support without notice
-      
+
 examples:
   rds_storage_encrypted:
     documented_actions:
@@ -1239,20 +1239,20 @@ registry:
   file: headroom/checks/registry.py
   decorator: "@register_check(type, name)"
   discovery: "Automatic from scps/ and rcps/ directories"
-  
+
 type_aliases:
   file: headroom/types.py
   use:
     - JsonDict: "Instead of Dict[str, Any]"
     - CheckCategory: "For categorization return values"
     - PrincipalType: "For IAM principal parsing"
-    
+
 helpers:
   file: headroom/aws/helpers.py
   functions:
     - get_all_regions(session): "Get all AWS regions"
     - paginate(client, operation, **kwargs): "Generic pagination"
-    
+
 constants:
   file: headroom/constants.py
   add: "CHECK_NAME constants"
@@ -1276,25 +1276,25 @@ before_completion:
     - tests_pass: "pytest tests/ -v"
     - coverage_100: "pytest --cov=headroom"
     - tox_passes: "tox"
-    
+
   files_created:
     - headroom/constants.py: "Added constant"
     - headroom/aws/{service}.py: "Created or updated"
     - headroom/checks/{type}/{check_name}.py: "Created with @register_check"
     - tests/test_aws_{service}.py: "Created"
     - tests/test_checks_{check_name}.py: "Created"
-    
+
   files_modified:
     - test_environment/modules/{type}/variables.tf: "Added variable"
     - test_environment/modules/{type}/locals.tf: "Added policy"
     - headroom/terraform/generate_{type}.py: "Added generation logic"
-    
+
   verification:
     - check_registered: "Appears in get_check_names()"
     - terraform_validates: "terraform validate passes"
     - no_lint_errors: "No flake8 errors"
     - no_type_errors: "No mypy errors"
-    
+
   optional:
     - test_infrastructure: "test_environment/test_{check_name}.tf"
     - documentation: "test_{check_name}/README.md"

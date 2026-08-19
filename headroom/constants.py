@@ -29,12 +29,12 @@ DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG = "deny_eks_create_cluster_without_tag"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 # IAM SAML
 DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO = "deny_iam_saml_provider_not_aws_sso"
+# Lambda
+DENY_LAMBDA_AUTH_TYPE_NONE = "deny_lambda_auth_type_none"
 # RDS
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 
 # RCP Checks (alphabetical by service)
-# AOSS
-DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 # ECR
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 # KMS

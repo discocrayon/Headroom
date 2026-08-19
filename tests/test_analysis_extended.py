@@ -323,6 +323,7 @@ class TestRunChecks:
             patch("headroom.checks.scps.deny_eks_create_cluster_without_tag.DenyEksCreateClusterWithoutTagCheck.execute") as mock_check_eks,
             patch("headroom.checks.scps.deny_iam_user_creation.DenyIamUserCreationCheck.execute") as mock_check2,
             patch("headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.DenySamlProviderNotAwsSsoCheck.execute") as mock_check_saml,
+            patch("headroom.checks.scps.deny_lambda_auth_type_none.DenyLambdaAuthTypeNoneCheck.execute") as mock_check_lambda,
             patch("headroom.checks.scps.deny_rds_unencrypted.DenyRdsUnencryptedCheck.execute") as mock_check3,
             patch("headroom.checks.rcps.deny_sts_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute"),
             patch("headroom.checks.rcps.deny_ecr_third_party_access.DenyECRThirdPartyAccessCheck.execute"),
@@ -334,12 +335,12 @@ class TestRunChecks:
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
             # Mock that results exist for first account but not second
-            # Call pattern now (with 7 SCP checks and 6 RCP checks):
-            # Account 1: all_scp_results_exist (7 calls for 7 SCP checks) → all True, all_rcp_results_exist (6 calls) → True, skip
-            # Account 2: all_scp_results_exist (7 calls) → any False, all_rcp_results_exist (6 calls) → False
-            #   Then run_scp_checks calls results_exist per check (7 calls) → False, runs checks
+            # Call pattern now (with 8 SCP checks and 6 RCP checks):
+            # Account 1: all_scp_results_exist (8 calls for 8 SCP checks) → all True, all_rcp_results_exist (6 calls) → True, skip
+            # Account 2: all_scp_results_exist (8 calls) → any False, all_rcp_results_exist (6 calls) → False
+            #   Then run_scp_checks calls results_exist per check (8 calls) → False, runs checks
             #   Then run_rcp_checks calls results_exist per check (6 calls) → False, runs checks
-            # Total: 13 (Account 1) + 13 (Account 2 initial) + 7 (Account 2 SCP) + 6 (Account 2 RCP) = 39 calls
+            # Total: 14 (Account 1) + 14 (Account 2 initial) + 8 (Account 2 SCP) + 6 (Account 2 RCP) = 42 calls
             mock_check_results.return_value = True  # Default
             mock_check_results.side_effect = [
                 True,   # Account 1 - SCP check 1 exists
@@ -349,6 +350,7 @@ class TestRunChecks:
                 True,   # Account 1 - SCP check 5 exists
                 True,   # Account 1 - SCP check 6 exists
                 True,   # Account 1 - SCP check 7 exists
+                True,   # Account 1 - SCP check 8 exists (Lambda)
                 True,   # Account 1 - RCP check 1 exists
                 True,   # Account 1 - RCP check 2 exists
                 True,   # Account 1 - RCP check 3 exists
@@ -362,6 +364,7 @@ class TestRunChecks:
                 False,  # Account 2 - SCP check 5 exists check
                 False,  # Account 2 - SCP check 6 exists check
                 False,  # Account 2 - SCP check 7 exists check
+                False,  # Account 2 - SCP check 8 exists check (Lambda)
                 False,  # Account 2 - RCP check 1 exists check
                 False,  # Account 2 - RCP check 2 exists check
                 False,  # Account 2 - RCP check 3 exists check
@@ -375,6 +378,7 @@ class TestRunChecks:
                 False,  # Account 2 - run_scp_checks internal check for check 5
                 False,  # Account 2 - run_scp_checks internal check for check 6
                 False,  # Account 2 - run_scp_checks internal check for check 7
+                False,  # Account 2 - run_scp_checks internal check for check 8 (Lambda)
                 False,  # Account 2 - run_rcp_checks internal check for check 1
                 False,  # Account 2 - run_rcp_checks internal check for check 2
                 False,  # Account 2 - run_rcp_checks internal check for check 3
@@ -408,6 +412,8 @@ class TestRunChecks:
             mock_check_saml.assert_called_with(mock_headroom_session)
             assert mock_check2.call_count == 1
             mock_check2.assert_called_with(mock_headroom_session)
+            assert mock_check_lambda.call_count == 1
+            mock_check_lambda.assert_called_with(mock_headroom_session)
             assert mock_check3.call_count == 1
             mock_check3.assert_called_with(mock_headroom_session)
 
