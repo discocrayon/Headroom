@@ -8,8 +8,9 @@ RCPs are AWS Organizations policies that help you enforce security controls on r
 1. Restricting ECR repository access to organization principals
 2. Restricting KMS key access to organization principals
 3. Restricting S3 bucket access to organization principals
-4. Restricting SQS queue access to organization principals
-5. Enforcing organization identity for IAM role assumptions
+4. Restricting Secrets Manager secret access to organization principals
+5. Restricting SQS queue access to organization principals
+6. Enforcing organization identity for IAM role assumptions
 
 ## Policy Details
 
@@ -37,6 +38,15 @@ The `deny_s3_third_party_access` RCP denies all `s3:*` actions unless one of the
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `s3_third_party_access_account_ids_allowlist`
+3. The resource is tagged with `dp:exclude:identity: true`
+4. The principal is an AWS service
+
+### Secrets Manager Secret Access Restriction
+
+The `deny_secrets_manager_third_party_access` RCP denies all `secretsmanager:*` actions unless one of the following conditions is met:
+
+1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
+2. The principal account is in the `secrets_manager_third_party_account_ids_allowlist`
 3. The resource is tagged with `dp:exclude:identity: true`
 4. The principal is an AWS service
 
@@ -84,6 +94,12 @@ module "account_rcp" {
     "444444444444"
   ]
 
+  # Secrets Manager
+  deny_secrets_manager_third_party_access = true
+  secrets_manager_third_party_account_ids_allowlist = [
+    "888888888888"
+  ]
+
   # SQS
   deny_sqs_third_party_access = true
   sqs_third_party_access_account_ids_allowlist = [
@@ -107,6 +123,7 @@ module "account_rcp" {
 - `deny_ecr_third_party_access` (bool): Whether to deny ECR access to accounts outside the organization
 - `deny_kms_third_party_access` (bool): Whether to deny KMS access to accounts outside the organization
 - `deny_s3_third_party_access` (bool): Whether to deny S3 access from third-party accounts
+- `deny_secrets_manager_third_party_access` (bool): Whether to deny Secrets Manager access from third-party accounts
 - `deny_sqs_third_party_access` (bool): Whether to deny SQS access from third-party accounts
 - `deny_sts_third_party_assumerole` (bool): Whether to deny STS AssumeRole from third-party accounts
 
@@ -115,6 +132,7 @@ module "account_rcp" {
 - `ecr_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access ECR repositories
 - `kms_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access KMS keys
 - `s3_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access S3 buckets
+- `secrets_manager_third_party_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access Secrets Manager secrets
 - `sqs_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access SQS queues
 - `sts_third_party_assumerole_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs that are permitted to assume roles
 
