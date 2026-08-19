@@ -2106,7 +2106,7 @@ def get_results_dir(
 ```python
 # constants.py
 
-DENY_IMDS_V1_EC2 = "deny_ec2_imds_v1"
+DENY_EC2_IMDS_V1 = "deny_ec2_imds_v1"
 DENY_IAM_USER_CREATION = "deny_iam_user_creation"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
@@ -2134,7 +2134,7 @@ def get_check_type_map() -> Dict[str, str]:
     return _CHECK_TYPE_MAP
 
 # Derived sets
-SCP_CHECK_NAMES = {DENY_IMDS_V1_EC2, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
+SCP_CHECK_NAMES = {DENY_EC2_IMDS_V1, DENY_IAM_USER_CREATION, DENY_RDS_UNENCRYPTED}
 RCP_CHECK_NAMES = {THIRD_PARTY_ASSUMEROLE, DENY_S3_THIRD_PARTY_ACCESS}
 RCP_CHECK_NAMES = {DENY_ECR_THIRD_PARTY_ACCESS, THIRD_PARTY_ASSUMEROLE}
 ```

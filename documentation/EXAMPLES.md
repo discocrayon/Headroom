@@ -11,7 +11,7 @@ $ python -m headroom --config sample_config.yaml
 SCP/RCP PLACEMENT RECOMMENDATIONS
 ================================================================================
 
-Check: deny_imds_v1_ec2
+Check: deny_ec2_imds_v1
 Recommended Level: ROOT
 Affected Accounts: 4
 Compliance: 100.0%
@@ -47,7 +47,7 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   # EC2
-  deny_imds_v1_ec2 = false
+  deny_ec2_imds_v1 = false
 
   # IAM
   deny_iam_user_creation = true
@@ -113,13 +113,13 @@ locals {
 
 ### SCP Check Result
 
-**File**: `test_environment/headroom_results/scps/deny_imds_v1_ec2/production_account_111111111111.json`
+**File**: `test_environment/headroom_results/scps/deny_ec2_imds_v1/production_account_111111111111.json`
 
 ```json
 {
   "account_id": "111111111111",
   "account_name": "production_account",
-  "check_name": "deny_imds_v1_ec2",
+  "check_name": "deny_ec2_imds_v1",
   "compliance_percentage": 100.0,
   "total_resources": 5,
   "violations": [],
