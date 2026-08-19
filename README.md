@@ -61,6 +61,10 @@ Deploy two types of roles in your AWS Organization:
 - `Headroom` role in all accounts you want to scan
 - `OrgAndAccountInfoReader` role in management account
 
+Only accounts in the `ACTIVE` lifecycle state are scanned. Closed, suspended and
+pending-closure accounts are skipped automatically, so you do not need a
+`Headroom` role in them.
+
 See [detailed setup guide](documentation/SETUP.md) for Terraform examples.
 
 ### 2. Create Configuration
