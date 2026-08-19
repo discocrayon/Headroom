@@ -35,7 +35,6 @@ graph LR
 ```
 headroom/
 ├── aws/           # AWS service integrations
-│   ├── aoss.py    # OpenSearch Serverless policy analysis
 │   ├── ec2.py     # EC2 analysis functions
 │   ├── ecr.py     # ECR repository policy analysis
 │   ├── eks.py     # EKS analysis functions

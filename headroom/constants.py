@@ -35,8 +35,6 @@ DENY_LAMBDA_AUTH_TYPE_NONE = "deny_lambda_auth_type_none"
 DENY_RDS_UNENCRYPTED = "deny_rds_unencrypted"
 
 # RCP Checks (alphabetical by service)
-# AOSS
-DENY_AOSS_THIRD_PARTY_ACCESS = "deny_aoss_third_party_access"
 # ECR
 DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 # KMS

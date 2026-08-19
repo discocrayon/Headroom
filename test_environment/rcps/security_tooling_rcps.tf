@@ -5,9 +5,6 @@ module "rcps_security_tooling" {
   source = "../modules/rcps"
   target_id = local.security_tooling_account_id
 
-  # AOSS
-  deny_aoss_third_party_access = false
-
   # ECR
   deny_ecr_third_party_access = false
 
