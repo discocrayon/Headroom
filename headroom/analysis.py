@@ -10,7 +10,7 @@ from mypy_boto3_organizations.type_defs import AccountTypeDef
 from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
 from .write_results import results_exist
-from .aws.sessions import assume_role
+from .aws.sessions import assume_role, new_session
 from .utils import format_account_identifier
 
 # Set up logging
@@ -31,7 +31,7 @@ def get_security_analysis_session(config: HeadroomConfig) -> Session:
     account_id = config.security_analysis_account_id
     if not account_id:
         logger.debug("No security_analysis_account_id provided, assuming already in security analysis account")
-        return Session()
+        return new_session()
     role_arn = f"arn:aws:iam::{account_id}:role/OrganizationAccountAccessRole"
     return assume_role(role_arn, "HeadroomSecurityAnalysisSession")
 

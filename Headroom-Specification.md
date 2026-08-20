@@ -1998,6 +1998,38 @@ Handling a missing regional endpoint is the caller's concern. Note that an
 absent endpoint raises `EndpointConnectionError`, which is not a `ClientError`
 subclass, so an `except ClientError` never catches it.
 
+#### Credentials in Opt-In Regions
+
+Reaching an enabled region also needs credentials AWS will honour there. Session
+tokens issued by the **global** STS endpoint, `sts.amazonaws.com`, are valid only
+in regions that are enabled by default, so an opt-in region rejects them:
+
+```
+An error occurred (AuthFailure) when calling the DescribeInstances operation:
+AWS was not able to validate the provided access credentials
+```
+
+botocore reaches that endpoint by default. Its `sts_regional_endpoints` setting
+defaults to `legacy`, which rewrites the STS endpoint whenever the session's
+region is one of botocore's `LEGACY_GLOBAL_STS_REGIONS` -- the regions that
+predate opt-in regions, `us-east-1` and `us-west-2` among them. An operator
+running Headroom from `us-west-2` therefore mints unusable credentials without
+having configured anything wrong.
+
+Headroom does not depend on the operator's configuration for this.
+`aws/sessions.new_session()` is the only place in the package that constructs a
+boto3 `Session`, and it sets `sts_regional_endpoints = regional` on every one.
+`assume_role()` builds its STS client in an explicit region and stamps that
+region onto the session it returns, so a chained assumption -- base account to
+security analysis account to member account -- stays regional at every hop. When
+no region resolves, `assume_role()` raises instead of picking one, on the same
+grounds as every other guess Headroom refuses to make.
+
+`test_only_the_sessions_module_constructs_a_session` fails the suite if any
+module builds a `Session` directly. A direct construction silently reinherits the
+`legacy` default, and nothing in a mocked test suite notices; the break surfaces
+only once a scan reaches an opt-in region.
+
 #### Unreadable Regions
 
 **A region that cannot be read aborts the run.** Every regional analysis raises
