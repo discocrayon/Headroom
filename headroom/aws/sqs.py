@@ -20,6 +20,17 @@ from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
 logger = logging.getLogger(__name__)
 
+# Error codes meaning a queue no longer exists.
+#
+# A queue deleted between `list_queues` and `get_queue_attributes` is the only
+# benign reason that read fails: the queue is gone, so it holds no policy and can
+# grant nobody access. Every other failure is a read Headroom could not complete
+# and must not report as an absence of findings.
+QUEUE_GONE_ERROR_CODES = frozenset({
+    "AWS.SimpleQueueService.NonExistentQueue",
+    "QueueDoesNotExist",
+})
+
 
 PrincipalType = Union[str, List["PrincipalType"], Dict[str, Union[str, List[str]]]]
 ActionsType = Union[str, List[str]]
@@ -248,6 +259,17 @@ def _analyze_queues_in_region(
     """
     Analyze SQS queues in a specific region.
 
+    A read that fails aborts the run rather than returning an empty list.
+    Returning nothing would be indistinguishable from a region that genuinely
+    holds no queues with third-party access, and these results populate
+    `sqs_third_party_access_account_ids_allowlist`, so the generated RCP would
+    omit every partner whose queues live only in the unreadable region and deny
+    them on deploy.
+
+    This assumes the `Headroom` role is exempt from region-allowlist SCPs, which
+    makes an `AccessDenied` here a genuine permissions gap rather than an
+    expected regional block. See documentation/SETUP.md.
+
     Args:
         session: boto3.Session for the target account
         region: AWS region to analyze
@@ -255,64 +277,62 @@ def _analyze_queues_in_region(
 
     Returns:
         List of SQSQueuePolicyAnalysis results for queues with policies
+
+    Raises:
+        ClientError: If listing queues, or reading a queue's attributes for any
+            reason other than the queue having been deleted mid-scan, fails
+        UnsupportedPrincipalTypeError: If Federated principals are found
     """
     sqs_client: SQSClient = session.client("sqs", region_name=region)
     results: List[SQSQueuePolicyAnalysis] = []
 
     try:
         paginator = sqs_client.get_paginator("list_queues")
+
+        for page in paginator.paginate():
+            queue_urls = page.get("QueueUrls", [])
+
+            for queue_url in queue_urls:
+                try:
+                    attrs = sqs_client.get_queue_attributes(
+                        QueueUrl=queue_url,
+                        AttributeNames=["Policy", "QueueArn"]
+                    )
+                except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code", "")
+                    if error_code in QUEUE_GONE_ERROR_CODES:
+                        logger.debug(
+                            f"Queue {queue_url} in {region} was deleted during the "
+                            "scan, skipping"
+                        )
+                        continue
+                    raise
+
+                attributes = attrs.get("Attributes", {})
+                policy_json = attributes.get("Policy")
+                queue_arn = attributes.get("QueueArn", "")
+
+                if not policy_json:
+                    continue
+
+                try:
+                    result = _analyze_queue_policy(
+                        queue_url=queue_url,
+                        queue_arn=queue_arn,
+                        region=region,
+                        policy_json=policy_json,
+                        org_account_ids=org_account_ids
+                    )
+                    results.append(result)
+                except UnsupportedPrincipalTypeError:
+                    raise
+                except (json.JSONDecodeError, UnknownPrincipalTypeError) as e:
+                    logger.warning(f"Failed to analyze queue {queue_url} in {region}: {e}")
+                    continue
+
     except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code", "")
-        if error_code == "AccessDenied":
-            logger.warning(f"Access denied listing SQS queues in region {region}")
-        else:
-            logger.error(f"Failed to list SQS queues in region {region}: {e}")
-        return []
-
-    try:
-        pages = list(paginator.paginate())
-    except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code", "")
-        if error_code == "AccessDenied":
-            logger.warning(f"Access denied listing SQS queues in region {region}")
-        else:
-            logger.error(f"Failed to paginate SQS queues in region {region}: {e}")
-        return []
-
-    for page in pages:
-        queue_urls = page.get("QueueUrls", [])
-
-        for queue_url in queue_urls:
-            try:
-                attrs = sqs_client.get_queue_attributes(
-                    QueueUrl=queue_url,
-                    AttributeNames=["Policy", "QueueArn"]
-                )
-            except ClientError as e:
-                logger.warning(f"Failed to get attributes for queue {queue_url} in {region}: {e}")
-                continue
-
-            attributes = attrs.get("Attributes", {})
-            policy_json = attributes.get("Policy")
-            queue_arn = attributes.get("QueueArn", "")
-
-            if not policy_json:
-                continue
-
-            try:
-                result = _analyze_queue_policy(
-                    queue_url=queue_url,
-                    queue_arn=queue_arn,
-                    region=region,
-                    policy_json=policy_json,
-                    org_account_ids=org_account_ids
-                )
-                results.append(result)
-            except UnsupportedPrincipalTypeError:
-                raise
-            except (json.JSONDecodeError, UnknownPrincipalTypeError) as e:
-                logger.warning(f"Failed to analyze queue {queue_url} in {region}: {e}")
-                continue
+        logger.error(f"Failed to analyze SQS queues in region {region}: {e}")
+        raise
 
     return results
 
@@ -325,7 +345,7 @@ def analyze_sqs_queue_policies(
     Analyze SQS queue policies across all regions.
 
     Algorithm:
-    1. Get all enabled regions from EC2
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. List all SQS queues
        b. Get queue attributes (Policy, QueueArn)
@@ -346,6 +366,7 @@ def analyze_sqs_queue_policies(
         List of SQSQueuePolicyAnalysis results
 
     Raises:
+        ClientError: If any region's queues cannot be read
         UnsupportedPrincipalTypeError: If Federated principals found in any queue
     """
     all_results: List[SQSQueuePolicyAnalysis] = []
