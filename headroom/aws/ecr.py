@@ -250,7 +250,7 @@ def analyze_ecr_repository_policies(
     account IDs that are not part of the organization.
 
     Algorithm:
-    1. Get all enabled regions via describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. List all repositories via describe_repositories() (paginated)
        b. Get repository policy via get_repository_policy()

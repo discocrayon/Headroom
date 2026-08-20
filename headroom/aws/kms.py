@@ -248,7 +248,7 @@ def analyze_kms_key_policies(
     account IDs that are not part of the organization.
 
     Algorithm:
-    1. Get all enabled regions via describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. List all keys via list_keys() (paginated)
        b. Get key policy via get_key_policy()
