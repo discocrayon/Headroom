@@ -515,7 +515,7 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
     Scan all regions for EC2 instances.
 
     Algorithm:
-    1. Describe all regions with describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region, create EC2 client
     3. Use paginator to describe_instances (handles pagination)
     4. Filter out terminated instances
@@ -670,7 +670,7 @@ def get_rds_unencrypted_analysis(session: boto3.Session) -> List[DenyRdsUnencryp
     Scan all regions for RDS instances and Aurora clusters.
 
     Algorithm:
-    1. Get all enabled regions via describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Analyze RDS instances via describe_db_instances() (paginated)
        b. Analyze Aurora clusters via describe_db_clusters() (paginated)
@@ -783,7 +783,7 @@ def analyze_ecr_repository_policies(
     Analyze all ECR repository policies for third-party access.
 
     Algorithm:
-    1. Get all enabled regions via ec2.describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Create regional ECR client
        b. Use paginator for describe_repositories
@@ -1968,6 +1968,41 @@ per-account checks. It deliberately does **not** apply to:
   still resolve, and placement is driven by the results that exist, which leaves
   an account with no results already inert.
 
+### Region Discovery
+
+Every regional check resolves its region list through one helper,
+`aws/helpers.get_all_regions()`, which calls `ec2:DescribeRegions` with no
+arguments.
+
+Calling it with no arguments is the entire contract. The default response
+contains only the regions **enabled for the account** and omits every
+`not-opted-in` region:
+
+| `OptInStatus` | Meaning | Returned by default |
+|---------------|---------|---------------------|
+| `opt-in-not-required` | Enabled for every account | Yes |
+| `opted-in` | Opt-in region the account has enabled | Yes |
+| `not-opted-in` | Opt-in region the account has not enabled | No |
+
+**Never pass `AllRegions=True`.** Per the EC2 API it "indicates whether to
+display all Regions, including Regions that are disabled for your account".
+Because every caller builds a per-region client from this list, each disabled
+region added would become a doomed API call against a region that cannot hold
+resources. Headroom has no interest in analyzing a disabled region, so the
+cheapest correct behaviour is to never learn about one.
+`test_only_enabled_regions_are_requested` asserts the exact call signature, so
+adding the argument fails the suite rather than the run.
+
+An enabled region is not a guarantee that a given service is available there.
+Handling a missing regional endpoint is the caller's concern, and the modules
+differ in how they do it - see the per-region failure discussion in each
+integration section.
+
+Routing all callers through the single helper is required by `AP-006: Not Using
+Existing Helpers` in `HOW_TO_ADD_A_CHECK.md`, which names duplicated region
+discovery as the anti-pattern. It keeps the enabled-regions guarantee in one
+place instead of restating it at each call site.
+
 ### EC2 Integration
 
 ```python
@@ -1980,7 +2015,7 @@ def get_imds_v1_ec2_analysis(
     Scan all regions for EC2 instances with IMDSv1.
 
     Algorithm:
-    1. Get all regions via ec2.describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Create regional EC2 client
        b. Use paginator for describe_instances

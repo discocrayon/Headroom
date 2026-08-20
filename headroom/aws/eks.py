@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from boto3.session import Session
-from mypy_boto3_ec2.client import EC2Client
 from mypy_boto3_eks.client import EKSClient
+
+from .helpers import get_all_regions
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def get_eks_cluster_tag_analysis(
     Analyze EKS clusters for PavedRoad tag presence.
 
     Algorithm:
-    1. Get all enabled regions from EC2
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. List all EKS clusters via list_clusters()
        b. For each cluster:
@@ -56,13 +57,8 @@ def get_eks_cluster_tag_analysis(
     Raises:
         ClientError: If AWS API calls fail
     """
-    ec2_client: EC2Client = session.client("ec2")
     all_results = []
-
-    # Get all regions (including opt-in regions that may be disabled)
-    # We intentionally scan all regions to detect resources in any region
-    regions_response = ec2_client.describe_regions()
-    regions = [region["RegionName"] for region in regions_response["Regions"]]
+    regions = get_all_regions(session)
 
     for region in regions:
         logger.info(f"Analyzing EKS clusters in {region}")
