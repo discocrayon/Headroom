@@ -32,14 +32,14 @@ class TestGetAllRegions:
         mock_ec2.describe_regions.return_value = {
             "Regions": [
                 {"RegionName": "us-east-1", "OptInStatus": "opt-in-not-required"},
-                {"RegionName": "ap-east-1", "OptInStatus": "opted-in"},
+                {"RegionName": "eu-south-1", "OptInStatus": "opted-in"},
             ]
         }
 
         regions = get_all_regions(mock_session)
 
         mock_ec2.describe_regions.assert_called_once_with()
-        assert regions == ["us-east-1", "ap-east-1"]
+        assert regions == ["us-east-1", "eu-south-1"]
 
     def test_region_names_are_returned_in_response_order(self) -> None:
         """Region names are extracted verbatim, preserving the API's order."""

@@ -145,6 +145,22 @@ You can apply this Terraform from your management account to reproduce a working
 - Ensure IAM policies include all required permissions
 - If the error names a specific region, check that the `Headroom` role is exempt from any region-allowlist SCP (see [SCP Exemption Requirement](#scp-exemption-requirement)). Headroom scans every *enabled* region, so an SCP that denies a region it can still see aborts the run.
 
+### "AuthFailure" in one region only
+
+`AWS was not able to validate the provided access credentials`, raised from a
+single region while every other region succeeds, means the credentials were
+minted at the global STS endpoint. Those tokens are valid only in regions that
+are enabled by default, so every opt-in region rejects them.
+
+Headroom mints its own credentials regionally, so this points at a session it
+did not build. Check for a boto3 `Session` constructed outside
+`headroom/aws/sessions.py`, and confirm the region is genuinely enabled rather
+than mid-enablement, which reports the same error:
+
+```bash
+aws account get-region-opt-status --region-name <region> --account-id <member-account-id>
+```
+
 ### "Role not found" errors
 - Confirm roles are deployed in the correct accounts
 - Verify role names match: `Headroom` and `OrgAndAccountInfoReader`
