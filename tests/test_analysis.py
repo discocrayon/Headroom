@@ -40,7 +40,7 @@ class TestSecurityAnalysisSession:
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
-        with patch("headroom.analysis.Session") as session_patch:
+        with patch("headroom.analysis.new_session") as session_patch:
             session = get_security_analysis_session(config)
             session_patch.assert_called_once_with()
             assert session is session_patch.return_value
@@ -52,7 +52,7 @@ class TestSecurityAnalysisSession:
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
         )
         with (
-            patch("headroom.analysis.Session") as session_patch,
+            patch("headroom.analysis.new_session") as session_patch,
             patch("headroom.analysis.logger") as mock_logger,
         ):
             session = get_security_analysis_session(config)

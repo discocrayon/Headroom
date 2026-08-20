@@ -62,8 +62,6 @@ def get_rds_unencrypted_analysis(
     """
     all_results = []
 
-    # Get all regions (including opt-in regions that may be disabled)
-    # We intentionally scan all regions to detect resources in any region
     regions = get_all_regions(session)
 
     for region in regions:

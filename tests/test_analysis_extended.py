@@ -165,7 +165,7 @@ class TestGetHeadroomSession:
         }
         mock_sts.assume_role.return_value = {"Credentials": creds}
 
-        with patch("headroom.analysis.Session"):
+        with patch("headroom.analysis.new_session"):
             # Test different account ID formats
             get_headroom_session(mock_config, mock_security_session, "111111111111")
             mock_sts.assume_role.assert_called_with(
@@ -632,9 +632,10 @@ class TestGetAllOrganizationAccountIds:
         mock_config.management_account_id = "999999999999"
 
         mock_session = MagicMock()
+        mock_session.region_name = "us-west-2"
         mock_sts = MagicMock()
 
-        def mock_client_factory(service_name: str) -> MagicMock:
+        def mock_client_factory(service_name: str, region_name: str) -> MagicMock:
             if service_name == "sts":
                 return mock_sts
             return MagicMock()  # pragma: no cover
