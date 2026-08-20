@@ -14,7 +14,21 @@ __all__ = ["get_all_regions", "paginate"]
 
 def get_all_regions(session: Session) -> list[str]:
     """
-    Return the list of AWS region names available to the account.
+    Return the AWS regions that are enabled for the account.
+
+    `describe_regions` is deliberately called with no arguments. The default
+    response contains only regions the account has enabled -- those with an
+    OptInStatus of `opt-in-not-required` or `opted-in` -- and omits every
+    `not-opted-in` region.
+
+    Do not pass `AllRegions=True`. It adds disabled regions to the result, and
+    since every caller builds a per-region client from this list, each disabled
+    region would become a doomed API call against a region the account cannot
+    use. Headroom has no interest in analyzing a region that cannot hold
+    resources. `test_only_enabled_regions_are_requested` pins this.
+
+    Note that an enabled region does not guarantee the service is available
+    there; handling a missing regional endpoint is the caller's concern.
     """
     ec2_client: EC2Client = session.client("ec2")
     response = ec2_client.describe_regions()

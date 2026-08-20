@@ -515,7 +515,7 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
     Scan all regions for EC2 instances.
 
     Algorithm:
-    1. Describe all regions with describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region, create EC2 client
     3. Use paginator to describe_instances (handles pagination)
     4. Filter out terminated instances
@@ -670,7 +670,7 @@ def get_rds_unencrypted_analysis(session: boto3.Session) -> List[DenyRdsUnencryp
     Scan all regions for RDS instances and Aurora clusters.
 
     Algorithm:
-    1. Get all enabled regions via describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Analyze RDS instances via describe_db_instances() (paginated)
        b. Analyze Aurora clusters via describe_db_clusters() (paginated)
@@ -783,7 +783,7 @@ def analyze_ecr_repository_policies(
     Analyze all ECR repository policies for third-party access.
 
     Algorithm:
-    1. Get all enabled regions via ec2.describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Create regional ECR client
        b. Use paginator for describe_repositories
@@ -1968,6 +1968,73 @@ per-account checks. It deliberately does **not** apply to:
   still resolve, and placement is driven by the results that exist, which leaves
   an account with no results already inert.
 
+### Region Discovery
+
+Every regional check resolves its region list through one helper,
+`aws/helpers.get_all_regions()`, which calls `ec2:DescribeRegions` with no
+arguments.
+
+Calling it with no arguments is the entire contract. The default response
+contains only the regions **enabled for the account** and omits every
+`not-opted-in` region:
+
+| `OptInStatus` | Meaning | Returned by default |
+|---------------|---------|---------------------|
+| `opt-in-not-required` | Enabled for every account | Yes |
+| `opted-in` | Opt-in region the account has enabled | Yes |
+| `not-opted-in` | Opt-in region the account has not enabled | No |
+
+**Never pass `AllRegions=True`.** Per the EC2 API it "indicates whether to
+display all Regions, including Regions that are disabled for your account".
+Because every caller builds a per-region client from this list, each disabled
+region added would become a doomed API call against a region that cannot hold
+resources. Headroom has no interest in analyzing a disabled region, so the
+cheapest correct behaviour is to never learn about one.
+`test_only_enabled_regions_are_requested` asserts the exact call signature, so
+adding the argument fails the suite rather than the run.
+
+An enabled region is not a guarantee that a given service is available there.
+Handling a missing regional endpoint is the caller's concern. Note that an
+absent endpoint raises `EndpointConnectionError`, which is not a `ClientError`
+subclass, so an `except ClientError` never catches it.
+
+#### Unreadable Regions
+
+**A region that cannot be read aborts the run.** Every regional analysis raises
+on a `ClientError` rather than contributing an empty result, because an empty
+result is exactly what a genuinely empty region produces. Nothing downstream can
+distinguish "this region holds no findings" from "this region was never read",
+and both feed generated policy:
+
+| Check type | Consequence of a silently unread region |
+|------------|------------------------------------------|
+| RCP third-party access | The allowlist omits partners whose resources live only in that region, so deploying the RCP denies them |
+| SCP compliance | The region contributes no violations, so an OU looks clean and a policy is recommended on incomplete evidence |
+
+The single exception is a resource that has been **deleted between listing it and
+reading it**. That is the one benign read failure: the resource is gone, so it
+holds no policy and can grant nobody access. Those error codes are named
+explicitly - `QUEUE_GONE_ERROR_CODES` in `aws/sqs.py` and
+`FUNCTION_GONE_ERROR_CODE` in `aws/lambda_functions.py` - and every other code
+propagates.
+
+This requires the `Headroom` role to be **exempt from region-allowlist SCPs**.
+Region enablement is independent of SCPs, so a region denied by
+`aws:RequestedRegion` is still enabled, still returned by `DescribeRegions`, and
+still scanned. Without the exemption every run would abort in the denied
+regions. With it, an `AccessDenied` unambiguously means a missing permission.
+See `documentation/SETUP.md`.
+
+Recovery is cheap because the abort is not a rollback. `run_checks_for_type()`
+consults `results_exist()` per check per account, so every result already written
+to disk is kept and skipped on the next run: fix the permission, re-run, and the
+scan resumes where it stopped.
+
+Routing all callers through the single helper is required by `AP-006: Not Using
+Existing Helpers` in `HOW_TO_ADD_A_CHECK.md`, which names duplicated region
+discovery as the anti-pattern. It keeps the enabled-regions guarantee in one
+place instead of restating it at each call site.
+
 ### EC2 Integration
 
 ```python
@@ -1980,7 +2047,7 @@ def get_imds_v1_ec2_analysis(
     Scan all regions for EC2 instances with IMDSv1.
 
     Algorithm:
-    1. Get all regions via ec2.describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Create regional EC2 client
        b. Use paginator for describe_instances
