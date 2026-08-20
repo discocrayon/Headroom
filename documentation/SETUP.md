@@ -32,6 +32,32 @@ Deploy an `OrgAndAccountInfoReader` role in your [AWS Organizations management a
 
 In the `test_environment/`, this is represented by `aws_organizations_account.security_tooling.id` ([see code](https://github.com/search?q=repo%3Adiscocrayon%2Fheadroom%20aws_organizations_account.security_tooling.id&type=code)).
 
+### SCP Exemption Requirement
+
+**The `Headroom` role must be exempt from any SCP that restricts access by region**, such as a region allowlist built on `aws:RequestedRegion`.
+
+Headroom analyzes every region that is *enabled* for the account. Region enablement is independent of SCPs, so a region an SCP denies is still returned by `ec2:DescribeRegions` and still scanned. If a region-allowlist SCP applies to the `Headroom` role, its API calls in the denied regions fail with `AccessDenied`.
+
+Headroom treats those failures as fatal rather than as an absence of findings, because it cannot distinguish "this region has nothing" from "this region could not be read", and the second silently understates what a generated policy must allow. A read it could not complete therefore aborts the run instead of contributing an empty result. With the exemption in place, an `AccessDenied` unambiguously means a missing permission.
+
+Exempt the role with a condition on the SCP's deny statement:
+
+```json
+{
+  "Effect": "Deny",
+  "NotAction": ["iam:*", "organizations:*", "sts:*"],
+  "Resource": "*",
+  "Condition": {
+    "StringNotEquals": {
+      "aws:RequestedRegion": ["us-east-1", "us-west-2"]
+    },
+    "ArnNotLike": {
+      "aws:PrincipalArn": "arn:aws:iam::*:role/Headroom"
+    }
+  }
+}
+```
+
 ## Execution Options
 
 ### Option 1: From the Security Analysis Account (Recommended)
@@ -117,6 +143,7 @@ You can apply this Terraform from your management account to reproduce a working
 - Verify trust relationships on IAM roles
 - Check that the principal account ID matches where you're running Headroom
 - Ensure IAM policies include all required permissions
+- If the error names a specific region, check that the `Headroom` role is exempt from any region-allowlist SCP (see [SCP Exemption Requirement](#scp-exemption-requirement)). Headroom scans every *enabled* region, so an SCP that denies a region it can still see aborts the run.
 
 ### "Role not found" errors
 - Confirm roles are deployed in the correct accounts

@@ -14,6 +14,15 @@ from .helpers import get_all_regions, paginate
 
 logger = logging.getLogger(__name__)
 
+# Error code meaning a function no longer exists.
+#
+# A function deleted between `list_functions` and `list_function_url_configs` is
+# the only benign reason that read fails: it is gone, so it exposes no URL. Every
+# other failure leaves the function's URL configuration unknown, and reporting
+# `has_function_url=False` would categorize it as COMPLIANT on the strength of a
+# read that never succeeded.
+FUNCTION_GONE_ERROR_CODE = "ResourceNotFoundException"
+
 
 @dataclass
 class DenyLambdaAuthTypeNone:
@@ -105,6 +114,11 @@ def _analyze_lambda_function(
     """
     Analyze single Lambda function for function URL authentication.
 
+    A failed read of the URL configuration aborts the run. `categorize_result`
+    treats `has_function_url=False` as COMPLIANT, so swallowing the error would
+    record a clean verdict for a function that was never read, hiding any
+    function whose URL uses an AuthType of NONE.
+
     Args:
         lambda_client: Lambda client for API calls
         function: Function dict from list_functions
@@ -112,6 +126,10 @@ def _analyze_lambda_function(
 
     Returns:
         DenyLambdaAuthTypeNone result for this function
+
+    Raises:
+        ClientError: If the function's URL configuration cannot be read for any
+            reason other than the function having been deleted mid-scan
     """
     function_name = function["FunctionName"]
     function_arn = function["FunctionArn"]
@@ -130,7 +148,15 @@ def _analyze_lambda_function(
             function_url_auth_type = url_configs[0].get("AuthType")
 
     except ClientError as e:
-        logger.warning(f"Failed to get function URL config for {function_name} in {region}: {e}")
+        if e.response.get("Error", {}).get("Code", "") != FUNCTION_GONE_ERROR_CODE:
+            logger.error(
+                f"Failed to get function URL config for {function_name} in {region}: {e}"
+            )
+            raise
+        logger.debug(
+            f"Function {function_name} in {region} was deleted during the scan, "
+            "reporting no function URL"
+        )
 
     return DenyLambdaAuthTypeNone(
         function_name=function_name,

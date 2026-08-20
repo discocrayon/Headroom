@@ -1994,9 +1994,41 @@ cheapest correct behaviour is to never learn about one.
 adding the argument fails the suite rather than the run.
 
 An enabled region is not a guarantee that a given service is available there.
-Handling a missing regional endpoint is the caller's concern, and the modules
-differ in how they do it - see the per-region failure discussion in each
-integration section.
+Handling a missing regional endpoint is the caller's concern. Note that an
+absent endpoint raises `EndpointConnectionError`, which is not a `ClientError`
+subclass, so an `except ClientError` never catches it.
+
+#### Unreadable Regions
+
+**A region that cannot be read aborts the run.** Every regional analysis raises
+on a `ClientError` rather than contributing an empty result, because an empty
+result is exactly what a genuinely empty region produces. Nothing downstream can
+distinguish "this region holds no findings" from "this region was never read",
+and both feed generated policy:
+
+| Check type | Consequence of a silently unread region |
+|------------|------------------------------------------|
+| RCP third-party access | The allowlist omits partners whose resources live only in that region, so deploying the RCP denies them |
+| SCP compliance | The region contributes no violations, so an OU looks clean and a policy is recommended on incomplete evidence |
+
+The single exception is a resource that has been **deleted between listing it and
+reading it**. That is the one benign read failure: the resource is gone, so it
+holds no policy and can grant nobody access. Those error codes are named
+explicitly - `QUEUE_GONE_ERROR_CODES` in `aws/sqs.py` and
+`FUNCTION_GONE_ERROR_CODE` in `aws/lambda_functions.py` - and every other code
+propagates.
+
+This requires the `Headroom` role to be **exempt from region-allowlist SCPs**.
+Region enablement is independent of SCPs, so a region denied by
+`aws:RequestedRegion` is still enabled, still returned by `DescribeRegions`, and
+still scanned. Without the exemption every run would abort in the denied
+regions. With it, an `AccessDenied` unambiguously means a missing permission.
+See `documentation/SETUP.md`.
+
+Recovery is cheap because the abort is not a rollback. `run_checks_for_type()`
+consults `results_exist()` per check per account, so every result already written
+to disk is kept and skipped on the next run: fix the permission, re-run, and the
+scan resumes where it stopped.
 
 Routing all callers through the single helper is required by `AP-006: Not Using
 Existing Helpers` in `HOW_TO_ADD_A_CHECK.md`, which names duplicated region

@@ -448,8 +448,22 @@ class TestAnalyzeSQSQueuePolicies:
         assert results[0].region == "us-east-1"
         assert results[1].region == "us-west-2"
 
-    def test_access_denied_region_continues(self) -> None:
-        """Test that AccessDenied in one region doesn't stop analysis."""
+    def test_access_denied_in_one_region_aborts_the_run(self) -> None:
+        """
+        AccessDenied in one region aborts the whole analysis.
+
+        The results of this check populate
+        `sqs_third_party_access_account_ids_allowlist`, so a region that could
+        not be read is indistinguishable from a region with no third-party
+        access. Continuing would emit an allowlist missing every partner whose
+        queues live only in the unreadable region, and deploying that RCP would
+        deny them. Headroom requires its role to be exempt from region-allowlist
+        SCPs, so an AccessDenied here is a real permissions gap, not an expected
+        regional block.
+
+        us-east-1 is analyzed first, so the later region proves the abort is
+        immediate rather than deferred to the end of the loop.
+        """
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
 
@@ -503,10 +517,13 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
 
-        assert len(results) == 1
-        assert results[0].region == "us-west-2"
+        with pytest.raises(ClientError) as exc_info:
+            analyze_sqs_queue_policies(mock_session, org_account_ids)
+
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+        # The failure aborted before us-west-2 was touched at all.
+        mock_sqs_clients["us-west-2"].get_paginator.assert_not_called()
 
     def test_deny_statement_ignored(self) -> None:
         """Test that Deny statements are ignored."""
@@ -659,8 +676,8 @@ class TestAnalyzeSQSQueuePolicies:
         assert not results[0].has_wildcard_principal
         assert not results[0].has_non_account_principals
 
-    def test_get_paginator_fails_access_denied(self) -> None:
-        """Test that AccessDenied errors from get_paginator are logged and handled."""
+    def _single_region_session(self) -> tuple[MagicMock, MagicMock]:
+        """Build a session mock wired to one region and return (session, sqs_client)."""
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_sqs_client = MagicMock()
@@ -673,56 +690,33 @@ class TestAnalyzeSQSQueuePolicies:
         mock_ec2_client.describe_regions.return_value = {
             "Regions": [{"RegionName": "us-east-1"}]
         }
+        return mock_session, mock_sqs_client
 
-        mock_sqs_client.get_paginator.side_effect = ClientError(
+    def test_listing_queues_raises_on_access_denied(self) -> None:
+        """
+        AccessDenied while listing queues raises rather than returning nothing.
+
+        Returning an empty list would report the region as having no queues with
+        third-party access, which is the same value a genuinely empty region
+        produces. Nothing downstream can tell the two apart.
+        """
+        mock_session, mock_sqs_client = self._single_region_session()
+
+        paginator = MagicMock()
+        paginator.paginate.side_effect = ClientError(
             {"Error": {"Code": "AccessDenied"}},
             "ListQueues"
         )
+        mock_sqs_client.get_paginator.return_value = paginator
 
-        org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        with pytest.raises(ClientError) as exc_info:
+            analyze_sqs_queue_policies(mock_session, {"111111111111"})
 
-        assert len(results) == 0
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
-    def test_get_paginator_fails_non_access_denied(self) -> None:
-        """Test that non-AccessDenied errors from get_paginator are logged and handled."""
-        mock_session = MagicMock()
-        mock_ec2_client = MagicMock()
-        mock_sqs_client = MagicMock()
-
-        mock_session.client.side_effect = lambda service, **kwargs: {
-            "ec2": mock_ec2_client,
-            "sqs": mock_sqs_client,
-        }.get(service)
-
-        mock_ec2_client.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
-
-        mock_sqs_client.get_paginator.side_effect = ClientError(
-            {"Error": {"Code": "ServiceUnavailable"}},
-            "ListQueues"
-        )
-
-        org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
-
-        assert len(results) == 0
-
-    def test_paginate_fails_non_access_denied(self) -> None:
-        """Test that non-AccessDenied errors from paginate are logged and handled."""
-        mock_session = MagicMock()
-        mock_ec2_client = MagicMock()
-        mock_sqs_client = MagicMock()
-
-        mock_session.client.side_effect = lambda service, **kwargs: {
-            "ec2": mock_ec2_client,
-            "sqs": mock_sqs_client,
-        }.get(service)
-
-        mock_ec2_client.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
+    def test_listing_queues_raises_on_service_error(self) -> None:
+        """A transient service error is not silently reinterpreted as zero findings."""
+        mock_session, mock_sqs_client = self._single_region_session()
 
         paginator = MagicMock()
         paginator.paginate.side_effect = ClientError(
@@ -731,41 +725,94 @@ class TestAnalyzeSQSQueuePolicies:
         )
         mock_sqs_client.get_paginator.return_value = paginator
 
-        org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        with pytest.raises(ClientError) as exc_info:
+            analyze_sqs_queue_policies(mock_session, {"111111111111"})
 
-        assert len(results) == 0
+        assert exc_info.value.response["Error"]["Code"] == "ServiceUnavailable"
 
-    def test_get_queue_attributes_fails(self) -> None:
-        """Test that get_queue_attributes failures are handled gracefully."""
-        mock_session = MagicMock()
-        mock_ec2_client = MagicMock()
-        mock_sqs_client = MagicMock()
+    def test_get_paginator_failure_propagates(self) -> None:
+        """
+        A failure building the paginator propagates.
 
-        mock_session.client.side_effect = lambda service, **kwargs: {
-            "ec2": mock_ec2_client,
-            "sqs": mock_sqs_client,
-        }.get(service)
+        `get_paginator` issues no API call, so this is defensive rather than
+        reachable in practice. It is pinned so the path cannot regress into
+        swallowing if that ever changes.
+        """
+        mock_session, mock_sqs_client = self._single_region_session()
 
-        mock_ec2_client.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
+        mock_sqs_client.get_paginator.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied"}},
+            "ListQueues"
+        )
+
+        with pytest.raises(ClientError):
+            analyze_sqs_queue_policies(mock_session, {"111111111111"})
+
+    def test_reading_queue_attributes_raises(self) -> None:
+        """
+        A failure reading one queue's policy aborts rather than skipping it.
+
+        Skipping drops that queue's third-party accounts from the allowlist,
+        which is the failure this check exists to prevent.
+        """
+        mock_session, mock_sqs_client = self._single_region_session()
 
         queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/test-queue"
-
         paginator = MagicMock()
         paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
         mock_sqs_client.get_paginator.return_value = paginator
 
         mock_sqs_client.get_queue_attributes.side_effect = ClientError(
-            {"Error": {"Code": "InvalidParameterValue"}},
+            {"Error": {"Code": "AccessDenied"}},
             "GetQueueAttributes"
         )
 
-        org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        with pytest.raises(ClientError) as exc_info:
+            analyze_sqs_queue_policies(mock_session, {"111111111111"})
 
-        assert len(results) == 0
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+
+    def test_queue_deleted_during_scan_is_skipped(self) -> None:
+        """
+        A queue deleted between listing and reading is skipped, not fatal.
+
+        This is the one benign reason a read fails: the queue is genuinely gone,
+        so it holds no policy and can grant nobody access. Later queues are still
+        analyzed, which distinguishes this from the aborting cases above.
+        """
+        mock_session, mock_sqs_client = self._single_region_session()
+
+        deleted_url = "https://sqs.us-east-1.amazonaws.com/111111111111/deleted"
+        live_url = "https://sqs.us-east-1.amazonaws.com/111111111111/live"
+        live_arn = "arn:aws:sqs:us-east-1:111111111111:live"
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"QueueUrls": [deleted_url, live_url]}]
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::222222222222:root"},
+                "Action": "sqs:SendMessage",
+                "Resource": live_arn
+            }]
+        }
+
+        mock_sqs_client.get_queue_attributes.side_effect = [
+            ClientError(
+                {"Error": {"Code": "AWS.SimpleQueueService.NonExistentQueue"}},
+                "GetQueueAttributes"
+            ),
+            {"Attributes": {"Policy": json.dumps(policy), "QueueArn": live_arn}},
+        ]
+
+        results = analyze_sqs_queue_policies(mock_session, {"111111111111"})
+
+        assert len(results) == 1
+        assert results[0].queue_arn == live_arn
+        assert results[0].third_party_account_ids == {"222222222222"}
 
     def test_json_decode_error(self) -> None:
         """Test that JSON decode errors are handled gracefully."""
