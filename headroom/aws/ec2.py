@@ -8,6 +8,8 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_ec2.client import EC2Client
 
+from .helpers import get_all_regions
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,11 +91,7 @@ def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
         List of DenyEc2ImdsV1 objects containing analysis results
     """
     results = []
-    ec2_client: EC2Client = session.client('ec2')
-
-    # Get all available regions
-    regions_response = ec2_client.describe_regions()
-    regions = [region['RegionName'] for region in regions_response['Regions']]
+    regions = get_all_regions(session)
 
     for region in regions:
         try:
@@ -144,7 +142,7 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
     Analyze EC2 instances to determine AMI owner for each instance.
 
     Algorithm:
-    1. Get all enabled regions from EC2
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Describe all EC2 instances via paginator
        b. For each instance, extract AMI ID
@@ -162,10 +160,7 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
         RuntimeError: If AWS API calls fail
     """
     results = []
-    ec2_client: EC2Client = session.client('ec2')
-
-    regions_response = ec2_client.describe_regions()
-    regions = [region['RegionName'] for region in regions_response['Regions']]
+    regions = get_all_regions(session)
 
     for region in regions:
         try:
@@ -250,7 +245,7 @@ def get_ec2_public_ip_analysis(session: Session) -> List[DenyEc2PublicIp]:
     Analyze EC2 instances for public IP address assignment across all regions.
 
     Algorithm:
-    1. Get all available regions from EC2
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Analyze EC2 instances via describe_instances() (paginated)
        b. Check for public IP address in network interfaces
@@ -268,10 +263,7 @@ def get_ec2_public_ip_analysis(session: Session) -> List[DenyEc2PublicIp]:
         RuntimeError: If AWS API calls fail
     """
     results = []
-    ec2_client: EC2Client = session.client('ec2')
-
-    regions_response = ec2_client.describe_regions()
-    regions = [region['RegionName'] for region in regions_response['Regions']]
+    regions = get_all_regions(session)
 
     for region in regions:
         try:
@@ -324,10 +316,7 @@ def get_ec2_imds_hop_limit_analysis(session: Session) -> List[DenyEc2ImdsHopLimi
         List of DenyEc2ImdsHopLimit objects containing analysis results
     """
     results = []
-    ec2_client: EC2Client = session.client('ec2')
-
-    regions_response = ec2_client.describe_regions()
-    regions = [region['RegionName'] for region in regions_response['Regions']]
+    regions = get_all_regions(session)
 
     for region in regions:
         try:

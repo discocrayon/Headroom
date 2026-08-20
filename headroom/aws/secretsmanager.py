@@ -17,6 +17,7 @@ from mypy_boto3_secretsmanager.client import SecretsManagerClient
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
+from .helpers import get_all_regions
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,7 @@ def analyze_secrets_manager_policies(
     not part of the organization.
 
     Algorithm:
-    1. Get all enabled regions via describe_regions()
+    1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. List all secrets via list_secrets() paginator
        b. For each secret, get resource policy via get_resource_policy()
@@ -198,11 +199,8 @@ def analyze_secrets_manager_policies(
         ClientError: If AWS API calls fail
         UnsupportedPrincipalTypeError: If policy contains Federated/CanonicalUser principals
     """
-    ec2_client = session.client("ec2")
     results: List[SecretsPolicyAnalysis] = []
-
-    regions_response = ec2_client.describe_regions()
-    regions = [region["RegionName"] for region in regions_response["Regions"]]
+    regions = get_all_regions(session)
 
     for region in regions:
         logger.info(f"Analyzing Secrets Manager in {region}")

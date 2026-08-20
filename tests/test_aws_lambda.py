@@ -4,6 +4,7 @@ Tests for headroom.aws.lambda_functions module.
 Tests for DenyLambdaAuthTypeNone dataclass and get_deny_lambda_auth_type_none_analysis function.
 """
 
+import pytest
 from unittest.mock import MagicMock
 from typing import Optional
 
@@ -251,8 +252,11 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
         assert len(results) == 0
         assert results == []
 
-    def test_get_deny_lambda_auth_type_none_analysis_url_config_error(self) -> None:
-        """Test handling of errors when retrieving function URL configs."""
+    def _one_function_session(
+        self,
+        url_config_side_effect: object
+    ) -> MagicMock:
+        """Build a session mock with one region and one function."""
         mock_session = MagicMock()
 
         mock_ec2 = MagicMock()
@@ -262,20 +266,11 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
 
         mock_regional_lambda = MagicMock()
         mock_functions_paginator = MagicMock()
-
-        functions_page = {
-            "Functions": [
-                self.create_mock_function("test-function")
-            ]
-        }
-        mock_functions_paginator.paginate.return_value = [functions_page]
+        mock_functions_paginator.paginate.return_value = [
+            {"Functions": [self.create_mock_function("test-function")]}
+        ]
         mock_regional_lambda.get_paginator.return_value = mock_functions_paginator
-
-        # Simulate error when getting URL config
-        mock_regional_lambda.list_function_url_configs.side_effect = ClientError(
-            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
-            "ListFunctionUrlConfigs"
-        )
+        mock_regional_lambda.list_function_url_configs.side_effect = url_config_side_effect
 
         def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
             if service == "ec2":
@@ -283,11 +278,48 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
             return mock_regional_lambda
 
         mock_session.client.side_effect = client_side_effect
+        return mock_session
 
-        # Execute function - should not raise, just log warning
+    def test_url_config_read_failure_aborts_the_run(self) -> None:
+        """
+        A failure reading a function's URL config raises rather than reporting
+        the function as having no URL.
+
+        `categorize_result` treats `has_function_url=False` as COMPLIANT, so
+        swallowing the error records a clean verdict for a function nobody could
+        read - and a function with AuthType NONE would become invisible. The
+        result file would state `"has_function_url": false` as though it had been
+        observed. Headroom requires its role to be exempt from region-allowlist
+        SCPs, so AccessDenied here is a real permissions gap.
+        """
+        mock_session = self._one_function_session(
+            ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Access denied"}},
+                "ListFunctionUrlConfigs"
+            )
+        )
+
+        with pytest.raises(ClientError) as exc_info:
+            get_deny_lambda_auth_type_none_analysis(mock_session)
+
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+
+    def test_function_deleted_during_scan_is_reported_without_a_url(self) -> None:
+        """
+        A function deleted between listing and reading is not fatal.
+
+        This is the one benign reason the read fails: the function is gone, so it
+        exposes no URL and cannot violate the policy.
+        """
+        mock_session = self._one_function_session(
+            ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "Gone"}},
+                "ListFunctionUrlConfigs"
+            )
+        )
+
         results = get_deny_lambda_auth_type_none_analysis(mock_session)
 
-        # Verify function is included with no URL
         assert len(results) == 1
         assert results[0].function_name == "test-function"
         assert results[0].has_function_url is False
