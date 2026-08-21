@@ -225,6 +225,101 @@ class TestCheckDenyEc2AmiOwner:
         assert category == "compliant"
         assert result_dict["ami_name"] is None
 
+    def test_categorize_result_unknown_owner_is_violation(self) -> None:
+        """An instance whose AMI owner could not be determined is a violation."""
+        check = DenyEc2AmiOwnerCheck(
+            check_name=DENY_EC2_AMI_OWNER,
+            account_name="test",
+            account_id="111111111111",
+            results_dir=DEFAULT_RESULTS_DIR,
+        )
+
+        result = DenyEc2AmiOwner(
+            instance_id="i-11111111111111111",
+            region="us-west-2",
+            ami_id="ami-11111111111111111",
+            ami_owner=None,
+            ami_name=None,
+            owner_unknown_reason="not_visible",
+        )
+
+        category, result_dict = check.categorize_result(result)
+
+        assert category == "violation"
+        assert result_dict["ami_owner"] is None
+        assert result_dict["owner_unknown_reason"] == "not_visible"
+
+    def test_categorize_result_known_owner_reports_no_reason(self) -> None:
+        """A resolved AMI owner carries a null reason rather than omitting the field."""
+        check = DenyEc2AmiOwnerCheck(
+            check_name=DENY_EC2_AMI_OWNER,
+            account_name="test",
+            account_id="111111111111",
+            results_dir=DEFAULT_RESULTS_DIR,
+        )
+
+        result = DenyEc2AmiOwner(
+            instance_id="i-test",
+            region="us-east-1",
+            ami_id="ami-12345678",
+            ami_owner="amazon",
+            ami_name="Amazon Linux 2",
+        )
+
+        category, result_dict = check.categorize_result(result)
+
+        assert category == "compliant"
+        assert result_dict["owner_unknown_reason"] is None
+
+    def test_build_summary_fields_with_unknown_owner(self, temp_results_dir: str) -> None:
+        """Unknown owners are counted separately and kept out of unique_ami_owners."""
+        from headroom.checks.base import CategorizedCheckResult
+        from headroom.types import JsonDict
+
+        violations: list[JsonDict] = [
+            {
+                "instance_id": "i-11111111111111111",
+                "ami_owner": None,
+                "region": "us-west-2",
+                "ami_id": "ami-11111111111111111",
+                "ami_name": None,
+                "owner_unknown_reason": "not_visible",
+            },
+        ]
+        compliant: list[JsonDict] = [
+            {
+                "instance_id": "i-1",
+                "ami_owner": "amazon",
+                "region": "us-east-1",
+                "ami_id": "ami-1",
+                "ami_name": "AL2",
+                "owner_unknown_reason": None,
+            },
+        ]
+
+        check_result = CategorizedCheckResult(
+            violations=violations,
+            exemptions=[],
+            compliant=compliant,
+            summary={}
+        )
+
+        check = DenyEc2AmiOwnerCheck(
+            check_name=DENY_EC2_AMI_OWNER,
+            account_name="test",
+            account_id="111111111111",
+            results_dir=temp_results_dir,
+        )
+
+        summary = check.build_summary_fields(check_result)
+
+        assert summary["total_instances"] == 2
+        assert summary["violations"] == 1
+        assert summary["compliant"] == 1
+        assert summary["compliance_percentage"] == 50.0
+        assert summary["unique_ami_owners"] == ["amazon"]
+        assert summary["unknown_ami_owners"] == {"not_visible": 1}
+
     def test_build_summary_fields(self, temp_results_dir: str) -> None:
         """Test summary fields calculation."""
         from headroom.checks.base import CategorizedCheckResult

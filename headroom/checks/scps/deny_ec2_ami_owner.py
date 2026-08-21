@@ -53,7 +53,11 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
             "ami_id": result.ami_id,
             "ami_owner": result.ami_owner,
             "ami_name": result.ami_name,
+            "owner_unknown_reason": result.owner_unknown_reason,
         }
+
+        if result.ami_owner is None:
+            return (CheckCategory.VIOLATION, result_dict)
 
         return (CheckCategory.COMPLIANT, result_dict)
 
@@ -75,8 +79,16 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
         compliance_pct = (compliant_count / total * 100) if total else 100
 
         ami_owners = set()
+        unknown_ami_owners: Dict[str, int] = {}
         for item in check_result.violations + check_result.compliant:
-            ami_owners.add(item["ami_owner"])
+            owner = item["ami_owner"]
+            if owner is None:
+                # `_resolve_ami_owner` always pairs a null owner with a reason
+                # string; str() narrows JsonDict's `object` value type.
+                reason = str(item["owner_unknown_reason"])
+                unknown_ami_owners[reason] = unknown_ami_owners.get(reason, 0) + 1
+                continue
+            ami_owners.add(owner)
 
         return {
             "total_instances": total,
@@ -84,4 +96,5 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
             "compliant": len(check_result.compliant),
             "compliance_percentage": compliance_pct,
             "unique_ami_owners": sorted(list(ami_owners)),
+            "unknown_ami_owners": unknown_ami_owners,
         }
