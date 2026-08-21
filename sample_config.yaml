@@ -8,6 +8,13 @@ security_analysis_account_id: '111111111111'
 # Set to `true` here so that I can commit `test_environment/` results without disclosing all my AWS account IDs
 exclude_account_ids: true
 
+# Account IDs to leave out of analysis entirely.
+# A skipped account is never scanned, so it is absent from the compliance picture
+# and cannot hold back an org-wide policy. Generated policies are the same as if
+# the account did not exist, and may deny actions it relies on.
+# Every entry must match an account in the organization, or the run aborts.
+skip_account_ids: []
+
 use_account_name_from_tags: false
 
 # Tag keys to look for on AWS accounts

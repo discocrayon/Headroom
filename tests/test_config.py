@@ -64,6 +64,44 @@ class TestAccountTagLayout:
 class TestHeadroomConfig:
     """Test HeadroomConfig class with all possible configurations."""
 
+    def test_skip_account_ids_defaults_to_empty(self) -> None:
+        """Omitting skip_account_ids analyzes every account."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="Environment", name="Name", owner="Owner")
+        )
+        assert config.skip_account_ids == []
+
+    def test_skip_account_ids_from_yaml(self) -> None:
+        """skip_account_ids is a YAML-only setting with no CLI override."""
+        yaml_cfg = {
+            "use_account_name_from_tags": False,
+            "account_tag_layout": {
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner",
+            },
+            "skip_account_ids": ["111111111111", "222222222222"],
+        }
+
+        merged = merge_configs(yaml_cfg, argparse.Namespace(config="dummy.yaml"))
+        assert merged.skip_account_ids == ["111111111111", "222222222222"]
+
+    def test_skip_account_ids_rejects_unquoted_yaml_integer(self) -> None:
+        """
+        An unquoted YAML account ID is an integer and must be rejected.
+
+        Silently accepting it would compare an int against the string IDs the
+        Organizations API returns, matching nothing and analyzing an account
+        the operator believes is excluded.
+        """
+        with pytest.raises(ValidationError):
+            HeadroomConfig(
+                use_account_name_from_tags=False,
+                account_tag_layout=AccountTagLayout(environment="Environment", name="Name", owner="Owner"),
+                skip_account_ids=[111111111111],  # type: ignore[list-item]
+            )
+
     def test_valid_headroom_config(self) -> None:
         """Test creating HeadroomConfig with valid data."""
         account_tag_layout = AccountTagLayout(

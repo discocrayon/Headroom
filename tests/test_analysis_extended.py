@@ -617,6 +617,41 @@ class TestGetAllOrganizationAccountIds:
             "444444444444",
         }
 
+    def test_get_all_organization_account_ids_includes_skipped_accounts(self) -> None:
+        """
+        Accounts named in skip_account_ids must stay in the membership set.
+
+        skip_account_ids means "do not scan this account", not "pretend it left
+        the organization". This set is subtracted from the principals observed
+        in resource policies to find third parties, so dropping a skipped
+        account would reclassify it as a third party and add it to the
+        generated RCP allowlist. That widens the policy, which is the opposite
+        of what skipping an account should do.
+        """
+        config = HeadroomConfig(
+            management_account_id="999999999999",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner"),
+            skip_account_ids=["222222222222"],
+        )
+
+        mock_mgmt_session = MagicMock()
+        mock_org_client = MagicMock()
+        mock_mgmt_session.client.return_value = mock_org_client
+        mock_org_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Accounts": [
+                    {"Id": "111111111111", "Name": "Scanned", "State": "ACTIVE"},
+                    {"Id": "222222222222", "Name": "Skipped", "State": "ACTIVE"},
+                ]
+            }
+        ]
+
+        with patch("headroom.analysis.get_management_account_session", return_value=mock_mgmt_session):
+            result = get_all_organization_account_ids(config, MagicMock())
+
+        assert result == {"111111111111", "222222222222"}
+
     def test_get_all_organization_account_ids_missing_management_account_id(self) -> None:
         """Test that missing management_account_id raises ValueError."""
         mock_session = MagicMock()
