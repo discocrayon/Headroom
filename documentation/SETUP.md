@@ -107,9 +107,48 @@ security_analysis_account_id: '111111111111'  # Required for this option
 
 ### Optional
 - `security_analysis_account_id`: Only required if running from management account (Option 2)
-- `exclude_account_ids`: When `true`, excludes account IDs from result files and filenames (default: `false`)
+- `exclude_account_ids`: When `true`, excludes account IDs from result files and filenames (default: `false`). This redacts identifiers; it does not skip any account.
+- `skip_account_ids`: Account IDs to leave out of analysis entirely (default: `[]`). See [Skipping Accounts](#skipping-accounts).
 - `use_account_name_from_tags`: When `true`, uses tag-based account names instead of AWS Organizations names (default: `false`)
 - `account_tag_layout`: Tag keys for extracting account metadata (all optional)
+
+### Skipping Accounts
+
+```yaml
+skip_account_ids:
+  - '333333333333'
+  - '444444444444'
+```
+
+A skipped account is never scanned, so it writes no result files. Policy
+placement only ever sees accounts that have results, which has a consequence
+worth being explicit about:
+
+**Skipped accounts do not restrain org-wide policy.** They are absent from the
+compliance picture rather than flagged as unknown, so Headroom recommends the
+same root-level or OU-level placement it would if the account did not exist.
+A generated policy can therefore deny actions a skipped account relies on. Skip
+an account only when you accept that outcome for it.
+
+Two things skipping does **not** do:
+
+1. **It does not remove the account from your organization's membership set.**
+   That set distinguishes in-org principals from third parties. Dropping a
+   skipped account from it would reclassify it as a third party and add it to
+   the generated RCP allowlist, widening the policy instead of narrowing it.
+2. **It does not delete result files written by earlier runs.** Results already
+   on disk keep feeding policy generation. To stop an account from influencing
+   generated policy after you skip it, delete its files under
+   `{results_dir}/{scps,rcps}/*/`.
+
+Every entry must match an account ID that AWS Organizations reports. An entry
+matching nothing aborts the run rather than silently analyzing an account you
+believe is excluded. Quote the IDs: unquoted YAML parses them as integers and
+the config is rejected.
+
+Because the skip list is consulted before lifecycle-state classification, it
+also serves as an escape hatch for an account whose state Headroom cannot
+classify and which would otherwise abort the run.
 
 ### Account Tag Layout
 
