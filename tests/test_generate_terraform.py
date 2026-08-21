@@ -497,7 +497,7 @@ class TestTerraformHelperFunctions:
         # Account's parent_ou_id points to an OU that doesn't exist in organizational_units
         # This simulates an orphaned account or data inconsistency
         accounts = {
-            "123456789012": AccountOrgPlacement("123456789012", "orphan-account", "ou-missing", ["Orphan"])
+            "111111111111": AccountOrgPlacement("111111111111", "orphan-account", "ou-missing", ["Orphan"])
         }
         ous: Dict[str, OrganizationalUnit] = {}  # Empty ous dict - the OU doesn't exist
 

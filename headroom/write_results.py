@@ -92,7 +92,7 @@ class ResultFilePathResolver:
         Build filename based on configuration.
 
         Returns:
-            Filename string (e.g., 'account_123456789012.json' or 'account.json')
+            Filename string (e.g., 'account_111111111111.json' or 'account.json')
         """
         if self.exclude_account_ids:
             account_identifier = self.account_name

@@ -22,7 +22,7 @@ variable "deny_ec2_ami_owner" {
 variable "ec2_allowed_ami_owners" {
   type        = list(string)
   default     = []
-  description = "List of allowed AMI owner account IDs or aliases (e.g., 'amazon', 'aws-marketplace', '123456789012')"
+  description = "List of allowed AMI owner account IDs or aliases (e.g., 'amazon', 'aws-marketplace', '111111111111')"
 }
 
 variable "deny_ec2_imds_hop_limit" {

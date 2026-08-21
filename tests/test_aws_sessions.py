@@ -64,13 +64,13 @@ class TestAssumeRole:
             mock_session_class.return_value = mock_new_session
 
             result = assume_role(
-                role_arn="arn:aws:iam::123456789012:role/TestRole",
+                role_arn="arn:aws:iam::111111111111:role/TestRole",
                 session_name="TestSession",
                 base_session=mock_base_session
             )
 
             mock_sts_client.assume_role.assert_called_once_with(
-                RoleArn="arn:aws:iam::123456789012:role/TestRole",
+                RoleArn="arn:aws:iam::111111111111:role/TestRole",
                 RoleSessionName="TestSession"
             )
 
@@ -101,7 +101,7 @@ class TestAssumeRole:
             }
 
             result = assume_role(
-                role_arn="arn:aws:iam::123456789012:role/TestRole",
+                role_arn="arn:aws:iam::111111111111:role/TestRole",
                 session_name="TestSession"
             )
 
@@ -122,7 +122,7 @@ class TestAssumeRole:
 
         with pytest.raises(ClientError) as exc_info:
             assume_role(
-                role_arn="arn:aws:iam::123456789012:role/TestRole",
+                role_arn="arn:aws:iam::111111111111:role/TestRole",
                 session_name="TestSession",
                 base_session=mock_base_session
             )
@@ -176,7 +176,7 @@ class TestAssumeRole:
             mock_session_class.return_value = mock_new_session
 
             result = assume_role(
-                role_arn="arn:aws:iam::123456789012:role/TestRole",
+                role_arn="arn:aws:iam::111111111111:role/TestRole",
                 session_name="TestSession",
                 base_session=mock_base_session
             )
@@ -207,7 +207,7 @@ class TestAssumeRole:
         }
 
         assume_role(
-            role_arn="arn:aws:iam::123456789012:role/TestRole",
+            role_arn="arn:aws:iam::111111111111:role/TestRole",
             session_name="TestSession",
             base_session=mock_base_session
         )
@@ -287,7 +287,7 @@ class TestAssumeRoleRegionHandling:
         """AssumeRole is issued against an explicit region, not a default."""
         base_session = self._base_session("us-west-2")
 
-        assume_role("arn:aws:iam::123456789012:role/Headroom", "TestSession", base_session)
+        assume_role("arn:aws:iam::111111111111:role/Headroom", "TestSession", base_session)
 
         base_session.client.assert_called_once_with("sts", region_name="us-west-2")
 
@@ -302,7 +302,7 @@ class TestAssumeRoleRegionHandling:
         base_session = self._base_session("us-west-2")
 
         session = assume_role(
-            "arn:aws:iam::123456789012:role/Headroom", "TestSession", base_session
+            "arn:aws:iam::111111111111:role/Headroom", "TestSession", base_session
         )
 
         assert session.region_name == "us-west-2"
@@ -320,7 +320,7 @@ class TestAssumeRoleRegionHandling:
 
         with pytest.raises(RuntimeError) as exc_info:
             assume_role(
-                "arn:aws:iam::123456789012:role/Headroom", "TestSession", base_session
+                "arn:aws:iam::111111111111:role/Headroom", "TestSession", base_session
             )
 
         assert "no AWS region" in str(exc_info.value)

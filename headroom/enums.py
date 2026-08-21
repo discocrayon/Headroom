@@ -27,3 +27,14 @@ class CheckCategory(str, Enum):
     VIOLATION = "violation"
     EXEMPTION = "exemption"
     COMPLIANT = "compliant"
+
+
+class AmiOwnerUnknownReason(str, Enum):
+    """Reasons an EC2 instance's AMI owner cannot be determined."""
+    # DescribeImages does not surface the AMI to this account even when asked
+    # for disabled and deprecated images: an Allowed AMIs setting filters it,
+    # or it was shared and then unshared.
+    NOT_VISIBLE = "not_visible"
+    # The AMI ID no longer resolves at all, which is what deregistration leaves
+    # behind on a long-lived instance.
+    DEREGISTERED = "deregistered"

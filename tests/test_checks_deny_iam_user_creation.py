@@ -18,7 +18,7 @@ class TestCheckDenyIamUserCreation:
         check = DenyIamUserCreationCheck(
             check_name="deny_iam_user_creation",
             account_name="test-account",
-            account_id="123456789012",
+            account_id="111111111111",
             results_dir=str(tmp_path),
         )
 
@@ -30,19 +30,19 @@ class TestCheckDenyIamUserCreation:
             mock_get_users.return_value = [
                 IamUserAnalysis(
                     user_name="admin",
-                    user_arn="arn:aws:iam::123456789012:user/admin",
+                    user_arn="arn:aws:iam::111111111111:user/admin",
                     path="/",
                 ),
                 IamUserAnalysis(
                     user_name="developer",
-                    user_arn="arn:aws:iam::123456789012:user/developer",
+                    user_arn="arn:aws:iam::111111111111:user/developer",
                     path="/",
                 ),
             ]
 
             check.execute(mock_session)
 
-        results_file = tmp_path / "scps" / "deny_iam_user_creation" / "test-account_123456789012.json"
+        results_file = tmp_path / "scps" / "deny_iam_user_creation" / "test-account_111111111111.json"
         assert results_file.exists()
 
         with open(results_file) as f:
@@ -50,8 +50,8 @@ class TestCheckDenyIamUserCreation:
 
         assert results["summary"]["total_users"] == 2
         assert len(results["summary"]["users"]) == 2
-        assert "arn:aws:iam::123456789012:user/admin" in results["summary"]["users"]
-        assert "arn:aws:iam::123456789012:user/developer" in results["summary"]["users"]
+        assert "arn:aws:iam::111111111111:user/admin" in results["summary"]["users"]
+        assert "arn:aws:iam::111111111111:user/developer" in results["summary"]["users"]
         assert len(results["compliant_instances"]) == 2
         assert len(results["violations"]) == 0
 
@@ -60,7 +60,7 @@ class TestCheckDenyIamUserCreation:
         check = DenyIamUserCreationCheck(
             check_name="deny_iam_user_creation",
             account_name="test-account",
-            account_id="123456789012",
+            account_id="111111111111",
             results_dir=str(tmp_path),
         )
 
@@ -73,7 +73,7 @@ class TestCheckDenyIamUserCreation:
 
             check.execute(mock_session)
 
-        results_file = tmp_path / "scps" / "deny_iam_user_creation" / "test-account_123456789012.json"
+        results_file = tmp_path / "scps" / "deny_iam_user_creation" / "test-account_111111111111.json"
         assert results_file.exists()
 
         with open(results_file) as f:
@@ -87,7 +87,7 @@ class TestCheckDenyIamUserCreation:
         check = DenyIamUserCreationCheck(
             check_name="deny_iam_user_creation",
             account_name="test-account",
-            account_id="123456789012",
+            account_id="111111111111",
             results_dir=str(tmp_path),
         )
 
@@ -99,19 +99,19 @@ class TestCheckDenyIamUserCreation:
             mock_get_users.return_value = [
                 IamUserAnalysis(
                     user_name="admin",
-                    user_arn="arn:aws:iam::123456789012:user/admin",
+                    user_arn="arn:aws:iam::111111111111:user/admin",
                     path="/",
                 ),
                 IamUserAnalysis(
                     user_name="developer",
-                    user_arn="arn:aws:iam::123456789012:user/developer",
+                    user_arn="arn:aws:iam::111111111111:user/developer",
                     path="/dev/",
                 ),
             ]
 
             check.execute(mock_session)
 
-        results_file = tmp_path / "scps" / "deny_iam_user_creation" / "test-account_123456789012.json"
+        results_file = tmp_path / "scps" / "deny_iam_user_creation" / "test-account_111111111111.json"
 
         with open(results_file) as f:
             results = json.load(f)

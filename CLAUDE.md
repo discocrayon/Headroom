@@ -127,6 +127,7 @@ The tool follows a multi-account AWS pattern:
 - Split docstrings over multiple lines for PEP 257 compliance
 - Wrap `with` statements in parentheses with proper indentation and trailing commas
 - Put data sources in separate `data.tf` files (for Terraform)
+- Never put a real AWS identifier (account ID, instance ID, AMI ID, ARN, KMS key ID, OU ID) in code, tests, docs, or commit messages - use obviously fake placeholders
 
 ### Quality Standards
 - 100% test coverage required for both source and test code

@@ -809,7 +809,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     Extract AWS account IDs from principal field.
 
     Handles:
-    - String: "arn:aws:iam::123456789012:..." or "123456789012"
+    - String: "arn:aws:iam::111111111111:..." or "111111111111"
     - List: recursively process each item
     - Dict: process AWS/Service/Federated keys
     - Mixed: {"AWS": [...], "Service": "..."}
@@ -969,7 +969,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     Extract AWS account IDs from principal field.
 
     Handles:
-    - String: "arn:aws:iam::123456789012:..." or "123456789012"
+    - String: "arn:aws:iam::111111111111:..." or "111111111111"
     - List: recursively process each item
     - Dict: process AWS/Service/Federated keys
     - Mixed: {"AWS": [...], "Service": "..."}
@@ -1110,7 +1110,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     Extract AWS account IDs from principal field.
 
     Handles:
-    - String: "arn:aws:s3:::bucket" or "123456789012"
+    - String: "arn:aws:s3:::bucket" or "111111111111"
     - List: recursively process each item
     - Dict: process AWS/Service/Federated/CanonicalUser keys
     - Mixed: {"AWS": [...], "Federated": "..."}
@@ -1213,9 +1213,9 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
 
 | Principal Type | Example | Account ID Extraction | RCP Compatible | Categorization |
 |----------------|---------|----------------------|----------------|----------------|
-| AWS Account | `arn:aws:iam::123456789012:root` | ✅ Extract 123456789012 | ✅ COMPLIANT | Can be allowlisted |
+| AWS Account | `arn:aws:iam::111111111111:root` | ✅ Extract 111111111111 | ✅ COMPLIANT | Can be allowlisted |
 | Wildcard | `"*"` | ❌ None | ❌ VIOLATION | Can't deploy RCP safely |
-| Federated (SAML/OIDC) | `arn:aws:iam::123456789012:saml-provider/MyProvider` | ⚠️ Extract 123456789012 but not the accessing principal | ❌ VIOLATION | Would break SSO access |
+| Federated (SAML/OIDC) | `arn:aws:iam::111111111111:saml-provider/MyProvider` | ⚠️ Extract 111111111111 but not the accessing principal | ❌ VIOLATION | Would break SSO access |
 | CanonicalUser | `79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be` | ❌ None | ❌ VIOLATION | Would break access |
 | Service | `cloudtrail.amazonaws.com` | ❌ None (skip) | ✅ EXEMPT | RCP has `aws:PrincipalIsAWSService` check |
 

@@ -1517,7 +1517,7 @@ class TestBuildRcpTerraformModule:
             check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["111111111111", "222222222222"],
             reasoning="Test"
         )
@@ -1541,7 +1541,7 @@ class TestBuildRcpTerraformModule:
             check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["*"],
             reasoning="Test"
         )
@@ -1562,8 +1562,8 @@ class TestBuildRcpTerraformModule:
             check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
             recommended_level="root",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
-            third_party_account_ids=["123456789012"],
+            affected_accounts=["000000000000"],
+            third_party_account_ids=["000000000000"],
             reasoning="Test"
         )
         result = _build_rcp_terraform_module(
@@ -1588,7 +1588,7 @@ class TestBuildRcpTerraformModule:
             check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
             recommended_level="root",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["749430749651"],
             reasoning="Test"
         )
@@ -1636,7 +1636,7 @@ module "rcps_test" {
             check_name="deny_s3_third_party_access",
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["333333333333", "444444444444"],
             reasoning="Test S3 access"
         )
@@ -1672,7 +1672,7 @@ module "rcps_test" {
             check_name=DENY_ECR_THIRD_PARTY_ACCESS,
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["464622532012", "198449067068"],
             reasoning="Test ECR access"
         )
@@ -1695,8 +1695,8 @@ module "rcps_test" {
             check_name=DENY_KMS_THIRD_PARTY_ACCESS,
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
-            third_party_account_ids=["999888777666"],
+            affected_accounts=["000000000000"],
+            third_party_account_ids=["000011113333"],
             reasoning="Test KMS access"
         )
         result = _build_rcp_terraform_module(
@@ -1707,7 +1707,7 @@ module "rcps_test" {
         )
 
         assert "kms_third_party_access_account_ids_allowlist" in result
-        assert '"999888777666"' in result
+        assert '"000011113333"' in result
         assert "deny_kms_third_party_access = true" in result
         assert "deny_sts_third_party_assumerole = false" in result
 
@@ -1717,8 +1717,8 @@ module "rcps_test" {
             check_name=DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
-            third_party_account_ids=["555666777888"],
+            affected_accounts=["000000000000"],
+            third_party_account_ids=["000011112222"],
             reasoning="Test Secrets Manager access"
         )
         result = _build_rcp_terraform_module(
@@ -1729,7 +1729,7 @@ module "rcps_test" {
         )
 
         assert "secrets_manager_third_party_account_ids_allowlist" in result
-        assert '"555666777888"' in result
+        assert '"000011112222"' in result
         assert "deny_secrets_manager_third_party_access = true" in result
 
     def test_build_module_with_both_ecr_and_iam(self) -> None:
@@ -1738,7 +1738,7 @@ module "rcps_test" {
             check_name=DENY_ECR_THIRD_PARTY_ACCESS,
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["464622532012"],
             reasoning="Test ECR access"
         )
@@ -1746,7 +1746,7 @@ module "rcps_test" {
             check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["999999999999"],
             reasoning="Test IAM access"
         )
@@ -1775,8 +1775,8 @@ class TestGenerateAccountRcpTerraform:
             root_id="r-root",
             organizational_units={},
             accounts={
-                "123456789012": AccountOrgPlacement(
-                    account_id="123456789012",
+                "000000000000": AccountOrgPlacement(
+                    account_id="000000000000",
                     account_name="Test Account",
                     parent_ou_id="ou-test",
                     ou_path=["r-root", "ou-test"]
@@ -1791,7 +1791,7 @@ class TestGenerateAccountRcpTerraform:
             check_name="deny_sts_third_party_assumerole",
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["999999999999", "888888888888"],
             reasoning="Test recommendation"
         )
@@ -1805,7 +1805,7 @@ class TestGenerateAccountRcpTerraform:
         output_path = Path("/tmp/test_rcps")
         output_path.mkdir(parents=True, exist_ok=True)
 
-        _generate_account_rcp_terraform("123456789012", [sample_rcp_rec], sample_org, output_path)
+        _generate_account_rcp_terraform("000000000000", [sample_rcp_rec], sample_org, output_path)
 
         expected_file = output_path / "test_account_rcps.tf"
         assert expected_file.exists()
@@ -1836,7 +1836,7 @@ class TestGenerateAccountRcpTerraform:
         output_path = Path("/tmp/test_rcps")
         output_path.mkdir(parents=True, exist_ok=True)
 
-        _generate_account_rcp_terraform("123456789012", [], sample_org, output_path)
+        _generate_account_rcp_terraform("000000000000", [], sample_org, output_path)
 
         expected_file = output_path / "test_account_rcps.tf"
         assert not expected_file.exists()
@@ -1857,12 +1857,12 @@ class TestGenerateOuRcpTerraform:
                     name="Test OU",
                     parent_ou_id="r-root",
                     child_ous=[],
-                    accounts=["123456789012"]
+                    accounts=["000000000000"]
                 )
             },
             accounts={
-                "123456789012": AccountOrgPlacement(
-                    account_id="123456789012",
+                "000000000000": AccountOrgPlacement(
+                    account_id="000000000000",
                     account_name="Test Account",
                     parent_ou_id="ou-12345",
                     ou_path=["r-root", "ou-12345"]
@@ -1877,7 +1877,7 @@ class TestGenerateOuRcpTerraform:
             check_name="deny_sts_third_party_assumerole",
             recommended_level="ou",
             target_ou_id="ou-12345",
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["999999999999"],
             reasoning="Test OU recommendation"
         )
@@ -1938,7 +1938,7 @@ class TestGenerateRootRcpTerraform:
             check_name="deny_sts_third_party_assumerole",
             recommended_level="root",
             target_ou_id=None,
-            affected_accounts=["123456789012", "987654321098"],
+            affected_accounts=["000000000000", "000011114444"],
             third_party_account_ids=["999999999999", "888888888888"],
             reasoning="Test root recommendation"
         )
@@ -1970,7 +1970,7 @@ class TestGenerateRootRcpTerraform:
             check_name="deny_sqs_third_party_access",
             recommended_level="account",
             target_ou_id=None,
-            affected_accounts=["123456789012"],
+            affected_accounts=["000000000000"],
             third_party_account_ids=["444444444444", "555555555555"],
             reasoning="Test SQS"
         )

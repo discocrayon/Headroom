@@ -39,14 +39,14 @@ class TestTerraformParameter:
 
     def test_render_single_item_list(self) -> None:
         """Test rendering list with single item."""
-        param = TerraformParameter("accounts", ["123456789012"])
-        expected = '  accounts = [\n    "123456789012",\n  ]'
+        param = TerraformParameter("accounts", ["111111111111"])
+        expected = '  accounts = [\n    "111111111111",\n  ]'
         assert param.render() == expected
 
     def test_render_multi_item_list(self) -> None:
         """Test rendering list with multiple items."""
-        param = TerraformParameter("accounts", ["123456789012", "234567890123", "345678901234"])
-        expected = '  accounts = [\n    "123456789012",\n    "234567890123",\n    "345678901234",\n  ]'
+        param = TerraformParameter("accounts", ["111111111111", "222222222222", "333333333333"])
+        expected = '  accounts = [\n    "111111111111",\n    "222222222222",\n    "333333333333",\n  ]'
         assert param.render() == expected
 
     def test_render_integer(self) -> None:
@@ -61,8 +61,8 @@ class TestTerraformParameter:
 
     def test_render_with_special_characters(self) -> None:
         """Test rendering string with special characters."""
-        param = TerraformParameter("arn", "arn:aws:iam::123456789012:user/path/username")
-        assert param.render() == '  arn = "arn:aws:iam::123456789012:user/path/username"'
+        param = TerraformParameter("arn", "arn:aws:iam::111111111111:user/path/username")
+        assert param.render() == '  arn = "arn:aws:iam::111111111111:user/path/username"'
 
     def test_render_with_terraform_variable(self) -> None:
         """Test rendering string containing Terraform variable reference."""
@@ -181,7 +181,7 @@ module "test_module" {
             target_id="local.root_ou_id",
             parameters=[
                 TerraformParameter("deny_ec2_ami_owner", True),
-                TerraformParameter("ec2_allowed_ami_owners", ["123456789012", "234567890123"]),
+                TerraformParameter("ec2_allowed_ami_owners", ["111111111111", "222222222222"]),
             ],
             comment="Organization Root"
         )
@@ -194,8 +194,8 @@ module "scps_root" {
 
   deny_ec2_ami_owner = true
   ec2_allowed_ami_owners = [
-    "123456789012",
-    "234567890123",
+    "111111111111",
+    "222222222222",
   ]
 }
 '''
@@ -261,7 +261,7 @@ module "scps_root" {
             target_id="local.top_level_security_tooling_ou_id",
             parameters=[
                 TerraformParameter("deny_ec2_ami_owner", True),
-                TerraformParameter("ec2_allowed_ami_owners", ["123456789012"]),
+                TerraformParameter("ec2_allowed_ami_owners", ["111111111111"]),
                 TerraformParameter("deny_ec2_imds_v1", False),
                 TerraformParameter("deny_eks_create_cluster_without_tag", True),
                 TerraformParameter("deny_iam_user_creation", True),
@@ -277,7 +277,7 @@ module "scps_root" {
         assert 'source = "../modules/scps"' in result
         assert "target_id = local.top_level_security_tooling_ou_id" in result
         assert "deny_ec2_ami_owner = true" in result
-        assert '"123456789012"' in result
+        assert '"111111111111"' in result
         assert "deny_ec2_imds_v1 = false" in result
         assert "deny_eks_create_cluster_without_tag = true" in result
         assert "deny_iam_user_creation = true" in result
@@ -297,12 +297,12 @@ module "scps_root" {
             target_id="local.root_ou_id",
             parameters=[
                 TerraformParameter("deny_ecr_third_party_access", True),
-                TerraformParameter("ecr_third_party_access_account_ids_allowlist", ["123456789012", "234567890123"]),
+                TerraformParameter("ecr_third_party_access_account_ids_allowlist", ["111111111111", "222222222222"]),
                 TerraformParameter("deny_sts_third_party_assumerole", True),
-                TerraformParameter("sts_third_party_assumerole_account_ids_allowlist", ["123456789012"]),
+                TerraformParameter("sts_third_party_assumerole_account_ids_allowlist", ["111111111111"]),
                 TerraformParameter("deny_sqs_third_party_access", False),
                 TerraformParameter("deny_s3_third_party_access", True),
-                TerraformParameter("s3_third_party_access_account_ids_allowlist", ["123456789012"]),
+                TerraformParameter("s3_third_party_access_account_ids_allowlist", ["111111111111"]),
             ],
             comment="Organization Root",
             policy_type="RCP"
