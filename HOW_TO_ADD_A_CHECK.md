@@ -538,9 +538,9 @@ def _extract_account_ids_from_policy(policy: dict) -> Set[str]:
     Extract all AWS account IDs from IAM policy.
 
     Handles various principal formats:
-    - String: "arn:aws:iam::123456789012:root"
-    - Dict: {"AWS": "arn:aws:iam::123456789012:root"}
-    - List: {"AWS": ["arn:aws:iam::123456789012:root"]}
+    - String: "arn:aws:iam::111111111111:root"
+    - Dict: {"AWS": "arn:aws:iam::111111111111:root"}
+    - List: {"AWS": ["arn:aws:iam::111111111111:root"]}
     """
     account_ids = set()
 
@@ -1100,18 +1100,46 @@ test_scenarios_mandatory:
     verify: "violation, compliant, (exemption if Pattern 4)"
 
 test_data_standards:
+  principle: |
+    Every identifier in a test, fixture, docstring, or doc example must be
+    impossible to mistake for one from a real account. Correct prefix, correct
+    length, one repeated digit for the body. An identifier that arrives from a
+    bug report, console screenshot, API response, or error message gets rewritten
+    to its placeholder before it enters the repo -- including in the commit
+    message.
+  applies_to: ["tests/", "documentation/", "docstrings", "sample_config.yaml", "commit messages", "PR descriptions"]
+  not_sensitive: ["region names", "service names", "AWS-owned owner aliases: amazon, aws-marketplace"]
+
   fake_account_ids:
-    primary: "111111111111"
+    rule: "Blocks of four repeated digits: AAAABBBBCCCC"
+    pattern: '^(\d)\1{3}(\d)\2{3}(\d)\3{3}$'  # 1000 available values
+    primary: "111111111111"    # A == B == C reads clearest, so exhaust these first
     secondary: "222222222222"
     tertiary: "333333333333"
+    beyond_ten: ["111122223333", "444455556666", "000011112222"]
     never_use: "123456789012"  # Old AWS convention
+    never_use_style: "Sequential runs such as 234567890123 or 987654321098"
+
+  fake_resource_ids:
+    rule: "Real prefix, real length, body is one repeated digit"
+    ec2_instance: "i-11111111111111111"                      # i- plus 17 hex
+    ec2_ami: "ami-11111111111111111"                         # ami- plus 17 hex
+    kms_key: "11111111-1111-1111-1111-111111111111"          # UUID
+    organizations_root: "r-1111"
+    organizations_ou: "ou-1111-11111111"                     # ou-<root>-<suffix>
+    organizations_org: "o-11111111111"
+    iam_access_key: "AKIAIOSFODNN7EXAMPLE"                   # AWS's own example key
+    never_use: "AWS doc-style bodies such as i-1234567890abcdef0 or ami-0abcdef1234567890"
+    reason: "A plausible-looking body cannot be told from a real one on review"
 
   resource_naming:
     format: "descriptive-purpose"
     examples: ["encrypted-db", "unencrypted-violation", "exempted-instance"]
+    never_use: "a name copied from a real account"
 
   arn_format:
     pattern: "arn:aws:service:region:111111111111:resource-type/resource-name"
+    rule: "Account field uses a fake_account_ids value; resource field uses fake_resource_ids or resource_naming"
 
 test_fixtures:
   temp_results_dir:

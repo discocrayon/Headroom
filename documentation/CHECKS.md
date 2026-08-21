@@ -203,11 +203,30 @@ Unless `rds:StorageEncrypted` condition key is true.
 
 **Allowlist Support**: Generates comprehensive list of unique AMI owners to inform allowlist configuration.
 
+**Unresolvable AMIs**: An instance outlives the visibility of the AMI it was
+launched from, so `DescribeImages` does not always return one. The lookup sets
+`IncludeDisabled` and `IncludeDeprecated` up front, which resolves the owner of
+an AMI turned off with `DisableImage` or hidden past its deprecation date. A
+disabled AMI is logged as a warning, since it keeps its owner but can no longer
+launch. An AMI that stays unresolvable is recorded as a **violation** with a
+null `ami_owner` and an `owner_unknown_reason`:
+
+| `owner_unknown_reason` | Meaning |
+|---|---|
+| `not_visible` | `DescribeImages` returns nothing even with the include flags. An [Allowed AMIs](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/allowed-amis.html) setting filters the AMI, or it was shared and then unshared. |
+| `deregistered` | The AMI ID no longer resolves at all (`InvalidAMIID.NotFound` or `InvalidAMIID.Unavailable`), which is what deregistration leaves behind on a long-lived instance. |
+
+Recording these as violations rather than aborting keeps the run going while
+ensuring an account whose AMI provenance cannot be attested never counts toward
+an org-wide placement of this SCP. An AMI that AWS returns *without* an
+`OwnerId` still aborts the run: that is the API breaking its own contract, not a
+fact about the account.
+
 **Output**:
 - Instance IDs and regions
 - AMI IDs and names
-- AMI owners for each instance
-- List of all unique AMI owners
+- AMI owners for each instance, or the reason the owner is unknown
+- List of all unique AMI owners, and a count of instances per unknown reason
 
 **Example Output**:
 ```json
@@ -216,7 +235,20 @@ Unless `rds:StorageEncrypted` condition key is true.
   "region": "us-east-1",
   "ami_id": "ami-0123456789abcdef0",
   "ami_owner": "amazon",
-  "ami_name": "amzn2-ami-hvm-2.0.20231218.0-x86_64-gp2"
+  "ami_name": "amzn2-ami-hvm-2.0.20231218.0-x86_64-gp2",
+  "owner_unknown_reason": null
+}
+```
+
+**Example Violation**:
+```json
+{
+  "instance_id": "i-11111111111111111",
+  "region": "us-west-2",
+  "ami_id": "ami-11111111111111111",
+  "ami_owner": null,
+  "ami_name": null,
+  "owner_unknown_reason": "not_visible"
 }
 ```
 

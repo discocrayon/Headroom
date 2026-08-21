@@ -34,7 +34,7 @@ class TestResultFilePathResolver:
             check_name="deny_ec2_imds_v1",
             results_base_dir="/tmp/results",
             account_name="test-account",
-            account_id="123456789012"
+            account_id="444444444444"
         )
         assert results_resolver.get_check_directory() == "/tmp/results/scps/deny_ec2_imds_v1"
 
@@ -46,7 +46,7 @@ class TestResultFilePathResolver:
             check_name="deny_sts_third_party_assumerole",
             results_base_dir="/tmp/results",
             account_name="test-account",
-            account_id="123456789012"
+            account_id="444444444444"
         )
         assert results_resolver.get_check_directory() == "/tmp/results/rcps/deny_sts_third_party_assumerole"
 
@@ -58,7 +58,7 @@ class TestResultFilePathResolver:
             check_name="unknown_check",
             results_base_dir="/tmp/results",
             account_name="test-account",
-            account_id="123456789012"
+            account_id="444444444444"
         )
         with pytest.raises(ValueError, match="Unknown check name: unknown_check"):
             results_resolver.get_check_directory()
@@ -71,10 +71,10 @@ class TestResultFilePathResolver:
             check_name="deny_ec2_imds_v1",
             results_base_dir="/tmp/results",
             account_name="test-account",
-            account_id="123456789012",
+            account_id="444444444444",
             exclude_account_ids=False
         )
-        expected = Path("/tmp/results/scps/deny_ec2_imds_v1/test-account_123456789012.json")
+        expected = Path("/tmp/results/scps/deny_ec2_imds_v1/test-account_444444444444.json")
         assert results_resolver.get_file_path() == expected
 
     @patch('headroom.write_results.get_check_type_map')
@@ -85,7 +85,7 @@ class TestResultFilePathResolver:
             check_name="deny_ec2_imds_v1",
             results_base_dir="/tmp/results",
             account_name="test-account",
-            account_id="123456789012",
+            account_id="444444444444",
             exclude_account_ids=True
         )
         expected = Path("/tmp/results/scps/deny_ec2_imds_v1/test-account.json")
@@ -98,14 +98,14 @@ class TestResultFilePathResolver:
         with tempfile.TemporaryDirectory() as temp_dir:
             check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
             check_dir.mkdir(parents=True)
-            result_file = check_dir / "test-account_123456789012.json"
+            result_file = check_dir / "test-account_444444444444.json"
             result_file.write_text("{}")
 
             results_resolver = ResultFilePathResolver(
                 check_name="deny_ec2_imds_v1",
                 results_base_dir=temp_dir,
                 account_name="test-account",
-                account_id="123456789012"
+                account_id="444444444444"
             )
             assert results_resolver.exists() is True
 
@@ -118,7 +118,7 @@ class TestResultFilePathResolver:
                 check_name="deny_ec2_imds_v1",
                 results_base_dir=temp_dir,
                 account_name="test-account",
-                account_id="123456789012"
+                account_id="444444444444"
             )
             assert results_resolver.exists() is False
 
@@ -138,7 +138,7 @@ class TestResultFilePathResolver:
                 check_name="deny_ec2_imds_v1",
                 results_base_dir=temp_dir,
                 account_name="test-account",
-                account_id="123456789012",
+                account_id="444444444444",
                 exclude_account_ids=False
             )
             assert results_resolver.exists() is True

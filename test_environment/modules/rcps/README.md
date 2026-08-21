@@ -74,7 +74,7 @@ The `deny_sts_third_party_assumerole` RCP denies `sts:AssumeRole` actions unless
 module "account_rcp" {
   source = "./modules/rcps"
 
-  target_id = "123456789012"
+  target_id = "111111111111"
 
   # ECR
   deny_ecr_third_party_access = true
