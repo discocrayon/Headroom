@@ -24,15 +24,15 @@ class TestExtractAccountIdsFromPrincipal:
 
     def test_extract_from_arn_format(self) -> None:
         """Test extraction from ARN format principal."""
-        principal = "arn:aws:iam::123456789012:root"
+        principal = "arn:aws:iam::666666666666:root"
         result = _extract_account_ids_from_principal(principal)
-        assert result == {"123456789012"}
+        assert result == {"666666666666"}
 
     def test_extract_from_plain_account_id(self) -> None:
         """Test extraction from plain account ID."""
-        principal = "123456789012"
+        principal = "666666666666"
         result = _extract_account_ids_from_principal(principal)
-        assert result == {"123456789012"}
+        assert result == {"666666666666"}
 
     def test_extract_from_list(self) -> None:
         """Test extraction from list of principals."""
@@ -84,15 +84,15 @@ class TestHasWildcardPrincipal:
 
     def test_string_non_wildcard(self) -> None:
         """Test non-wildcard string."""
-        assert _has_wildcard_principal("arn:aws:iam::123456789012:root") is False
+        assert _has_wildcard_principal("arn:aws:iam::666666666666:root") is False
 
     def test_list_with_wildcard(self) -> None:
         """Test list containing wildcard."""
-        assert _has_wildcard_principal(["arn:aws:iam::123456789012:root", "*"]) is True
+        assert _has_wildcard_principal(["arn:aws:iam::666666666666:root", "*"]) is True
 
     def test_list_without_wildcard(self) -> None:
         """Test list without wildcard."""
-        assert _has_wildcard_principal(["arn:aws:iam::123456789012:root"]) is False
+        assert _has_wildcard_principal(["arn:aws:iam::666666666666:root"]) is False
 
     def test_dict_aws_wildcard(self) -> None:
         """Test dict with AWS wildcard."""
@@ -100,7 +100,7 @@ class TestHasWildcardPrincipal:
 
     def test_dict_aws_list_wildcard(self) -> None:
         """Test dict with AWS list containing wildcard."""
-        assert _has_wildcard_principal({"AWS": ["arn:aws:iam::123456789012:root", "*"]}) is True
+        assert _has_wildcard_principal({"AWS": ["arn:aws:iam::666666666666:root", "*"]}) is True
 
 
 class TestHasNonAccountPrincipals:
@@ -108,7 +108,7 @@ class TestHasNonAccountPrincipals:
 
     def test_federated_principal(self) -> None:
         """Test detection of Federated principal."""
-        principal = {"Federated": "arn:aws:iam::123456789012:saml-provider/ExampleProvider"}
+        principal = {"Federated": "arn:aws:iam::666666666666:saml-provider/ExampleProvider"}
         assert _has_non_account_principals(principal) is True  # type: ignore[arg-type]
 
     def test_canonical_user_principal(self) -> None:
@@ -118,7 +118,7 @@ class TestHasNonAccountPrincipals:
 
     def test_aws_principal_only(self) -> None:
         """Test AWS principal without non-account types."""
-        principal = {"AWS": "arn:aws:iam::123456789012:root"}
+        principal = {"AWS": "arn:aws:iam::666666666666:root"}
         assert _has_non_account_principals(principal) is False  # type: ignore[arg-type]
 
     def test_non_dict_principal(self) -> None:
@@ -184,7 +184,7 @@ class TestAnalyzeSecretPolicy:
             "Statement": [
                 {
                     "Effect": "Allow",
-                    "Principal": {"Federated": "arn:aws:iam::123456789012:saml-provider/Provider"},
+                    "Principal": {"Federated": "arn:aws:iam::666666666666:saml-provider/Provider"},
                     "Action": "secretsmanager:GetSecretValue"
                 }
             ]

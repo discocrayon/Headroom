@@ -447,7 +447,7 @@ class TestBuildAccountInfoFromAccountDict:
             use_account_name_from_tags=True,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
         mock_org_client.list_tags_for_resource.return_value = {
             "Tags": [
@@ -459,7 +459,7 @@ class TestBuildAccountInfoFromAccountDict:
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
-        assert result.account_id == "123456789012"
+        assert result.account_id == "777777777777"
         assert result.name == "TagAccountName"
         assert result.environment == "production"
         assert result.owner == "TeamA"
@@ -470,7 +470,7 @@ class TestBuildAccountInfoFromAccountDict:
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
         mock_org_client.list_tags_for_resource.return_value = {
             "Tags": [
@@ -482,7 +482,7 @@ class TestBuildAccountInfoFromAccountDict:
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
-        assert result.account_id == "123456789012"
+        assert result.account_id == "777777777777"
         assert result.name == "ApiAccountName"
         assert result.environment == "staging"
         assert result.owner == "TeamB"
@@ -493,14 +493,14 @@ class TestBuildAccountInfoFromAccountDict:
             use_account_name_from_tags=True,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
         mock_org_client.list_tags_for_resource.return_value = {"Tags": []}
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
-        assert result.account_id == "123456789012"
-        assert result.name == "123456789012"
+        assert result.account_id == "777777777777"
+        assert result.name == "777777777777"
         assert result.environment == "unknown"
         assert result.owner == "unknown"
 
@@ -510,7 +510,7 @@ class TestBuildAccountInfoFromAccountDict:
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
         mock_org_client.list_tags_for_resource.return_value = {
             "Tags": [
@@ -520,7 +520,7 @@ class TestBuildAccountInfoFromAccountDict:
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
-        assert result.account_id == "123456789012"
+        assert result.account_id == "777777777777"
         assert result.name == "ApiAccountName"
         assert result.environment == "dev"
         assert result.owner == "unknown"
@@ -532,7 +532,7 @@ class TestBuildAccountInfoFromAccountDict:
             use_account_name_from_tags=True,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
         mock_org_client.list_tags_for_resource.side_effect = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
@@ -541,8 +541,8 @@ class TestBuildAccountInfoFromAccountDict:
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
-        assert result.account_id == "123456789012"
-        assert result.name == "123456789012"
+        assert result.account_id == "777777777777"
+        assert result.name == "777777777777"
         assert result.environment == "unknown"
         assert result.owner == "unknown"
         mock_logger.warning.assert_called_once()
@@ -554,7 +554,7 @@ class TestBuildAccountInfoFromAccountDict:
             use_account_name_from_tags=True,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        account = cast(AccountTypeDef, {"Id": "123456789012", "Name": "ApiAccountName"})
+        account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
         mock_org_client.list_tags_for_resource.side_effect = ClientError(
             {"Error": {"Code": "InternalError", "Message": "Service Error"}},
@@ -563,8 +563,8 @@ class TestBuildAccountInfoFromAccountDict:
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
-        assert result.account_id == "123456789012"
-        assert result.name == "123456789012"
+        assert result.account_id == "777777777777"
+        assert result.name == "777777777777"
         assert result.environment == "unknown"
         assert result.owner == "unknown"
         mock_logger.error.assert_called_once()
@@ -575,7 +575,7 @@ class TestBuildAccountInfoFromAccountDict:
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        account = cast(AccountTypeDef, {"Id": "123456789012"})
+        account = cast(AccountTypeDef, {"Id": "777777777777"})
         mock_org_client = MagicMock()
         mock_org_client.list_tags_for_resource.return_value = {
             "Tags": [
@@ -586,7 +586,7 @@ class TestBuildAccountInfoFromAccountDict:
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
-        assert result.account_id == "123456789012"
-        assert result.name == "123456789012"
+        assert result.account_id == "777777777777"
+        assert result.name == "777777777777"
         assert result.environment == "production"
         assert result.owner == "TeamC"

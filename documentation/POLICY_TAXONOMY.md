@@ -191,8 +191,8 @@ This document categorizes the different patterns of Service Control Policies (SC
     "StringNotEqualsIfExists": {
       "aws:PrincipalOrgID": "o-exampleorgid",
       "aws:PrincipalAccount": [
-        "123456789012",
-        "210987654321"
+        "111111111111",
+        "333333333333"
       ]
     },
     "BoolIfExists": {

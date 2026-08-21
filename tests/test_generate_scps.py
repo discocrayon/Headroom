@@ -384,8 +384,8 @@ def test_generate_account_scp_terraform_creates_file_with_correct_name() -> None
         root_id="r-root",
         organizational_units={},
         accounts={
-            "123456789012": AccountOrgPlacement(
-                account_id="123456789012",
+            "333333333333": AccountOrgPlacement(
+                account_id="333333333333",
                 account_name="Test Account",
                 parent_ou_id="ou-test",
                 ou_path=["r-root", "ou-test"]
@@ -396,14 +396,14 @@ def test_generate_account_scp_terraform_creates_file_with_correct_name() -> None
         check_name="deny-ec2-imds-v1",
         recommended_level="account",
         target_ou_id=None,
-        affected_accounts=["123456789012"],
+        affected_accounts=["333333333333"],
         compliance_percentage=100.0,
         reasoning="test",
     )
     output_path = Path("/tmp/test_scps")
     output_path.mkdir(parents=True, exist_ok=True)
 
-    _generate_account_scp_terraform("123456789012", [rec], org, output_path)
+    _generate_account_scp_terraform("333333333333", [rec], org, output_path)
 
     expected_file = output_path / "test_account_scps.tf"
     assert expected_file.exists()

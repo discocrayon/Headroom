@@ -153,7 +153,7 @@ class TestCheckDenyEc2ImdsV1:
         """Test check function with all compliant results."""
         mock_session = MagicMock()
         account_name = "compliant-account"
-        account_id = "987654321098"
+        account_id = "777777777777"
 
         with (
             patch("headroom.checks.scps.deny_ec2_imds_v1.get_ec2_imds_v1_analysis") as mock_analysis,
