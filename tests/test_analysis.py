@@ -590,3 +590,161 @@ class TestBuildAccountInfoFromAccountDict:
         assert result.name == "123456789012"
         assert result.environment == "production"
         assert result.owner == "TeamC"
+
+
+class TestSkipAccountIds:
+    """
+    Test that accounts named in skip_account_ids are excluded from analysis.
+
+    A skipped account is never scanned, so it writes no result files. Placement
+    only ever sees accounts that have results, so a skipped account cannot hold
+    back an org-wide policy and does not appear in its affected accounts. The
+    generated policy may therefore deny actions the skipped account relies on,
+    which is the accepted cost of skipping it.
+    """
+
+    @staticmethod
+    def _config(skip_account_ids: List[str]) -> HeadroomConfig:
+        """Build a config whose management account is 222222222222."""
+        return HeadroomConfig(
+            management_account_id="222222222222",
+            security_analysis_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag"),
+            skip_account_ids=skip_account_ids,
+        )
+
+    def _run(
+        self,
+        accounts: List[Dict[str, Any]],
+        skip_account_ids: List[str]
+    ) -> Tuple[List[AccountInfo], MagicMock, MagicMock]:
+        """Run get_subaccount_information over raw Organizations account dicts."""
+        mock_org_client = MagicMock()
+        mock_org_client.get_paginator.return_value.paginate.return_value = [{"Accounts": accounts}]
+        mock_org_client.list_tags_for_resource.return_value = {"Tags": []}
+        mgmt_session = MagicMock()
+        mgmt_session.client.return_value = mock_org_client
+
+        with (
+            patch("headroom.analysis.get_management_account_session", return_value=mgmt_session),
+            patch("headroom.analysis.logger") as mock_logger,
+        ):
+            result = get_subaccount_information(self._config(skip_account_ids), MagicMock())
+
+        return result, mock_org_client, mock_logger
+
+    def test_skipped_account_is_excluded(self) -> None:
+        """An account named in skip_account_ids is not analyzed."""
+        result, _, _ = self._run(
+            [
+                {"Id": "333333333333", "Name": "Skipped", "State": "ACTIVE"},
+                {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+            ],
+            skip_account_ids=["333333333333"],
+        )
+
+        assert [account.account_id for account in result] == ["444444444444"]
+
+    def test_empty_skip_list_analyzes_every_active_account(self) -> None:
+        """The default empty skip list excludes nothing."""
+        result, _, _ = self._run(
+            [
+                {"Id": "333333333333", "Name": "One", "State": "ACTIVE"},
+                {"Id": "444444444444", "Name": "Two", "State": "ACTIVE"},
+            ],
+            skip_account_ids=[],
+        )
+
+        assert [account.account_id for account in result] == ["333333333333", "444444444444"]
+
+    def test_skipped_account_is_not_tag_queried(self) -> None:
+        """
+        A skipped account costs no Organizations API call.
+
+        Skipping happens before AccountInfo is built, so the per-account
+        ListTagsForResource call is never made for it.
+        """
+        _, mock_org_client, _ = self._run(
+            [
+                {"Id": "333333333333", "Name": "Skipped", "State": "ACTIVE"},
+                {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+            ],
+            skip_account_ids=["333333333333"],
+        )
+
+        mock_org_client.list_tags_for_resource.assert_called_once_with(ResourceId="444444444444")
+
+    def test_skipped_accounts_are_logged(self) -> None:
+        """The operator can see which accounts the config excluded."""
+        _, _, mock_logger = self._run(
+            [
+                {"Id": "333333333333", "Name": "SkippedOne", "State": "ACTIVE"},
+                {"Id": "444444444444", "Name": "SkippedTwo", "State": "ACTIVE"},
+                {"Id": "555555555555", "Name": "Live", "State": "ACTIVE"},
+            ],
+            skip_account_ids=["444444444444", "333333333333"],
+        )
+
+        mock_logger.info.assert_any_call(
+            "Skipped 2 account(s) named in skip_account_ids: 333333333333, 444444444444"
+        )
+
+    def test_skip_takes_precedence_over_unknown_lifecycle_state(self) -> None:
+        """
+        Skipping an account bypasses lifecycle classification for it.
+
+        An unrecognized lifecycle state normally aborts the run. Checking the
+        skip list first makes skip_account_ids an escape hatch for the account
+        that triggered the abort, so one odd account cannot block the run.
+        """
+        result, _, _ = self._run(
+            [
+                {"Id": "333333333333", "Name": "Odd", "State": "SOME_NEW_STATE"},
+                {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+            ],
+            skip_account_ids=["333333333333"],
+        )
+
+        assert [account.account_id for account in result] == ["444444444444"]
+
+    def test_skipping_the_management_account_is_allowed(self) -> None:
+        """
+        Naming the always-excluded management account is redundant, not an error.
+
+        The management account is filtered out before the skip list is consulted,
+        so it never registers as skipped, but it is still a real organization
+        member and must not be reported as unmatched.
+        """
+        result, _, _ = self._run(
+            [
+                {"Id": "222222222222", "Name": "Mgmt", "State": "ACTIVE"},
+                {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
+            ],
+            skip_account_ids=["222222222222"],
+        )
+
+        assert [account.account_id for account in result] == ["444444444444"]
+
+    def test_skip_id_matching_no_account_aborts(self) -> None:
+        """
+        An entry matching no account aborts rather than silently doing nothing.
+
+        A typo leaves the intended account being analyzed while the operator
+        believes it is excluded, so the mismatch must surface.
+        """
+        with pytest.raises(RuntimeError, match="999999999999"):
+            self._run(
+                [{"Id": "444444444444", "Name": "Live", "State": "ACTIVE"}],
+                skip_account_ids=["999999999999"],
+            )
+
+    def test_abort_names_every_unmatched_skip_id(self) -> None:
+        """The error lists all bad entries so they can be fixed in one pass."""
+        with pytest.raises(RuntimeError) as exc_info:
+            self._run(
+                [{"Id": "444444444444", "Name": "Live", "State": "ACTIVE"}],
+                skip_account_ids=["999999999999", "888888888888"],
+            )
+
+        assert "888888888888, 999999999999" in str(exc_info.value)

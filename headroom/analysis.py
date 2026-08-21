@@ -245,6 +245,38 @@ def _should_skip_account(account: AccountTypeDef, account_id: str) -> bool:
     )
 
 
+def _verify_skip_account_ids_matched(config: HeadroomConfig, seen_account_ids: Set[str]) -> None:
+    """
+    Abort if a skip_account_ids entry matched no account in the organization.
+
+    An entry that matches nothing is silent: the account the operator meant to
+    exclude keeps being analyzed, and nothing in the output says so. A typo, a
+    wrong digit count, or an account that has left the organization all look
+    identical to a correctly spelled entry, so the mismatch has to surface here
+    rather than be discovered in the generated policy.
+
+    Args:
+        config: Headroom configuration
+        seen_account_ids: Every account ID the Organizations API returned,
+            including the management account
+
+    Raises:
+        RuntimeError: If any skip_account_ids entry matched no account
+    """
+    unmatched = sorted(set(config.skip_account_ids) - seen_account_ids)
+
+    if not unmatched:
+        return
+
+    raise RuntimeError(
+        f"skip_account_ids names {len(unmatched)} account(s) that are not in the "
+        f"organization: {', '.join(unmatched)}. Every entry must match an account "
+        "ID that AWS Organizations reports, so an entry matching nothing means the "
+        "account meant to be skipped is still being analyzed. Correct the entries "
+        "or remove them."
+    )
+
+
 def get_subaccount_information(config: HeadroomConfig, session: Session) -> List[AccountInfo]:
     """
     Get subaccount information from the management account.
@@ -252,8 +284,14 @@ def get_subaccount_information(config: HeadroomConfig, session: Session) -> List
     Uses the provided session to assume the OrgAndAccountInfoReader role in the
     management account, then retrieves account information with tags.
 
-    Excludes the management account, which SCPs and RCPs do not affect, and any
-    account that is not in the ACTIVE lifecycle state.
+    Excludes the management account, which SCPs and RCPs do not affect, any
+    account named in `config.skip_account_ids`, and any account that is not in
+    the ACTIVE lifecycle state.
+
+    An excluded account writes no result files, and policy placement only ever
+    sees accounts that have results, so exclusion here removes the account from
+    the compliance picture entirely rather than holding back a policy. An
+    org-wide policy can therefore deny actions a skipped account relies on.
 
     Args:
         config: Headroom configuration
@@ -261,24 +299,36 @@ def get_subaccount_information(config: HeadroomConfig, session: Session) -> List
 
     Returns:
         List of AccountInfo objects for the ACTIVE accounts, excluding the
-        management account
+        management account and any account in `config.skip_account_ids`
 
     Raises:
         ValueError: If management_account_id is not set in config
-        RuntimeError: If role assumption or API calls fail, or if an account's
-            lifecycle state cannot be determined
+        RuntimeError: If role assumption or API calls fail, if an account's
+            lifecycle state cannot be determined, or if a `skip_account_ids`
+            entry matches no account in the organization
     """
     mgmt_session = get_management_account_session(config, session)
     org_client = mgmt_session.client("organizations")
     paginator = org_client.get_paginator("list_accounts")
     accounts = []
     skipped_states: Dict[str, int] = {}
+    skip_account_ids = set(config.skip_account_ids)
+    skipped_by_config = []
+    seen_account_ids: Set[str] = set()
 
     for page in paginator.paginate():
         for acct in page.get("Accounts", []):
             account_id = acct["Id"]
+            seen_account_ids.add(account_id)
 
             if account_id == config.management_account_id:
+                continue
+
+            # Consulted before the lifecycle check so that an account whose state
+            # `_should_skip_account` cannot classify can be skipped by config
+            # instead of aborting every other account's analysis.
+            if account_id in skip_account_ids:
+                skipped_by_config.append(account_id)
                 continue
 
             if _should_skip_account(acct, account_id):
@@ -291,9 +341,17 @@ def get_subaccount_information(config: HeadroomConfig, session: Session) -> List
             account_info = _build_account_info_from_account_dict(acct, org_client, config)
             accounts.append(account_info)
 
+    if skipped_by_config:
+        logger.info(
+            f"Skipped {len(skipped_by_config)} account(s) named in skip_account_ids: "
+            f"{', '.join(sorted(skipped_by_config))}"
+        )
+
     if skipped_states:
         breakdown = ", ".join(f"{count} {state}" for state, count in sorted(skipped_states.items()))
         logger.info(f"Skipped {sum(skipped_states.values())} non-active account(s): {breakdown}")
+
+    _verify_skip_account_ids_matched(config, seen_account_ids)
 
     return accounts
 
@@ -334,6 +392,9 @@ def get_relevant_subaccounts(account_infos: List[AccountInfo]) -> List[AccountIn
     - Specific OU
     - Specific owner
     - Specific environment
+
+    Filtering by explicit account ID already happens upstream, in
+    `get_subaccount_information`, where it costs no per-account tag lookup.
     """
     return account_infos
 
@@ -489,8 +550,9 @@ def run_checks(
     run, because this output drives SCP and RCP deployment and an account skipped
     for a transient error is indistinguishable in the results from an account
     with zero violations, so swallowing the error could green-light a policy that
-    breaks it. Accounts that genuinely cannot be analyzed are excluded earlier,
-    by lifecycle state in `get_subaccount_information`.
+    breaks it. Accounts that cannot or should not be analyzed are excluded
+    earlier, in `get_subaccount_information`: by lifecycle state, or by being
+    named in `config.skip_account_ids`.
     """
     for account_info in relevant_account_infos:
         if _all_checks_complete(account_info, config):

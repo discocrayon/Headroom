@@ -79,6 +79,11 @@ management_account_id: '222222222222'
 exclude_account_ids: false
 use_account_name_from_tags: false
 
+# Optional - accounts to leave out of analysis entirely.
+# Skipped accounts do not restrain org-wide policy: see documentation/SETUP.md
+# skip_account_ids:
+#   - '333333333333'
+
 account_tag_layout:
   environment: 'Environment'
   name: 'Name'

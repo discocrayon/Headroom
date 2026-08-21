@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -19,6 +19,17 @@ class HeadroomConfig(BaseModel):
     security_analysis_account_id: Optional[str] = None
     # Exclude account IDs from result files and filenames
     exclude_account_ids: bool = False
+    # Account IDs to leave out of analysis entirely.
+    #
+    # A skipped account is never scanned, so it writes no result files and is
+    # invisible to policy placement, which only sees accounts that have results.
+    # Org-wide policies are therefore generated as if the account did not exist
+    # and may deny actions it relies on.
+    #
+    # Skipping does not remove the account from the organization membership set
+    # used to tell in-org principals from third parties; see
+    # get_all_organization_account_ids.
+    skip_account_ids: List[str] = []
     use_account_name_from_tags: bool
     account_tag_layout: AccountTagLayout
     # Base directory where check result JSONs are written/read
