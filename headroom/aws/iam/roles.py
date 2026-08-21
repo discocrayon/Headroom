@@ -66,7 +66,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
         # Handle wildcard
         if principal == "*":
             return set()
-        # Extract account ID from ARN format: arn:aws:iam::123456789012:*
+        # Extract account ID from ARN format: arn:aws:iam::111111111111:*
         # The account ID is always in the 5th field (index 4) when split by ':'
         arn_match = re.match(r'^arn:aws:iam::(\d{12}):', principal)
         if arn_match:

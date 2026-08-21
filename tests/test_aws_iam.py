@@ -30,15 +30,15 @@ class TestExtractAccountIdsFromPrincipal:
 
     def test_extract_from_arn_string(self) -> None:
         """Test extracting account ID from ARN string."""
-        principal = "arn:aws:iam::123456789012:root"
+        principal = "arn:aws:iam::333333333333:root"
         result = _extract_account_ids_from_principal(principal)
-        assert result == {"123456789012"}
+        assert result == {"333333333333"}
 
     def test_extract_from_account_id_string(self) -> None:
         """Test extracting from plain account ID string."""
-        principal = "123456789012"
+        principal = "333333333333"
         result = _extract_account_ids_from_principal(principal)
-        assert result == {"123456789012"}
+        assert result == {"333333333333"}
 
     def test_extract_from_wildcard(self) -> None:
         """Test wildcard returns empty set."""
@@ -57,9 +57,9 @@ class TestExtractAccountIdsFromPrincipal:
 
     def test_extract_from_dict_aws_key(self) -> None:
         """Test extracting from dict with AWS key."""
-        principal = {"AWS": "arn:aws:iam::123456789012:root"}
+        principal = {"AWS": "arn:aws:iam::333333333333:root"}
         result = _extract_account_ids_from_principal(principal)
-        assert result == {"123456789012"}
+        assert result == {"333333333333"}
 
     def test_extract_from_dict_aws_list(self) -> None:
         """Test extracting from dict with AWS key containing list."""
@@ -97,11 +97,11 @@ class TestHasWildcardPrincipal:
 
     def test_no_wildcard_string(self) -> None:
         """Test no wildcard in string."""
-        assert _has_wildcard_principal("arn:aws:iam::123456789012:root") is False
+        assert _has_wildcard_principal("arn:aws:iam::333333333333:root") is False
 
     def test_wildcard_in_list(self) -> None:
         """Test wildcard in list."""
-        assert _has_wildcard_principal(["arn:aws:iam::123456789012:root", "*"]) is True
+        assert _has_wildcard_principal(["arn:aws:iam::333333333333:root", "*"]) is True
 
     def test_no_wildcard_in_list(self) -> None:
         """Test no wildcard in list."""
@@ -113,11 +113,11 @@ class TestHasWildcardPrincipal:
 
     def test_wildcard_in_dict_aws_list(self) -> None:
         """Test wildcard in dict AWS key list."""
-        assert _has_wildcard_principal({"AWS": ["arn:aws:iam::123456789012:root", "*"]}) is True
+        assert _has_wildcard_principal({"AWS": ["arn:aws:iam::333333333333:root", "*"]}) is True
 
     def test_no_wildcard_in_dict(self) -> None:
         """Test no wildcard in dict."""
-        assert _has_wildcard_principal({"AWS": "arn:aws:iam::123456789012:root"}) is False
+        assert _has_wildcard_principal({"AWS": "arn:aws:iam::333333333333:root"}) is False
 
 
 class TestAnalyzeIamRolesTrustPolicies:
@@ -598,12 +598,12 @@ class TestGetIamUsersAnalysis:
                 "Users": [
                     {
                         "UserName": "admin",
-                        "Arn": "arn:aws:iam::123456789012:user/admin",
+                        "Arn": "arn:aws:iam::333333333333:user/admin",
                         "Path": "/"
                     },
                     {
                         "UserName": "developer",
-                        "Arn": "arn:aws:iam::123456789012:user/developer",
+                        "Arn": "arn:aws:iam::333333333333:user/developer",
                         "Path": "/devs/"
                     }
                 ]
@@ -615,10 +615,10 @@ class TestGetIamUsersAnalysis:
 
         assert len(results) == 2
         assert results[0].user_name == "admin"
-        assert results[0].user_arn == "arn:aws:iam::123456789012:user/admin"
+        assert results[0].user_arn == "arn:aws:iam::333333333333:user/admin"
         assert results[0].path == "/"
         assert results[1].user_name == "developer"
-        assert results[1].user_arn == "arn:aws:iam::123456789012:user/developer"
+        assert results[1].user_arn == "arn:aws:iam::333333333333:user/developer"
         assert results[1].path == "/devs/"
 
     def test_get_iam_users_no_users(self) -> None:

@@ -18,15 +18,15 @@ class TestExtractAccountIdsFromPrincipal:
 
     def test_extract_from_arn_string(self) -> None:
         """Test extraction from ARN format string."""
-        principal = "arn:aws:iam::123456789012:root"
+        principal = "arn:aws:iam::333333333333:root"
         result = _extract_account_ids_from_principal(principal)
-        assert result == {"123456789012"}
+        assert result == {"333333333333"}
 
     def test_extract_from_plain_account_id(self) -> None:
         """Test extraction from plain 12-digit account ID."""
-        principal = "123456789012"
+        principal = "333333333333"
         result = _extract_account_ids_from_principal(principal)
-        assert result == {"123456789012"}
+        assert result == {"333333333333"}
 
     def test_extract_from_wildcard(self) -> None:
         """Test that wildcard returns empty set."""
@@ -73,7 +73,7 @@ class TestExtractAccountIdsFromPrincipal:
     def test_unsupported_federated_principal(self) -> None:
         """Test that Federated principals raise UnsupportedPrincipalTypeError."""
         principal = {
-            "Federated": "arn:aws:iam::123456789012:saml-provider/MyProvider"
+            "Federated": "arn:aws:iam::333333333333:saml-provider/MyProvider"
         }
         with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
             _extract_account_ids_from_principal(principal)
@@ -90,16 +90,16 @@ class TestHasWildcardPrincipal:
 
     def test_non_wildcard_string(self) -> None:
         """Test non-wildcard string."""
-        assert _has_wildcard_principal("arn:aws:iam::123456789012:root") is False
+        assert _has_wildcard_principal("arn:aws:iam::333333333333:root") is False
 
     def test_wildcard_in_list(self) -> None:
         """Test detection of wildcard in list."""
-        principal = ["arn:aws:iam::123456789012:root", "*"]
+        principal = ["arn:aws:iam::333333333333:root", "*"]
         assert _has_wildcard_principal(principal) is True
 
     def test_no_wildcard_in_list(self) -> None:
         """Test list without wildcard."""
-        principal = ["arn:aws:iam::123456789012:root", "arn:aws:iam::111111111111:root"]
+        principal = ["arn:aws:iam::333333333333:root", "arn:aws:iam::111111111111:root"]
         assert _has_wildcard_principal(principal) is False
 
     def test_wildcard_in_dict_aws_string(self) -> None:
@@ -110,14 +110,14 @@ class TestHasWildcardPrincipal:
     def test_wildcard_in_dict_aws_list(self) -> None:
         """Test detection of wildcard in dict AWS list."""
         principal = {
-            "AWS": ["arn:aws:iam::123456789012:root", "*"]
+            "AWS": ["arn:aws:iam::333333333333:root", "*"]
         }
         assert _has_wildcard_principal(principal) is True
 
     def test_no_wildcard_in_dict(self) -> None:
         """Test dict without wildcard."""
         principal = {
-            "AWS": "arn:aws:iam::123456789012:root",
+            "AWS": "arn:aws:iam::333333333333:root",
             "Service": "lambda.amazonaws.com"
         }
         assert _has_wildcard_principal(principal) is False
@@ -400,7 +400,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_paginator.return_value = keys_paginator
 
         policy_response = {
-            "Policy": '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::123456789012:saml-provider/MyProvider"},"Action":"kms:Decrypt","Resource":"*"}]}'
+            "Policy": '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::333333333333:saml-provider/MyProvider"},"Action":"kms:Decrypt","Resource":"*"}]}'
         }
         mock_kms_client.get_key_policy.return_value = policy_response
 

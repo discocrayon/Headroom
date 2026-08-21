@@ -98,7 +98,7 @@ class TestHasNonAccountPrincipals:
     def test_detects_federated_principal(self) -> None:
         """Test detecting Federated principal."""
         from headroom.aws.s3 import _has_non_account_principals
-        principal = {"Federated": "arn:aws:iam::123456789012:saml-provider/MyProvider"}
+        principal = {"Federated": "arn:aws:iam::555555555555:saml-provider/MyProvider"}
         assert _has_non_account_principals(principal) is True
 
     def test_detects_canonical_user_principal(self) -> None:
@@ -110,7 +110,7 @@ class TestHasNonAccountPrincipals:
     def test_ignores_aws_principal(self) -> None:
         """Test that AWS principal is not flagged."""
         from headroom.aws.s3 import _has_non_account_principals
-        principal = {"AWS": "arn:aws:iam::123456789012:root"}
+        principal = {"AWS": "arn:aws:iam::555555555555:root"}
         assert _has_non_account_principals(principal) is False
 
     def test_ignores_service_principal(self) -> None:
@@ -122,7 +122,7 @@ class TestHasNonAccountPrincipals:
     def test_mixed_with_federated(self) -> None:
         """Test mixed principals with Federated."""
         from headroom.aws.s3 import _has_non_account_principals
-        principal = {"AWS": "arn:aws:iam::123456789012:root", "Federated": "arn:aws:iam::123456789012:saml-provider/MyProvider"}
+        principal = {"AWS": "arn:aws:iam::555555555555:root", "Federated": "arn:aws:iam::555555555555:saml-provider/MyProvider"}
         assert _has_non_account_principals(principal) is True
 
 
@@ -390,7 +390,7 @@ class TestAnalyzeS3BucketPolicies:
                 {
                     "Effect": "Allow",
                     "Principal": {
-                        "Federated": "arn:aws:iam::123456789012:saml-provider/MyProvider"
+                        "Federated": "arn:aws:iam::555555555555:saml-provider/MyProvider"
                     },
                     "Action": "s3:GetObject"
                 }
