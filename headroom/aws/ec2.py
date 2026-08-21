@@ -146,6 +146,10 @@ def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
 # DescribeImages error codes that mean the AMI ID no longer resolves at all.
 # AWS returns NotFound for a deregistered AMI and Unavailable for one that is
 # deregistered but not yet fully torn down. Neither leaves an owner to read.
+# AMI state set by DisableImage. A disabled image keeps its owner but cannot
+# launch, and DescribeImages omits it unless IncludeDisabled is set.
+DISABLED_AMI_STATE = "disabled"
+
 DEREGISTERED_AMI_ERROR_CODES = frozenset({
     "InvalidAMIID.NotFound",
     "InvalidAMIID.Unavailable",
@@ -164,59 +168,31 @@ class _ResolvedAmi:
     unknown_reason: Optional[str]
 
 
-def _describe_ami(
-    regional_ec2: EC2Client,
-    ami_id: str,
-    include_hidden: bool = False,
-) -> Optional[ImageTypeDef]:
+def _describe_ami(regional_ec2: EC2Client, ami_id: str) -> Optional[ImageTypeDef]:
     """
     Describe one AMI, returning None when DescribeImages does not surface it.
 
     DescribeImages filters its results rather than erroring, so an AMI that a
-    running instance was launched from can come back as an empty list. Setting
-    `include_hidden` asks for the two categories AWS hides by default: images
-    turned off with DisableImage, and images past their deprecation date that
-    this account does not own.
+    running instance was launched from can come back as an empty list. The two
+    categories AWS hides by default are asked for up front: images turned off
+    with DisableImage, and images past their deprecation date that this account
+    does not own. Both still carry the owner this check needs, and asking for
+    them once costs less than discovering their absence and asking again.
 
     Args:
         regional_ec2: EC2 client for the region the instance runs in
         ami_id: AMI identifier to describe
-        include_hidden: Whether to ask for disabled and deprecated images
 
     Returns:
         The AMI description, or None if it is not in the response
     """
-    if include_hidden:
-        response = regional_ec2.describe_images(
-            ImageIds=[ami_id],
-            IncludeDisabled=True,
-            IncludeDeprecated=True,
-        )
-    else:
-        response = regional_ec2.describe_images(ImageIds=[ami_id])
-
+    response = regional_ec2.describe_images(
+        ImageIds=[ami_id],
+        IncludeDisabled=True,
+        IncludeDeprecated=True,
+    )
     images = response['Images']
     return images[0] if images else None
-
-
-def _hidden_ami_description(image: ImageTypeDef) -> str:
-    """
-    Name why DescribeImages hides an AMI that the include flags recovered.
-
-    Both causes leave a running instance untouched, so they surface only here.
-    An AMI that fits neither is described without a cause rather than guessed at.
-
-    Args:
-        image: AMI description returned by the include-flag retry
-
-    Returns:
-        A phrase naming the cause, for use in a log message
-    """
-    if image.get('State') == 'disabled':
-        return "disabled"
-    if image.get('DeprecationTime'):
-        return "deprecated"
-    return "hidden"
 
 
 def _resolve_ami_owner(
@@ -256,25 +232,16 @@ def _resolve_ami_owner(
         image = _describe_ami(regional_ec2, ami_id)
 
         if image is None:
-            image = _describe_ami(regional_ec2, ami_id, include_hidden=True)
-
-            if image is None:
-                logger.warning(
-                    f"AMI {ami_id} in {region} is not visible to this account even "
-                    f"with IncludeDisabled and IncludeDeprecated, so the owner of "
-                    f"instance {instance_id} cannot be determined. An Allowed AMIs "
-                    f"setting is filtering it, or it was shared and then unshared."
-                )
-                return _ResolvedAmi(
-                    owner=None,
-                    name=None,
-                    unknown_reason=AmiOwnerUnknownReason.NOT_VISIBLE.value,
-                )
-
             logger.warning(
-                f"AMI {ami_id} in {region}, used by instance {instance_id}, is "
-                f"{_hidden_ami_description(image)} and so is absent from the "
-                f"default DescribeImages view."
+                f"AMI {ami_id} in {region} is not visible to this account even "
+                f"with IncludeDisabled and IncludeDeprecated, so the owner of "
+                f"instance {instance_id} cannot be determined. An Allowed AMIs "
+                f"setting is filtering it, or it was shared and then unshared."
+            )
+            return _ResolvedAmi(
+                owner=None,
+                name=None,
+                unknown_reason=AmiOwnerUnknownReason.NOT_VISIBLE.value,
             )
     except ClientError as e:
         if e.response['Error']['Code'] not in DEREGISTERED_AMI_ERROR_CODES:
@@ -296,6 +263,12 @@ def _resolve_ami_owner(
             f"AMI {ami_id} in {region} has no OwnerId - "
             f"cannot determine owner for instance {instance_id}. "
             f"This is a critical security check failure."
+        )
+
+    if image.get('State') == DISABLED_AMI_STATE:
+        logger.warning(
+            f"AMI {ami_id} in {region}, used by instance {instance_id}, has been "
+            f"disabled. Its owner still resolves, but the image cannot launch."
         )
 
     return _ResolvedAmi(owner=owner_id, name=image.get('Name'), unknown_reason=None)

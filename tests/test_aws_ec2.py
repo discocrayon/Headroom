@@ -650,68 +650,64 @@ class TestGetEc2AmiOwnerAnalysis:
         mock_session.client.side_effect = client_side_effect
         return mock_session, mock_regional_ec2
 
-    def test_get_ec2_ami_owner_analysis_recovers_owner_of_hidden_ami(self) -> None:
-        """A disabled or deprecated AMI is retried with the include flags and its owner recovered."""
+    def test_get_ec2_ami_owner_analysis_asks_for_hidden_amis_up_front(self) -> None:
+        """The single lookup asks for disabled and deprecated images."""
         mock_session, mock_regional_ec2 = self.build_single_region_session(
             [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
         )
-        mock_regional_ec2.describe_images.side_effect = [
-            {"Images": []},
-            {"Images": [{"OwnerId": "333333333333", "Name": "golden-base", "State": "disabled"}]},
-        ]
+        mock_regional_ec2.describe_images.return_value = {
+            "Images": [{"OwnerId": "amazon", "Name": "old-al2"}]
+        }
 
-        results = get_ec2_ami_owner_analysis(mock_session)
+        get_ec2_ami_owner_analysis(mock_session)
 
-        assert len(results) == 1
+        mock_regional_ec2.describe_images.assert_called_once_with(
+            ImageIds=["ami-11111111111111111"],
+            IncludeDisabled=True,
+            IncludeDeprecated=True,
+        )
+
+    def resolve_single_ami(
+        self,
+        image: dict,
+        caplog: pytest.LogCaptureFixture,
+    ) -> tuple[list, str]:
+        """
+        Run the analysis against one instance whose AMI describes as `image`.
+
+        Returns:
+            Tuple of (results, captured log text)
+        """
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.return_value = {"Images": [image]}
+
+        with caplog.at_level(logging.WARNING):
+            results = get_ec2_ami_owner_analysis(mock_session)
+
+        return results, caplog.text
+
+    def test_get_ec2_ami_owner_analysis_resolves_owner_of_disabled_ami(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An AMI turned off with DisableImage still yields its owner."""
+        results, _ = self.resolve_single_ami(
+            {"OwnerId": "333333333333", "Name": "golden-base", "State": "disabled"},
+            caplog,
+        )
+
         assert results[0].ami_owner == "333333333333"
         assert results[0].ami_name == "golden-base"
         assert results[0].owner_unknown_reason is None
 
-    def test_get_ec2_ami_owner_analysis_retry_asks_for_hidden_amis(self) -> None:
-        """The retry sets IncludeDisabled and IncludeDeprecated, which the first call must not."""
-        mock_session, mock_regional_ec2 = self.build_single_region_session(
-            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
-        )
-        mock_regional_ec2.describe_images.side_effect = [
-            {"Images": []},
-            {"Images": [{"OwnerId": "amazon", "Name": "old-al2"}]},
-        ]
-
-        get_ec2_ami_owner_analysis(mock_session)
-
-        first_call, retry_call = mock_regional_ec2.describe_images.call_args_list
-        assert first_call.kwargs == {"ImageIds": ["ami-11111111111111111"]}
-        assert retry_call.kwargs["ImageIds"] == ["ami-11111111111111111"]
-        assert retry_call.kwargs["IncludeDisabled"] is True
-        assert retry_call.kwargs["IncludeDeprecated"] is True
-
-    def recover_hidden_ami(
-        self,
-        image: dict,
-        caplog: pytest.LogCaptureFixture,
-    ) -> str:
-        """
-        Run the analysis against an AMI only the retry surfaces, returning the log.
-        """
-        mock_session, mock_regional_ec2 = self.build_single_region_session(
-            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
-        )
-        mock_regional_ec2.describe_images.side_effect = [
-            {"Images": []},
-            {"Images": [image]},
-        ]
-
-        with caplog.at_level(logging.WARNING):
-            get_ec2_ami_owner_analysis(mock_session)
-
-        return caplog.text
-
-    def test_get_ec2_ami_owner_analysis_names_a_disabled_ami(
+    def test_get_ec2_ami_owner_analysis_warns_that_an_ami_is_disabled(
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """An AMI turned off with DisableImage is reported as disabled."""
-        log = self.recover_hidden_ami(
+        """A non-available AMI state is worth reporting even though the owner resolved."""
+        _, log = self.resolve_single_ami(
             {"OwnerId": "333333333333", "Name": "golden-base", "State": "disabled"},
             caplog,
         )
@@ -719,12 +715,12 @@ class TestGetEc2AmiOwnerAnalysis:
         assert "ami-11111111111111111" in log
         assert "disabled" in log
 
-    def test_get_ec2_ami_owner_analysis_names_a_deprecated_ami(
+    def test_get_ec2_ami_owner_analysis_resolves_owner_of_deprecated_ami(
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """An AMI past its deprecation date is reported as deprecated."""
-        log = self.recover_hidden_ami(
+        """A deprecated AMI resolves to its owner and is not worth a warning."""
+        results, log = self.resolve_single_ami(
             {
                 "OwnerId": "amazon",
                 "Name": "old-al2",
@@ -734,25 +730,12 @@ class TestGetEc2AmiOwnerAnalysis:
             caplog,
         )
 
-        assert "ami-11111111111111111" in log
-        assert "deprecated" in log
-
-    def test_get_ec2_ami_owner_analysis_reports_hidden_ami_without_naming_a_cause(
-        self,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """An AMI hidden for some other reason is reported without guessing why."""
-        log = self.recover_hidden_ami(
-            {"OwnerId": "amazon", "Name": "mystery", "State": "available"},
-            caplog,
-        )
-
-        assert "ami-11111111111111111" in log
-        assert "disabled" not in log
-        assert "deprecated" not in log
+        assert results[0].ami_owner == "amazon"
+        assert results[0].owner_unknown_reason is None
+        assert log == ""
 
     def test_get_ec2_ami_owner_analysis_records_ami_hidden_from_this_account(self) -> None:
-        """An AMI invisible even with the include flags is recorded, not raised."""
+        """An AMI the include flags do not surface is recorded, not raised."""
         mock_session, mock_regional_ec2 = self.build_single_region_session(
             [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
         )
@@ -811,7 +794,7 @@ class TestGetEc2AmiOwnerAnalysis:
 
         assert len(results) == 3
         assert all(r.owner_unknown_reason == "not_visible" for r in results)
-        assert mock_regional_ec2.describe_images.call_count == 2
+        assert mock_regional_ec2.describe_images.call_count == 1
 
     def test_get_ec2_ami_owner_analysis_success(self) -> None:
         """Test successful AMI owner analysis across regions."""

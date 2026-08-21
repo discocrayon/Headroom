@@ -204,11 +204,12 @@ Unless `rds:StorageEncrypted` condition key is true.
 **Allowlist Support**: Generates comprehensive list of unique AMI owners to inform allowlist configuration.
 
 **Unresolvable AMIs**: An instance outlives the visibility of the AMI it was
-launched from, so `DescribeImages` does not always return one. The check first
-asks again with `IncludeDisabled` and `IncludeDeprecated`, which recovers the
-owner of an AMI turned off with `DisableImage` or hidden past its deprecation
-date. An AMI that stays unresolvable is recorded as a **violation** with a null
-`ami_owner` and an `owner_unknown_reason`:
+launched from, so `DescribeImages` does not always return one. The lookup sets
+`IncludeDisabled` and `IncludeDeprecated` up front, which resolves the owner of
+an AMI turned off with `DisableImage` or hidden past its deprecation date. A
+disabled AMI is logged as a warning, since it keeps its owner but can no longer
+launch. An AMI that stays unresolvable is recorded as a **violation** with a
+null `ami_owner` and an `owner_unknown_reason`:
 
 | `owner_unknown_reason` | Meaning |
 |---|---|
