@@ -4,6 +4,8 @@ Tests for headroom.aws.ec2 module.
 Tests for DenyEc2ImdsV1 dataclass and get_ec2_imds_v1_analysis function.
 """
 
+import logging
+
 import pytest
 from unittest.mock import MagicMock
 from typing import List, Optional
@@ -619,6 +621,198 @@ class TestGetEc2AmiOwnerAnalysis:
             "State": {"Name": state}
         }
 
+    def build_single_region_session(
+        self,
+        instances: List[dict],
+        region: str = "us-east-1",
+    ) -> tuple[MagicMock, MagicMock]:
+        """
+        Build a mock session serving `instances` from a single region.
+
+        Returns:
+            Tuple of (session, regional EC2 client) so tests can drive and
+            assert on describe_images directly.
+        """
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {"Regions": [{"RegionName": region}]}
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{"Reservations": [{"Instances": instances}]}]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session = MagicMock()
+        mock_session.client.side_effect = client_side_effect
+        return mock_session, mock_regional_ec2
+
+    def test_get_ec2_ami_owner_analysis_recovers_owner_of_hidden_ami(self) -> None:
+        """A disabled or deprecated AMI is retried with the include flags and its owner recovered."""
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.side_effect = [
+            {"Images": []},
+            {"Images": [{"OwnerId": "333333333333", "Name": "golden-base", "State": "disabled"}]},
+        ]
+
+        results = get_ec2_ami_owner_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].ami_owner == "333333333333"
+        assert results[0].ami_name == "golden-base"
+        assert results[0].owner_unknown_reason is None
+
+    def test_get_ec2_ami_owner_analysis_retry_asks_for_hidden_amis(self) -> None:
+        """The retry sets IncludeDisabled and IncludeDeprecated, which the first call must not."""
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.side_effect = [
+            {"Images": []},
+            {"Images": [{"OwnerId": "amazon", "Name": "old-al2"}]},
+        ]
+
+        get_ec2_ami_owner_analysis(mock_session)
+
+        first_call, retry_call = mock_regional_ec2.describe_images.call_args_list
+        assert first_call.kwargs == {"ImageIds": ["ami-11111111111111111"]}
+        assert retry_call.kwargs["ImageIds"] == ["ami-11111111111111111"]
+        assert retry_call.kwargs["IncludeDisabled"] is True
+        assert retry_call.kwargs["IncludeDeprecated"] is True
+
+    def recover_hidden_ami(
+        self,
+        image: dict,
+        caplog: pytest.LogCaptureFixture,
+    ) -> str:
+        """
+        Run the analysis against an AMI only the retry surfaces, returning the log.
+        """
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.side_effect = [
+            {"Images": []},
+            {"Images": [image]},
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            get_ec2_ami_owner_analysis(mock_session)
+
+        return caplog.text
+
+    def test_get_ec2_ami_owner_analysis_names_a_disabled_ami(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An AMI turned off with DisableImage is reported as disabled."""
+        log = self.recover_hidden_ami(
+            {"OwnerId": "333333333333", "Name": "golden-base", "State": "disabled"},
+            caplog,
+        )
+
+        assert "ami-11111111111111111" in log
+        assert "disabled" in log
+
+    def test_get_ec2_ami_owner_analysis_names_a_deprecated_ami(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An AMI past its deprecation date is reported as deprecated."""
+        log = self.recover_hidden_ami(
+            {
+                "OwnerId": "amazon",
+                "Name": "old-al2",
+                "State": "available",
+                "DeprecationTime": "2024-01-01T00:00:00.000Z",
+            },
+            caplog,
+        )
+
+        assert "ami-11111111111111111" in log
+        assert "deprecated" in log
+
+    def test_get_ec2_ami_owner_analysis_reports_hidden_ami_without_naming_a_cause(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An AMI hidden for some other reason is reported without guessing why."""
+        log = self.recover_hidden_ami(
+            {"OwnerId": "amazon", "Name": "mystery", "State": "available"},
+            caplog,
+        )
+
+        assert "ami-11111111111111111" in log
+        assert "disabled" not in log
+        assert "deprecated" not in log
+
+    def test_get_ec2_ami_owner_analysis_records_ami_hidden_from_this_account(self) -> None:
+        """An AMI invisible even with the include flags is recorded, not raised."""
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.return_value = {"Images": []}
+
+        results = get_ec2_ami_owner_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].ami_id == "ami-11111111111111111"
+        assert results[0].ami_owner is None
+        assert results[0].ami_name is None
+        assert results[0].owner_unknown_reason == "not_visible"
+
+    def test_get_ec2_ami_owner_analysis_records_deregistered_ami(self) -> None:
+        """InvalidAMIID.NotFound is recorded as a deregistered AMI, not raised."""
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.side_effect = ClientError(
+            {"Error": {"Code": "InvalidAMIID.NotFound", "Message": "AMI not found"}},
+            "DescribeImages"
+        )
+
+        results = get_ec2_ami_owner_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].ami_owner is None
+        assert results[0].owner_unknown_reason == "deregistered"
+
+    def test_get_ec2_ami_owner_analysis_records_unavailable_ami_as_deregistered(self) -> None:
+        """InvalidAMIID.Unavailable is the deregistration signal AWS returns for some AMIs."""
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.side_effect = ClientError(
+            {"Error": {"Code": "InvalidAMIID.Unavailable", "Message": "AMI unavailable"}},
+            "DescribeImages"
+        )
+
+        results = get_ec2_ami_owner_analysis(mock_session)
+
+        assert len(results) == 1
+        assert results[0].ami_owner is None
+        assert results[0].owner_unknown_reason == "deregistered"
+
+    def test_get_ec2_ami_owner_analysis_caches_unresolvable_ami(self) -> None:
+        """An unresolvable AMI is looked up once, not once per instance using it."""
+        mock_session, mock_regional_ec2 = self.build_single_region_session([
+            self.create_mock_instance("i-11111111111111111", "ami-11111111111111111"),
+            self.create_mock_instance("i-22222222222222222", "ami-11111111111111111"),
+            self.create_mock_instance("i-33333333333333333", "ami-11111111111111111"),
+        ])
+        mock_regional_ec2.describe_images.return_value = {"Images": []}
+
+        results = get_ec2_ami_owner_analysis(mock_session)
+
+        assert len(results) == 3
+        assert all(r.owner_unknown_reason == "not_visible" for r in results)
+        assert mock_regional_ec2.describe_images.call_count == 2
+
     def test_get_ec2_ami_owner_analysis_success(self) -> None:
         """Test successful AMI owner analysis across regions."""
         mock_session = MagicMock()
@@ -701,47 +895,6 @@ class TestGetEc2AmiOwnerAnalysis:
         assert results[2].ami_id == "ami-custom123"
         assert results[2].ami_owner == "222222222222"
         assert results[2].region == "us-west-2"
-
-    def test_get_ec2_ami_owner_analysis_ami_not_found(self) -> None:
-        """Test handling when AMI no longer exists - must fail fast."""
-        mock_session = MagicMock()
-
-        mock_ec2 = MagicMock()
-        mock_ec2.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
-
-        mock_regional_ec2 = MagicMock()
-        mock_paginator = MagicMock()
-
-        instances_page = {
-            "Reservations": [
-                {
-                    "Instances": [
-                        self.create_mock_instance("i-test", "ami-nonexistent")
-                    ]
-                }
-            ]
-        }
-
-        mock_paginator.paginate.return_value = [instances_page]
-        mock_regional_ec2.get_paginator.return_value = mock_paginator
-
-        mock_regional_ec2.describe_images.side_effect = ClientError(
-            {"Error": {"Code": "InvalidAMIID.NotFound", "Message": "AMI not found"}},
-            "DescribeImages"
-        )
-
-        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
-            if region_name is None:
-                return mock_ec2
-            return mock_regional_ec2
-
-        mock_session.client.side_effect = client_side_effect
-
-        # Must fail fast - cannot determine AMI owner
-        with pytest.raises(RuntimeError, match="AMI ami-nonexistent no longer exists.*critical security check failure"):
-            get_ec2_ami_owner_analysis(mock_session)
 
     def test_get_ec2_ami_owner_analysis_ami_access_denied(self) -> None:
         """Test handling when describe_images raises AccessDenied error."""
@@ -911,44 +1064,6 @@ class TestGetEc2AmiOwnerAnalysis:
         results = get_ec2_ami_owner_analysis(mock_session)
 
         assert len(results) == 0
-
-    def test_get_ec2_ami_owner_analysis_empty_ami_response(self) -> None:
-        """Test handling when describe_images returns empty list - must fail fast."""
-        mock_session = MagicMock()
-
-        mock_ec2 = MagicMock()
-        mock_ec2.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
-
-        mock_regional_ec2 = MagicMock()
-        mock_paginator = MagicMock()
-
-        instances_page = {
-            "Reservations": [
-                {
-                    "Instances": [
-                        self.create_mock_instance("i-test", "ami-missing")
-                    ]
-                }
-            ]
-        }
-
-        mock_paginator.paginate.return_value = [instances_page]
-        mock_regional_ec2.get_paginator.return_value = mock_paginator
-
-        mock_regional_ec2.describe_images.return_value = {"Images": []}
-
-        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
-            if region_name is None:
-                return mock_ec2
-            return mock_regional_ec2
-
-        mock_session.client.side_effect = client_side_effect
-
-        # Must fail fast - cannot determine AMI owner
-        with pytest.raises(RuntimeError, match="AMI ami-missing not found.*critical security check failure"):
-            get_ec2_ami_owner_analysis(mock_session)
 
     def test_get_ec2_ami_owner_analysis_ami_without_owner_id(self) -> None:
         """Test handling when AMI has no OwnerId field - must fail fast."""
