@@ -33,7 +33,7 @@ account holding nothing still costs:
 203 requests + (192 handshakes x 2) = 587 round-trips ~= 58.7 s
 ```
 
-Serially, 300 such accounts take about 3.5 hours.
+Serially, 300 such accounts take about 4.9 hours.
 
 ### Four identical EC2 sweeps
 
@@ -56,8 +56,8 @@ Building the session itself costs a further ~124 ms.
 This yields a floor of **~0.45 s per account of GIL-bound Python** -- client
 construction, model binding, JSON parsing -- or about 2.2 minutes across 300 accounts.
 
-That floor is real but it does **not** bind: network wait after the memos is ~42 s per
-account against ~0.45 s of CPU, a ratio near 94:1. Roughly 94 workers would be needed to
+That floor is real but it does **not** bind: network wait after the memos is ~46 s per
+account against ~0.45 s of CPU, a ratio near 100:1. Roughly 94 workers would be needed to
 saturate one core, which is far past the point where other limits bite. The worker count
 is set by memory instead (section 4), not by the GIL.
 
@@ -261,16 +261,22 @@ checks, which is the framework change this design avoids.
 | Memo | Key | Removes per account |
 | --- | --- | --- |
 | Region list | session | 10 of 11 `describe_regions` |
-| Instances | (session, region) | 51 of 68 `describe_instances`, 51 of 187 client builds, ~222 ms CPU, 51 TLS handshakes |
+| Instances | (session, region) | 51 of 68 `describe_instances`, 34 of 187 client builds and their TLS handshakes |
 
 ### Why there is no client memo
 
 An earlier draft included a third memo caching one client per `(session, service, region)`.
 It was dropped for two reasons.
 
-It is **redundant**. EC2 is the only service any check uses more than once, so all 51
-duplicated client builds are EC2 clients -- exactly the 51 the instance memo eliminates by
-collapsing four sweeps into one.
+It is **redundant**. EC2 is the only service any check uses more than once, so every
+duplicated client build is an EC2 client, and the instance memo already removes 34 of the
+51 by collapsing four sweeps into one.
+
+It does not remove all 51 because `get_ec2_ami_owner_analysis` needs an EC2 client of its
+own for `describe_images`, independent of the instance list. Per-region EC2 clients
+therefore go from four to two: one built inside the collector on first access for that
+region, and one the AMI check builds for image lookups. A client memo would recover the
+last 17, which does not justify its cost.
 
 It is **harmful**. Today a client is built inside the region loop and dropped at the end of
 the iteration, so its connection pool is collected and its sockets close; peak usage is
@@ -334,13 +340,15 @@ Growth is linear at roughly 43 MB per worker. That gives:
 
 | Workers | Resident | 300 accounts |
 | --- | --- | --- |
-| 1 | baseline | ~3.5 hours |
-| 8 | ~0.4 GB | ~26 minutes |
-| **16** | **~0.8 GB** | **~13 minutes** |
+| 1 | baseline | ~3.8 hours |
+| 8 | ~0.4 GB | ~29 minutes |
+| **16** | **~0.8 GB** | **~14 minutes** |
 | 32 | ~1.5 GB | ~7 minutes |
 
+Row 1 is the post-memo serial time; today's serial run is ~4.9 hours.
+
 16 is a deliberately conservative default: under a gigabyte, comfortable on a laptop or a
-small CI box, and a 16x improvement. The upper bound of 32 is where resident memory passes
+small CI box, and a 21x improvement over today's serial run. The upper bound of 32 is where resident memory passes
 1.5 GB; wanting more than that is a signal to revisit the design rather than turn a knob.
 
 The flag exists precisely because the right value is environment-dependent. Raising it is
@@ -468,11 +476,11 @@ account ID.
 
 | Metric | Before | After (16 workers) |
 | --- | --- | --- |
-| Wall clock, 300 accounts | ~3.5 hours | ~13 minutes |
-| Round-trips per empty account | 587 | 424 |
+| Wall clock, 300 accounts | ~4.9 hours | ~14 minutes |
+| Round-trips per empty account | 587 | 458 |
 | `describe_regions` per account | 11 | 1 |
 | `describe_instances` per account | 68 | 17 |
-| Client builds per account | 187 | 136 |
+| Client builds per account | 187 | 153 |
 | GIL-bound CPU per account | ~0.66 s | ~0.45 s |
 
 Output is unchanged. Results are written per account and per check, so worker scheduling
