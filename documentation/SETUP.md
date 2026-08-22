@@ -166,6 +166,24 @@ account_tag_layout:
 - `name`: Only used when `use_account_name_from_tags: true`, falls back to account ID if missing
 - `owner`: Extracted if present, falls back to "unknown" if missing
 
+**Resolving tag names back to accounts:**
+
+With `exclude_account_ids: true`, result files carry no account ID, so Headroom
+resolves each file back to an account by name. The name in the file comes from
+the `name` tag; the name in the organization hierarchy always comes from AWS
+Organizations. Headroom matches exactly first, then retries ignoring case and
+separators, so a `Name` tag of `management-account` still resolves to an account
+Organizations calls `Management Account`, logging a warning that the two differ.
+
+Resolution fails loudly when the answer is not unique or not present:
+- The name matches two or more accounts (Organizations enforces uniqueness on
+  account email, not on account name). Rename one account, or set
+  `exclude_account_ids: false` so result files carry account IDs.
+- The name matches nothing — most often a `name` tag that is missing (the name
+  then falls back to the account ID, which matches no account name), a tag that
+  is not merely a re-spelling of the account name, or a stale result file left
+  behind after an account was renamed.
+
 ## Test Environment
 
 The [`test_environment/`](https://github.com/discocrayon/Headroom/tree/main/test_environment) folder contains complete Terraform code to set up:

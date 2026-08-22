@@ -6,13 +6,14 @@ using the AWS Organizations API.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from boto3.session import Session
 from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
+from ..utils import make_safe_variable_name
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -159,6 +160,19 @@ def create_account_ou_mapping(session: Session) -> Dict[str, str]:
     return mapping
 
 
+def _format_account_candidates(candidates: List[Tuple[str, str]]) -> str:
+    """
+    Render account candidates as a readable list for error messages.
+
+    Args:
+        candidates: List of (account_id, account_name) pairs
+
+    Returns:
+        Comma-separated string, e.g. "111111111111 ('Prod'), 222222222222 ('prod')"
+    """
+    return ", ".join(f"{acc_id} ('{name}')" for acc_id, name in sorted(candidates))
+
+
 def lookup_account_id_by_name(
     account_name: str,
     organization_hierarchy: OrganizationHierarchy,
@@ -167,21 +181,70 @@ def lookup_account_id_by_name(
     """
     Look up account ID by name in organization hierarchy.
 
+    Matches the name exactly first. Result files are written under the name
+    configured by use_account_name_from_tags, which can be a slug such as
+    "management-account" where Organizations reports "Management Account", so a
+    name that matches nothing exactly falls back to comparing names with case
+    and separators ignored. The fallback resolves only when exactly one account
+    matches; anything else aborts rather than attribute results to a guess.
+
     Args:
         account_name: Account name to look up
         organization_hierarchy: Organization structure containing accounts
         context: Context string for error message (e.g., "result file", "check processing")
 
     Returns:
-        Account ID matching the account name
+        Account ID of the single account matching the account name
 
     Raises:
-        RuntimeError: If account name is not found in organization hierarchy
+        RuntimeError: If the account name matches no account, or matches more
+            than one (Organizations enforces uniqueness on account email, not
+            on account name)
     """
-    for acc_id, acc_info in organization_hierarchy.accounts.items():
-        if acc_info.account_name == account_name:
-            logger.info(f"Looked up account_id {acc_id} for account name '{account_name}'")
-            return acc_id
+    exact_matches = [
+        (acc_id, acc_info.account_name)
+        for acc_id, acc_info in organization_hierarchy.accounts.items()
+        if acc_info.account_name == account_name
+    ]
+
+    if len(exact_matches) == 1:
+        acc_id = exact_matches[0][0]
+        logger.info(f"Looked up account_id {acc_id} for account name '{account_name}'")
+        return acc_id
+
+    if exact_matches:
+        raise RuntimeError(
+            f"Account name '{account_name}' from {context} matches multiple accounts "
+            f"in the organization hierarchy: {_format_account_candidates(exact_matches)}"
+        )
+
+    # A name of only separators canonicalizes to "", which would otherwise
+    # match every other such name, so it is left unresolved.
+    canonical_name = make_safe_variable_name(account_name)
+    canonical_matches: List[Tuple[str, str]] = []
+    if canonical_name:
+        canonical_matches = [
+            (acc_id, acc_info.account_name)
+            for acc_id, acc_info in organization_hierarchy.accounts.items()
+            if make_safe_variable_name(acc_info.account_name) == canonical_name
+        ]
+
+    if len(canonical_matches) == 1:
+        acc_id, matched_name = canonical_matches[0]
+        logger.warning(
+            f"Account name '{account_name}' from {context} does not match any "
+            f"account name in the organization hierarchy exactly; resolved to "
+            f"account_id {acc_id} ('{matched_name}') by ignoring case and separators"
+        )
+        return acc_id
+
+    if canonical_matches:
+        raise RuntimeError(
+            f"Account name '{account_name}' from {context} matches multiple accounts "
+            f"in the organization hierarchy when ignoring case and separators: "
+            f"{_format_account_candidates(canonical_matches)}"
+        )
+
     raise RuntimeError(
         f"Account name '{account_name}' from {context} not found in organization hierarchy"
     )
