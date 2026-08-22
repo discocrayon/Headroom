@@ -1277,6 +1277,28 @@ if not account_id:
 ```
 
 **Shared Utility Function:**
+
+Result files are written under the name selected by `use_account_name_from_tags`,
+while the hierarchy always holds the AWS Organizations account name. A Name tag
+of `management-account` against an account Organizations calls `Management
+Account` must still resolve, so the lookup matches exactly first and then retries with
+case and separators ignored, using the same canonicalization as Terraform
+identifiers (`make_safe_variable_name`).
+
+Organizations enforces uniqueness on account email, not on account name, so
+either stage can match more than one account. Resolution requires exactly one
+match at a stage; anything else raises rather than attributing results to an
+arbitrary account. A name that canonicalizes to the empty string (only
+separators) is never canonically matched, since every such name reduces alike.
+
+| Stage | Matches | Behavior |
+|-------|---------|----------|
+| Exact | 1 | Return the account ID, log at info |
+| Exact | >1 | Raise, listing every candidate ID and name |
+| Canonical | 1 | Return the account ID, log at warning with both names |
+| Canonical | >1 | Raise, listing every candidate ID and name |
+| Neither | 0 | Raise `Account name '<name>' from <context> not found in organization hierarchy` |
+
 ```python
 # aws/organization.py
 def lookup_account_id_by_name(
@@ -1287,13 +1309,35 @@ def lookup_account_id_by_name(
     """
     Look up account ID by name in organization hierarchy.
 
-    Raises: RuntimeError if account not found
+    Raises: RuntimeError if the name matches no account or several
     """
-    for acc_id, acc_info in organization_hierarchy.accounts.items():
-        if acc_info.account_name == account_name:
-            logger.info(f"Looked up account_id {acc_id} for '{account_name}'")
-            return acc_id
-    raise RuntimeError(f"Account '{account_name}' from {context} not found")
+    exact_matches = [
+        (acc_id, acc_info.account_name)
+        for acc_id, acc_info in organization_hierarchy.accounts.items()
+        if acc_info.account_name == account_name
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0][0]
+    if exact_matches:
+        raise RuntimeError(f"Account name '{account_name}' from {context} matches ...")
+
+    canonical_name = make_safe_variable_name(account_name)
+    canonical_matches: List[Tuple[str, str]] = []
+    if canonical_name:
+        canonical_matches = [
+            (acc_id, acc_info.account_name)
+            for acc_id, acc_info in organization_hierarchy.accounts.items()
+            if make_safe_variable_name(acc_info.account_name) == canonical_name
+        ]
+    if len(canonical_matches) == 1:
+        logger.warning(f"'{account_name}' resolved by ignoring case and separators")
+        return canonical_matches[0][0]
+    if canonical_matches:
+        raise RuntimeError(f"Account name '{account_name}' from {context} matches ...")
+
+    raise RuntimeError(
+        f"Account name '{account_name}' from {context} not found in organization hierarchy"
+    )
 ```
 
 ### SCP Results Parsing
