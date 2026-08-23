@@ -122,6 +122,38 @@ class TestPerformAnalysis:
             assert mock_logger.info.call_count == 7
             mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
 
+    def test_perform_analysis_aborts_before_run_checks_on_duplicate_names(self) -> None:
+        """
+        The duplicate-name guard must gate run_checks, not merely exist.
+
+        Pins the ordering rather than just the raising: if the call to
+        _verify_no_duplicate_account_names were deleted, or moved to after
+        run_checks, this test would fail even though the guard itself would
+        still raise correctly when called directly.
+        """
+        config = HeadroomConfig(
+            management_account_id="222222222222",
+            security_analysis_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner"),
+            exclude_account_ids=True,
+        )
+        colliding_account_infos = [
+            AccountInfo(account_id="333333333333", environment="prod", name="shared-name", owner="team"),
+            AccountInfo(account_id="444444444444", environment="prod", name="shared-name", owner="team"),
+        ]
+        mock_session = MagicMock()
+        with (
+            patch("headroom.analysis.get_security_analysis_session", return_value=mock_session),
+            patch("headroom.analysis.get_all_organization_account_ids", return_value=set()),
+            patch("headroom.analysis.get_subaccount_information", return_value=colliding_account_infos),
+            patch("headroom.analysis.run_checks") as mock_run_checks,
+        ):
+            with pytest.raises(RuntimeError, match="shared-name"):
+                perform_analysis(config)
+
+            mock_run_checks.assert_not_called()
+
 
 class TestGetSubaccountInformation:
     @patch("headroom.analysis.get_management_account_session")
@@ -810,8 +842,7 @@ class TestDuplicateAccountNameGuard:
             )
 
         message = str(excinfo.value)
-        assert "shared-name" in message
-        assert "2" in message
+        assert "shared-name (2 accounts)" in message
         assert not re.search(r"\d{12}", message)
 
     def test_duplicate_names_are_allowed_when_ids_are_included(self) -> None:
@@ -831,3 +862,23 @@ class TestDuplicateAccountNameGuard:
             self._config(exclude_account_ids=True),
             self._accounts("one", "two", "three"),
         )
+
+    def test_case_insensitive_collision_is_caught(self) -> None:
+        """
+        Names collide case-insensitively.
+
+        Development happens on macOS, where APFS is case-insensitive by
+        default: accounts named `Prod` and `prod` resolve to the same file
+        on the filesystem this tool actually runs on, even though the two
+        strings differ. The message must show both spellings so an operator
+        sees why two names they consider different are flagged.
+        """
+        with pytest.raises(RuntimeError) as excinfo:
+            _verify_no_duplicate_account_names(
+                self._config(exclude_account_ids=True),
+                self._accounts("Prod", "prod"),
+            )
+
+        message = str(excinfo.value)
+        assert "Prod" in message
+        assert "prod" in message
