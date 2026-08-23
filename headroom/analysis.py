@@ -563,6 +563,58 @@ def run_checks(
         _run_checks_for_account(account_info, security_session, config, org_account_ids)
 
 
+def _verify_no_duplicate_account_names(
+    config: HeadroomConfig,
+    account_infos: List[AccountInfo]
+) -> None:
+    """
+    Abort if two accounts would write to the same result file.
+
+    With `exclude_account_ids` set, the result filename is the account name
+    alone: `ResultFilePathResolver._build_filename` drops the account ID, which
+    is the only guaranteed-unique component. Two accounts sharing a name then
+    resolve to one path.
+
+    Run serially that is a quiet last-writer-wins. Run with a worker per
+    account it is two threads interleaving `json.dump` output into one file,
+    producing either corrupt JSON or a valid file holding two accounts' results
+    spliced together -- which then feeds policy generation.
+
+    The message names the duplicated name and how many accounts carry it, never
+    the account IDs. Printing those would defeat the setting that created the
+    collision.
+
+    Args:
+        config: Headroom configuration
+        account_infos: Accounts about to be analyzed
+
+    Raises:
+        RuntimeError: If `exclude_account_ids` is set and two accounts share a
+            name
+    """
+    if not config.exclude_account_ids:
+        return
+
+    counts: Dict[str, int] = {}
+    for account_info in account_infos:
+        counts[account_info.name] = counts.get(account_info.name, 0) + 1
+
+    collisions = sorted(name for name, count in counts.items() if count > 1)
+
+    if not collisions:
+        return
+
+    breakdown = ", ".join(f"{name} ({counts[name]} accounts)" for name in collisions)
+    raise RuntimeError(
+        f"exclude_account_ids is set, so result files are named by account name "
+        f"alone, but these names are not unique: {breakdown}. Every such account "
+        "would write to the same file, and because accounts are analyzed "
+        "concurrently the file would hold interleaved output from all of them. "
+        "Rename the accounts, or unset exclude_account_ids so the account ID "
+        "makes each filename unique."
+    )
+
+
 def perform_analysis(config: HeadroomConfig) -> None:
     """
     Perform security analysis using the security analysis account session.
@@ -585,6 +637,8 @@ def perform_analysis(config: HeadroomConfig) -> None:
 
     relevant_account_infos = get_relevant_subaccounts(account_infos)
     logger.info(f"Filtered to {len(relevant_account_infos)} relevant accounts for analysis")
+
+    _verify_no_duplicate_account_names(config, relevant_account_infos)
 
     run_checks(security_session, relevant_account_infos, config, org_account_ids)
     logger.info("Security analysis completed")
