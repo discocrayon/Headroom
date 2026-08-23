@@ -2,15 +2,17 @@
 
 import logging
 from dataclasses import dataclass
+from threading import Lock
 from typing import Dict, List, Optional
+from weakref import WeakKeyDictionary
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_ec2.client import EC2Client
-from mypy_boto3_ec2.type_defs import ImageTypeDef
+from mypy_boto3_ec2.type_defs import ImageTypeDef, InstanceTypeDef
 
 from ..enums import AmiOwnerUnknownReason
-from .helpers import get_all_regions
+from .helpers import get_all_regions, paginate
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,154 @@ class DenyEc2PublicIp:
     instance_arn: str
 
 
+@dataclass
+class Ec2Instance:
+    """
+    The subset of a describe_instances entry that Headroom's EC2 checks read.
+
+    Four checks previously swept every region independently for the same data.
+    They now share one collection pass, and this is its output: the nine values
+    those checks actually consume. Everything else in the API response --
+    BlockDeviceMappings, NetworkInterfaces, SecurityGroups, Placement -- is
+    dropped, because the memo holds this for an account's whole lifetime and
+    the full entries are what would make that expensive.
+
+    Attributes:
+        instance_id: EC2 instance identifier
+        region: AWS region the instance runs in
+        image_id: AMI the instance was launched from, None if the API omits it
+        owner_id: Account that owns the reservation
+        public_ip_address: Public IP if one is assigned, None otherwise
+        http_tokens: MetadataOptions HttpTokens; AWS defaults to 'optional'
+        http_endpoint: MetadataOptions HttpEndpoint; AWS defaults to 'enabled'
+        hop_limit: MetadataOptions HttpPutResponseHopLimit; AWS defaults to 1
+        tags: Instance tags as a key to value mapping
+    """
+    instance_id: str
+    region: str
+    image_id: Optional[str]
+    owner_id: str
+    public_ip_address: Optional[str]
+    http_tokens: str
+    http_endpoint: str
+    hop_limit: int
+    tags: Dict[str, str]
+
+
+_INSTANCE_MEMO: WeakKeyDictionary[Session, Dict[str, List[Ec2Instance]]] = WeakKeyDictionary()
+_INSTANCE_MEMO_LOCK = Lock()
+
+
+def _project_instance(
+    instance: InstanceTypeDef,
+    owner_id: str,
+    region: str
+) -> Ec2Instance:
+    """
+    Reduce one describe_instances entry to the values the checks read.
+
+    Args:
+        instance: Instance dictionary from describe_instances
+        owner_id: Owner of the reservation the instance belongs to
+        region: AWS region being collected
+
+    Returns:
+        The projected instance
+    """
+    metadata_options = instance.get('MetadataOptions', {})
+    return Ec2Instance(
+        instance_id=instance['InstanceId'],
+        region=region,
+        image_id=instance.get('ImageId'),
+        owner_id=owner_id,
+        public_ip_address=instance.get('PublicIpAddress'),
+        http_tokens=metadata_options.get('HttpTokens', 'optional'),
+        http_endpoint=metadata_options.get('HttpEndpoint', 'enabled'),
+        hop_limit=metadata_options.get('HttpPutResponseHopLimit', 1),
+        tags={tag['Key']: tag['Value'] for tag in instance.get('Tags', [])},
+    )
+
+
+def _describe_instances(session: Session, region: str) -> List[Ec2Instance]:
+    """
+    Read every non-terminated instance in one region and project it.
+
+    The terminated filter lives here rather than in each check. All four EC2
+    checks previously opened with the identical test, and collecting once is
+    the opportunity to state it once.
+
+    Args:
+        session: boto3.Session for the target account
+        region: AWS region to read
+
+    Returns:
+        Projected instances, terminated ones excluded
+
+    Raises:
+        RuntimeError: If describe_instances fails
+    """
+    regional_ec2: EC2Client = session.client('ec2', region_name=region)
+    instances = []
+
+    try:
+        for page in paginate(regional_ec2, 'describe_instances'):
+            for reservation in page['Reservations']:
+                owner_id = reservation.get('OwnerId', '')
+                for instance in reservation['Instances']:
+                    if instance['State']['Name'] == 'terminated':
+                        continue
+                    instances.append(_project_instance(instance, owner_id, region))
+    except ClientError as e:
+        raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
+
+    return instances
+
+
+def get_instances(session: Session, region: str) -> List[Ec2Instance]:
+    """
+    Return one region's non-terminated instances, reading AWS at most once.
+
+    Four checks -- IMDSv1, AMI owner, public IP, and IMDS hop limit -- each
+    need every instance in every region. Sweeping separately cost four
+    identical describe_instances passes per region, 51 of the 68 calls a
+    17-region account made.
+
+    The memo is keyed on the session object itself, never on an account ID or
+    name, which is what keeps one account's instances out of another account's
+    results. Entries live in a WeakKeyDictionary and are released when the
+    worker drops the session.
+
+    The lock is released across the API call rather than held; see
+    `get_all_regions` in helpers.py for why.
+
+    Args:
+        session: boto3.Session for the target account
+        region: AWS region to read
+
+    Returns:
+        Projected instances for that region
+
+    Raises:
+        RuntimeError: If describe_instances fails
+    """
+    with _INSTANCE_MEMO_LOCK:
+        by_region = _INSTANCE_MEMO.get(session)
+        if by_region is None:
+            by_region = {}
+            _INSTANCE_MEMO[session] = by_region
+        cached = by_region.get(region)
+
+    if cached is not None:
+        return cached
+
+    instances = _describe_instances(session, region)
+
+    with _INSTANCE_MEMO_LOCK:
+        by_region[region] = instances
+
+    return instances
+
+
 def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
     """
     Analyze EC2 instances for IMDS v1 configuration across all regions.
@@ -100,45 +250,20 @@ def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
     regions = get_all_regions(session)
 
     for region in regions:
-        try:
-            regional_ec2: EC2Client = session.client('ec2', region_name=region)
-            paginator = regional_ec2.get_paginator('describe_instances')
+        for instance in get_instances(session, region):
+            # IMDSv1 is allowed when IMDS is enabled and tokens are optional;
+            # it is blocked when HttpTokens is 'required' or IMDS is disabled.
+            imdsv1_allowed = (
+                instance.http_endpoint == 'enabled' and instance.http_tokens == 'optional'
+            )
+            exemption_tag_present = instance.tags.get('ExemptFromIMDSv2', '').lower() == 'true'
 
-            for page in paginator.paginate():
-                for reservation in page['Reservations']:
-                    for instance in reservation['Instances']:
-                        # Skip terminated instances
-                        if instance['State']['Name'] == 'terminated':
-                            continue
-
-                        instance_id = instance['InstanceId']
-
-                        # Check IMDS configuration
-                        metadata_options = instance.get('MetadataOptions', {})
-                        http_tokens = metadata_options.get('HttpTokens', 'optional')
-                        http_endpoint = metadata_options.get('HttpEndpoint', 'enabled')
-
-                        # Determine if IMDSv1 is allowed
-                        # IMDSv1 is allowed if IMDS is enabled and HttpTokens is 'optional'
-                        # IMDSv1 is blocked if HttpTokens is 'required' or IMDS is disabled
-                        imdsv1_allowed = (http_endpoint == 'enabled' and http_tokens == 'optional')
-
-                        # Check for exemption tag
-                        exemption_tag_present = False
-                        for tag in instance.get('Tags', []):
-                            if tag['Key'] == 'ExemptFromIMDSv2' and tag['Value'].lower() == 'true':
-                                exemption_tag_present = True
-                                break
-
-                        results.append(DenyEc2ImdsV1(
-                            region=region,
-                            instance_id=instance_id,
-                            imdsv1_allowed=imdsv1_allowed,
-                            exemption_tag_present=exemption_tag_present
-                        ))
-
-        except ClientError as e:
-            raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
+            results.append(DenyEc2ImdsV1(
+                region=region,
+                instance_id=instance.instance_id,
+                imdsv1_allowed=imdsv1_allowed,
+                exemption_tag_present=exemption_tag_present
+            ))
 
     return results
 
@@ -306,48 +431,36 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
     regions = get_all_regions(session)
 
     for region in regions:
-        try:
-            regional_ec2: EC2Client = session.client('ec2', region_name=region)
-            logger.info(f"Analyzing EC2 AMI owners in {region}")
+        instances = get_instances(session, region)
+        if not instances:
+            continue
 
-            ami_cache: Dict[str, _ResolvedAmi] = {}
+        regional_ec2: EC2Client = session.client('ec2', region_name=region)
+        logger.debug(f"Analyzing EC2 AMI owners in {region}")
+        ami_cache: Dict[str, _ResolvedAmi] = {}
 
-            paginator = regional_ec2.get_paginator('describe_instances')
-            for page in paginator.paginate():
-                for reservation in page['Reservations']:
-                    for instance in reservation['Instances']:
-                        if instance['State']['Name'] == 'terminated':
-                            continue
+        for instance in instances:
+            if not instance.image_id:
+                logger.warning(
+                    f"Instance {instance.instance_id} in {region} has no AMI ID, skipping"
+                )
+                continue
 
-                        instance_id = instance['InstanceId']
-                        ami_id = instance.get('ImageId')
+            if instance.image_id not in ami_cache:
+                ami_cache[instance.image_id] = _resolve_ami_owner(
+                    regional_ec2, instance.image_id, region, instance.instance_id
+                )
 
-                        if not ami_id:
-                            logger.warning(
-                                f"Instance {instance_id} in {region} has no AMI ID, skipping"
-                            )
-                            continue
+            resolved = ami_cache[instance.image_id]
 
-                        if ami_id not in ami_cache:
-                            ami_cache[ami_id] = _resolve_ami_owner(
-                                regional_ec2, ami_id, region, instance_id
-                            )
-
-                        resolved = ami_cache[ami_id]
-
-                        results.append(DenyEc2AmiOwner(
-                            instance_id=instance_id,
-                            region=region,
-                            ami_id=ami_id,
-                            ami_owner=resolved.owner,
-                            ami_name=resolved.name,
-                            owner_unknown_reason=resolved.unknown_reason
-                        ))
-
-        except ClientError as e:
-            raise RuntimeError(
-                f"Failed to analyze EC2 AMI owners in region {region}: {e}"
-            )
+            results.append(DenyEc2AmiOwner(
+                instance_id=instance.instance_id,
+                region=region,
+                ami_id=instance.image_id,
+                ami_owner=resolved.owner,
+                ami_name=resolved.name,
+                owner_unknown_reason=resolved.unknown_reason
+            ))
 
     logger.info(
         f"Analyzed {len(results)} EC2 instances across {len(regions)} regions"
@@ -381,36 +494,18 @@ def get_ec2_public_ip_analysis(session: Session) -> List[DenyEc2PublicIp]:
     regions = get_all_regions(session)
 
     for region in regions:
-        try:
-            regional_ec2: EC2Client = session.client('ec2', region_name=region)
-            paginator = regional_ec2.get_paginator('describe_instances')
+        for instance in get_instances(session, region):
+            instance_arn = (
+                f"arn:aws:ec2:{region}:{instance.owner_id}:instance/{instance.instance_id}"
+            )
 
-            for page in paginator.paginate():
-                for reservation in page['Reservations']:
-                    for instance in reservation['Instances']:
-                        if instance['State']['Name'] == 'terminated':
-                            continue
-
-                        instance_id = instance['InstanceId']
-                        account_id = instance.get('OwnerId', '')
-
-                        instance_arn = (
-                            f"arn:aws:ec2:{region}:{account_id}:instance/{instance_id}"
-                        )
-
-                        public_ip_address = instance.get('PublicIpAddress')
-                        has_public_ip = public_ip_address is not None
-
-                        results.append(DenyEc2PublicIp(
-                            instance_id=instance_id,
-                            region=region,
-                            public_ip_address=public_ip_address,
-                            has_public_ip=has_public_ip,
-                            instance_arn=instance_arn
-                        ))
-
-        except ClientError as e:
-            raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
+            results.append(DenyEc2PublicIp(
+                instance_id=instance.instance_id,
+                region=region,
+                public_ip_address=instance.public_ip_address,
+                has_public_ip=instance.public_ip_address is not None,
+                instance_arn=instance_arn
+            ))
 
     return results
 
@@ -434,30 +529,12 @@ def get_ec2_imds_hop_limit_analysis(session: Session) -> List[DenyEc2ImdsHopLimi
     regions = get_all_regions(session)
 
     for region in regions:
-        try:
-            regional_ec2: EC2Client = session.client('ec2', region_name=region)
-            paginator = regional_ec2.get_paginator('describe_instances')
-
-            for page in paginator.paginate():
-                for reservation in page['Reservations']:
-                    for instance in reservation['Instances']:
-                        # Skip terminated instances
-                        if instance['State']['Name'] == 'terminated':
-                            continue
-
-                        metadata_options = instance.get('MetadataOptions', {})
-                        # AWS defaults the hop limit to 1 when it is not set
-                        hop_limit = metadata_options.get('HttpPutResponseHopLimit', 1)
-                        imds_enabled = metadata_options.get('HttpEndpoint', 'enabled') == 'enabled'
-
-                        results.append(DenyEc2ImdsHopLimit(
-                            region=region,
-                            instance_id=instance['InstanceId'],
-                            hop_limit=hop_limit,
-                            imds_enabled=imds_enabled
-                        ))
-
-        except ClientError as e:
-            raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
+        for instance in get_instances(session, region):
+            results.append(DenyEc2ImdsHopLimit(
+                region=region,
+                instance_id=instance.instance_id,
+                hop_limit=instance.hop_limit,
+                imds_enabled=instance.http_endpoint == 'enabled'
+            ))
 
     return results
