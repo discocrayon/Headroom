@@ -435,32 +435,37 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
         if not instances:
             continue
 
-        regional_ec2: EC2Client = session.client('ec2', region_name=region)
-        logger.debug(f"Analyzing EC2 AMI owners in {region}")
-        ami_cache: Dict[str, _ResolvedAmi] = {}
+        try:
+            regional_ec2: EC2Client = session.client('ec2', region_name=region)
+            logger.debug(f"Analyzing EC2 AMI owners in {region}")
+            ami_cache: Dict[str, _ResolvedAmi] = {}
 
-        for instance in instances:
-            if not instance.image_id:
-                logger.warning(
-                    f"Instance {instance.instance_id} in {region} has no AMI ID, skipping"
-                )
-                continue
+            for instance in instances:
+                if not instance.image_id:
+                    logger.warning(
+                        f"Instance {instance.instance_id} in {region} has no AMI ID, skipping"
+                    )
+                    continue
 
-            if instance.image_id not in ami_cache:
-                ami_cache[instance.image_id] = _resolve_ami_owner(
-                    regional_ec2, instance.image_id, region, instance.instance_id
-                )
+                if instance.image_id not in ami_cache:
+                    ami_cache[instance.image_id] = _resolve_ami_owner(
+                        regional_ec2, instance.image_id, region, instance.instance_id
+                    )
 
-            resolved = ami_cache[instance.image_id]
+                resolved = ami_cache[instance.image_id]
 
-            results.append(DenyEc2AmiOwner(
-                instance_id=instance.instance_id,
-                region=region,
-                ami_id=instance.image_id,
-                ami_owner=resolved.owner,
-                ami_name=resolved.name,
-                owner_unknown_reason=resolved.unknown_reason
-            ))
+                results.append(DenyEc2AmiOwner(
+                    instance_id=instance.instance_id,
+                    region=region,
+                    ami_id=instance.image_id,
+                    ami_owner=resolved.owner,
+                    ami_name=resolved.name,
+                    owner_unknown_reason=resolved.unknown_reason
+                ))
+        except ClientError as e:
+            raise RuntimeError(
+                f"Failed to analyze EC2 AMI owners in region {region}: {e}"
+            )
 
     logger.info(
         f"Analyzed {len(results)} EC2 instances across {len(regions)} regions"
