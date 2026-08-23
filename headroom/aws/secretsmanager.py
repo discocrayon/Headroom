@@ -203,7 +203,7 @@ def analyze_secrets_manager_policies(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing Secrets Manager in {region}")
+        logger.debug(f"Analyzing Secrets Manager in {region}")
         regional_results = _analyze_secrets_in_region(session, region, org_account_ids)
         results.extend(regional_results)
 

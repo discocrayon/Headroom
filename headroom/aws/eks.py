@@ -61,7 +61,7 @@ def get_eks_cluster_tag_analysis(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing EKS clusters in {region}")
+        logger.debug(f"Analyzing EKS clusters in {region}")
         regional_results = _analyze_eks_in_region(session, region)
         all_results.extend(regional_results)
 

@@ -277,7 +277,7 @@ def analyze_kms_key_policies(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing KMS keys in {region}")
+        logger.debug(f"Analyzing KMS keys in {region}")
         kms_client: KMSClient = session.client("kms", region_name=region)
 
         try:

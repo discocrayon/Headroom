@@ -279,7 +279,7 @@ def analyze_ecr_repository_policies(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing ECR repositories in {region}")
+        logger.debug(f"Analyzing ECR repositories in {region}")
         ecr_client: ECRClient = session.client("ecr", region_name=region)
 
         try:
