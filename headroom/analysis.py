@@ -580,9 +580,18 @@ def _verify_no_duplicate_account_names(
     producing either corrupt JSON or a valid file holding two accounts' results
     spliced together -- which then feeds policy generation.
 
-    The message names the duplicated name and how many accounts carry it, never
-    the account IDs. Printing those would defeat the setting that created the
-    collision.
+    Names are compared case-insensitively. Development happens on macOS,
+    where APFS is case-insensitive by default, so accounts named `Prod` and
+    `prod` resolve to the same file on the filesystem this tool actually runs
+    on even though the two strings differ. This can abort a run on a
+    case-sensitive filesystem where `Prod` and `prod` would not actually have
+    collided; that is a deliberate trade-off -- a loud abort resolved by
+    renaming beats two accounts' JSON interleaved into one file that then
+    feeds policy generation.
+
+    The message names the colliding spellings and how many accounts carry
+    them, never the account IDs. Printing those would defeat the setting that
+    created the collision.
 
     Args:
         config: Headroom configuration
@@ -590,23 +599,26 @@ def _verify_no_duplicate_account_names(
 
     Raises:
         RuntimeError: If `exclude_account_ids` is set and two accounts share a
-            name
+            name, comparing names case-insensitively
     """
     if not config.exclude_account_ids:
         return
 
-    counts: Dict[str, int] = {}
+    names_by_lower: Dict[str, List[str]] = {}
     for account_info in account_infos:
-        counts[account_info.name] = counts.get(account_info.name, 0) + 1
+        names_by_lower.setdefault(account_info.name.lower(), []).append(account_info.name)
 
-    collisions = sorted(name for name, count in counts.items() if count > 1)
+    collisions = sorted(lower for lower, names in names_by_lower.items() if len(names) > 1)
 
     if not collisions:
         return
 
-    breakdown = ", ".join(f"{name} ({counts[name]} accounts)" for name in collisions)
+    breakdown = ", ".join(
+        f"{', '.join(sorted(set(names_by_lower[lower])))} ({len(names_by_lower[lower])} accounts)"
+        for lower in collisions
+    )
     raise RuntimeError(
-        f"exclude_account_ids is set, so result files are named by account name "
+        "exclude_account_ids is set, so result files are named by account name "
         f"alone, but these names are not unique: {breakdown}. Every such account "
         "would write to the same file, and because accounts are analyzed "
         "concurrently the file would hold interleaved output from all of them. "
