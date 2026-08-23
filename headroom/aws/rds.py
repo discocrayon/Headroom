@@ -65,7 +65,7 @@ def get_rds_unencrypted_analysis(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing RDS resources in {region}")
+        logger.debug(f"Analyzing RDS resources in {region}")
         regional_results = _analyze_rds_in_region(session, region)
         all_results.extend(regional_results)
 

@@ -7,6 +7,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 
 from .config import HeadroomConfig
+from .log_context import configure_logging
 from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session
 from .parse_results import analyze_scp_compliance, print_policy_recommendations
@@ -166,6 +167,7 @@ def handle_rcp_workflow(final_config: HeadroomConfig, org_hierarchy: Organizatio
 
 def main() -> None:
     """Main entry point for Headroom security analysis."""
+    configure_logging()
     cli_args = parse_cli_args()
     yaml_config = load_yaml_config(cli_args.config)
 

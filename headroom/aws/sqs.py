@@ -373,7 +373,7 @@ def analyze_sqs_queue_policies(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing SQS queues in {region}")
+        logger.debug(f"Analyzing SQS queues in {region}")
         regional_results = _analyze_queues_in_region(session, region, org_account_ids)
         all_results.extend(regional_results)
 

@@ -69,7 +69,7 @@ def get_deny_lambda_auth_type_none_analysis(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing Lambda functions in {region}")
+        logger.debug(f"Analyzing Lambda functions in {region}")
         regional_results = _analyze_lambda_in_region(session, region)
         all_results.extend(regional_results)
 
