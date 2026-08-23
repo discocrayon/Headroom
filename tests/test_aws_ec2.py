@@ -887,20 +887,15 @@ class TestGetEc2AmiOwnerAnalysis:
 
     def test_get_ec2_ami_owner_analysis_ami_access_denied(self) -> None:
         """
-        A describe_images failure propagates as ClientError, not RuntimeError.
+        A describe_images failure surfaces as RuntimeError naming the region.
 
-        Before the shared collector, get_ec2_ami_owner_analysis wrapped its
-        whole body -- describe_instances and describe_images alike -- in one
-        try/except ClientError that raised a "Failed to analyze EC2 AMI
-        owners" RuntimeError. describe_instances failures now raise from
-        inside _describe_instances instead (see
-        test_get_ec2_ami_owner_analysis_regional_client_error), and nothing
-        in this function wraps describe_images any more, so
-        _resolve_ami_owner's documented ClientError (see its docstring)
-        reaches the caller unwrapped. The run still aborts either way; what
-        changes is the exception type and that the region name is no longer
-        folded into the message. Confirmed acceptable for this task -- see
-        task-2-report.md.
+        get_ec2_ami_owner_analysis keeps its own try/except ClientError around
+        AMI resolution -- deliberately, unlike the other three EC2 checks --
+        because it is the only one of the four that still makes an AWS call
+        of its own (describe_images, via _resolve_ami_owner) after collecting
+        instances. describe_instances failures are the shared collector's
+        concern (see test_get_ec2_ami_owner_analysis_regional_client_error);
+        this test pins the one this function still owns.
         """
         mock_session = MagicMock()
 
@@ -938,10 +933,8 @@ class TestGetEc2AmiOwnerAnalysis:
 
         mock_session.client.side_effect = client_side_effect
 
-        with pytest.raises(ClientError) as exc_info:
+        with pytest.raises(RuntimeError, match="Failed to analyze EC2 AMI owners in region us-east-1"):
             get_ec2_ami_owner_analysis(mock_session)
-
-        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
     def test_get_ec2_ami_owner_analysis_ami_caching(self) -> None:
         """Test that AMI information is cached to reduce API calls."""
