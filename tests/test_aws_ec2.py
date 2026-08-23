@@ -166,6 +166,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_1 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
                             "i-1234567890abcdef0",
@@ -185,6 +186,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_2 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
                             "i-abcdef1234567890",
@@ -199,6 +201,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_fallback = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
                             "i-fallback123456789",
@@ -296,6 +299,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-running", state="running"),
                         self.create_mock_instance("i-terminated", state="terminated"),
@@ -344,7 +348,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_paginator_1 = MagicMock()
         instances_page_1 = {
             "Reservations": [
-                {"Instances": [self.create_mock_instance("i-success")]}
+                {"OwnerId": "111111111111", "Instances": [self.create_mock_instance("i-success")]}
             ]
         }
         mock_paginator_1.paginate.return_value = [instances_page_1]
@@ -399,6 +403,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
                             "i-true-lower",
@@ -500,6 +505,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_1 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-main")
                     ]
@@ -511,6 +517,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_fallback = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-fallback")
                     ]
@@ -1569,7 +1576,7 @@ class TestGetEc2ImdsHopLimitAnalysis:
         mock_regional_ec2 = MagicMock()
         mock_paginator = MagicMock()
         mock_paginator.paginate.return_value = [
-            {"Reservations": [{"Instances": instances}]}
+            {"Reservations": [{"OwnerId": "111111111111", "Instances": instances}]}
         ]
         mock_regional_ec2.get_paginator.return_value = mock_paginator
 

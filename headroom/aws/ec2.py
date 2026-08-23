@@ -91,7 +91,7 @@ class Ec2Instance:
     The subset of a describe_instances entry that Headroom's EC2 checks read.
 
     Four checks previously swept every region independently for the same data.
-    They now share one collection pass, and this is its output: the nine values
+    They now share one collection pass, and this is its output: the eight values
     those checks actually consume. Everything else in the API response --
     BlockDeviceMappings, NetworkInterfaces, SecurityGroups, Placement -- is
     dropped, because the memo holds this for an account's whole lifetime and
@@ -177,7 +177,7 @@ def _describe_instances(session: Session, region: str) -> List[Ec2Instance]:
     try:
         for page in paginate(regional_ec2, 'describe_instances'):
             for reservation in page['Reservations']:
-                owner_id = reservation.get('OwnerId', '')
+                owner_id = reservation['OwnerId']
                 for instance in reservation['Instances']:
                     if instance['State']['Name'] == 'terminated':
                         continue
@@ -237,8 +237,9 @@ def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
     """
     Analyze EC2 instances for IMDS v1 configuration across all regions.
 
-    This function calls describe_instances in a paginated, performant way
-    and returns a list of DenyEc2ImdsV1 with the relevant attributes filled in.
+    Instances come from get_instances, which reads each region once per
+    session and has already dropped terminated instances. This returns a
+    list of DenyEc2ImdsV1 with the relevant attributes filled in.
 
     Args:
         session: boto3.Session with appropriate permissions
@@ -406,7 +407,8 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
     Algorithm:
     1. Get all enabled regions via get_all_regions()
     2. For each region:
-       a. Describe all EC2 instances via paginator
+       a. Get the region's instances via get_instances(), which reads each
+          region once per session and has already dropped terminated ones
        b. For each instance, extract AMI ID
        c. Resolve the AMI's owner via _resolve_ami_owner(), which records why
           the owner is unknown when the AMI cannot be resolved
@@ -480,10 +482,10 @@ def get_ec2_public_ip_analysis(session: Session) -> List[DenyEc2PublicIp]:
     Algorithm:
     1. Get all enabled regions via get_all_regions()
     2. For each region:
-       a. Analyze EC2 instances via describe_instances() (paginated)
+       a. Get the region's instances via get_instances(), which reads each
+          region once per session and has already dropped terminated ones
        b. Check for public IP address in network interfaces
-       c. Skip terminated instances
-       d. Create DenyEc2PublicIp results
+       c. Create DenyEc2PublicIp results
     3. Return all results across all regions
 
     Args:
