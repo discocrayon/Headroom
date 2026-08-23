@@ -1,3 +1,4 @@
+import re
 import pytest
 from typing import Any, Dict, List, Tuple, cast, get_args
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,7 @@ from headroom.analysis import (
     perform_analysis,
     get_subaccount_information,
     _build_account_info_from_account_dict,
+    _verify_no_duplicate_account_names,
     ACTIVE_ACCOUNT_STATE,
     INACTIVE_ACCOUNT_STATES,
     AccountInfo
@@ -748,3 +750,84 @@ class TestSkipAccountIds:
             )
 
         assert "888888888888, 999999999999" in str(exc_info.value)
+
+
+class TestDuplicateAccountNameGuard:
+    """
+    Test that duplicate account names abort before any result file is written.
+
+    With exclude_account_ids set, the result filename is the account name
+    alone, so two accounts sharing a name resolve to one path. Serially that
+    is last-writer-wins; with a worker per account it interleaves two
+    accounts' JSON into one file, which then feeds policy generation.
+    """
+
+    @staticmethod
+    def _config(exclude_account_ids: bool) -> HeadroomConfig:
+        """Build a config with the given redaction setting."""
+        return HeadroomConfig(
+            management_account_id="222222222222",
+            security_analysis_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Env", name="NameTag", owner="OwnerTag"
+            ),
+            exclude_account_ids=exclude_account_ids,
+        )
+
+    @staticmethod
+    def _accounts(*names: str) -> List[AccountInfo]:
+        """Build one AccountInfo per name, each with a distinct account ID."""
+        return [
+            AccountInfo(
+                account_id=str(index + 1) * 12,
+                environment="prod",
+                name=name,
+                owner="team",
+            )
+            for index, name in enumerate(names)
+        ]
+
+    def test_duplicate_names_abort_when_ids_are_excluded(self) -> None:
+        """Two accounts sharing a name would write the same file, so abort."""
+        with pytest.raises(RuntimeError, match="shared-name"):
+            _verify_no_duplicate_account_names(
+                self._config(exclude_account_ids=True),
+                self._accounts("shared-name", "unique", "shared-name"),
+            )
+
+    def test_the_abort_message_names_no_account_id(self) -> None:
+        """
+        The message names the duplicated name and the count, never the IDs.
+
+        Printing the IDs would defeat exclude_account_ids, which is the
+        setting that created the collision in the first place.
+        """
+        with pytest.raises(RuntimeError) as excinfo:
+            _verify_no_duplicate_account_names(
+                self._config(exclude_account_ids=True),
+                self._accounts("shared-name", "shared-name"),
+            )
+
+        message = str(excinfo.value)
+        assert "shared-name" in message
+        assert "2" in message
+        assert not re.search(r"\d{12}", message)
+
+    def test_duplicate_names_are_allowed_when_ids_are_included(self) -> None:
+        """
+        With IDs in the filename, two accounts named alike do not collide.
+
+        format_account_identifier appends the account ID, which is unique.
+        """
+        _verify_no_duplicate_account_names(
+            self._config(exclude_account_ids=False),
+            self._accounts("shared-name", "shared-name"),
+        )
+
+    def test_unique_names_pass(self) -> None:
+        """Distinct names never collide, whatever the redaction setting."""
+        _verify_no_duplicate_account_names(
+            self._config(exclude_account_ids=True),
+            self._accounts("one", "two", "three"),
+        )
