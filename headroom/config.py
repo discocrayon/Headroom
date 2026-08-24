@@ -14,8 +14,8 @@ DEFAULT_ACCOUNT_WORKERS = 16
 
 # Upper bound on max_account_workers. At 32 workers resident memory passes
 # 1.5 GB; wanting more is a signal to revisit the design rather than raise this.
-# The shared session's STS connection pool is sized to this value, so the pool
-# can serve every worker whatever the operator configures.
+# sessions.py also sizes the STS client's connection pool to this value, as a
+# ceiling that currently binds nothing -- see the comment there.
 MAX_ACCOUNT_WORKERS = 32
 
 

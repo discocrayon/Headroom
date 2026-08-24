@@ -27,8 +27,13 @@ RETRY_MAX_ATTEMPTS = 5
 # builds a fresh botocore session each time -- so this is the only site at risk.
 _CLIENT_CONSTRUCTION_LOCK = Lock()
 
-# The shared session's STS client serves every worker at once, so its pool needs
-# one connection per worker. botocore defaults to 10.
+# Ceiling on the STS client's connection pool, imported rather than redeclared.
+# It binds nothing today: assume_role builds a fresh client on every call and
+# boto3 caches none, so each client gets its own PoolManager and serves exactly
+# one AssumeRole request -- well inside botocore's default of 10. There is no
+# shared STS pool to exhaust. Kept because it costs nothing and becomes
+# load-bearing the day that client is built once per run and shared, which is
+# also the change that would save one TLS handshake per account.
 _STS_CLIENT_CONFIG = Config(max_pool_connections=MAX_ACCOUNT_WORKERS)
 
 
