@@ -236,8 +236,11 @@ The filter fixes all 42 sites without editing any of them.
 
 ### Mechanism
 
-Two memos, both living in `headroom/aws/helpers.py` alongside `get_all_regions` and
-`paginate`, both keyed on the boto3 `Session`:
+Two memos, both keyed on the boto3 `Session`. The region memo lives in
+`headroom/aws/helpers.py` alongside `get_all_regions` and `paginate`. The instance memo
+lives in `headroom/aws/ec2.py` instead: its value type is `Ec2Instance`, which is defined
+there, and `ec2.py` already imports `paginate` from `helpers.py`, so putting the memo in
+`helpers.py` would need `Ec2Instance` back the other way and close an import cycle.
 
 ```python
 _MEMO: WeakKeyDictionary[Session, dict] = WeakKeyDictionary()
@@ -258,10 +261,15 @@ checks, which is the framework change this design avoids.
 
 ### The two memos
 
-| Memo | Key | Removes per account |
+| Memo | Type | Removes per account |
 | --- | --- | --- |
-| Region list | session | 10 of 11 `describe_regions` |
-| Instances | (session, region) | 51 of 68 `describe_instances`, 34 of 187 client builds and their TLS handshakes |
+| Region list | `WeakKeyDictionary[Session, list[str]]` | 10 of 11 `describe_regions` |
+| Instances | `WeakKeyDictionary[Session, Dict[str, List[Ec2Instance]]]` | 51 of 68 `describe_instances`, 34 of 187 client builds and their TLS handshakes |
+
+The instance memo nests the region inside a per-session dictionary rather than keying on a
+`(session, region)` tuple. A tuple key is a strong reference to the session, which defeats
+the `WeakKeyDictionary`: no entry would ever be collected, and a 300-account run would
+retain every account's session and instance list to the end.
 
 ### Why there is no client memo
 
