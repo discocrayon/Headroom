@@ -800,6 +800,9 @@ class TestDuplicateAccountNameGuard:
     alone, so two accounts sharing a name resolve to one path. Serially that
     is last-writer-wins; with a worker per account it interleaves two
     accounts' JSON into one file, which then feeds policy generation.
+
+    "Sharing a name" is what the filesystem thinks, not what `==` thinks: the
+    guard folds case and Unicode normal form, because APFS collapses both.
     """
 
     @staticmethod
@@ -890,6 +893,30 @@ class TestDuplicateAccountNameGuard:
         message = str(excinfo.value)
         assert "Prod" in message
         assert "prod" in message
+
+    def test_a_unicode_normalization_collision_is_caught(self) -> None:
+        """
+        Names collide across Unicode normal forms as well as across case.
+
+        APFS folds two axes, not one. `caf\u00e9` composed (NFC, a single
+        U+00E9) and decomposed (NFD, `e` followed by the combining acute
+        U+0301) are different strings that resolve to the same file, exactly
+        as `Prod` and `prod` do. Folding case alone lets this pair through and
+        interleaves two accounts' JSON into one file -- the outcome the guard
+        exists to prevent, reached through the same filesystem property that
+        justifies the case folding.
+        """
+        composed = "caf\u00e9"
+        decomposed = "cafe\u0301"
+        assert composed != decomposed
+
+        with pytest.raises(RuntimeError) as excinfo:
+            _verify_no_duplicate_account_names(
+                self._config(exclude_account_ids=True),
+                self._accounts(composed, decomposed),
+            )
+
+        assert "(2 accounts)" in str(excinfo.value)
 
 
 class TestRunChecksPool:
