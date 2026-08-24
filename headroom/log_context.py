@@ -55,13 +55,20 @@ class AccountContextFilter(logging.Filter):
         return True
 
 
+_ACCOUNT_FILTER = AccountContextFilter()
+
+
 def configure_logging() -> None:
     """
     Install the account filter and format on the root handler.
 
-    Called once from `main`. `logging.basicConfig` has already run at import
-    time in `analysis.py`, so the root handler exists by now.
+    `main` calls this once, but nothing about the function requires that.
+    Repeat calls are harmless: `_ACCOUNT_FILTER` is a module-level singleton,
+    and `Handler.addFilter` dedups by identity, so passing the same instance
+    on a later call is a no-op rather than a second filter. `logging.basicConfig`
+    has already run at import time in `analysis.py`, so the root handler
+    exists by now.
     """
     for handler in logging.getLogger().handlers:
-        handler.addFilter(AccountContextFilter())
+        handler.addFilter(_ACCOUNT_FILTER)
         handler.setFormatter(logging.Formatter(LOG_FORMAT))
