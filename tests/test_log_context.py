@@ -10,26 +10,26 @@ from typing import List
 from headroom.log_context import NO_ACCOUNT, AccountContextFilter, configure_logging, set_account
 
 
+def _bare_record() -> logging.LogRecord:
+    """Build a log record with no account attribute."""
+    return logging.LogRecord(
+        name="headroom.aws.sqs",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Analyzing SQS queues in eu-west-1",
+        args=(),
+        exc_info=None,
+    )
+
+
 class TestAccountContextFilter:
     """Test that log records carry the account of the emitting thread."""
-
-    @staticmethod
-    def _record() -> logging.LogRecord:
-        """Build a bare log record with no account attribute."""
-        return logging.LogRecord(
-            name="headroom.aws.sqs",
-            level=logging.INFO,
-            pathname=__file__,
-            lineno=1,
-            msg="Analyzing SQS queues in eu-west-1",
-            args=(),
-            exc_info=None,
-        )
 
     def test_record_carries_the_account_this_thread_set(self) -> None:
         """The filter stamps the record with this thread's account."""
         set_account("payments_111111111111")
-        record = self._record()
+        record = _bare_record()
 
         assert AccountContextFilter().filter(record) is True
         assert record.account == "payments_111111111111"  # type: ignore[attr-defined]
@@ -46,7 +46,7 @@ class TestAccountContextFilter:
         captured: List[str] = []
 
         def emit_without_context() -> None:
-            record = self._record()
+            record = _bare_record()
             AccountContextFilter().filter(record)
             captured.append(record.account)  # type: ignore[attr-defined]
 
@@ -67,7 +67,7 @@ class TestAccountContextFilter:
         def worker(identifier: str) -> None:
             set_account(identifier)
             ready.wait()
-            record = self._record()
+            record = _bare_record()
             AccountContextFilter().filter(record)
             seen[identifier] = record.account  # type: ignore[attr-defined]
 
@@ -87,7 +87,55 @@ class TestAccountContextFilter:
 
 
 class TestConfigureLogging:
-    """Test that configure_logging is safe to call more than once."""
+    """Test what configure_logging installs, and that repeating it is safe."""
+
+    def test_an_empty_root_gets_a_handler_rather_than_nothing(self) -> None:
+        """
+        With no root handler yet, configure_logging installs one.
+
+        Iterating an empty handler list installs nothing, and says nothing
+        about it. The `[account]` field is then gone for the rest of the
+        process: whichever `logging.basicConfig` runs next fits the root
+        logger with the default format and no filter, and every later record
+        formats without complaint and without the account.
+
+        The only thing keeping that list non-empty today is `analysis.py`
+        calling `basicConfig` at import time together with `main.py` importing
+        it at module scope -- an invariant nothing states or enforces, and one
+        that deferring the heavy `analysis` import to cut startup cost would
+        quietly break.
+
+        The other test in this class pre-installs a NullHandler, which is
+        exactly what keeps it off this path.
+
+        The root logger's handler list is process-global and shared with
+        pytest, so this puts it back.
+        """
+        root_logger = logging.getLogger()
+        preexisting_handlers = list(root_logger.handlers)
+        root_logger.handlers = []
+        set_account("payments_111111111111")
+
+        try:
+            configure_logging()
+
+            installed = list(root_logger.handlers)
+            assert installed
+
+            for handler in installed:
+                assert any(
+                    isinstance(installed_filter, AccountContextFilter)
+                    for installed_filter in handler.filters
+                )
+                assert handler.formatter is not None
+
+                record = _bare_record()
+                assert handler.filter(record)
+                assert handler.formatter.format(record) == (
+                    "INFO:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1"
+                )
+        finally:
+            root_logger.handlers = preexisting_handlers
 
     def test_repeat_calls_leave_one_account_filter_on_the_handler(self) -> None:
         """
