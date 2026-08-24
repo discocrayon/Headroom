@@ -7,6 +7,7 @@ Tests for get_relevant_subaccounts, get_headroom_session, and run_checks functio
 import pytest
 import tempfile
 import shutil
+import threading
 from boto3.session import Session
 from unittest.mock import MagicMock, patch
 from typing import List, Generator
@@ -247,8 +248,9 @@ class TestRunChecks:
             mock_scp_execute.assert_any_call(mock_headroom_session1)
             mock_scp_execute.assert_any_call(mock_headroom_session2)
 
-            # Verify logging
-            assert mock_logger.info.call_count == 4
+            # Verify logging: the pool size line, then two lines per account
+            assert mock_logger.info.call_count == 5
+            mock_logger.info.assert_any_call("Analyzing 2 account(s) with 16 worker(s)")
             mock_logger.info.assert_any_call("Running checks for account: prod-account_111111111111")
             mock_logger.info.assert_any_call("Checks completed for account: prod-account_111111111111")
 
@@ -330,10 +332,17 @@ class TestRunChecks:
         account with zero violations. Swallowing the error could green-light a
         policy that breaks the account that was never actually examined.
 
-        This pins both halves of the contract that
-        test_run_checks_fails_fast_on_session_failure cannot: the concrete error
-        type `assume_role` raises propagates uncaught, and no later account is
-        attempted once one has failed.
+        This pins what test_run_checks_fails_fast_on_session_failure cannot: the
+        concrete error type `assume_role` raises propagates uncaught, carrying
+        its error code, rather than being wrapped or replaced.
+
+        It deliberately does not assert how many accounts were attempted.
+        Accounts run in a worker pool, so every account the pool has already
+        started is in flight when the first one fails, and how many that is
+        depends on thread scheduling. What stops the rest is pinned
+        deterministically elsewhere:
+        TestRunChecksPool.test_a_worker_returns_immediately_when_abort_is_set
+        and test_no_further_checks_run_once_abort_is_set in tests/test_analysis.py.
         """
         mock_security_session = MagicMock()
         access_denied = ClientError(
@@ -350,9 +359,8 @@ class TestRunChecks:
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
-        # Fail fast: the first account raised, so the second was never attempted.
-        assert mock_assume_role.call_count == 1
-        assert mock_assume_role.call_args.args[0] == "arn:aws:iam::111111111111:role/Headroom"
+        # The error came from assuming the Headroom role, not from somewhere else.
+        assert mock_assume_role.call_args.args[0].endswith(":role/Headroom")
 
     def test_run_checks_skip_existing_results(
         self,
@@ -383,61 +391,15 @@ class TestRunChecks:
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
-            # Mock that results exist for first account but not second
-            # Call pattern now (with 9 SCP checks and 6 RCP checks):
-            # Account 1: all_scp_results_exist (9 calls for 9 SCP checks) → all True, all_rcp_results_exist (6 calls) → True, skip
-            # Account 2: all_scp_results_exist (9 calls) → any False, all_rcp_results_exist (6 calls) → False
-            #   Then run_scp_checks calls results_exist per check (9 calls) → False, runs checks
-            #   Then run_rcp_checks calls results_exist per check (6 calls) → False, runs checks
-            # Total: 15 (Account 1) + 15 (Account 2 initial) + 9 (Account 2 SCP) + 6 (Account 2 RCP) = 45 calls
-            mock_check_results.return_value = True  # Default
-            mock_check_results.side_effect = [
-                True,   # Account 1 - SCP check 1 exists
-                True,   # Account 1 - SCP check 2 exists
-                True,   # Account 1 - SCP check 3 exists
-                True,   # Account 1 - SCP check 4 exists
-                True,   # Account 1 - SCP check 5 exists
-                True,   # Account 1 - SCP check 6 exists
-                True,   # Account 1 - SCP check 7 exists
-                True,   # Account 1 - SCP check 8 exists (Lambda)
-                True,   # Account 1 - SCP check 9 exists (IMDS hop limit)
-                True,   # Account 1 - RCP check 1 exists
-                True,   # Account 1 - RCP check 2 exists
-                True,   # Account 1 - RCP check 3 exists
-                True,   # Account 1 - RCP check 4 exists
-                True,   # Account 1 - RCP check 5 exists (Secrets Manager)
-                True,   # Account 1 - RCP check 6 exists (SQS)
-                False,  # Account 2 - SCP check 1 exists check
-                False,  # Account 2 - SCP check 2 exists check
-                False,  # Account 2 - SCP check 3 exists check
-                False,  # Account 2 - SCP check 4 exists check
-                False,  # Account 2 - SCP check 5 exists check
-                False,  # Account 2 - SCP check 6 exists check
-                False,  # Account 2 - SCP check 7 exists check
-                False,  # Account 2 - SCP check 8 exists check (Lambda)
-                False,  # Account 2 - SCP check 9 exists check (IMDS hop limit)
-                False,  # Account 2 - RCP check 1 exists check
-                False,  # Account 2 - RCP check 2 exists check
-                False,  # Account 2 - RCP check 3 exists check
-                False,  # Account 2 - RCP check 4 exists check
-                False,  # Account 2 - RCP check 5 exists check (Secrets Manager)
-                False,  # Account 2 - RCP check 6 exists check (SQS)
-                False,  # Account 2 - run_scp_checks internal check for check 1
-                False,  # Account 2 - run_scp_checks internal check for check 2
-                False,  # Account 2 - run_scp_checks internal check for check 3
-                False,  # Account 2 - run_scp_checks internal check for check 4
-                False,  # Account 2 - run_scp_checks internal check for check 5
-                False,  # Account 2 - run_scp_checks internal check for check 6
-                False,  # Account 2 - run_scp_checks internal check for check 7
-                False,  # Account 2 - run_scp_checks internal check for check 8 (Lambda)
-                False,  # Account 2 - run_scp_checks internal check for check 9 (IMDS hop limit)
-                False,  # Account 2 - run_rcp_checks internal check for check 1
-                False,  # Account 2 - run_rcp_checks internal check for check 2
-                False,  # Account 2 - run_rcp_checks internal check for check 3
-                False,  # Account 2 - run_rcp_checks internal check for check 4
-                False,  # Account 2 - run_rcp_checks internal check for check 5 (Secrets Manager)
-                False   # Account 2 - run_rcp_checks internal check for check 6 (SQS)
-            ]
+            # Results exist for the first account and for no other. Keyed on the
+            # account rather than on call order: accounts are analyzed
+            # concurrently, so the order `results_exist` is reached in is not
+            # defined, and the up-front completeness filter regroups the calls
+            # even at one worker.
+            def results_exist_for_first_account(**kwargs: object) -> bool:
+                return kwargs["account_name"] == "prod-account"
+
+            mock_check_results.side_effect = results_exist_for_first_account
 
             mock_headroom_session = MagicMock()
             mock_get_session.return_value = mock_headroom_session
@@ -530,7 +492,9 @@ class TestRunChecks:
             mock_results_exist.side_effect = [True, False]
 
             org_account_ids = {"111111111111"}
-            run_checks_for_type("scps", mock_session, account_info, mock_config, org_account_ids)
+            run_checks_for_type(
+                "scps", mock_session, account_info, mock_config, org_account_ids, threading.Event()
+            )
 
             # Verify first check was skipped (not instantiated or executed)
             mock_check1.assert_not_called()

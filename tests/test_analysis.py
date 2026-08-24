@@ -1,4 +1,6 @@
 import re
+import threading
+
 import pytest
 from typing import Any, Dict, List, Tuple, cast, get_args
 from unittest.mock import MagicMock, patch
@@ -11,7 +13,10 @@ from headroom.analysis import (
     get_security_analysis_session,
     perform_analysis,
     get_subaccount_information,
+    run_checks,
+    run_checks_for_type,
     _build_account_info_from_account_dict,
+    _run_checks_for_account,
     _verify_no_duplicate_account_names,
     ACTIVE_ACCOUNT_STATE,
     INACTIVE_ACCOUNT_STATES,
@@ -882,3 +887,134 @@ class TestDuplicateAccountNameGuard:
         message = str(excinfo.value)
         assert "Prod" in message
         assert "prod" in message
+
+
+class TestRunChecksPool:
+    """Test the worker pool and its cooperative abort."""
+
+    @staticmethod
+    def _accounts(count: int) -> List[AccountInfo]:
+        """Build `count` accounts with distinct names and IDs."""
+        return [
+            AccountInfo(
+                account_id=str(index + 1) * 12,
+                environment="prod",
+                name=f"account-{index}",
+                owner="team",
+            )
+            for index in range(count)
+        ]
+
+    @staticmethod
+    def _config(max_account_workers: int) -> HeadroomConfig:
+        """Build a config with the given pool size."""
+        return HeadroomConfig(
+            management_account_id="222222222222",
+            security_analysis_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Env", name="NameTag", owner="OwnerTag"
+            ),
+            max_account_workers=max_account_workers,
+        )
+
+    def test_every_pending_account_is_analyzed(self) -> None:
+        """All accounts without results reach the worker."""
+        seen: List[str] = []
+        lock = threading.Lock()
+
+        def record(account_info: AccountInfo, *args: object) -> None:
+            with lock:
+                seen.append(account_info.account_id)
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=record),
+        ):
+            run_checks(MagicMock(), self._accounts(5), self._config(4), set())
+
+        assert sorted(seen) == sorted(a.account_id for a in self._accounts(5))
+
+    def test_completed_accounts_never_reach_the_pool(self) -> None:
+        """
+        Accounts with all results present are filtered serially, up front.
+
+        The filter is local filesystem I/O, so doing it before the pool starts
+        keeps the "N accounts to scan" log line accurate.
+        """
+        worker = MagicMock()
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=True),
+            patch("headroom.analysis._run_checks_for_account", worker),
+        ):
+            run_checks(MagicMock(), self._accounts(3), self._config(4), set())
+
+        worker.assert_not_called()
+
+    def test_accounts_are_analyzed_concurrently(self) -> None:
+        """
+        With four workers, four accounts are in flight at once.
+
+        The barrier is the assertion: if fewer than four run simultaneously it
+        times out and the test fails, which is how this pins parallelism
+        rather than assuming it.
+        """
+        barrier = threading.Barrier(4, timeout=5)
+
+        def wait_for_the_others(account_info: AccountInfo, *args: object) -> None:
+            barrier.wait()
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=wait_for_the_others),
+        ):
+            run_checks(MagicMock(), self._accounts(4), self._config(4), set())
+
+    def test_a_worker_failure_propagates_unchanged(self) -> None:
+        """
+        The first failure aborts the run rather than being logged and skipped.
+
+        A partial run is more dangerous than no run: this output drives policy
+        deployment, and an account skipped for a transient error looks exactly
+        like an account with zero violations.
+        """
+        failure = RuntimeError("role assumption failed")
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=failure),
+            pytest.raises(RuntimeError, match="role assumption failed"),
+        ):
+            run_checks(MagicMock(), self._accounts(3), self._config(1), set())
+
+    def test_a_worker_returns_immediately_when_abort_is_set(self) -> None:
+        """
+        An in-flight worker bails at its next checkpoint.
+
+        Python cannot kill a running thread, so cancelling queued futures is
+        not enough: without this check, shutdown would block until every
+        in-flight account finished all its remaining checks.
+        """
+        abort = threading.Event()
+        abort.set()
+
+        with patch("headroom.analysis.get_headroom_session") as mock_session:
+            _run_checks_for_account(
+                self._accounts(1)[0], MagicMock(), self._config(1), set(), abort
+            )
+
+        mock_session.assert_not_called()
+
+    def test_no_further_checks_run_once_abort_is_set(self) -> None:
+        """`run_checks_for_type` stops before starting the next check."""
+        abort = threading.Event()
+        abort.set()
+
+        with patch("headroom.analysis.get_all_check_classes") as mock_classes:
+            mock_classes.return_value = [MagicMock()]
+            run_checks_for_type(
+                "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), abort
+            )
+
+        mock_classes.return_value[0].assert_not_called()

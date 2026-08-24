@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # Centralized defaults for directories
@@ -49,3 +49,11 @@ class HeadroomConfig(BaseModel):
     scps_dir: str = DEFAULT_SCPS_DIR
     # Base directory where Terraform RCP files are generated
     rcps_dir: str = DEFAULT_RCPS_DIR
+    # Accounts analyzed concurrently. 1 runs them serially, on the same code
+    # path, which is the escape hatch for debugging. See SETUP.md for the
+    # memory cost per worker.
+    max_account_workers: int = Field(
+        default=DEFAULT_ACCOUNT_WORKERS,
+        ge=1,
+        le=MAX_ACCOUNT_WORKERS,
+    )
