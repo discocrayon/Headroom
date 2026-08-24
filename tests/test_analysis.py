@@ -1321,6 +1321,72 @@ class TestRunChecksPool:
         assert sum(1 for future in captured if future.cancelled()) >= 1
         assert len(entered) < len(accounts)
 
+    def test_a_failure_to_submit_aborts_the_accounts_already_submitted(self) -> None:
+        """
+        `executor.submit` can raise, and the abort has to cover that window.
+
+        `submit` reaches `_adjust_thread_count`, whose `Thread.start()` raises
+        `RuntimeError("can't start new thread")` once the host is at its
+        thread limit -- likeliest at `max_account_workers=32`, the ceiling an
+        operator raises the setting to. Ctrl-C can land in the submit loop
+        too, but this trigger does not depend on when a signal arrives, which
+        is what makes it testable without a race.
+
+        With the submit loop outside the `try`, nothing raised there reaches
+        the handler: `abort` stays clear and `Executor.__exit__` runs
+        `shutdown(wait=True)`, whose default `cancel_futures=False` puts its
+        sentinel behind every account already submitted. The run the operator
+        just lost finishes in full anyway.
+
+        The futures are appended one at a time rather than comprehended for
+        this test's second assertion: a comprehension binds its target only on
+        completion, so a `submit` that raises halfway leaves the handler an
+        empty list and cancels nothing.
+
+        The first account parks until the abort is set, so one worker is
+        genuinely in flight and the rest are genuinely queued when submission
+        fails. The queue is deliberately far longer than one worker can drain
+        while the main thread is being scheduled to cancel it, for the reason
+        measured in test_the_cancel_loop_cancels_futures_still_in_the_queue.
+        """
+        accounts = self._accounts(200)
+        blocking_account_id = accounts[0].account_id
+        submitted: List[Future[None]] = []
+        aborts: List[threading.Event] = []
+        real_submit = ThreadPoolExecutor.submit
+
+        def submit_until_the_host_runs_out_of_threads(
+            executor: ThreadPoolExecutor, fn: object, *args: object, **kwargs: object
+        ) -> Future[None]:
+            if len(submitted) == 100:
+                raise RuntimeError("can't start new thread")
+            future: Future[None] = real_submit(executor, fn, *args, **kwargs)  # type: ignore[arg-type]
+            submitted.append(future)
+            aborts.append(cast(threading.Event, args[4]))
+            return future
+
+        def park_the_first_account(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            abort: threading.Event,
+        ) -> None:
+            if account_info.account_id == blocking_account_id:
+                abort.wait(timeout=5)
+
+        with (
+            patch.object(ThreadPoolExecutor, "submit", submit_until_the_host_runs_out_of_threads),
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=park_the_first_account),
+            pytest.raises(RuntimeError, match="can.t start new thread"),
+        ):
+            run_checks(MagicMock(), accounts, self._config(1), set())
+
+        assert len(submitted) == 100
+        assert aborts[0].is_set()
+        assert sum(1 for future in submitted if future.cancelled()) >= 1
+
     def test_an_aborted_account_does_not_log_that_its_checks_completed(self) -> None:
         """
         A worker cut short mid-flight says so rather than claiming success.

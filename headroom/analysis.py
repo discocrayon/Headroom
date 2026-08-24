@@ -608,6 +608,16 @@ def run_checks(
     account -- hours of it at one worker. Catching it here makes interrupting
     as prompt as a failure: bounded by the one check each in-flight worker is
     already inside.
+
+    Submission sits inside the same `try`, and `futures` is bound before the
+    `with`, because the submit loop can raise too. `executor.submit` reaches
+    `_adjust_thread_count`, whose `Thread.start()` raises
+    `RuntimeError("can't start new thread")` on a host at its thread limit --
+    likeliest at `max_account_workers=32` -- and a Ctrl-C can land there as
+    readily as in `as_completed`. Submitting outside the `try` would let either
+    escape before `futures` was bound, leaving the abort unset and `__exit__`
+    running every account already submitted to completion: the drain this
+    handler exists to prevent.
     """
     pending = []
     for account_info in relevant_account_infos:
@@ -622,31 +632,41 @@ def run_checks(
     )
 
     abort = threading.Event()
+    futures: List[Future[None]] = []
 
     with ThreadPoolExecutor(max_workers=config.max_account_workers) as executor:
-        futures: List[Future[None]] = [
-            executor.submit(
-                _run_checks_for_account,
-                account_info,
-                security_session,
-                config,
-                org_account_ids,
-                abort,
-            )
-            for account_info in pending
-        ]
-
         try:
+            # Appended one at a time rather than built as a comprehension. A
+            # comprehension binds `futures` only once it finishes, so a
+            # `submit` that raises halfway would discard the partial list and
+            # leave the handler below with nothing to cancel.
+            for account_info in pending:
+                futures.append(
+                    executor.submit(
+                        _run_checks_for_account,
+                        account_info,
+                        security_session,
+                        config,
+                        org_account_ids,
+                        abort,
+                    )
+                )
+
             for future in as_completed(futures):
                 error = future.exception()
-                if error is None:
-                    continue
-
-                abort.set()
-                for outstanding in futures:
-                    outstanding.cancel()
-                raise error
-        except KeyboardInterrupt:
+                if error is not None:
+                    raise error
+        except BaseException:
+            # Broader than Exception deliberately, and not a swallow: it
+            # re-raises unconditionally. Its job is to run the abort on every
+            # abnormal exit, which is why it has to catch the two that are not
+            # Exceptions -- the KeyboardInterrupt of an operator's Ctrl-C and
+            # SystemExit. Narrowing it back to `except Exception` would let
+            # those reach `__exit__` uncaught, and `shutdown(wait=True)` would
+            # then run every queued account before the process gave up.
+            # `abort.set()` comes before the cancel loop so a second Ctrl-C
+            # landing inside that loop still finds the in-flight workers
+            # already headed for their next checkpoint.
             abort.set()
             for outstanding in futures:
                 outstanding.cancel()
