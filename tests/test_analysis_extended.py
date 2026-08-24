@@ -516,7 +516,7 @@ class TestRunChecks:
             mock_results_exist.side_effect = [True, False]
 
             org_account_ids = {"111111111111"}
-            run_checks_for_type(
+            completed = run_checks_for_type(
                 "scps", mock_session, account_info, mock_config, org_account_ids, threading.Event()
             )
 
@@ -527,6 +527,9 @@ class TestRunChecks:
             # Verify second check was instantiated and executed
             mock_check2.assert_called_once()
             mock_check2_instance.execute.assert_called_once_with(mock_session)
+
+            # A check already on disk is not an early stop: the type ran to the end.
+            assert completed is True
 
 
 class TestGetAllOrganizationAccountIds:

@@ -441,7 +441,7 @@ def run_checks_for_type(
     config: HeadroomConfig,
     org_account_ids: Set[str],
     abort: threading.Event
-) -> None:
+) -> bool:
     """
     Run all checks of a given type for a single account.
 
@@ -456,12 +456,19 @@ def run_checks_for_type(
         org_account_ids: Set of all account IDs in the organization
         abort: Set when another account has failed, ending this account's run
             at the next check boundary
+
+    Returns:
+        True if every check of this type ran or was already on disk, False if
+        a checkpoint stopped the loop with checks still to run. The caller
+        needs the distinction to label the account, and cannot recover it by
+        re-reading `abort`: the Event can be set by another account's failure
+        after this loop's last iteration, when nothing was skipped here.
     """
     check_classes = get_all_check_classes(check_type)
 
     for check_class in check_classes:
         if abort.is_set():
-            return
+            return False
 
         if results_exist(
             check_name=check_class.CHECK_NAME,
@@ -481,6 +488,8 @@ def run_checks_for_type(
             exclude_account_ids=config.exclude_account_ids,
         )
         check.execute(headroom_session)
+
+    return True
 
 
 def _get_account_identifier(account_info: AccountInfo) -> str:
@@ -518,6 +527,13 @@ def _run_checks_for_account(
     lets `aws/helpers.py` and `aws/ec2.py` memoize per-session without
     locking.
 
+    The closing log line comes from what the check loops report, not from
+    re-reading `abort`. Another account can fail while this worker is inside
+    its last `check.execute()`, and this account has then run and written
+    every check it owns; reading the Event at that point labels a complete
+    account aborted, sending the operator after a re-run that answers "All
+    results already exist".
+
     Args:
         account_info: Information about the target account
         security_session: boto3 Session for security analysis account
@@ -536,15 +552,24 @@ def _run_checks_for_account(
 
     headroom_session = get_headroom_session(config, security_session, account_info.account_id)
 
+    # `run_checks_for_type(...) and completed`, never the reverse: `and`
+    # evaluates its left operand first, so putting the call second would skip
+    # the RCPs entirely whenever the SCPs stopped at a checkpoint.
+    completed = True
+
     scp_exist = all_check_results_exist("scps", account_info, config)
     if not scp_exist:
-        run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids, abort)
+        completed = run_checks_for_type(
+            "scps", headroom_session, account_info, config, org_account_ids, abort
+        ) and completed
 
     rcp_exist = all_check_results_exist("rcps", account_info, config)
     if not rcp_exist:
-        run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids, abort)
+        completed = run_checks_for_type(
+            "rcps", headroom_session, account_info, config, org_account_ids, abort
+        ) and completed
 
-    if abort.is_set():
+    if not completed:
         logger.info(f"Checks aborted for account: {account_identifier}")
         return
 
