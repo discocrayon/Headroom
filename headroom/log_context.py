@@ -65,10 +65,20 @@ def configure_logging() -> None:
     `main` calls this once, but nothing about the function requires that.
     Repeat calls are harmless: `_ACCOUNT_FILTER` is a module-level singleton,
     and `Handler.addFilter` dedups by identity, so passing the same instance
-    on a later call is a no-op rather than a second filter. `logging.basicConfig`
-    has already run at import time in `analysis.py`, so the root handler
-    exists by now.
+    on a later call is a no-op rather than a second filter.
+
+    `basicConfig` is called rather than assumed. It is a no-op once the root
+    logger has a handler, so it changes nothing in the normal run, where
+    `analysis.py` has already called it at import time. What it removes is the
+    dependence on that: with an empty handler list this function used to
+    iterate over nothing and install nothing, silently, and the first
+    `basicConfig` to run afterwards would then fit the root logger with the
+    default format and no filter -- dropping the `[account]` field from every
+    record for the rest of the process. Deferring the import of `analysis`,
+    which is the obvious way to speed up startup, is all it would take.
     """
+    logging.basicConfig()
+
     for handler in logging.getLogger().handlers:
         handler.addFilter(_ACCOUNT_FILTER)
         handler.setFormatter(logging.Formatter(LOG_FORMAT))
