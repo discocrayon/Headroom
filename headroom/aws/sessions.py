@@ -1,13 +1,35 @@
 """AWS session management utilities."""
 
+from threading import Lock
 from typing import Optional
 
 import botocore.session
 from boto3.session import Session
+from botocore.config import Config
 from mypy_boto3_sts.client import STSClient
 from mypy_boto3_sts.type_defs import AssumeRoleResponseTypeDef, CredentialsTypeDef
 
+from ..config import MAX_ACCOUNT_WORKERS
+
 __all__ = ["assume_role", "new_session"]
+
+# Retry attempts every client inherits from the session. botocore's `standard`
+# mode defaults to three; five gives throttling headroom now that many accounts
+# are analyzed at once. `adaptive` is deliberately not used: it adds client-side
+# rate limiting that throttles unpredictably, and workers are spread across
+# separate accounts, which are separate rate-limit buckets.
+RETRY_MAX_ATTEMPTS = 5
+
+# Guards client construction on the shared security-analysis session. Every
+# worker assumes a role through that one Session, and Session.client() resolves
+# the service model through the session's loader and mutates its component
+# registry on first use. Per-account sessions are not shared -- new_session()
+# builds a fresh botocore session each time -- so this is the only site at risk.
+_CLIENT_CONSTRUCTION_LOCK = Lock()
+
+# The shared session's STS client serves every worker at once, so its pool needs
+# one connection per worker. botocore defaults to 10.
+_STS_CLIENT_CONFIG = Config(max_pool_connections=MAX_ACCOUNT_WORKERS)
 
 
 def new_session(
@@ -35,6 +57,8 @@ def new_session(
     """
     botocore_session = botocore.session.get_session()
     botocore_session.set_config_variable("sts_regional_endpoints", "regional")
+    botocore_session.set_config_variable("retry_mode", "standard")
+    botocore_session.set_config_variable("max_attempts", RETRY_MAX_ATTEMPTS)
     return Session(
         botocore_session=botocore_session,
         region_name=region_name,
@@ -82,7 +106,13 @@ def assume_role(
             f"AWS profile."
         )
 
-    sts: STSClient = base_session.client("sts", region_name=region)
+    with _CLIENT_CONSTRUCTION_LOCK:
+        sts: STSClient = base_session.client(
+            "sts",
+            region_name=region,
+            config=_STS_CLIENT_CONFIG,
+        )
+
     resp: AssumeRoleResponseTypeDef = sts.assume_role(
         RoleArn=role_arn,
         RoleSessionName=session_name
