@@ -145,7 +145,8 @@ headroom/
 
    Within an account the checks stay serial, so each account's boto3 session is touched by
    exactly one thread. The first worker to fail cancels the queued accounts, sets an abort
-   `Event` that in-flight workers check at each check boundary, and re-raises.
+   `Event` that in-flight workers check at each check boundary, and re-raises. An operator's
+   Ctrl-C does the same, so interrupting is prompt rather than a wait for the whole queue.
 5. **Placement:** Parse all result files → analyze org structure → determine policy levels
 6. **Generation:** Generate `grab_org_info.tf` + SCP Terraform files + RCP Terraform files
 
@@ -2213,15 +2214,16 @@ def run_checks_for_type(
     """
 
 def run_checks(
-    subaccounts: List[AccountInfo],
+    security_session: boto3.Session,
+    relevant_account_infos: List[AccountInfo],
     config: HeadroomConfig,
-    session: boto3.Session
+    org_account_ids: Set[str]
 ) -> None:
     """
     Run all checks across all accounts.
 
     Algorithm:
-    1. Get all organization account IDs via get_all_organization_account_ids()
+    1. Receive org_account_ids, gathered by perform_analysis()
     2. Serially, for each account, drop it from the work list when both
        all_check_results_exist("scps", ...) and all_check_results_exist("rcps", ...)
        report every result already on disk
@@ -2235,6 +2237,8 @@ def run_checks(
     4. Consume the futures with as_completed(). The first one carrying an
        exception sets the abort Event, cancels the outstanding futures, and
        re-raises
+    5. A KeyboardInterrupt out of that loop does the same before re-raising,
+       so Ctrl-C is as prompt as a failure
 
     Error handling is deliberately absent: the first failure aborts the entire
     run rather than being logged and skipped. A partial run is more dangerous
@@ -2248,6 +2252,12 @@ def run_checks(
     Aborting takes two mechanisms because Python cannot kill a running thread.
     Future.cancel clears the queue but does nothing to accounts already in
     flight; the abort Event stops those at their next check boundary.
+
+    An operator's Ctrl-C takes the same path. shutdown(wait=True) defaults to
+    cancel_futures=False and puts its sentinel at the back of the work queue,
+    so an interrupt that only propagated would still wait out every queued
+    account. Catching it makes interrupting prompt and bounded by the one
+    check each in-flight worker is already inside, the same as a failure.
     """
 ```
 

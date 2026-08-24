@@ -4,7 +4,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import pytest
-from typing import Any, Dict, List, Tuple, cast, get_args
+from typing import Any, Dict, Iterable, Iterator, List, Tuple, cast, get_args
 from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
@@ -1214,3 +1214,82 @@ class TestRunChecksPool:
 
         assert len(captured) == len(accounts)
         assert sum(1 for future in captured if future.cancelled()) >= 1
+
+    def test_a_keyboard_interrupt_aborts_the_run_rather_than_draining_the_queue(self) -> None:
+        """
+        Ctrl-C sets the abort Event and cancels the accounts still queued.
+
+        `Executor.__exit__` calls `shutdown(wait=True)`, whose default
+        `cancel_futures=False` drains nothing: the `None` sentinel goes to the
+        back of the work queue, so every queued account still runs before a
+        worker sees it. Without the handler an interrupt therefore waits out
+        the entire remaining run -- at `max_account_workers=1`, the value
+        SETUP.md recommends for debugging, hours of ignoring Ctrl-C. The
+        serial loop this pool replaced raised immediately.
+
+        A `KeyboardInterrupt` raised inside a worker is a different scenario.
+        The real one is SIGINT delivered to the main thread while it blocks in
+        `as_completed` waiting for the first account to finish, which is what
+        patching `as_completed` reproduces.
+
+        The first account parks until the Event is set, so the pool's one
+        worker is genuinely in flight when the interrupt lands and the other
+        accounts are genuinely queued behind it -- the shape that makes
+        cancellation observable rather than a race against a worker that has
+        already emptied the queue.
+        """
+        accounts = self._accounts(200)
+        blocking_account_id = accounts[0].account_id
+        captured: List[Future[None]] = []
+        aborts: List[threading.Event] = []
+        entered: List[str] = []
+        lock = threading.Lock()
+        real_submit = ThreadPoolExecutor.submit
+
+        def capturing_submit(
+            executor: ThreadPoolExecutor, fn: object, *args: object, **kwargs: object
+        ) -> Future[None]:
+            future: Future[None] = real_submit(executor, fn, *args, **kwargs)  # type: ignore[arg-type]
+            captured.append(future)
+            aborts.append(cast(threading.Event, args[4]))
+            return future
+
+        def park_the_first_account(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            abort: threading.Event,
+        ) -> None:
+            with lock:
+                entered.append(account_info.account_id)
+            if account_info.account_id == blocking_account_id:
+                abort.wait(timeout=5)
+
+        def interrupt_while_the_main_thread_waits(
+            futures: Iterable[Future[None]]
+        ) -> Iterator[Future[None]]:
+            """
+            Stand in for `as_completed` and raise where a SIGINT would land.
+
+            `yield from ()` makes this a generator that yields no future, so
+            the raise happens on the loop's first `next()` -- inside the `for`
+            statement, exactly where the signal handler would raise it -- and
+            not at the call.
+            """
+            yield from ()
+            raise KeyboardInterrupt
+
+        with (
+            patch.object(ThreadPoolExecutor, "submit", capturing_submit),
+            patch("headroom.analysis.as_completed", interrupt_while_the_main_thread_waits),
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=park_the_first_account),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            run_checks(MagicMock(), accounts, self._config(1), set())
+
+        assert len(captured) == len(accounts)
+        assert aborts[0].is_set()
+        assert sum(1 for future in captured if future.cancelled()) >= 1
+        assert len(entered) < len(accounts)

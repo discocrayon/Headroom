@@ -160,6 +160,12 @@ re-raises. Setting before cancelling is deliberate: an account that starts in th
 between the two finds the Event already set and returns without assuming a role.
 Because Python cannot kill a running thread, the Event is what makes the abort prompt.
 
+An operator's Ctrl-C takes the same path. `shutdown(wait=True)` defaults to
+`cancel_futures=False` and puts its sentinel at the back of the work queue, so an interrupt
+that only propagated would still wait out every queued account -- hours of it at one worker.
+Catching it makes interrupting as prompt as a failure: bounded by the one check each
+in-flight worker is already inside.
+
 ## Key Architectural Points
 
 1. **Security Analysis Account**: Central hub where Headroom CLI typically executes
