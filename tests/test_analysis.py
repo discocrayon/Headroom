@@ -1,6 +1,7 @@
 import logging
 import re
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import pytest
 from typing import Any, Dict, List, Tuple, cast, get_args
@@ -1157,3 +1158,59 @@ class TestRunChecksPool:
         thread.join(timeout=5)
 
         assert stamped == ["account-0_111111111111"]
+
+    def test_the_cancel_loop_cancels_futures_still_in_the_queue(self) -> None:
+        """
+        Queued accounts are cancelled, not merely left to return early.
+
+        Call-count assertions cannot see this loop: a queued account that is
+        not cancelled still starts and returns immediately at the
+        `_run_checks_for_account` abort checkpoint, so "did it run" cannot
+        tell cancelled apart from merely-fast. `Future.cancelled()` can.
+        `outstanding.cancel()` is the only `.cancel()` call in the package, so
+        a captured future reporting cancelled is unambiguous evidence that
+        this loop ran and took effect.
+
+        `futures` is local to `run_checks`, so capturing the futures means
+        patching `ThreadPoolExecutor.submit` -- a public method -- rather than
+        reaching into the function under test.
+
+        The queue is deliberately far longer than one worker can drain while
+        the main thread is being scheduled to cancel it. That length is the
+        margin, and it was measured rather than guessed: at 20 accounts the
+        worker empties the queue often enough that nothing is left to cancel
+        in 5 runs out of 400 under `setswitchinterval(1e-6)`, while at 200 the
+        smallest count seen over 400 runs was 42 contended and 69 uncontended.
+        """
+        accounts = self._accounts(200)
+        failing_account_id = accounts[0].account_id
+        captured: List[Future[None]] = []
+        real_submit = ThreadPoolExecutor.submit
+
+        def capturing_submit(
+            executor: ThreadPoolExecutor, fn: object, *args: object, **kwargs: object
+        ) -> Future[None]:
+            future: Future[None] = real_submit(executor, fn, *args, **kwargs)  # type: ignore[arg-type]
+            captured.append(future)
+            return future
+
+        def fail_the_first_account(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            abort: threading.Event,
+        ) -> None:
+            if account_info.account_id == failing_account_id:
+                raise RuntimeError("role assumption failed")
+
+        with (
+            patch.object(ThreadPoolExecutor, "submit", capturing_submit),
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=fail_the_first_account),
+            pytest.raises(RuntimeError, match="role assumption failed"),
+        ):
+            run_checks(MagicMock(), accounts, self._config(1), set())
+
+        assert len(captured) == len(accounts)
+        assert sum(1 for future in captured if future.cancelled()) >= 1
