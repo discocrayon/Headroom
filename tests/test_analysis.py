@@ -1293,3 +1293,32 @@ class TestRunChecksPool:
         assert aborts[0].is_set()
         assert sum(1 for future in captured if future.cancelled()) >= 1
         assert len(entered) < len(accounts)
+
+    def test_an_aborted_account_does_not_log_that_its_checks_completed(self) -> None:
+        """
+        A worker cut short mid-flight says so rather than claiming success.
+
+        The entry checkpoint only covers a worker that has not started. One
+        that is already running finds `run_checks_for_type` returning early
+        for both check types and then reaches the end of the function, where
+        it used to log "Checks completed" -- during exactly the incident an
+        operator is reading the log to diagnose.
+        """
+        abort = threading.Event()
+
+        def abort_partway_through(*args: object) -> None:
+            abort.set()
+
+        with (
+            patch("headroom.analysis.get_headroom_session"),
+            patch("headroom.analysis.all_check_results_exist", return_value=False),
+            patch("headroom.analysis.run_checks_for_type", side_effect=abort_partway_through),
+            patch("headroom.analysis.logger") as mock_logger,
+        ):
+            _run_checks_for_account(
+                self._accounts(1)[0], MagicMock(), self._config(1), set(), abort
+            )
+
+        logged = [call.args[0] for call in mock_logger.info.call_args_list]
+        assert "Checks aborted for account: account-0_111111111111" in logged
+        assert "Checks completed for account: account-0_111111111111" not in logged
