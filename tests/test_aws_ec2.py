@@ -1711,7 +1711,6 @@ class TestGetInstances:
 
         assert instances == [Ec2Instance(
             instance_id="i-11111111111111111",
-            region="us-east-1",
             image_id="ami-11111111111111111",
             owner_id="111111111111",
             public_ip_address="203.0.113.10",
