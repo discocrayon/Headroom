@@ -302,11 +302,15 @@ def _build_ou_recommendation(
 
     Creates recommendation for deploying SCP at organizational unit level.
     Includes OU name in reasoning and allowed IAM user ARNs if applicable.
+
+    Raises:
+        RuntimeError: If the target OU is not present in the hierarchy
     """
-    ou_name = organization_hierarchy.organizational_units.get(
-        target_ou_id,
-        OrganizationalUnit("", "", None, [], [])
-    ).name
+    ou_info = organization_hierarchy.organizational_units.get(target_ou_id)
+    if not ou_info:
+        raise RuntimeError(f"OU {target_ou_id} not found in organization hierarchy")
+
+    ou_name = ou_info.name
 
     allowed_iam_user_arns = _build_iam_user_arns_for_recommendation(
         check_name,
@@ -400,13 +404,18 @@ def _determine_check_placement(
             )
             recommendations.append(rec)
         elif candidate.level == "account":
+            candidate_safe_results = [
+                r for r in safe_check_results
+                if r.account_id in candidate.affected_accounts
+            ]
+            if not candidate_safe_results:
+                continue
             rec = _build_account_recommendation(
                 check_name,
-                safe_check_results,
+                candidate_safe_results,
                 len(check_results)
             )
             recommendations.append(rec)
-            break
 
     return recommendations
 

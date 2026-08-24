@@ -81,35 +81,38 @@ class HierarchyPlacementAnalyzer(Generic[T]):
                 reasoning="All accounts safe - deploy at root"
             )]
 
-        ou_results: Dict[str, List[T]] = self._group_results_by_ou(
-            check_results,
-            get_account_id
-        )
-        ou_candidates = []
+        ou_results = self._group_results_by_ou(check_results, get_account_id)
+        candidates = []
+        covered_accounts = set()
 
         for ou_id, ou_check_results in ou_results.items():
             if is_safe_for_ou(ou_id, ou_check_results):
-                ou_candidates.append(PlacementCandidate(
+                ou_accounts = [get_account_id(r) for r in ou_check_results]
+                candidates.append(PlacementCandidate(
                     level="ou",
                     target_id=ou_id,
-                    affected_accounts=[get_account_id(r) for r in ou_check_results],
+                    affected_accounts=ou_accounts,
                     reasoning=f"OU-level deployment safe for {len(ou_check_results)} accounts"
                 ))
+                covered_accounts.update(ou_accounts)
 
-        if ou_candidates:
-            return ou_candidates
-
-        account_candidates = [
-            PlacementCandidate(
+        # Everything an OU did not claim is offered individually, so that one
+        # qualifying OU cannot suppress placement for accounts elsewhere.
+        # Accounts under the root land here too: they have no OU to inherit
+        # from. Callers apply their own safety filter to these accounts.
+        uncovered_accounts = [
+            account_id for account_id in map(get_account_id, check_results)
+            if account_id not in covered_accounts
+        ]
+        if uncovered_accounts:
+            candidates.append(PlacementCandidate(
                 level="account",
                 target_id=None,
-                affected_accounts=[get_account_id(result)],
+                affected_accounts=uncovered_accounts,
                 reasoning="Individual account-level deployment"
-            )
-            for result in check_results
-        ]
+            ))
 
-        return account_candidates
+        return candidates
 
     def _group_results_by_ou(
         self,
@@ -117,7 +120,11 @@ class HierarchyPlacementAnalyzer(Generic[T]):
         get_account_id: Callable[[T], str]
     ) -> Dict[str, List[T]]:
         """
-        Group check results by parent OU.
+        Group check results by parent OU, omitting accounts under the root.
+
+        An account attached directly to the organization root belongs to no OU.
+        The root ID is not an OU ID, so such accounts are left out rather than
+        grouped under a bogus OU key; the caller places them individually.
 
         Args:
             check_results: List of check results to group
@@ -136,6 +143,8 @@ class HierarchyPlacementAnalyzer(Generic[T]):
             if not account_info:
                 raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
             ou_id = account_info.parent_ou_id
+            if ou_id is None or ou_id == self.org.root_id:
+                continue
             if ou_id not in ou_results:
                 ou_results[ou_id] = []
             ou_results[ou_id].append(result)

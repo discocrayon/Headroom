@@ -129,10 +129,11 @@ def analyze_organization_structure(session: Session) -> OrganizationHierarchy:
             ParentId=root_id
         )
         for acc in root_accounts_response.get("Accounts", []):
+            # No parent OU: these accounts hang directly off the organization root
             accounts[acc["Id"]] = AccountOrgPlacement(
                 account_id=acc["Id"],
                 account_name=acc["Name"],
-                parent_ou_id=root_id,
+                parent_ou_id=None,
                 ou_path=["Root"]
             )
     except (ClientError, BotoCoreError) as e:
@@ -145,14 +146,16 @@ def analyze_organization_structure(session: Session) -> OrganizationHierarchy:
     )
 
 
-def create_account_ou_mapping(session: Session) -> Dict[str, str]:
+def create_account_ou_mapping(session: Session) -> Dict[str, Optional[str]]:
     """
     Create mapping of account IDs to their direct parent OU IDs.
 
     Returns dictionary with account_id -> parent_ou_id relationships.
+
+    parent_ou_id is None for accounts attached directly to the organization root.
     """
     hierarchy = analyze_organization_structure(session)
-    mapping: Dict[str, str] = {}
+    mapping: Dict[str, Optional[str]] = {}
 
     for account_id, account_info in hierarchy.accounts.items():
         mapping[account_id] = account_info.parent_ou_id
