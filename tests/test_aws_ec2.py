@@ -339,7 +339,7 @@ class TestGetImdsV1Ec2Analysis:
             "Regions": [
                 {"RegionName": "us-east-1"},
                 {"RegionName": "us-west-2"},
-                {"RegionName": "ap-south-1"}  # This will trigger fallback
+                {"RegionName": "ap-south-1"}
             ]
         }
 
@@ -362,17 +362,6 @@ class TestGetImdsV1Ec2Analysis:
             "DescribeInstances"
         )
         mock_regional_ec2_2.get_paginator.return_value = mock_paginator_2
-
-        # Third regional client (fallback) works
-        mock_regional_ec2_fallback = MagicMock()
-        mock_paginator_fallback = MagicMock()
-        instances_page_fallback = {
-            "Reservations": [
-                {"Instances": [self.create_mock_instance("i-fallback-success")]}
-            ]
-        }
-        mock_paginator_fallback.paginate.return_value = [instances_page_fallback]
-        mock_regional_ec2_fallback.get_paginator.return_value = mock_paginator_fallback
 
         def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
             if region_name is None:
@@ -1841,8 +1830,15 @@ class TestGetInstances:
         another mock's return_value gets a strong _mock_new_parent back-link),
         so they linger as uncollected garbage rather than vanishing the
         instant their owning test returns. Without the sweep, this test's
-        exact-one-entry assertion counts other tests' debris instead (5
-        entries observed, not 1).
+        one-entry assertion counts other tests' debris instead (5 entries
+        observed, not 1).
+
+        The assertions are on the delta rather than on an absolute count,
+        because the memo is module state this test does not own and the sweep
+        cannot always clear it: an earlier *failing* test in this file keeps
+        its mocks alive through pytest's traceback, out of gc.collect()'s
+        reach. An absolute count would then fail too, adding noise to the
+        report of an unrelated bug.
 
         Unlike the equivalent test in test_aws_helpers.py, there is no second
         `del` here: `_session` keeps its regional-client mock as a helper
@@ -1851,16 +1847,17 @@ class TestGetInstances:
         the mock family, and gc.collect() reclaims the rest of the cycle.
         """
         gc.collect()
+        before = len(_INSTANCE_MEMO)
 
         session = self._session([{"Reservations": []}])
 
         get_instances(session, "us-east-1")
-        assert len(_INSTANCE_MEMO) == 1
+        assert len(_INSTANCE_MEMO) == before + 1
 
         del session
         gc.collect()
 
-        assert len(_INSTANCE_MEMO) == 0
+        assert len(_INSTANCE_MEMO) == before
 
     def test_client_error_becomes_a_runtime_error_naming_the_region(self) -> None:
         """
