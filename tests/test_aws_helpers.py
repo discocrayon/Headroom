@@ -113,7 +113,14 @@ class TestGetAllRegions:
         another mock's return_value gets a strong _mock_new_parent back-link),
         so they linger as uncollected garbage rather than vanishing the
         instant their owning test returns. Without the sweep, this test's
-        exact-one-entry assertion would be counting other tests' debris.
+        one-entry assertion would be counting other tests' debris.
+
+        The assertions are on the delta rather than on an absolute count,
+        because the memo is module state this test does not own and the sweep
+        cannot always clear it: an earlier *failing* test in this file keeps
+        its mocks alive through pytest's traceback, out of gc.collect()'s
+        reach. An absolute count would then fail too, adding noise to the
+        report of an unrelated bug.
 
         mock_ec2 is deleted alongside mock_session for the same reason: since
         mock_session.client.return_value = mock_ec2 gave mock_ec2 a strong
@@ -121,6 +128,7 @@ class TestGetAllRegions:
         mock_session reachable and the memo entry would never clear.
         """
         gc.collect()
+        before = len(_REGION_MEMO)
 
         mock_session = MagicMock()
         mock_ec2 = MagicMock()
@@ -128,13 +136,13 @@ class TestGetAllRegions:
         mock_ec2.describe_regions.return_value = {"Regions": [{"RegionName": "us-east-1"}]}
 
         get_all_regions(mock_session)
-        assert len(_REGION_MEMO) == 1
+        assert len(_REGION_MEMO) == before + 1
 
         del mock_session
         del mock_ec2
         gc.collect()
 
-        assert len(_REGION_MEMO) == 0
+        assert len(_REGION_MEMO) == before
 
 
 class TestPaginate:
