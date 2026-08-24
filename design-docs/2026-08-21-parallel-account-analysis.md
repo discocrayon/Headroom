@@ -374,16 +374,30 @@ concurrency. `standard` rather than `adaptive`: adaptive adds client-side rate l
 that throttles unpredictably, and 16 workers spread across 16 separate accounts sit in 16 separate
 rate-limit buckets, so there is little to adapt to.
 
-### One connection pool needs sizing
+### One connection pool is sized, as a ceiling that binds nothing yet
 
 `max_pool_connections` is not a botocore session config variable, only a
-`botocore.config.Config` setting. Exactly one client needs it: the STS client in
-`assume_role`, built from the shared security session and hit by all workers at t=0. A
-default pool of 10 would leave the remaining workers churning connections and logging
-pool-full warnings.
+`botocore.config.Config` setting. One client receives one: the STS client in
+`assume_role`, built from the shared security session, with a `Config` sized to the worker
+cap that `sessions.py` imports from `config.py` rather than redeclaring.
 
-That client receives a `Config` sized to the worker cap, which `sessions.py` imports from
-`config.py` rather than redeclaring.
+**The original premise for that sizing was wrong and is corrected here.** There is no
+single shared STS client "hit by all workers at t=0". `assume_role` calls
+`base_session.client("sts", ...)` on every invocation and boto3 caches no clients, so a
+300-account run builds 300 of them, each with its own `URLLib3Session` and its own
+`PoolManager`, each serving exactly one `AssumeRole` request. Measured on two clients built
+from one session: same client object `False`, same http session `False`, same `PoolManager`
+`False`. Against a pool of one request, botocore's default of 10 was never going to be
+exhausted, so nothing churned connections and nothing logged pool-full warnings.
+
+The `Config` stays anyway. It costs nothing, it keeps the intended ceiling stated in one
+place, and it becomes load-bearing the day the STS client is built once per run and shared
+-- the change that would also save one TLS handshake per account and make this section's
+original wording true. Filed rather than done here.
+
+The lock in 2.1 is untouched by this correction and remains necessary: `Session.client()`
+resolves the service model through the shared session's loader and mutates its component
+registry, which is a hazard regardless of how many clients come back out.
 
 Per-account clients stay on defaults. Each is used by a single thread and pools are lazy,
 so the default of 10 costs nothing.

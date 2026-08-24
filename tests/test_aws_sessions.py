@@ -442,12 +442,15 @@ class TestSessionRetryConfiguration:
             "max_attempts", RETRY_MAX_ATTEMPTS
         )
 
-    def test_sts_client_pool_holds_one_connection_per_worker(self) -> None:
+    def test_the_sts_client_pool_is_sized_to_the_worker_cap(self) -> None:
         """
-        The shared session's STS client is hit by every worker at once.
+        The STS client is built with the pool ceiling, not left at botocore's 10.
 
-        botocore defaults the pool to 10; with more workers than that the
-        surplus churn connections and log pool-full warnings.
+        The ceiling binds nothing today: assume_role builds a fresh client on
+        every call and boto3 caches none, so each client gets its own
+        PoolManager and serves exactly one AssumeRole request. This pins the
+        wiring, not a live constraint, so the sizing survives until the client
+        is built once per run and shared -- at which point it starts to matter.
         """
         base_session = MagicMock()
         base_session.region_name = "us-east-1"
