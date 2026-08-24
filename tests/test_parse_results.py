@@ -15,6 +15,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from headroom.parse_results import (
+    _build_ou_recommendation,
     parse_scp_result_files,
     determine_scp_placement,
     analyze_scp_compliance,
@@ -1411,3 +1412,273 @@ class TestPrintPolicyRecommendations:
         assert any("RCP RECOMMENDATIONS" in str(call) for call in printed_calls)
         assert any("deny_sts_third_party_assumerole" in str(call) for call in printed_calls)
         assert any("Third-Party Accounts: 2" in str(call) for call in printed_calls)
+
+
+class TestRootParentedAccountPlacement:
+    """
+    Tests for accounts attached directly to the organization root.
+
+    Such an account has no parent OU, so it can only be targeted by an SCP
+    attached to the account itself. Treating the root ID as an OU used to
+    raise "OU r-... not found in organization hierarchy" during Terraform
+    generation.
+    """
+
+    ROOT_ID = "r-aabb"
+    WORKLOADS_OU_ID = "ou-aabb-workloads"
+    LEGACY_OU_ID = "ou-aabb-legacy"
+
+    def make_hierarchy(self) -> OrganizationHierarchy:
+        """
+        Build an org with a safe OU, an unsafe OU, and a root-parented account.
+
+        This is the shape that reaches OU grouping: the org is not safe at root,
+        one OU is fully compliant, and one account hangs off the root.
+        """
+        return OrganizationHierarchy(
+            root_id=self.ROOT_ID,
+            organizational_units={
+                self.WORKLOADS_OU_ID: OrganizationalUnit(
+                    ou_id=self.WORKLOADS_OU_ID,
+                    name="Workloads",
+                    parent_ou_id=None,
+                    child_ous=[],
+                    accounts=["222222222222"]
+                ),
+                self.LEGACY_OU_ID: OrganizationalUnit(
+                    ou_id=self.LEGACY_OU_ID,
+                    name="Legacy",
+                    parent_ou_id=None,
+                    child_ous=[],
+                    accounts=["333333333333"]
+                ),
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="sandbox",
+                    parent_ou_id=None,
+                    ou_path=["Root"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    account_id="222222222222",
+                    account_name="prod",
+                    parent_ou_id=self.WORKLOADS_OU_ID,
+                    ou_path=["Workloads"]
+                ),
+                "333333333333": AccountOrgPlacement(
+                    account_id="333333333333",
+                    account_name="legacy-app",
+                    parent_ou_id=self.LEGACY_OU_ID,
+                    ou_path=["Legacy"]
+                ),
+            }
+        )
+
+    def make_results(self) -> list[SCPCheckResult]:
+        """Build check results where only the Legacy OU account has violations."""
+        return [
+            SCPCheckResult(
+                account_id="111111111111",
+                account_name="sandbox",
+                check_name="deny_ec2_imds_v1",
+                violations=0,
+                exemptions=0,
+                compliant=3,
+                compliance_percentage=100.0
+            ),
+            SCPCheckResult(
+                account_id="222222222222",
+                account_name="prod",
+                check_name="deny_ec2_imds_v1",
+                violations=0,
+                exemptions=0,
+                compliant=5,
+                compliance_percentage=100.0
+            ),
+            SCPCheckResult(
+                account_id="333333333333",
+                account_name="legacy-app",
+                check_name="deny_ec2_imds_v1",
+                violations=7,
+                exemptions=0,
+                compliant=1,
+                compliance_percentage=12.5
+            ),
+        ]
+
+    def test_root_parented_account_is_placed_at_account_level(self) -> None:
+        """The root-parented account gets its own account-level recommendation."""
+        recommendations = determine_scp_placement(
+            self.make_results(),
+            self.make_hierarchy()
+        )
+
+        account_recs = [
+            r for r in recommendations if r.recommended_level == "account"
+        ]
+        assert len(account_recs) == 1
+        assert account_recs[0].affected_accounts == ["111111111111"]
+
+    def test_safe_ou_still_gets_an_ou_recommendation(self) -> None:
+        """Adding account-level coverage does not displace the OU recommendation."""
+        recommendations = determine_scp_placement(
+            self.make_results(),
+            self.make_hierarchy()
+        )
+
+        ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
+        assert len(ou_recs) == 1
+        assert ou_recs[0].target_ou_id == self.WORKLOADS_OU_ID
+
+    def test_no_recommendation_targets_the_root_id_as_an_ou(self) -> None:
+        """Regression: the root ID must never appear as target_ou_id."""
+        recommendations = determine_scp_placement(
+            self.make_results(),
+            self.make_hierarchy()
+        )
+
+        assert all(r.target_ou_id != self.ROOT_ID for r in recommendations)
+
+    def test_generate_scp_terraform_does_not_raise_for_root_parented_account(
+        self
+    ) -> None:
+        """
+        Regression: generating Terraform used to raise RuntimeError.
+
+        The root ID reached _generate_ou_scp_terraform, which looked it up in
+        organizational_units and failed.
+        """
+        hierarchy = self.make_hierarchy()
+        recommendations = determine_scp_placement(self.make_results(), hierarchy)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            generate_scp_terraform(recommendations, hierarchy, output_dir=tmp_dir)
+
+            generated = {path.name for path in Path(tmp_dir).iterdir()}
+            assert generated == {"workloads_ou_scps.tf", "sandbox_scps.tf"}
+
+
+class TestOURecommendationValidation:
+    """Tests that a missing OU is reported rather than silently defaulted."""
+
+    def test_build_ou_recommendation_raises_for_unknown_ou(self) -> None:
+        """An OU absent from the hierarchy is an invariant violation."""
+        hierarchy = OrganizationHierarchy(
+            root_id="r-aabb",
+            organizational_units={},
+            accounts={}
+        )
+
+        with pytest.raises(RuntimeError, match=r"OU ou-aabb-missing not found"):
+            _build_ou_recommendation(
+                check_name="deny_ec2_imds_v1",
+                target_ou_id="ou-aabb-missing",
+                affected_accounts=["111111111111"],
+                check_results=[],
+                organization_hierarchy=hierarchy
+            )
+
+
+class TestCoverageIsIndependentOfOtherOUs:
+    """
+    Tests that placement for one account does not depend on unrelated OUs.
+
+    Placement used to return OU-level candidates exclusively, so a compliant
+    account sharing an OU with a violating one was recommended only while no
+    other OU qualified. Remediating an unrelated OU silently withdrew it.
+    """
+
+    WORKLOADS_OU_ID = "ou-aabb-workloads"
+    LEGACY_OU_ID = "ou-aabb-legacy"
+    CLEAN_SIBLING = "333333333333"
+
+    def make_hierarchy(self) -> OrganizationHierarchy:
+        """Build two OUs of two accounts each."""
+        return OrganizationHierarchy(
+            root_id="r-aabb",
+            organizational_units={
+                self.WORKLOADS_OU_ID: OrganizationalUnit(
+                    self.WORKLOADS_OU_ID, "Workloads", None, [],
+                    ["111111111111", "222222222222"]
+                ),
+                self.LEGACY_OU_ID: OrganizationalUnit(
+                    self.LEGACY_OU_ID, "Legacy", None, [],
+                    [self.CLEAN_SIBLING, "444444444444"]
+                ),
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    "111111111111", "prod", self.WORKLOADS_OU_ID, ["Workloads"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    "222222222222", "staging", self.WORKLOADS_OU_ID, ["Workloads"]
+                ),
+                self.CLEAN_SIBLING: AccountOrgPlacement(
+                    self.CLEAN_SIBLING, "legacy-a", self.LEGACY_OU_ID, ["Legacy"]
+                ),
+                "444444444444": AccountOrgPlacement(
+                    "444444444444", "legacy-b", self.LEGACY_OU_ID, ["Legacy"]
+                ),
+            }
+        )
+
+    def make_results(self, staging_violations: int) -> list[SCPCheckResult]:
+        """
+        Build results where legacy-a is always compliant and legacy-b never is.
+
+        staging_violations controls whether the unrelated Workloads OU qualifies.
+        """
+        counts = {
+            "111111111111": ("prod", 0),
+            "222222222222": ("staging", staging_violations),
+            self.CLEAN_SIBLING: ("legacy-a", 0),
+            "444444444444": ("legacy-b", 9),
+        }
+        return [
+            SCPCheckResult(
+                account_id=account_id,
+                account_name=name,
+                check_name="deny_ec2_imds_v1",
+                violations=violations,
+                exemptions=0,
+                compliant=5,
+                compliance_percentage=100.0
+            )
+            for account_id, (name, violations) in counts.items()
+        ]
+
+    def covered_accounts(self, staging_violations: int) -> set[str]:
+        """Return every account named by any recommendation."""
+        recommendations = determine_scp_placement(
+            self.make_results(staging_violations),
+            self.make_hierarchy()
+        )
+        return {
+            account
+            for rec in recommendations
+            for account in rec.affected_accounts
+        }
+
+    def test_clean_account_covered_when_another_ou_qualifies(self) -> None:
+        """A compliant account is recommended even though its own OU cannot be."""
+        assert self.CLEAN_SIBLING in self.covered_accounts(staging_violations=0)
+
+    def test_clean_account_covered_when_no_other_ou_qualifies(self) -> None:
+        """The same account is recommended when no OU qualifies at all."""
+        assert self.CLEAN_SIBLING in self.covered_accounts(staging_violations=4)
+
+    def test_remediating_an_unrelated_ou_never_reduces_coverage(self) -> None:
+        """
+        Coverage is monotonic: fixing one OU cannot drop accounts elsewhere.
+
+        The only difference between these runs is whether staging violates.
+        """
+        before_remediation = self.covered_accounts(staging_violations=4)
+        after_remediation = self.covered_accounts(staging_violations=0)
+
+        assert before_remediation <= after_remediation
+
+    def test_violating_account_is_never_recommended(self) -> None:
+        """Widening coverage must not recommend an account that has violations."""
+        assert "444444444444" not in self.covered_accounts(staging_violations=0)
