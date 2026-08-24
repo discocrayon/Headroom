@@ -670,7 +670,7 @@ class TestGetAllOrganizationAccountIds:
         mock_session.region_name = "us-west-2"
         mock_sts = MagicMock()
 
-        def mock_client_factory(service_name: str, region_name: str) -> MagicMock:
+        def mock_client_factory(service_name: str, region_name: str, config: object) -> MagicMock:
             if service_name == "sts":
                 return mock_sts
             return MagicMock()  # pragma: no cover

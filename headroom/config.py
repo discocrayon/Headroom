@@ -7,6 +7,17 @@ DEFAULT_RESULTS_DIR = "test_environment/headroom_results"
 DEFAULT_SCPS_DIR = "test_environment/scps"
 DEFAULT_RCPS_DIR = "test_environment/rcps"
 
+# Accounts analyzed concurrently. Memory sets this, not the GIL: each worker
+# holds its own botocore session carrying its own parsed service models, which
+# measures at roughly 43 MB. Sixteen workers stay under a gigabyte.
+DEFAULT_ACCOUNT_WORKERS = 16
+
+# Upper bound on max_account_workers. At 32 workers resident memory passes
+# 1.5 GB; wanting more is a signal to revisit the design rather than raise this.
+# The shared session's STS connection pool is sized to this value, so the pool
+# can serve every worker whatever the operator configures.
+MAX_ACCOUNT_WORKERS = 32
+
 
 class AccountTagLayout(BaseModel):
     environment: str
