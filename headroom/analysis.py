@@ -1,5 +1,6 @@
 import logging
 import threading
+import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
@@ -669,14 +670,16 @@ def _verify_no_duplicate_account_names(
     producing either corrupt JSON or a valid file holding two accounts' results
     spliced together -- which then feeds policy generation.
 
-    Names are compared case-insensitively. Development happens on macOS,
-    where APFS is case-insensitive by default, so accounts named `Prod` and
-    `prod` resolve to the same file on the filesystem this tool actually runs
-    on even though the two strings differ. This can abort a run on a
-    case-sensitive filesystem where `Prod` and `prod` would not actually have
-    collided; that is a deliberate trade-off -- a loud abort resolved by
-    renaming beats two accounts' JSON interleaved into one file that then
-    feeds policy generation.
+    Names are compared as the filesystem compares them, not as `==` does.
+    Development happens on macOS, where APFS folds two axes by default: case,
+    so `Prod` and `prod` are one file, and Unicode normal form, so `café`
+    composed and decomposed are one file even though the two strings hold
+    different code points. Both are closed here, by normalizing to NFC and
+    then case-folding. This can abort a run on a filesystem that folds
+    neither, where the names would not actually have collided; that is a
+    deliberate trade-off -- a loud abort resolved by renaming beats two
+    accounts' JSON interleaved into one file that then feeds policy
+    generation.
 
     The message names the colliding spellings and how many accounts carry
     them, never the account IDs. Printing those would defeat the setting that
@@ -688,23 +691,24 @@ def _verify_no_duplicate_account_names(
 
     Raises:
         RuntimeError: If `exclude_account_ids` is set and two accounts share a
-            name, comparing names case-insensitively
+            name, comparing names case-folded and NFC-normalized
     """
     if not config.exclude_account_ids:
         return
 
-    names_by_lower: Dict[str, List[str]] = {}
+    names_by_key: Dict[str, List[str]] = {}
     for account_info in account_infos:
-        names_by_lower.setdefault(account_info.name.lower(), []).append(account_info.name)
+        key = unicodedata.normalize("NFC", account_info.name).casefold()
+        names_by_key.setdefault(key, []).append(account_info.name)
 
-    collisions = sorted(lower for lower, names in names_by_lower.items() if len(names) > 1)
+    collisions = sorted(key for key, names in names_by_key.items() if len(names) > 1)
 
     if not collisions:
         return
 
     breakdown = ", ".join(
-        f"{', '.join(sorted(set(names_by_lower[lower])))} ({len(names_by_lower[lower])} accounts)"
-        for lower in collisions
+        f"{', '.join(sorted(set(names_by_key[key])))} ({len(names_by_key[key])} accounts)"
+        for key in collisions
     )
     raise RuntimeError(
         "exclude_account_ids is set, so result files are named by account name "
