@@ -2,7 +2,12 @@ import pytest
 from typing import cast
 import argparse
 from pydantic import ValidationError
-from headroom.config import HeadroomConfig, AccountTagLayout
+from headroom.config import (
+    DEFAULT_ACCOUNT_WORKERS,
+    MAX_ACCOUNT_WORKERS,
+    AccountTagLayout,
+    HeadroomConfig,
+)
 from headroom.usage import merge_configs
 
 
@@ -334,3 +339,39 @@ class TestHeadroomConfig:
 
         merged = merge_configs(yaml_cfg, cli_args)
         assert merged.exclude_account_ids is True
+
+    def test_max_account_workers_defaults_to_sixteen(self) -> None:
+        """The default lives in config.py and nowhere else."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Env", name="NameTag", owner="OwnerTag"
+            ),
+        )
+
+        assert config.max_account_workers == DEFAULT_ACCOUNT_WORKERS == 16
+
+    def test_max_account_workers_rejects_zero(self) -> None:
+        """Zero workers would analyze nothing while appearing to succeed."""
+        with pytest.raises(ValidationError):
+            HeadroomConfig(
+                use_account_name_from_tags=False,
+                account_tag_layout=AccountTagLayout(
+                    environment="Env", name="NameTag", owner="OwnerTag"
+                ),
+                max_account_workers=0,
+            )
+
+    def test_max_account_workers_rejects_above_the_cap(self) -> None:
+        """
+        Past the cap resident memory exceeds 1.5 GB, and the STS connection
+        pool is sized to the cap, so a larger value would churn connections.
+        """
+        with pytest.raises(ValidationError):
+            HeadroomConfig(
+                use_account_name_from_tags=False,
+                account_tag_layout=AccountTagLayout(
+                    environment="Env", name="NameTag", owner="OwnerTag"
+                ),
+                max_account_workers=MAX_ACCOUNT_WORKERS + 1,
+            )

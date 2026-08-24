@@ -1,4 +1,6 @@
 import logging
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
@@ -9,6 +11,7 @@ from mypy_boto3_organizations.type_defs import AccountTypeDef
 
 from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
+from .log_context import set_account
 from .write_results import results_exist
 from .aws.sessions import assume_role, new_session
 from .utils import format_account_identifier
@@ -435,7 +438,8 @@ def run_checks_for_type(
     headroom_session: Session,
     account_info: AccountInfo,
     config: HeadroomConfig,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    abort: threading.Event
 ) -> None:
     """
     Run all checks of a given type for a single account.
@@ -449,10 +453,15 @@ def run_checks_for_type(
         account_info: Account information
         config: Headroom configuration
         org_account_ids: Set of all account IDs in the organization
+        abort: Set when another account has failed, ending this account's run
+            at the next check boundary
     """
     check_classes = get_all_check_classes(check_type)
 
     for check_class in check_classes:
+        if abort.is_set():
+            return
+
         if results_exist(
             check_name=check_class.CHECK_NAME,
             account_name=account_info.name,
@@ -490,7 +499,8 @@ def _run_checks_for_account(
     account_info: AccountInfo,
     security_session: Session,
     config: HeadroomConfig,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    abort: threading.Event
 ) -> None:
     """
     Run all checks for a single account.
@@ -498,24 +508,40 @@ def _run_checks_for_account(
     Assumes the Headroom role in the target account and runs any missing
     SCP and RCP checks.
 
+    Runs on a worker thread, so it registers the account with `set_account`
+    before anything else: every log record this thread emits from here on
+    names the account it belongs to, including records from `headroom/aws/`
+    that mention only a region or a resource.
+
+    The session created here is touched by this thread alone, which is what
+    lets `aws/helpers.py` and `aws/ec2.py` memoize per-session without
+    locking.
+
     Args:
         account_info: Information about the target account
         security_session: boto3 Session for security analysis account
         config: Headroom configuration
         org_account_ids: Set of all account IDs in the organization
+        abort: Set when another account has failed, ending this account's run
+            at the next check boundary
     """
     account_identifier = _get_account_identifier(account_info)
+    set_account(account_identifier)
+
+    if abort.is_set():
+        return
+
     logger.info(f"Running checks for account: {account_identifier}")
 
     headroom_session = get_headroom_session(config, security_session, account_info.account_id)
 
     scp_exist = all_check_results_exist("scps", account_info, config)
     if not scp_exist:
-        run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids)
+        run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids, abort)
 
     rcp_exist = all_check_results_exist("rcps", account_info, config)
     if not rcp_exist:
-        run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids)
+        run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids, abort)
 
     logger.info(f"Checks completed for account: {account_identifier}")
 
@@ -529,11 +555,12 @@ def run_checks(
     """
     Run security checks against all relevant accounts.
 
-    For each account:
-    1. Checks if results already exist and skips if they do
-    2. Assumes the Headroom role in that account
-    3. Runs all registered SCP/RCP checks
-    4. Writes results to headroom_results folder
+    Accounts whose results are all present are filtered out serially, then the
+    rest are analyzed by a `ThreadPoolExecutor` of `config.max_account_workers`
+    workers, one account per worker. For each account a worker:
+    1. Assumes the Headroom role in that account
+    2. Runs all registered SCP/RCP checks
+    3. Writes results to headroom_results folder
 
     Args:
         security_session: boto3 Session for security analysis account
@@ -545,22 +572,67 @@ def run_checks(
         ClientError: If assuming the Headroom role in an account fails
         RuntimeError: If a check's underlying AWS API calls fail
 
-    Error handling is deliberately absent: a failure aborts the entire run
-    rather than being logged and skipped. A partial run is more dangerous than no
-    run, because this output drives SCP and RCP deployment and an account skipped
-    for a transient error is indistinguishable in the results from an account
-    with zero violations, so swallowing the error could green-light a policy that
-    breaks it. Accounts that cannot or should not be analyzed are excluded
-    earlier, in `get_subaccount_information`: by lifecycle state, or by being
-    named in `config.skip_account_ids`.
+    Error handling is deliberately absent: the first failure aborts the entire
+    run rather than being logged and skipped. A partial run is more dangerous
+    than no run, because this output drives SCP and RCP deployment and an
+    account skipped for a transient error is indistinguishable in the results
+    from an account with zero violations, so swallowing the error could
+    green-light a policy that breaks it. Accounts that cannot or should not be
+    analyzed are excluded earlier, in `get_subaccount_information`: by lifecycle
+    state, or by being named in `config.skip_account_ids`.
+
+    Aborting takes two mechanisms because Python cannot kill a running thread.
+    `Future.cancel` clears the queue but does nothing to accounts already in
+    flight; the `abort` Event stops those at their next check boundary. Without
+    it, leaving this `with` block would block until every in-flight account had
+    run all its remaining checks.
+
+    Leaving the block joins the in-flight workers before the exception reaches
+    `main`, so no thread is still writing result files when the run gives up. A
+    check already inside `execute()` finishes and writes its file, which is
+    harmless: the file is complete and valid, and `results_exist` makes the run
+    resumable at per-account, per-check granularity.
+
+    "First" means first to complete with an exception, since `as_completed`
+    yields in completion order. Workers that fail after the abort have their
+    exceptions discarded unretrieved.
     """
+    pending = []
     for account_info in relevant_account_infos:
         if _all_checks_complete(account_info, config):
             account_identifier = _get_account_identifier(account_info)
             logger.info(f"All results already exist for account {account_identifier}, skipping checks")
             continue
+        pending.append(account_info)
 
-        _run_checks_for_account(account_info, security_session, config, org_account_ids)
+    logger.info(
+        f"Analyzing {len(pending)} account(s) with {config.max_account_workers} worker(s)"
+    )
+
+    abort = threading.Event()
+
+    with ThreadPoolExecutor(max_workers=config.max_account_workers) as executor:
+        futures: List[Future[None]] = [
+            executor.submit(
+                _run_checks_for_account,
+                account_info,
+                security_session,
+                config,
+                org_account_ids,
+                abort,
+            )
+            for account_info in pending
+        ]
+
+        for future in as_completed(futures):
+            error = future.exception()
+            if error is None:
+                continue
+
+            abort.set()
+            for outstanding in futures:
+                outstanding.cancel()
+            raise error
 
 
 def _verify_no_duplicate_account_names(

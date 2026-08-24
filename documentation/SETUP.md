@@ -111,6 +111,8 @@ security_analysis_account_id: '111111111111'  # Required for this option
 - `skip_account_ids`: Account IDs to leave out of analysis entirely (default: `[]`). See [Skipping Accounts](#skipping-accounts).
 - `use_account_name_from_tags`: When `true`, uses tag-based account names instead of AWS Organizations names (default: `false`)
 - `account_tag_layout`: Tag keys for extracting account metadata (all optional)
+- `max_account_workers`: how many accounts to analyze at once. Defaults to 16, and must be
+  between 1 and 32. See [Tuning `max_account_workers`](#tuning-max_account_workers).
 
 ### Skipping Accounts
 
@@ -165,6 +167,27 @@ account_tag_layout:
 - `environment`: Extracted if present, falls back to "unknown" if missing
 - `name`: Only used when `use_account_name_from_tags: true`, falls back to account ID if missing
 - `owner`: Extracted if present, falls back to "unknown" if missing
+
+### Tuning `max_account_workers`
+
+Each worker holds its own boto3 session carrying its own parsed AWS service models, which
+measures at roughly 43 MB. That is what bounds this setting, not CPU: analysis is
+overwhelmingly network-bound, so the interpreter is idle most of the run.
+
+| Workers | Resident memory | 300 accounts |
+| --- | --- | --- |
+| 1 | baseline | ~3.8 hours |
+| 8 | ~0.4 GB | ~29 minutes |
+| 16 (default) | ~0.8 GB | ~14 minutes |
+| 32 (maximum) | ~1.5 GB | ~7 minutes |
+
+Set it to `1` to analyze accounts one at a time. That runs the same code path as any other
+value rather than a separate serial branch, so it is a safe way to get readable logs and a
+simple stack trace while debugging.
+
+A failure in any account aborts the whole run. Queued accounts never start, and accounts
+already in flight stop after their current check. Nothing is lost: each check writes its own
+result file as it completes, and a re-run skips the results already on disk.
 
 ## Test Environment
 

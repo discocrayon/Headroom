@@ -135,12 +135,17 @@ headroom/
 1. **Configuration:** Load YAML → merge with CLI args → validate with Pydantic
 2. **AWS Setup:** Assume security analysis role (if specified) → assume OrgAndAccountInfoReader in management account
 3. **Account Discovery:** Query Organizations API → extract account metadata with tags → filter management account → filter to ACTIVE accounts only
-4. **Analysis:** For each account:
-   - Check if all results already exist (skip if so)
-   - Assume Headroom role in target account
-   - Run all registered SCP checks
-   - Run all registered RCP checks
-   - Write JSON results to `{results_dir}/{check_type}/{check_name}/`
+4. **Analysis:** Filter out accounts whose results all already exist, then analyze the rest
+   through a `ThreadPoolExecutor` of `max_account_workers` workers (default 16, maximum 32),
+   one worker per account. Each worker:
+   - Assumes the Headroom role in its target account
+   - Runs all registered SCP checks
+   - Runs all registered RCP checks
+   - Writes JSON results to `{results_dir}/{check_type}/{check_name}/`
+
+   Within an account the checks stay serial, so each account's boto3 session is touched by
+   exactly one thread. The first worker to fail cancels the queued accounts, sets an abort
+   `Event` that in-flight workers check at each check boundary, and re-raises.
 5. **Placement:** Parse all result files → analyze org structure → determine policy levels
 6. **Generation:** Generate `grab_org_info.tf` + SCP Terraform files + RCP Terraform files
 
@@ -156,6 +161,8 @@ headroom/
 DEFAULT_RESULTS_DIR = "test_environment/headroom_results"
 DEFAULT_SCPS_DIR = "test_environment/scps"
 DEFAULT_RCPS_DIR = "test_environment/rcps"
+DEFAULT_ACCOUNT_WORKERS = 16   # Accounts analyzed concurrently
+MAX_ACCOUNT_WORKERS = 32       # Upper bound; ~1.5 GB resident at 32 workers
 
 class AccountTagLayout(BaseModel):
     environment: str  # Tag key for environment (e.g., "Environment")
@@ -171,6 +178,11 @@ class HeadroomConfig(BaseModel):
     results_dir: str = DEFAULT_RESULTS_DIR
     scps_dir: str = DEFAULT_SCPS_DIR
     rcps_dir: str = DEFAULT_RCPS_DIR
+    max_account_workers: int = Field(                    # 1 runs accounts serially
+        default=DEFAULT_ACCOUNT_WORKERS,
+        ge=1,
+        le=MAX_ACCOUNT_WORKERS,
+    )
 ```
 
 ### Organization Structure Models
@@ -322,6 +334,7 @@ use_account_name_from_tags: boolean          # Use tag for name vs AWS account n
 results_dir: string                          # Default: test_environment/headroom_results
 scps_dir: string                             # Default: test_environment/scps
 rcps_dir: string                             # Default: test_environment/rcps
+max_account_workers: integer                 # Accounts analyzed at once, 1-32, default 16
 account_tag_layout:
   environment: string                        # Optional tag, fallback: "unknown"
   name: string                               # Optional tag, used when use_account_name_from_tags=true
@@ -346,6 +359,7 @@ account_tag_layout:
 --management-account-id ID                 # Optional: override management_account_id
 --security-analysis-account-id ID          # Optional: override security_analysis_account_id
 --exclude-account-ids                      # Optional: flag to redact IDs
+--max-account-workers N                    # Optional: override max_account_workers
 ```
 
 ---
@@ -2176,7 +2190,8 @@ def run_checks_for_type(
     headroom_session: boto3.Session,
     account_info: AccountInfo,
     config: HeadroomConfig,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    abort: threading.Event
 ) -> None:
     """
     Execute all checks of a given type for single account.
@@ -2184,11 +2199,13 @@ def run_checks_for_type(
     Algorithm:
     1. Get all check classes for type via registry.get_all_check_classes(check_type)
     2. For each check class:
-       a. Get check_name from class.CHECK_NAME
-       b. Check if results already exist via results_exist()
-       c. If exists: skip
-       d. Instantiate check with common parameters + org_account_ids
-       e. Call check.execute(headroom_session)
+       a. Return immediately if the abort Event is set, so a worker whose run
+          has been aborted stops at a check boundary rather than at the end
+       b. Get check_name from class.CHECK_NAME
+       c. Check if results already exist via results_exist()
+       d. If exists: skip
+       e. Instantiate check with common parameters + org_account_ids
+       f. Call check.execute(headroom_session)
 
     Check instantiation uses **kwargs pattern:
     - SCP checks ignore org_account_ids
@@ -2205,21 +2222,32 @@ def run_checks(
 
     Algorithm:
     1. Get all organization account IDs via get_all_organization_account_ids()
-    2. For each account:
-       a. Check if all SCP results exist via all_check_results_exist("scps", ...)
-       b. Check if all RCP results exist via all_check_results_exist("rcps", ...)
-       c. If both exist: skip entire account
-       d. Get Headroom session via get_headroom_session()
-       e. Run SCP checks via run_checks_for_type("scps", ...)
-       f. Run RCP checks via run_checks_for_type("rcps", ...)
+    2. Serially, for each account, drop it from the work list when both
+       all_check_results_exist("scps", ...) and all_check_results_exist("rcps", ...)
+       report every result already on disk
+    3. Submit the remaining accounts to a ThreadPoolExecutor sized by
+       config.max_account_workers, one account per worker. Each worker:
+       a. Registers its account with set_account() so its log records name it
+       b. Returns immediately if the abort Event is already set
+       c. Gets a Headroom session via get_headroom_session()
+       d. Runs SCP checks via run_checks_for_type("scps", ..., abort)
+       e. Runs RCP checks via run_checks_for_type("rcps", ..., abort)
+    4. Consume the futures with as_completed(). The first one carrying an
+       exception sets the abort Event, cancels the outstanding futures, and
+       re-raises
 
-    Error handling is deliberately absent: a failure aborts the entire run
-    rather than being logged and skipped. A partial run is more dangerous than no
-    run, because this output drives SCP and RCP deployment and an account skipped
-    for a transient error is indistinguishable in the results from an account
-    with zero violations, so swallowing the error could green-light a policy that
-    breaks it. Accounts that genuinely cannot be analyzed are excluded earlier,
-    by lifecycle state in `get_subaccount_information`.
+    Error handling is deliberately absent: the first failure aborts the entire
+    run rather than being logged and skipped. A partial run is more dangerous
+    than no run, because this output drives SCP and RCP deployment and an
+    account skipped for a transient error is indistinguishable in the results
+    from an account with zero violations, so swallowing the error could
+    green-light a policy that breaks it. Accounts that genuinely cannot be
+    analyzed are excluded earlier, by lifecycle state in
+    `get_subaccount_information`.
+
+    Aborting takes two mechanisms because Python cannot kill a running thread.
+    Future.cancel clears the queue but does nothing to accounts already in
+    flight; the abort Event stops those at their next check boundary.
     """
 ```
 

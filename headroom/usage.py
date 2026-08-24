@@ -61,6 +61,13 @@ def parse_cli_args() -> argparse.Namespace:
         help='Directory to output RCP Terraform (default test_environment/rcps)'
     )
 
+    parser.add_argument(
+        '--max-account-workers',
+        dest='max_account_workers',
+        type=int,
+        help='Accounts to analyze concurrently (1 runs them serially)'
+    )
+
     # Account IDs
     parser.add_argument(
         '--security-analysis-account-id',

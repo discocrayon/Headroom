@@ -115,7 +115,7 @@ sequenceDiagram
     Mgmt-->>Tool: OU Hierarchy
     Note over Tool: Skip accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)
 
-    Note over Tool: Step 2: Analyze Each Account
+    Note over Tool: Step 2: Analyze accounts<br/>(max_account_workers at a time, default 16)
     Tool->>Prod1: AssumeRole(Headroom)
     Prod1-->>Tool: Session Credentials
     Tool->>Prod1: describe_instances() [all regions]
@@ -135,6 +135,28 @@ sequenceDiagram
     Tool->>Tool: Generate Terraform SCPs
     Tool->>Tool: Generate Org Data Sources
 ```
+
+## Concurrency model
+
+One worker per account, from a single `ThreadPoolExecutor` sized by
+`max_account_workers`. There is no region-level, check-level, or resource-level threading:
+at 50-300 accounts the account pool already saturates the available network capacity, so a
+second axis would multiply in-flight requests and throttling risk without going faster.
+
+Within an account everything stays serial, which means each account's boto3 session is
+touched by exactly one thread. Two caches rely on that: the region list and the projected
+EC2 instance list are memoized in `WeakKeyDictionary` instances keyed on the session
+object, so entries are released when a worker finishes and nothing accumulates across a
+long run. Keying on the session rather than on an account ID is what keeps one account's
+data out of another's results.
+
+The one genuinely shared object is the security-analysis session, which every worker uses
+to assume its target role. Client construction on that session is serialized by a lock in
+`aws/sessions.py`; the `AssumeRole` round trip is not, so workers still overlap.
+
+Failure aborts the run. The first worker exception cancels the queue, sets an abort
+`Event` that in-flight workers check at each check boundary, joins them, and re-raises.
+Because Python cannot kill a running thread, the Event is what makes the abort prompt.
 
 ## Key Architectural Points
 
