@@ -507,3 +507,86 @@ class TestTerraformHelperFunctions:
         result_str = "\n".join(result)
         assert result_str == "  # Account IDs by name"
         assert "orphan_account_account_id" not in result_str
+
+
+class TestRootParentedAccountLocals:
+    """
+    Tests locals generation for accounts attached directly to the organization root.
+
+    These accounts belong to no OU, so their IDs cannot be resolved through an
+    OU child-accounts data source. They were previously skipped entirely, which
+    left account-level SCPs referencing a local that was never emitted.
+    """
+
+    def make_hierarchy(self) -> OrganizationHierarchy:
+        """Build an org with one OU-resident account and one root-parented account."""
+        return OrganizationHierarchy(
+            root_id="r-aabb",
+            organizational_units={
+                "ou-aabb-workloads": OrganizationalUnit(
+                    "ou-aabb-workloads", "Workloads", None, [], ["222222222222"]
+                ),
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    "111111111111", "sandbox", None, ["Root"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    "222222222222", "prod", "ou-aabb-workloads", ["Workloads"]
+                ),
+            }
+        )
+
+    def test_emits_account_id_local_for_root_parented_account(self) -> None:
+        """The root-parented account still gets a <name>_account_id local."""
+        hierarchy = self.make_hierarchy()
+
+        content = "\n".join(_generate_account_locals(
+            hierarchy.accounts,
+            hierarchy.organizational_units
+        ))
+
+        assert "sandbox_account_id = [" in content
+
+    def test_resolves_root_parented_account_from_org_accounts(self) -> None:
+        """
+        The local resolves through the organization-wide accounts list.
+
+        No OU child-accounts data source exists for the root, so the always
+        present aws_organizations_organization data source is used instead.
+        """
+        hierarchy = self.make_hierarchy()
+
+        content = "\n".join(_generate_account_locals(
+            hierarchy.accounts,
+            hierarchy.organizational_units
+        ))
+
+        sandbox_block = content.split("sandbox_account_id = [")[1]
+        assert "data.aws_organizations_organization.org.accounts" in sandbox_block
+
+    def test_ou_resident_account_still_uses_its_ou_data_source(self) -> None:
+        """OU-resident accounts keep resolving through their OU data source."""
+        hierarchy = self.make_hierarchy()
+
+        content = "\n".join(_generate_account_locals(
+            hierarchy.accounts,
+            hierarchy.organizational_units
+        ))
+
+        prod_block = content.split("prod_account_id = [")[1]
+        assert (
+            "data.aws_organizations_organizational_unit_child_accounts"
+            ".workloads_accounts.accounts" in prod_block
+        )
+
+    def test_validation_check_emitted_for_root_parented_account(self) -> None:
+        """The root-parented account gets the same one-match validation guard."""
+        hierarchy = self.make_hierarchy()
+
+        content = "\n".join(_generate_account_locals(
+            hierarchy.accounts,
+            hierarchy.organizational_units
+        ))
+
+        assert "validation_check_sandbox_account = " in content
