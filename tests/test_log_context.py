@@ -7,7 +7,7 @@ import threading
 
 from typing import List
 
-from headroom.log_context import NO_ACCOUNT, AccountContextFilter, set_account
+from headroom.log_context import NO_ACCOUNT, AccountContextFilter, configure_logging, set_account
 
 
 class TestAccountContextFilter:
@@ -84,3 +84,42 @@ class TestAccountContextFilter:
             "a_111111111111": "a_111111111111",
             "b_222222222222": "b_222222222222",
         }
+
+
+class TestConfigureLogging:
+    """Test that configure_logging is safe to call more than once."""
+
+    def test_repeat_calls_leave_one_account_filter_on_the_handler(self) -> None:
+        """
+        A second call must not install a second filter.
+
+        main() calls configure_logging() once, but nothing enforces that.
+        Handler.addFilter dedups by identity, not by class, so a fresh
+        AccountContextFilter() built on every call would never be recognized
+        as a duplicate. The check runs against a handler of its own, and
+        restores every pre-existing handler's filters and formatter
+        afterwards, so it cannot leak state into the process's real root
+        handler for a later test to inherit.
+        """
+        root_logger = logging.getLogger()
+        preexisting_handlers = list(root_logger.handlers)
+        original_filters = {handler: list(handler.filters) for handler in preexisting_handlers}
+        original_formatters = {handler: handler.formatter for handler in preexisting_handlers}
+
+        probe_handler = logging.NullHandler()
+        root_logger.addHandler(probe_handler)
+        try:
+            configure_logging()
+            configure_logging()
+
+            account_filters = [
+                installed_filter
+                for installed_filter in probe_handler.filters
+                if isinstance(installed_filter, AccountContextFilter)
+            ]
+            assert len(account_filters) == 1
+        finally:
+            root_logger.removeHandler(probe_handler)
+            for handler in preexisting_handlers:
+                handler.filters = original_filters[handler]
+                handler.formatter = original_formatters[handler]
