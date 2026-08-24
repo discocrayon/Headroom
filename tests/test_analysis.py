@@ -1,3 +1,4 @@
+import logging
 import re
 import threading
 
@@ -23,6 +24,7 @@ from headroom.analysis import (
     AccountInfo
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
+from headroom.log_context import AccountContextFilter
 
 
 class TestSecurityAnalysisSession:
@@ -1018,3 +1020,140 @@ class TestRunChecksPool:
             )
 
         mock_classes.return_value[0].assert_not_called()
+
+    def test_the_first_failure_sets_the_abort_event(self) -> None:
+        """
+        The pool half of the abort: a failure sets the Event workers poll.
+
+        The two checkpoint tests prove a worker stops once the Event is set.
+        This proves the Event gets set, which nothing else pins: deleting
+        `abort.set()` leaves the rest of the suite green while turning a
+        prompt abort into one that waits out every in-flight account.
+        """
+        events: List[threading.Event] = []
+        lock = threading.Lock()
+
+        def fail(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            abort: threading.Event,
+        ) -> None:
+            with lock:
+                events.append(abort)
+            raise RuntimeError("role assumption failed")
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=fail),
+            pytest.raises(RuntimeError, match="role assumption failed"),
+        ):
+            run_checks(MagicMock(), self._accounts(3), self._config(1), set())
+
+        assert events
+        assert events[0].is_set()
+
+    def test_abort_stops_run_checks_for_type_between_checks(self) -> None:
+        """
+        The checkpoint sits in the loop body, so the next check never starts.
+
+        Setting the Event before the call would pass with the checkpoint
+        hoisted above the loop; failing mid-run is what pins the placement.
+        """
+        abort = threading.Event()
+        first = MagicMock()
+        second = MagicMock()
+        first.CHECK_NAME = "first_check"
+        second.CHECK_NAME = "second_check"
+        first.return_value.execute.side_effect = lambda session: abort.set()
+
+        with (
+            patch("headroom.analysis.get_all_check_classes", return_value=[first, second]),
+            patch("headroom.analysis.results_exist", return_value=False),
+        ):
+            run_checks_for_type(
+                "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), abort
+            )
+
+        first.assert_called_once()
+        second.assert_not_called()
+
+    def test_each_account_builds_its_session_on_its_own_worker_thread(self) -> None:
+        """
+        Sessions are constructed inside the worker, never hoisted.
+
+        The per-session memoization in `aws/helpers.py` and `aws/ec2.py` reads
+        and writes without a lock, which is only safe because one thread owns
+        each session. Building them on the calling thread would leave every
+        account with its own session and every existing test green, while
+        falsifying that premise and serializing N AssumeRole round trips.
+
+        The barrier holds all four workers in `get_headroom_session` at once,
+        so "four distinct threads" is a fact about the pool rather than about
+        how fast a reused worker thread recycles.
+        """
+        barrier = threading.Barrier(4, timeout=5)
+        lock = threading.Lock()
+        building_threads: List[int] = []
+
+        def record_building_thread(
+            config: HeadroomConfig, security_session: object, account_id: str
+        ) -> MagicMock:
+            barrier.wait()
+            with lock:
+                building_threads.append(threading.get_ident())
+            return MagicMock()
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis.all_check_results_exist", return_value=True),
+            patch("headroom.analysis.get_headroom_session", side_effect=record_building_thread),
+        ):
+            run_checks(MagicMock(), self._accounts(4), self._config(4), set())
+
+        assert len(building_threads) == 4
+        assert threading.get_ident() not in building_threads
+        assert len(set(building_threads)) == 4
+
+    def test_a_worker_registers_its_account_for_log_records(self) -> None:
+        """
+        The worker wires Task 4's log context to the pool.
+
+        `tests/test_log_context.py` covers the filter and `set_account` on
+        their own; nothing else covers the single call site that connects
+        them, so dropping it would silently revert every worker's log records
+        to the no-account placeholder. The check runs on a thread of its own
+        because an earlier test calling `_run_checks_for_account` directly
+        leaves this thread's context already set.
+        """
+        stamped: List[str] = []
+
+        def stamp_a_record(config: HeadroomConfig, security_session: object, account_id: str) -> MagicMock:
+            record = logging.LogRecord(
+                name="headroom.aws.ec2",
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=1,
+                msg="Collecting EC2 instances in eu-west-1",
+                args=(),
+                exc_info=None,
+            )
+            AccountContextFilter().filter(record)
+            stamped.append(record.account)  # type: ignore[attr-defined]
+            return MagicMock()
+
+        def run_the_worker() -> None:
+            with (
+                patch("headroom.analysis.all_check_results_exist", return_value=True),
+                patch("headroom.analysis.get_headroom_session", side_effect=stamp_a_record),
+            ):
+                _run_checks_for_account(
+                    self._accounts(1)[0], MagicMock(), self._config(1), set(), threading.Event()
+                )
+
+        thread = threading.Thread(target=run_the_worker)
+        thread.start()
+        thread.join(timeout=5)
+
+        assert stamped == ["account-0_111111111111"]

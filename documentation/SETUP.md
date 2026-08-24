@@ -181,6 +181,9 @@ overwhelmingly network-bound, so the interpreter is idle most of the run.
 | 16 (default) | ~0.8 GB | ~14 minutes |
 | 32 (maximum) | ~1.5 GB | ~7 minutes |
 
+Row 1 is the serial time with the per-session region and EC2 caches in place; before those,
+a serial run took roughly 4.9 hours.
+
 Set it to `1` to analyze accounts one at a time. That runs the same code path as any other
 value rather than a separate serial branch, so it is a safe way to get readable logs and a
 simple stack trace while debugging.

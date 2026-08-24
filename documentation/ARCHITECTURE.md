@@ -154,8 +154,10 @@ The one genuinely shared object is the security-analysis session, which every wo
 to assume its target role. Client construction on that session is serialized by a lock in
 `aws/sessions.py`; the `AssumeRole` round trip is not, so workers still overlap.
 
-Failure aborts the run. The first worker exception cancels the queue, sets an abort
-`Event` that in-flight workers check at each check boundary, joins them, and re-raises.
+Failure aborts the run. The first worker exception sets an abort `Event` that in-flight
+workers check at each check boundary, cancels the queued accounts, joins the workers, and
+re-raises. Setting before cancelling is deliberate: an account that starts in the window
+between the two finds the Event already set and returns without assuming a role.
 Because Python cannot kill a running thread, the Event is what makes the abort prompt.
 
 ## Key Architectural Points
