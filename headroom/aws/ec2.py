@@ -85,10 +85,14 @@ class DenyEc2PublicIp:
     instance_arn: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class Ec2Instance:
     """
     The subset of a describe_instances entry that Headroom's EC2 checks read.
+
+    Frozen, because `get_instances` hands every check the same object rather
+    than a copy: an unfrozen field assignment in one check would be visible to
+    the next three.
 
     Four checks previously swept every region independently for the same data.
     They now share one collection pass, and this is its output: the eight values
@@ -199,10 +203,18 @@ def get_instances(session: Session, region: str) -> List[Ec2Instance]:
     The memo is keyed on the session object itself, never on an account ID or
     name, which is what keeps one account's instances out of another account's
     results. Entries live in a WeakKeyDictionary and are released when the
-    worker drops the session.
+    worker drops the session. The key is the session, with the region as a key
+    of the nested dictionary, rather than a `(session, region)` tuple: a tuple
+    holds a strong reference to the session, so every entry would outlive its
+    worker and the run would leak one per account per region.
 
     The lock is released across the API call rather than held; see
     `get_all_regions` in helpers.py for why.
+
+    Callers must not mutate what this returns. It is the cached list itself,
+    not a copy, so appending to it or removing from it changes what the next
+    check for this account and region sees. `Ec2Instance` is frozen; the list
+    is not, and no check has any reason to write to either.
 
     Args:
         session: boto3.Session for the target account
