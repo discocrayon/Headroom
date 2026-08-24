@@ -596,6 +596,13 @@ def run_checks(
     "First" means first to complete with an exception, since `as_completed`
     yields in completion order. Workers that fail after the abort have their
     exceptions discarded unretrieved.
+
+    An operator's Ctrl-C takes the same path. `shutdown(wait=True)` defaults to
+    `cancel_futures=False` and puts its sentinel at the back of the work queue,
+    so an interrupt that only propagated would still wait out every queued
+    account -- hours of it at one worker. Catching it here makes interrupting
+    as prompt as a failure: bounded by the one check each in-flight worker is
+    already inside.
     """
     pending = []
     for account_info in relevant_account_infos:
@@ -624,15 +631,21 @@ def run_checks(
             for account_info in pending
         ]
 
-        for future in as_completed(futures):
-            error = future.exception()
-            if error is None:
-                continue
+        try:
+            for future in as_completed(futures):
+                error = future.exception()
+                if error is None:
+                    continue
 
+                abort.set()
+                for outstanding in futures:
+                    outstanding.cancel()
+                raise error
+        except KeyboardInterrupt:
             abort.set()
             for outstanding in futures:
                 outstanding.cancel()
-            raise error
+            raise
 
 
 def _verify_no_duplicate_account_names(
