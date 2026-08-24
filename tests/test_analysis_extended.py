@@ -214,8 +214,27 @@ class TestRunChecks:
         sample_account_infos: List[AccountInfo],
         temp_results_dir: str
     ) -> None:
-        """Test successful run_checks execution."""
+        """
+        Test successful run_checks execution.
+
+        Pinned to one worker, and not out of timidity: every assertion below
+        counts calls on MagicMocks that all workers share, and
+        `MagicMock.__call__` does `self.call_count += 1` in Python. That
+        read-modify-write loses increments when two workers land in it at
+        once, so under contention the counts come back low even though the
+        run was correct -- measured at 5 failures in 200 runs at
+        `sys.setswitchinterval(1e-6)`. No assertion rewrite fixes that,
+        because no assertion is wrong; the measuring apparatus is what is not
+        thread-safe.
+
+        Nothing here is about concurrency. It asserts per-account behaviour:
+        both accounts analyzed, each with its own session. One worker runs
+        the identical code path, and concurrency is pinned deterministically
+        by TestRunChecksPool.test_accounts_are_analyzed_concurrently in
+        tests/test_analysis.py.
+        """
         mock_security_session = MagicMock()
+        mock_config.max_account_workers = 1
 
         with (
             patch("headroom.analysis.get_headroom_session") as mock_get_session,
@@ -250,7 +269,7 @@ class TestRunChecks:
 
             # Verify logging: the pool size line, then two lines per account
             assert mock_logger.info.call_count == 5
-            mock_logger.info.assert_any_call("Analyzing 2 account(s) with 16 worker(s)")
+            mock_logger.info.assert_any_call("Analyzing 2 account(s) with 1 worker(s)")
             mock_logger.info.assert_any_call("Running checks for account: prod-account_111111111111")
             mock_logger.info.assert_any_call("Checks completed for account: prod-account_111111111111")
 
