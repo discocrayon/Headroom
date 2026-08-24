@@ -1043,11 +1043,12 @@ class TestRunChecksPool:
 
         with patch("headroom.analysis.get_all_check_classes") as mock_classes:
             mock_classes.return_value = [MagicMock()]
-            run_checks_for_type(
+            completed = run_checks_for_type(
                 "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), abort
             )
 
         mock_classes.return_value[0].assert_not_called()
+        assert completed is False
 
     def test_the_first_failure_sets_the_abort_event(self) -> None:
         """
@@ -1100,12 +1101,13 @@ class TestRunChecksPool:
             patch("headroom.analysis.get_all_check_classes", return_value=[first, second]),
             patch("headroom.analysis.results_exist", return_value=False),
         ):
-            run_checks_for_type(
+            completed = run_checks_for_type(
                 "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), abort
             )
 
         first.assert_called_once()
         second.assert_not_called()
+        assert completed is False
 
     def test_each_account_builds_its_session_on_its_own_worker_thread(self) -> None:
         """
@@ -1387,6 +1389,45 @@ class TestRunChecksPool:
         assert aborts[0].is_set()
         assert sum(1 for future in submitted if future.cancelled()) >= 1
 
+    def test_an_account_that_ran_every_check_is_not_logged_as_aborted(self) -> None:
+        """
+        Another account failing during the last check does not relabel this one.
+
+        The worker used to pick its closing line by re-reading the Event. An
+        account whose final `check.execute()` overlaps another account's
+        failure has run and written every check it owns, yet finds the Event
+        set on the way out and reports itself aborted. The operator reads that
+        line, believes the account is incomplete, and the re-run answers "All
+        results already exist" -- the inverse of the bug the aborted line was
+        added to fix, and just as misleading.
+
+        The RCP results are already on disk so the SCP loop is the account's
+        last work, and the single SCP check sets the Event as it finishes:
+        every check ran, and the Event is set, at the same time.
+        """
+        abort = threading.Event()
+        check_class = MagicMock()
+        check_class.CHECK_NAME = "deny_iam_user_creation"
+        check_class.return_value.execute.side_effect = lambda session: abort.set()
+
+        with (
+            patch("headroom.analysis.get_headroom_session"),
+            patch("headroom.analysis.all_check_results_exist", side_effect=[False, True]),
+            patch("headroom.analysis.get_all_check_classes", return_value=[check_class]),
+            patch("headroom.analysis.results_exist", return_value=False),
+            patch("headroom.analysis.logger") as mock_logger,
+        ):
+            _run_checks_for_account(
+                self._accounts(1)[0], MagicMock(), self._config(1), set(), abort
+            )
+
+        check_class.return_value.execute.assert_called_once()
+        assert abort.is_set()
+
+        logged = [call.args[0] for call in mock_logger.info.call_args_list]
+        assert "Checks completed for account: account-0_111111111111" in logged
+        assert "Checks aborted for account: account-0_111111111111" not in logged
+
     def test_an_aborted_account_does_not_log_that_its_checks_completed(self) -> None:
         """
         A worker cut short mid-flight says so rather than claiming success.
@@ -1396,11 +1437,19 @@ class TestRunChecksPool:
         for both check types and then reaches the end of the function, where
         it used to log "Checks completed" -- during exactly the incident an
         operator is reading the log to diagnose.
+
+        The stand-in returns what the real function returns when a checkpoint
+        stops it, since that return value is what picks the line. Its
+        `abort.set()` is what makes the scenario realistic rather than what
+        the assertion rests on; see
+        test_an_account_that_ran_every_check_is_not_logged_as_aborted for the
+        case where the two disagree.
         """
         abort = threading.Event()
 
-        def abort_partway_through(*args: object) -> None:
+        def abort_partway_through(*args: object) -> bool:
             abort.set()
+            return False
 
         with (
             patch("headroom.analysis.get_headroom_session"),
