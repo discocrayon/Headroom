@@ -340,9 +340,14 @@ class TestRunChecks:
         Accounts run in a worker pool, so every account the pool has already
         started is in flight when the first one fails, and how many that is
         depends on thread scheduling. What stops the rest is pinned
-        deterministically elsewhere:
-        TestRunChecksPool.test_a_worker_returns_immediately_when_abort_is_set
-        and test_no_further_checks_run_once_abort_is_set in tests/test_analysis.py.
+        deterministically by three tests in TestRunChecksPool, in
+        tests/test_analysis.py, which together carry the whole chain: the
+        failure sets the abort Event
+        (test_the_first_failure_sets_the_abort_event), a queued worker returns
+        without assuming a role once it is set
+        (test_a_worker_returns_immediately_when_abort_is_set), and an
+        in-flight worker stops at its next check boundary
+        (test_abort_stops_run_checks_for_type_between_checks).
         """
         mock_security_session = MagicMock()
         access_denied = ClientError(
