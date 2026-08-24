@@ -6,6 +6,7 @@ Tests for DenyEc2ImdsV1 dataclass and get_ec2_imds_v1_analysis function.
 
 import gc
 import logging
+from dataclasses import FrozenInstanceError
 
 import pytest
 from unittest.mock import MagicMock
@@ -1788,6 +1789,29 @@ class TestGetInstances:
             get_instances(session, "us-east-1")
 
         session.client.return_value.get_paginator.assert_called_once_with("describe_instances")
+
+    def test_a_projected_instance_cannot_be_mutated(self) -> None:
+        """
+        Ec2Instance is frozen, because the memo hands out the object itself.
+
+        `get_instances` returns the cached list, not a copy, so one check
+        writing to a field would change what the next three read for the same
+        account and region -- a cross-check data dependency with no call site
+        connecting the two. Freezing the dataclass is what makes the memo's
+        "callers must not mutate what this returns" invariant enforced rather
+        than merely documented, and it is cheaper than copying on every read.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{"InstanceId": "i-11111111111111111", "State": {"Name": "running"}}],
+            }]
+        }])
+
+        instance = get_instances(session, "us-east-1")[0]
+
+        with pytest.raises(FrozenInstanceError):
+            instance.http_tokens = "required"  # type: ignore[misc]
 
     def test_each_region_is_described_separately(self) -> None:
         """Two regions are distinct memo entries, not one shared answer."""

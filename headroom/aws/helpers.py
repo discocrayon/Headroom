@@ -50,6 +50,10 @@ def get_all_regions(session: Session) -> list[str]:
     Two threads cannot race to fill the same entry because each session belongs
     to exactly one worker; the lock exists only because the outer
     WeakKeyDictionary is shared between workers.
+
+    Callers must not mutate what this returns. It is the cached list itself,
+    not a copy, so sorting or filtering it in place changes the region list
+    every later check for this account reads.
     """
     with _REGION_MEMO_LOCK:
         cached = _REGION_MEMO.get(session)
