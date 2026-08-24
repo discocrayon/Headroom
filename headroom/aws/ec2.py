@@ -99,7 +99,6 @@ class Ec2Instance:
 
     Attributes:
         instance_id: EC2 instance identifier
-        region: AWS region the instance runs in
         image_id: AMI the instance was launched from, None if the API omits it
         owner_id: Account that owns the reservation
         public_ip_address: Public IP if one is assigned, None otherwise
@@ -109,7 +108,6 @@ class Ec2Instance:
         tags: Instance tags as a key to value mapping
     """
     instance_id: str
-    region: str
     image_id: Optional[str]
     owner_id: str
     public_ip_address: Optional[str]
@@ -125,16 +123,18 @@ _INSTANCE_MEMO_LOCK = Lock()
 
 def _project_instance(
     instance: InstanceTypeDef,
-    owner_id: str,
-    region: str
+    owner_id: str
 ) -> Ec2Instance:
     """
     Reduce one describe_instances entry to the values the checks read.
 
+    The region is not among them. Every check already has it as the loop
+    variable it passed to get_instances, and it is the memo's dict key, so
+    carrying it on each instance would be a field with no reader.
+
     Args:
         instance: Instance dictionary from describe_instances
         owner_id: Owner of the reservation the instance belongs to
-        region: AWS region being collected
 
     Returns:
         The projected instance
@@ -142,7 +142,6 @@ def _project_instance(
     metadata_options = instance.get('MetadataOptions', {})
     return Ec2Instance(
         instance_id=instance['InstanceId'],
-        region=region,
         image_id=instance.get('ImageId'),
         owner_id=owner_id,
         public_ip_address=instance.get('PublicIpAddress'),
@@ -181,7 +180,7 @@ def _describe_instances(session: Session, region: str) -> List[Ec2Instance]:
                 for instance in reservation['Instances']:
                     if instance['State']['Name'] == 'terminated':
                         continue
-                    instances.append(_project_instance(instance, owner_id, region))
+                    instances.append(_project_instance(instance, owner_id))
     except ClientError as e:
         raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
 
