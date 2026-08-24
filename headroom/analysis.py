@@ -543,6 +543,10 @@ def _run_checks_for_account(
     if not rcp_exist:
         run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids, abort)
 
+    if abort.is_set():
+        logger.info(f"Checks aborted for account: {account_identifier}")
+        return
+
     logger.info(f"Checks completed for account: {account_identifier}")
 
 
