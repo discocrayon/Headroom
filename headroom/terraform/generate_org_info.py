@@ -7,7 +7,7 @@ to support SCP/RCP deployment targeting.
 
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from boto3.session import Session
 
@@ -167,7 +167,7 @@ def _generate_ou_locals(
 def _group_accounts_by_top_level_ou(
     accounts: Dict[str, AccountOrgPlacement],
     organizational_units: Dict[str, OrganizationalUnit]
-) -> Dict[str, List[AccountOrgPlacement]]:
+) -> Dict[Optional[str], List[AccountOrgPlacement]]:
     """
     Group accounts by their top-level parent OU.
 
@@ -181,7 +181,7 @@ def _group_accounts_by_top_level_ou(
     Returns:
         Dictionary mapping top-level OU ID -> list of accounts under that OU
     """
-    accounts_by_top_level_ou: Dict[str, List[AccountOrgPlacement]] = {}
+    accounts_by_top_level_ou: Dict[Optional[str], List[AccountOrgPlacement]] = {}
 
     for account in accounts.values():
         top_level_ou_id = account.parent_ou_id
@@ -235,20 +235,28 @@ def _generate_account_locals(
 
     # Code generation: build Terraform locals for each account
     for top_level_ou_id, accounts_list in accounts_by_top_level_ou.items():
-        if top_level_ou_id not in organizational_units:
+        if top_level_ou_id is None:
+            # Accounts directly under the root belong to no OU, so there is no
+            # OU child-accounts data source to resolve them through.
+            accounts_source = "data.aws_organizations_organization.org.accounts"
+        elif top_level_ou_id in organizational_units:
+            ou_name = organizational_units[top_level_ou_id].name
+            safe_ou_name = make_safe_variable_name(ou_name)
+            accounts_source = (
+                "data.aws_organizations_organizational_unit_child_accounts"
+                f".{safe_ou_name}_accounts.accounts"
+            )
+        else:
             continue
-
-        ou_name = organizational_units[top_level_ou_id].name
-        safe_ou_name = make_safe_variable_name(ou_name)
 
         for account in accounts_list:
             safe_account_name = make_safe_variable_name(account.account_name)
             content_parts.extend([
                 f"  # Validation for {account.account_name} account",
-                f"  validation_check_{safe_account_name}_account = (length([for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts : account.id if account.name == \"{account.account_name}\"]) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {account.account_name} account, found ${{length([for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts : account.id if account.name == \"{account.account_name}\"])}}\")",
+                f"  validation_check_{safe_account_name}_account = (length([for account in {accounts_source} : account.id if account.name == \"{account.account_name}\"]) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {account.account_name} account, found ${{length([for account in {accounts_source} : account.id if account.name == \"{account.account_name}\"])}}\")",
                 "",
                 f"  {safe_account_name}_account_id = [",
-                f"    for account in data.aws_organizations_organizational_unit_child_accounts.{safe_ou_name}_accounts.accounts :",
+                f"    for account in {accounts_source} :",
                 f"    account.id if account.name == \"{account.account_name}\"",
                 "  ][0]",
                 "",

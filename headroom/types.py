@@ -37,10 +37,16 @@ class OrganizationalUnit:
 
 @dataclass
 class AccountOrgPlacement:
-    """Information about an account's OU placement."""
+    """
+    Information about an account's OU placement.
+
+    parent_ou_id is None for accounts attached directly to the organization
+    root, which belong to no OU. Such accounts cannot be targeted by an
+    OU-level policy; the organization root ID is not a substitute.
+    """
     account_id: str
     account_name: str
-    parent_ou_id: str
+    parent_ou_id: Optional[str]
     ou_path: List[str]  # Full path from root to account
 
 
