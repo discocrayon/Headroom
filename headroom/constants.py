@@ -13,8 +13,13 @@ BASE_PRINCIPAL_TYPES = frozenset({"AWS", "Service", "Federated"})
 
 # AWS ARN Regex Pattern
 # Pattern to extract 12-digit account ID from AWS ARN
-# Format: arn:aws:service:region:account-id:resource
-AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+# Format: arn:partition:service:region:account-id:resource
+#
+# The service segment is deliberately unconstrained: a resource policy
+# principal can be an STS session ARN (arn:aws:sts::{account}:assumed-role/...)
+# as readily as an IAM one, and pinning the segment to `iam` drops the account.
+# The partition is matched the same way, so GovCloud and China ARNs resolve.
+AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws[a-z0-9-]*:[^:]+:[^:]*:(\d{12}):'
 
 # Check name constants
 

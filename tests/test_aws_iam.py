@@ -6,6 +6,7 @@ Tests cover IAM role trust policy analysis and SAML provider enumeration helpers
 
 import json
 from datetime import datetime, timezone
+from typing import Any, Dict, Set
 from unittest.mock import MagicMock
 from urllib.parse import quote
 
@@ -14,6 +15,7 @@ from botocore.exceptions import ClientError
 
 from headroom.aws.iam import (
     InvalidFederatedPrincipalError,
+    MalformedStatementError,
     SamlProviderAnalysis,
     UnknownPrincipalTypeError,
     analyze_iam_roles_trust_policies,
@@ -725,3 +727,164 @@ class TestGetSamlProvidersAnalysis:
 
         with pytest.raises(ClientError):
             get_saml_providers_analysis(mock_session)
+
+
+class TestTrustPolicyActionMatching:
+    """
+    Tests that every IAM action form granting sts:AssumeRole is recognized.
+
+    The gate used to be exact string membership - `"sts:AssumeRole" in action` -
+    while IAM matches action names case-insensitively and expands `*` and `?`
+    inside the name. A trust policy written `sts:*` therefore granted a third
+    party AssumeRole while the analyzer recorded nothing: no violation, no
+    error, and the account simply missing from the RCP allowlist meant to keep
+    it working. `NotAction` was dropped the same way, since only `Action` was
+    ever read.
+    """
+
+    PARTNER = "999999999999"
+    ORG = {"111111111111"}
+
+    def third_parties(self, statement: Dict[str, Any]) -> Set[str]:
+        """Run the analyzer over one trust policy statement."""
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+        trust_policy = {"Version": "2012-10-17", "Statement": [statement]}
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Roles": [
+                    {
+                        "RoleName": "PartnerRole",
+                        "Arn": "arn:aws:iam::111111111111:role/PartnerRole",
+                        "AssumeRolePolicyDocument": quote(json.dumps(trust_policy))
+                    }
+                ]
+            }
+        ]
+        found: Set[str] = set()
+        for result in analyze_iam_roles_trust_policies(mock_session, self.ORG):
+            found.update(result.third_party_account_ids)
+        return found
+
+    def allow(self, **fields: Any) -> Dict[str, Any]:
+        """Build an Allow statement naming the partner account."""
+        statement: Dict[str, Any] = {
+            "Effect": "Allow",
+            "Principal": {"AWS": f"arn:aws:iam::{self.PARTNER}:root"},
+        }
+        statement.update(fields)
+        return statement
+
+    @pytest.mark.parametrize("action", [
+        "sts:AssumeRole",
+        "STS:AssumeRole",
+        "sts:assumerole",
+        "sts:*",
+        "sts:Assume*",
+        "sts:*Role",
+        "sts:AssumeRol?",
+        "*",
+    ])
+    def test_action_form_grants_assume_role(self, action: str) -> None:
+        """Every form IAM would match against sts:AssumeRole is recognized."""
+        assert self.third_parties(self.allow(Action=action)) == {self.PARTNER}
+
+    @pytest.mark.parametrize("action", [
+        "sts:TagSession",
+        "sts:AssumeRoleWithSAML",
+        "sts:AssumeRoleWith*",
+        "sts:AssumeRoleX",
+        "iam:*",
+        "s3:GetObject",
+    ])
+    def test_action_form_does_not_grant_assume_role(self, action: str) -> None:
+        """Forms IAM would not match must stay unrecognized."""
+        assert self.third_parties(self.allow(Action=action)) == set()
+
+    def test_action_list_grants_if_any_entry_matches(self) -> None:
+        """One matching pattern in a list is enough."""
+        statement = self.allow(Action=["sts:TagSession", "sts:Assume*"])
+        assert self.third_parties(statement) == {self.PARTNER}
+
+    def test_empty_action_list_grants_nothing(self) -> None:
+        """An empty Action list matches no action."""
+        assert self.third_parties(self.allow(Action=[])) == set()
+
+    def test_not_action_excluding_assume_role_is_not_a_grant(self) -> None:
+        """Allow + NotAction sts:AssumeRole permits everything but AssumeRole."""
+        assert self.third_parties(self.allow(NotAction="sts:AssumeRole")) == set()
+
+    def test_not_action_wildcard_excluding_assume_role_is_not_a_grant(self) -> None:
+        """A NotAction wildcard covering AssumeRole excludes it too."""
+        assert self.third_parties(self.allow(NotAction="sts:*")) == set()
+
+    def test_not_action_leaving_assume_role_is_a_grant(self) -> None:
+        """Allow + NotAction that misses AssumeRole still grants it."""
+        statement = self.allow(NotAction=["sts:AssumeRoleWithSAML"])
+        assert self.third_parties(statement) == {self.PARTNER}
+
+    def test_statement_with_action_and_not_action_raises(self) -> None:
+        """IAM permits exactly one of Action and NotAction."""
+        statement = self.allow(Action="sts:AssumeRole", NotAction="s3:*")
+        with pytest.raises(MalformedStatementError, match="both Action and NotAction"):
+            self.third_parties(statement)
+
+    def test_statement_with_neither_action_nor_not_action_raises(self) -> None:
+        """A statement naming no actions cannot be classified."""
+        with pytest.raises(MalformedStatementError, match="neither Action nor NotAction"):
+            self.third_parties(self.allow())
+
+    def test_deny_statement_is_ignored_before_action_is_read(self) -> None:
+        """Effect is checked first, so a Deny is never classified."""
+        statement = {
+            "Effect": "Deny",
+            "Principal": {"AWS": f"arn:aws:iam::{self.PARTNER}:root"},
+        }
+        assert self.third_parties(statement) == set()
+
+    def test_wildcard_action_reaches_principal_validation(self) -> None:
+        """
+        A statement recognized only by the widened gate is fully validated.
+
+        Under exact matching this statement was skipped, so its unknown
+        principal type went unreported.
+        """
+        statement = {
+            "Effect": "Allow",
+            "Action": "sts:*",
+            "Principal": {"NotARealPrincipalType": "whatever"},
+        }
+        with pytest.raises(UnknownPrincipalTypeError):
+            self.third_parties(statement)
+
+
+class TestPrincipalArnCoverage:
+    """
+    Tests that principal ARNs outside arn:aws:iam:: yield their account ID.
+
+    The trust policy analyzer matched only `^arn:aws:iam::(\\d{12}):`, so STS
+    session principals - which AWS documents as valid in a resource-based
+    policy, and a role trust policy is one - and every non-commercial
+    partition produced no account ID at all.
+    """
+
+    PARTNER = "999999999999"
+
+    @pytest.mark.parametrize("principal", [
+        "arn:aws:iam::999999999999:root",
+        "arn:aws:iam::999999999999:role/vendor",
+        "arn:aws:iam::999999999999:user/vendor",
+        "arn:aws:sts::999999999999:assumed-role/vendor/session",
+        "arn:aws:sts::999999999999:federated-user/vendor",
+        "arn:aws-us-gov:iam::999999999999:role/vendor",
+        "arn:aws-cn:iam::999999999999:role/vendor",
+        "999999999999",
+    ])
+    def test_principal_yields_account_id(self, principal: str) -> None:
+        """Each documented principal form resolves to its account."""
+        assert _extract_account_ids_from_principal(principal) == {self.PARTNER}
+
+    def test_non_account_principal_yields_nothing(self) -> None:
+        """A service principal carries no account ID."""
+        assert _extract_account_ids_from_principal("ec2.amazonaws.com") == set()
