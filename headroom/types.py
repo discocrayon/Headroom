@@ -108,30 +108,41 @@ class SCPPlacementRecommendations:
 @dataclass
 class RCPCheckResult(CheckResult):
     """
-    Result from an RCP check (third-party access control).
+    One account's findings for one RCP check.
 
-    RCP checks identify external account access and determine whether
-    Resource Control Policies can be safely deployed.
-
-    TODO: As more RCP checks are added, consider creating per-check
-    subclasses if fields diverge significantly. For now, all RCP checks
-    share the third-party access pattern.
+    Attributes:
+        third_party_account_ids: Third parties this account's policies allow
+        blocks_rcp: True if this check counted a violation, meaning a
+            resource names a principal that no allowlist can express and
+            the RCP is unsafe to deploy here. A wildcard principal is the
+            one case every check flags this way. Federated and
+            CanonicalUser principals, which carry no account ID to
+            allowlist, are handled per check rather than uniformly: the S3
+            analyzer records them as violations, the ECR, KMS, Secrets
+            Manager and SQS analyzers raise on them, and the STS analyzer
+            raises on a CanonicalUser or on a Federated principal granted
+            sts:AssumeRole, so S3 is the only check those two principal
+            types can set this flag from
     """
     third_party_account_ids: List[str]
-    has_wildcard: bool
-    total_roles_analyzed: Optional[int] = None
+    blocks_rcp: bool
 
 
 @dataclass
-class RCPParseResult:
+class RCPCheckParseResult:
     """
-    Result from parsing RCP check result files.
+    Third-party access findings for one RCP check across all accounts.
 
-    Contains mapping of accounts to their third-party accounts,
-    and tracks which accounts have wildcard principals.
+    Attributes:
+        check_name: Name of the RCP check these findings belong to
+        account_third_party_map: Accounts that can take this RCP, mapped to
+            the third-party accounts their policies grant access to
+        accounts_with_blockers: Accounts that cannot take this RCP, because a
+            resource policy names a principal that no allowlist can express
     """
+    check_name: str
     account_third_party_map: AccountThirdPartyMap
-    accounts_with_wildcards: Set[str]
+    accounts_with_blockers: Set[str]
 
 
 @dataclass

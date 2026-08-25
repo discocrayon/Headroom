@@ -90,8 +90,16 @@ execution_order:
 
   phase_5_terraform_generation:
     file: headroom/terraform/generate_{scps|rcps}.py
-    function: "_build_{scp|rcp}_terraform_module"
-    add: parameter generation logic
+    scp: "add parameter generation logic to _build_scp_terraform_module"
+    rcp: |
+      Add one RCP_TERRAFORM_VARIABLES entry naming the check's comment,
+      enable variable, and allowlist variable. The renderer loops the table,
+      so no branch needs editing. Parsing and placement are already driven by
+      the registry and need no change.
+    enforced_by: |
+      test_table_covers_every_registered_rcp_check fails by name if a
+      registered RCP check has no table entry. Do not silence it by removing
+      the check from the registry.
     ordering: "alphabetical by service"
 
   phase_6_tests:

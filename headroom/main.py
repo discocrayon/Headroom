@@ -141,16 +141,12 @@ def handle_rcp_workflow(final_config: HeadroomConfig, org_hierarchy: Organizatio
         final_config: Validated Headroom configuration
         org_hierarchy: Organization hierarchy structure
     """
-    rcp_parse_result = parse_rcp_result_files(final_config.results_dir, org_hierarchy)
+    parse_results = parse_rcp_result_files(final_config.results_dir, org_hierarchy)
 
-    if not rcp_parse_result.account_third_party_map:
+    if not any(parsed.account_third_party_map for parsed in parse_results):
         return
 
-    rcp_recommendations = determine_rcp_placement(
-        rcp_parse_result.account_third_party_map,
-        org_hierarchy,
-        rcp_parse_result.accounts_with_wildcards
-    )
+    rcp_recommendations = determine_rcp_placement(parse_results, org_hierarchy)
 
     if not rcp_recommendations:
         return

@@ -10,10 +10,11 @@ import tempfile
 import shutil
 import pytest
 from pathlib import Path
-from typing import List, Set, Generator
+from typing import Any, Dict, List, Set, Generator
 from headroom.constants import (
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
+    DENY_S3_THIRD_PARTY_ACCESS,
     DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
     DENY_STS_THIRD_PARTY_ASSUMEROLE,
 )
@@ -28,16 +29,69 @@ from headroom.terraform.generate_rcps import (
     _build_rcp_terraform_module,
     _create_root_level_rcp_recommendation,
     _create_ou_level_rcp_recommendations,
-    _create_account_level_rcp_recommendations
+    _create_account_level_rcp_recommendations,
+    RCP_TERRAFORM_VARIABLES
 )
+from headroom.checks.registry import get_check_names
 from headroom.placement.hierarchy import PlacementCandidate
 from headroom.types import (
     AccountThirdPartyMap,
     OrganizationHierarchy,
     OrganizationalUnit,
     AccountOrgPlacement,
+    RCPCheckParseResult,
     RCPPlacementRecommendations
 )
+
+
+def write_rcp_result(
+    results_dir: str,
+    check_name: str,
+    account_id: str,
+    account_name: str,
+    third_party_account_ids: List[str],
+    violations: int = 0,
+) -> None:
+    """
+    Write one RCP check result file, shaped as the checks write it.
+
+    Args:
+        results_dir: Base results directory
+        check_name: Registered RCP check the result belongs to
+        account_id: Account the check ran against
+        account_name: Account name, also used as the filename stem
+        third_party_account_ids: Third parties the account's policies allow
+        violations: Resources whose principals no allowlist can express
+    """
+    check_dir = Path(results_dir) / "rcps" / check_name
+    check_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "summary": {
+            "account_id": account_id,
+            "account_name": account_name,
+            "check": check_name,
+            "unique_third_party_accounts": third_party_account_ids,
+            "violations": violations,
+        }
+    }
+
+    with open(check_dir / f"{account_name}.json", "w") as f:
+        json.dump(payload, f)
+
+
+def seed_all_rcp_check_dirs(results_dir: str) -> None:
+    """
+    Create a results directory for every registered RCP check.
+
+    Parsing aborts on a registered check with no directory, so a test that
+    exercises one check still needs the rest to exist.
+
+    Args:
+        results_dir: Base results directory
+    """
+    for check_name in get_check_names("rcps"):
+        (Path(results_dir) / "rcps" / check_name).mkdir(parents=True, exist_ok=True)
 
 
 class TestParseRcpResultFiles:
@@ -86,28 +140,21 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing results from a single account."""
-        check_dir = Path(temp_results_dir) / "rcps" / "deny_sts_third_party_assumerole"
-        check_dir.mkdir(parents=True)
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=["999999999999", "888888888888"],
+        )
 
-        result_data = {
-            "summary": {
-                "account_id": "111111111111",
-                "account_name": "test-account",
-                "unique_third_party_accounts": ["999999999999", "888888888888"],
-                "roles_with_wildcards": 0
-            }
-        }
+        results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
-        result_file = check_dir / "test-account.json"
-        with open(result_file, 'w') as f:
-            json.dump(result_data, f)
-
-        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
-
-        assert len(result.account_third_party_map) == 1
-        assert "111111111111" in result.account_third_party_map
-        assert result.account_third_party_map["111111111111"] == {"999999999999", "888888888888"}
-        assert len(result.accounts_with_wildcards) == 0
+        sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
+        assert len(sts.account_third_party_map) == 1
+        assert sts.account_third_party_map["111111111111"] == {"999999999999", "888888888888"}
+        assert len(sts.accounts_with_blockers) == 0
 
     def test_parse_multiple_accounts(
         self,
@@ -115,41 +162,39 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing results from multiple accounts."""
-        check_dir = Path(temp_results_dir) / "rcps" / "deny_sts_third_party_assumerole"
-        check_dir.mkdir(parents=True)
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=["999999999999"],
+        )
+        write_rcp_result(
+            temp_results_dir,
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            account_id="222222222222",
+            account_name="account2",
+            third_party_account_ids=["888888888888", "777777777777"],
+        )
 
-        result_data_1 = {
-            "summary": {
-                "account_id": "111111111111",
-                "unique_third_party_accounts": ["999999999999"],
-                "roles_with_wildcards": 0
-            }
-        }
+        results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
-        result_data_2 = {
-            "summary": {
-                "account_id": "222222222222",
-                "unique_third_party_accounts": ["888888888888", "777777777777"],
-                "roles_with_wildcards": 0
-            }
-        }
-
-        with open(check_dir / "account1.json", 'w') as f:
-            json.dump(result_data_1, f)
-
-        with open(check_dir / "account2.json", 'w') as f:
-            json.dump(result_data_2, f)
-
-        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
-
-        assert len(result.account_third_party_map) == 2
-        assert result.account_third_party_map["111111111111"] == {"999999999999"}
-        assert result.account_third_party_map["222222222222"] == {"888888888888", "777777777777"}
-        assert len(result.accounts_with_wildcards) == 0
+        sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
+        assert len(sts.account_third_party_map) == 2
+        assert sts.account_third_party_map["111111111111"] == {"999999999999"}
+        assert sts.account_third_party_map["222222222222"] == {"888888888888", "777777777777"}
+        assert len(sts.accounts_with_blockers) == 0
 
     def test_parse_nonexistent_directory(self, sample_org_hierarchy: OrganizationHierarchy) -> None:
-        """Test parsing when directory doesn't exist."""
-        with pytest.raises(RuntimeError, match="STS third-party AssumeRole check directory does not exist"):
+        """
+        Test parsing when the results directory doesn't exist.
+
+        A totally missing results directory means every registered check is
+        missing its own directory, so the abort names all of them, STS
+        included.
+        """
+        with pytest.raises(RuntimeError, match=DENY_STS_THIRD_PARTY_ASSUMEROLE):
             parse_rcp_result_files("/nonexistent/path", sample_org_hierarchy)
 
     def test_parse_empty_directory(
@@ -158,12 +203,13 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing empty directory."""
-        check_dir = Path(temp_results_dir) / "rcps" / "deny_sts_third_party_assumerole"
-        check_dir.mkdir(parents=True)
+        seed_all_rcp_check_dirs(temp_results_dir)
 
-        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
-        assert result.account_third_party_map == {}
-        assert result.accounts_with_wildcards == set()
+        results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
+        assert sts.account_third_party_map == {}
+        assert sts.accounts_with_blockers == set()
 
     def test_parse_invalid_json(
         self,
@@ -171,8 +217,8 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing with invalid JSON file."""
-        check_dir = Path(temp_results_dir) / "rcps" / "deny_sts_third_party_assumerole"
-        check_dir.mkdir(parents=True)
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
 
         # Create invalid JSON file
         result_file = check_dir / "invalid.json"
@@ -189,8 +235,8 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test parsing with file missing required summary key."""
-        check_dir = Path(temp_results_dir) / "rcps" / "deny_sts_third_party_assumerole"
-        check_dir.mkdir(parents=True)
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
 
         # Create file with missing summary key - should fail with RuntimeError
         result_data = {
@@ -204,50 +250,41 @@ class TestParseRcpResultFiles:
         with pytest.raises(RuntimeError, match="missing both account_id and account_name"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
-    def test_parse_skips_accounts_with_wildcards(
+    def test_parse_separates_blocked_accounts(
         self,
         temp_results_dir: str,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test that accounts with wildcard principals are skipped."""
-        check_dir = Path(temp_results_dir) / "rcps" / "deny_sts_third_party_assumerole"
-        check_dir.mkdir(parents=True)
+        """Test that accounts with blocking violations are separated out."""
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=["999999999999"],
+            violations=1,
+        )
+        write_rcp_result(
+            temp_results_dir,
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            account_id="222222222222",
+            account_name="account2",
+            third_party_account_ids=["888888888888"],
+        )
 
-        # Account with wildcard - should be skipped
-        result_data_with_wildcard = {
-            "summary": {
-                "account_id": "111111111111",
-                "unique_third_party_accounts": ["999999999999"],
-                "roles_with_wildcards": 2
-            }
-        }
+        results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+        sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
 
-        # Account without wildcard - should be included
-        result_data_without_wildcard = {
-            "summary": {
-                "account_id": "222222222222",
-                "unique_third_party_accounts": ["888888888888"],
-                "roles_with_wildcards": 0
-            }
-        }
+        # Only the account with no blocking violation should be in the map
+        assert len(sts.account_third_party_map) == 1
+        assert "222222222222" in sts.account_third_party_map
+        assert "111111111111" not in sts.account_third_party_map
+        assert sts.account_third_party_map["222222222222"] == {"888888888888"}
 
-        with open(check_dir / "account1.json", 'w') as f:
-            json.dump(result_data_with_wildcard, f)
-
-        with open(check_dir / "account2.json", 'w') as f:
-            json.dump(result_data_without_wildcard, f)
-
-        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
-
-        # Only account without wildcard should be included in map
-        assert len(result.account_third_party_map) == 1
-        assert "222222222222" in result.account_third_party_map
-        assert "111111111111" not in result.account_third_party_map
-        assert result.account_third_party_map["222222222222"] == {"888888888888"}
-
-        # Account with wildcard should be in wildcard set
-        assert len(result.accounts_with_wildcards) == 1
-        assert "111111111111" in result.accounts_with_wildcards
+        # The account with a blocking violation should be in the blocked set
+        assert len(sts.accounts_with_blockers) == 1
+        assert "111111111111" in sts.accounts_with_blockers
 
     def test_parse_looks_up_missing_account_id(
         self,
@@ -255,15 +292,16 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that missing account_id is looked up from account_name."""
-        check_dir = Path(temp_results_dir) / "rcps" / "deny_sts_third_party_assumerole"
-        check_dir.mkdir(parents=True)
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
 
         # Result without account_id (e.g., from exclude_account_ids=True)
         result_data = {
             "summary": {
                 "account_name": "test-account",
+                "check": DENY_STS_THIRD_PARTY_ASSUMEROLE,
                 "unique_third_party_accounts": ["999999999999"],
-                "roles_with_wildcards": 0
+                "violations": 0,
             }
         }
 
@@ -271,12 +309,13 @@ class TestParseRcpResultFiles:
         with open(result_file, 'w') as f:
             json.dump(result_data, f)
 
-        result = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+        results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+        sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
 
         # Should have looked up account_id from account_name
-        assert len(result.account_third_party_map) == 1
-        assert "111111111111" in result.account_third_party_map
-        assert result.account_third_party_map["111111111111"] == {"999999999999"}
+        assert len(sts.account_third_party_map) == 1
+        assert "111111111111" in sts.account_third_party_map
+        assert sts.account_third_party_map["111111111111"] == {"999999999999"}
 
     def test_parse_fails_when_account_name_not_found(
         self,
@@ -284,15 +323,16 @@ class TestParseRcpResultFiles:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that an error is raised when account_name is not in org hierarchy."""
-        check_dir = Path(temp_results_dir) / "rcps" / "deny_sts_third_party_assumerole"
-        check_dir.mkdir(parents=True)
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
 
         # Result with unknown account name
         result_data = {
             "summary": {
                 "account_name": "unknown-account",
+                "check": DENY_STS_THIRD_PARTY_ASSUMEROLE,
                 "unique_third_party_accounts": ["999999999999"],
-                "roles_with_wildcards": 0
+                "violations": 0,
             }
         }
 
@@ -301,6 +341,153 @@ class TestParseRcpResultFiles:
             json.dump(result_data, f)
 
         with pytest.raises(RuntimeError, match="Account name 'unknown-account'.* not found in organization hierarchy"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+    def test_parse_aborts_when_a_check_directory_is_missing(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A registered check with no results directory must abort the run.
+
+        Results gate RCP deployment, and a check absent from them is
+        indistinguishable from a check that found nothing.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        shutil.rmtree(Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS)
+
+        with pytest.raises(RuntimeError, match=DENY_S3_THIRD_PARTY_ACCESS):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+    def test_parse_aborts_when_violations_field_is_absent(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A result file without a violations count must abort the run.
+
+        Defaulting the count to zero would read a malformed file as an
+        account with nothing blocking deployment.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "check": DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    "unique_third_party_accounts": [],
+                }
+            }, f)
+
+        with pytest.raises(RuntimeError, match="violations"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+    def test_parse_aborts_when_third_party_accounts_field_is_absent(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A result file without a third-party allowlist must abort the run.
+
+        Defaulting the allowlist to empty would read a malformed file as an
+        account that trusts nobody, which renders the check enabled with an
+        empty allowlist and denies every third-party integration it has.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "check": DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    "violations": 0,
+                }
+            }, f)
+
+        with pytest.raises(RuntimeError, match="test-account.json.*unique_third_party_accounts"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+    def test_parse_aborts_when_summary_check_field_is_absent(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A result file that names no check must abort the run.
+
+        Treating the absent name as agreeing with the directory disarms the
+        mismatch guard for exactly the files it exists to catch.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "unique_third_party_accounts": [],
+                    "violations": 0,
+                }
+            }, f)
+
+        with pytest.raises(RuntimeError, match="test-account.json.*names no check"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+    def test_absent_and_mismatched_check_names_report_differently(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        The two check-name failures must be told apart from the message.
+
+        A file that names nothing needs regenerating; a file that names
+        another check has been filed in the wrong directory.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        summary: Dict[str, Any] = {
+            "account_id": "111111111111",
+            "unique_third_party_accounts": [],
+            "violations": 0,
+        }
+
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({"summary": summary}, f)
+        with pytest.raises(RuntimeError) as absent:
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({"summary": {**summary, "check": DENY_S3_THIRD_PARTY_ACCESS}}, f)
+        with pytest.raises(RuntimeError) as mismatch:
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        assert str(absent.value) != str(mismatch.value)
+        assert "does not match" not in str(absent.value)
+        assert "names no check" not in str(mismatch.value)
+
+    def test_parse_aborts_when_summary_check_disagrees_with_directory(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """A result filed under the wrong check directory must abort."""
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "check": DENY_S3_THIRD_PARTY_ACCESS,
+                    "unique_third_party_accounts": [],
+                    "violations": 0,
+                }
+            }, f)
+
+        with pytest.raises(RuntimeError, match="does not match"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
 
@@ -360,9 +547,17 @@ class TestDetermineRcpPlacement:
             "222222222222": {"999999999999"},
             "333333333333": {"999999999999"}
         }
-        accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    accounts_with_blockers=set(),
+                )
+            ],
+            sample_org_hierarchy,
+        )
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
@@ -382,9 +577,17 @@ class TestDetermineRcpPlacement:
             "222222222222": {"888888888888"},
             "333333333333": {"999999999999", "777777777777"}
         }
-        accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    accounts_with_blockers=set(),
+                )
+            ],
+            sample_org_hierarchy,
+        )
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
@@ -406,9 +609,17 @@ class TestDetermineRcpPlacement:
             "222222222222": {"999999999999", "666666666666"},
             "333333333333": {"777777777777"}
         }
-        accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    accounts_with_blockers=set(),
+                )
+            ],
+            sample_org_hierarchy,
+        )
 
         # Should NOT get root-level since wildcards would prevent it
         # Should get OU-level for ou-1111 with unioned third-party IDs
@@ -440,9 +651,17 @@ class TestDetermineRcpPlacement:
             "222222222222": {"888888888888"},
             "333333333333": {"777777777777"}
         }
-        accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    accounts_with_blockers=set(),
+                )
+            ],
+            sample_org_hierarchy,
+        )
 
         # With union logic, this should recommend root-level with all IDs unioned
         assert len(recommendations) == 1
@@ -455,9 +674,17 @@ class TestDetermineRcpPlacement:
     ) -> None:
         """Test with no third-party accounts."""
         account_third_party_map: AccountThirdPartyMap = {}
-        accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    accounts_with_blockers=set(),
+                )
+            ],
+            sample_org_hierarchy,
+        )
 
         assert len(recommendations) == 0
 
@@ -477,10 +704,18 @@ class TestDetermineRcpPlacement:
             "111111111111": set(),
             "222222222222": set()
         }
-        # One account has wildcards (like shared-foo-bar in test_environment)
-        accounts_with_wildcards: Set[str] = {"333333333333"}
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    # One account has wildcards (like shared-foo-bar in test_environment)
+                    accounts_with_blockers={"333333333333"},
+                )
+            ],
+            sample_org_hierarchy,
+        )
 
         # Should NOT get root-level recommendation
         root_recs = [r for r in recommendations if r.recommended_level == "root"]
@@ -503,9 +738,17 @@ class TestDetermineRcpPlacement:
             # 222222222222 has wildcards, not in map
             "333333333333": {"777777777777"}
         }
-        accounts_with_wildcards: Set[str] = {"222222222222"}
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    accounts_with_blockers={"222222222222"},
+                )
+            ],
+            sample_org_hierarchy,
+        )
 
         # Should NOT get root-level (wildcard blocks it)
         root_recs = [r for r in recommendations if r.recommended_level == "root"]
@@ -537,12 +780,19 @@ class TestDetermineRcpPlacement:
             "222222222222": {"999999999999"},
             "999999999999": {"888888888888"}  # This account doesn't exist in hierarchy
         }
-        # Add wildcard to prevent root-level and force OU-level processing
-        accounts_with_wildcards: Set[str] = {"some_wildcard_account"}
-
         # Should raise exception for account not in hierarchy during OU-level processing
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
-            determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+            determine_rcp_placement(
+                [
+                    RCPCheckParseResult(
+                        check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                        account_third_party_map=account_third_party_map,
+                        # Add a blocker to prevent root-level and force OU-level processing
+                        accounts_with_blockers={"some_wildcard_account"},
+                    )
+                ],
+                sample_org_hierarchy,
+            )
 
     def test_with_empty_third_party_sets(
         self,
@@ -554,9 +804,17 @@ class TestDetermineRcpPlacement:
             "222222222222": set(),
             "333333333333": set()
         }
-        accounts_with_wildcards: Set[str] = set()
 
-        recommendations = determine_rcp_placement(account_third_party_map, sample_org_hierarchy, accounts_with_wildcards)
+        recommendations = determine_rcp_placement(
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    accounts_with_blockers=set(),
+                )
+            ],
+            sample_org_hierarchy,
+        )
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
@@ -574,12 +832,15 @@ class TestDetermineRcpPlacement:
         account_third_party_map: AccountThirdPartyMap = {
             "333333333333": {"999999999999"}  # Single account in Development OU (ou-2222)
         }
-        accounts_with_wildcards: Set[str] = {"dummy_account"}  # Block root to force OU processing
-
         recommendations = determine_rcp_placement(
-            account_third_party_map,
+            [
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map=account_third_party_map,
+                    accounts_with_blockers={"dummy_account"},  # Block root to force OU processing
+                )
+            ],
             sample_org_hierarchy,
-            accounts_with_wildcards
         )
 
         # Should get OU-level recommendation even though OU has only 1 account
@@ -588,6 +849,39 @@ class TestDetermineRcpPlacement:
         assert recommendations[0].recommended_level == "ou"
         assert recommendations[0].target_ou_id == "ou-2222"
         assert recommendations[0].affected_accounts == ["333333333333"]
+
+    def test_blocking_account_suppresses_only_its_own_check(
+        self,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A blocked account must not suppress placement for other checks.
+
+        An S3 bucket policy with a wildcard principal makes the S3 RCP unsafe
+        for that account. It says nothing about that account's IAM trust
+        policies, so the STS RCP is still safe at root.
+        """
+        parse_results = [
+            RCPCheckParseResult(
+                check_name=DENY_S3_THIRD_PARTY_ACCESS,
+                account_third_party_map={"222222222222": {"999999999999"}},
+                accounts_with_blockers={"111111111111"},
+            ),
+            RCPCheckParseResult(
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                account_third_party_map={
+                    "111111111111": {"999999999999"},
+                    "222222222222": {"999999999999"},
+                },
+                accounts_with_blockers=set(),
+            ),
+        ]
+
+        recommendations = determine_rcp_placement(parse_results, sample_org_hierarchy)
+
+        by_check = {rec.check_name: rec for rec in recommendations}
+        assert by_check[DENY_STS_THIRD_PARTY_ASSUMEROLE].recommended_level == "root"
+        assert by_check[DENY_S3_THIRD_PARTY_ACCESS].recommended_level != "root"
 
 
 class TestCreateRootLevelRcpRecommendation:
@@ -633,6 +927,7 @@ class TestCreateRootLevelRcpRecommendation:
         }
 
         recommendation = _create_root_level_rcp_recommendation(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             sample_org_hierarchy
         )
@@ -656,6 +951,7 @@ class TestCreateRootLevelRcpRecommendation:
         }
 
         recommendation = _create_root_level_rcp_recommendation(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             sample_org_hierarchy
         )
@@ -676,6 +972,7 @@ class TestCreateRootLevelRcpRecommendation:
         }
 
         recommendation = _create_root_level_rcp_recommendation(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             sample_org_hierarchy
         )
@@ -695,6 +992,7 @@ class TestCreateRootLevelRcpRecommendation:
         }
 
         recommendation = _create_root_level_rcp_recommendation(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             sample_org_hierarchy
         )
@@ -712,6 +1010,7 @@ class TestCreateRootLevelRcpRecommendation:
         }
 
         recommendation = _create_root_level_rcp_recommendation(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             sample_org_hierarchy
         )
@@ -728,6 +1027,7 @@ class TestCreateRootLevelRcpRecommendation:
         }
 
         recommendation = _create_root_level_rcp_recommendation(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             sample_org_hierarchy
         )
@@ -800,6 +1100,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -839,6 +1140,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -871,6 +1173,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -897,6 +1200,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -924,6 +1228,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -950,6 +1255,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -977,6 +1283,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -996,6 +1303,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -1022,6 +1330,7 @@ class TestCreateOuLevelRcpRecommendations:
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
             account_third_party_map,
             sample_org_hierarchy
@@ -1044,6 +1353,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = {"222222222222"}
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1063,6 +1373,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = {"111111111111", "222222222222"}
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1077,6 +1388,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1099,6 +1411,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1113,6 +1426,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1127,6 +1441,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = {"111111111111"}
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1141,6 +1456,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1157,6 +1473,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1177,6 +1494,7 @@ class TestCreateAccountLevelRcpRecommendations:
         covered_accounts: Set[str] = {"111111111111", "333333333333"}
 
         recommendations = _create_account_level_rcp_recommendations(
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
             account_third_party_map,
             covered_accounts
         )
@@ -1370,38 +1688,6 @@ class TestGenerateRcpTerraform:
         output_path = Path(temp_output_dir)
         assert not output_path.exists() or len(list(output_path.glob("*.tf"))) == 0
 
-    def test_generate_with_wildcard_disables_enforcement(
-        self,
-        temp_output_dir: str,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """
-        Test that wildcard in third_party_account_ids sets deny_sts_third_party_assumerole to false.
-
-        When a wildcard is present, it means trusting all account IDs which could cause
-        outages if the RCP is deployed, so enforcement should be disabled.
-        The sts_third_party_assumerole_account_ids_allowlist parameter should not be passed when enforcement is false.
-        """
-        recommendations = [
-            RCPPlacementRecommendations(
-                check_name="deny_sts_third_party_assumerole",
-                recommended_level="root",
-                target_ou_id=None,
-                affected_accounts=["111111111111"],
-                third_party_account_ids=["*"],
-                reasoning="Test wildcard detection"
-            )
-        ]
-
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
-
-        root_file = Path(temp_output_dir) / "root_rcps.tf"
-        assert root_file.exists()
-
-        content = root_file.read_text()
-        assert "deny_sts_third_party_assumerole = false" in content
-        assert "sts_third_party_assumerole_account_ids_allowlist" not in content
-
     def test_no_symlink_created_by_generate_rcp_terraform(
         self,
         temp_output_dir: str,
@@ -1508,6 +1794,28 @@ class TestGenerateRcpTerraform:
         assert os.readlink(symlink_path) == expected_target
 
 
+class TestRcpTerraformVariableTable:
+    """Test the table that maps RCP checks to Terraform variables."""
+
+    def test_table_covers_every_registered_rcp_check(self) -> None:
+        """
+        Every registered RCP check must have Terraform variables declared.
+
+        A check missing from the table is collected on every run and then
+        dropped at render time, emitting no module parameters at all, so the
+        omission surfaces as a Terraform plan failure instead of here.
+        """
+        assert set(RCP_TERRAFORM_VARIABLES) == set(get_check_names("rcps"))
+
+    def test_table_declares_distinct_variables_per_check(self) -> None:
+        """Each check must own its enable flag and allowlist variable."""
+        enable_vars = [v.enable_var for v in RCP_TERRAFORM_VARIABLES.values()]
+        allowlist_vars = [v.allowlist_var for v in RCP_TERRAFORM_VARIABLES.values()]
+
+        assert len(set(enable_vars)) == len(enable_vars)
+        assert len(set(allowlist_vars)) == len(allowlist_vars)
+
+
 class TestBuildRcpTerraformModule:
     """Test _build_rcp_terraform_module helper function."""
 
@@ -1534,27 +1842,6 @@ class TestBuildRcpTerraformModule:
         assert '"111111111111"' in result
         assert '"222222222222"' in result
         assert "deny_sts_third_party_assumerole = true" in result
-
-    def test_build_module_with_wildcard(self) -> None:
-        """Should generate module without allowlist when wildcard present."""
-        rec = RCPPlacementRecommendations(
-            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            recommended_level="account",
-            target_ou_id=None,
-            affected_accounts=["000000000000"],
-            third_party_account_ids=["*"],
-            reasoning="Test"
-        )
-        result = _build_rcp_terraform_module(
-            module_name="rcps_test",
-            target_id_reference="local.test_id",
-            recommendations=[rec],
-            comment="Test"
-        )
-
-        assert 'module "rcps_test"' in result
-        assert "third_party_assumerole_account_ids_allowlist" not in result
-        assert "deny_sts_third_party_assumerole = false" in result
 
     def test_build_module_includes_comment(self) -> None:
         """Should include comment in generated content."""
@@ -1589,7 +1876,7 @@ class TestBuildRcpTerraformModule:
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["749430749651"],
+            third_party_account_ids=["555555555555"],
             reasoning="Test"
         )
         result = _build_rcp_terraform_module(
@@ -1624,7 +1911,7 @@ module "rcps_test" {
   # STS
   deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
-    "749430749651",
+    "555555555555",
   ]
 }
 '''
@@ -1673,7 +1960,7 @@ module "rcps_test" {
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["464622532012", "198449067068"],
+            third_party_account_ids=["333333333333", "444444444444"],
             reasoning="Test ECR access"
         )
         result = _build_rcp_terraform_module(
@@ -1684,8 +1971,8 @@ module "rcps_test" {
         )
 
         assert "ecr_third_party_access_account_ids_allowlist" in result
-        assert '"464622532012"' in result
-        assert '"198449067068"' in result
+        assert '"333333333333"' in result
+        assert '"444444444444"' in result
         assert "deny_ecr_third_party_access = true" in result
         assert "deny_sts_third_party_assumerole = false" in result
 
@@ -1739,7 +2026,7 @@ module "rcps_test" {
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["464622532012"],
+            third_party_account_ids=["333333333333"],
             reasoning="Test ECR access"
         )
         iam_rec = RCPPlacementRecommendations(
@@ -1758,7 +2045,7 @@ module "rcps_test" {
         )
 
         assert "ecr_third_party_access_account_ids_allowlist" in result
-        assert '"464622532012"' in result
+        assert '"333333333333"' in result
         assert "deny_ecr_third_party_access = true" in result
         assert "sts_third_party_assumerole_account_ids_allowlist" in result
         assert '"999999999999"' in result
@@ -1998,3 +2285,151 @@ class TestGenerateRootRcpTerraform:
         expected_file = output_path / "root_rcps.tf"
         assert not expected_file.exists()
         output_path.rmdir()
+
+
+class TestEveryRcpCheckReachesTerraform:
+    """Test that every registered RCP check flows through to Terraform."""
+
+    @pytest.fixture
+    def temp_results_dir(self) -> Generator[str, None, None]:
+        """Create temporary results directory for testing."""
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    @pytest.fixture
+    def temp_output_dir(self) -> Generator[str, None, None]:
+        """Create temporary Terraform output directory for testing."""
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    @pytest.fixture
+    def single_account_hierarchy(self) -> OrganizationHierarchy:
+        """Create a one-account, one-OU organization hierarchy."""
+        return OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1111": OrganizationalUnit(
+                    ou_id="ou-1111",
+                    name="Production",
+                    parent_ou_id="r-1234",
+                    child_ous=[],
+                    accounts=["111111111111"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="test-account",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                )
+            }
+        )
+
+    def test_every_registered_check_is_enabled_in_generated_terraform(
+        self,
+        temp_results_dir: str,
+        temp_output_dir: str,
+        single_account_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        Results for every RCP check must reach the generated Terraform.
+
+        Drives the real pipeline rather than hand-building recommendations,
+        because the defect this guards against lived between parsing and
+        rendering while both ends worked.
+        """
+        for check_name in get_check_names("rcps"):
+            write_rcp_result(
+                temp_results_dir,
+                check_name,
+                account_id="111111111111",
+                account_name="test-account",
+                third_party_account_ids=["999999999999"],
+            )
+
+        parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
+        recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
+        generate_rcp_terraform(recommendations, single_account_hierarchy, temp_output_dir)
+
+        content = (Path(temp_output_dir) / "root_rcps.tf").read_text()
+
+        for tf_vars in RCP_TERRAFORM_VARIABLES.values():
+            assert f"{tf_vars.enable_var} = true" in content
+            assert tf_vars.allowlist_var in content
+        assert '"999999999999"' in content
+
+    def test_parse_returns_one_result_per_registered_check(
+        self,
+        temp_results_dir: str,
+        single_account_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """Parsing must yield an entry for every registered RCP check."""
+        seed_all_rcp_check_dirs(temp_results_dir)
+
+        parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
+
+        assert [r.check_name for r in parse_results] == sorted(get_check_names("rcps"))
+
+    def test_account_with_no_third_parties_is_locked_down(
+        self,
+        temp_results_dir: str,
+        temp_output_dir: str,
+        single_account_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        An account with results but no third parties must be enforced.
+
+        An empty allowlist means deny all third-party access to the service.
+        It must not collapse into the absent-recommendation case, which
+        renders the flag false and enforces nothing.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=[],
+        )
+
+        parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
+        recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
+        generate_rcp_terraform(recommendations, single_account_hierarchy, temp_output_dir)
+
+        content = (Path(temp_output_dir) / "root_rcps.tf").read_text()
+
+        assert "deny_sts_third_party_assumerole = true" in content
+        assert "sts_third_party_assumerole_account_ids_allowlist = []" in content
+
+    def test_check_with_no_results_is_not_enabled(
+        self,
+        temp_results_dir: str,
+        temp_output_dir: str,
+        single_account_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A check whose directory holds no findings must render as disabled.
+
+        This is the case that must stay distinguishable from an unwired
+        check, which is why an absent directory aborts instead.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=["999999999999"],
+        )
+
+        parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
+        recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
+        generate_rcp_terraform(recommendations, single_account_hierarchy, temp_output_dir)
+
+        content = (Path(temp_output_dir) / "root_rcps.tf").read_text()
+
+        assert "deny_sts_third_party_assumerole = true" in content
+        assert "deny_s3_third_party_access = false" in content

@@ -11,7 +11,9 @@ from headroom.main import (
     ensure_org_info_symlink,
 )
 from headroom.config import HeadroomConfig
-from headroom.types import OrganizationHierarchy, RCPParseResult
+from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
+from headroom.checks.registry import get_check_names
+from headroom.types import OrganizationHierarchy, RCPCheckParseResult
 from pydantic import ValidationError
 
 
@@ -482,10 +484,13 @@ class TestHandleRcpWorkflow:
         config.scps_dir = "/test/scps"
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        parse_result = RCPParseResult(
-            account_third_party_map={"account1": {"third_party1"}},
-            accounts_with_wildcards=set()
-        )
+        parse_result = [
+            RCPCheckParseResult(
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                account_third_party_map={"111111111111": {"999999999999"}},
+                accounts_with_blockers=set(),
+            )
+        ]
         recommendations = [{"recommendation": "test"}]
 
         with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
@@ -505,10 +510,30 @@ class TestHandleRcpWorkflow:
         config.results_dir = "/test/results"
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        parse_result = RCPParseResult(
-            account_third_party_map={},
-            accounts_with_wildcards=set()
-        )
+        parse_result: List[RCPCheckParseResult] = []
+
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
+            with patch('headroom.main.determine_rcp_placement') as mock_determine:
+                with patch('headroom.main.process_policy_recommendations') as mock_process:
+                    handle_rcp_workflow(config, org_hierarchy)
+
+        mock_determine.assert_not_called()
+        mock_process.assert_not_called()
+
+    def test_handle_rcp_workflow_all_checks_empty(self) -> None:
+        """Test RCP workflow when every check parsed but found nothing."""
+        config = MagicMock(spec=HeadroomConfig)
+        config.results_dir = "/test/results"
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        parse_result = [
+            RCPCheckParseResult(
+                check_name=check_name,
+                account_third_party_map={},
+                accounts_with_blockers=set(),
+            )
+            for check_name in get_check_names("rcps")
+        ]
 
         with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
             with patch('headroom.main.determine_rcp_placement') as mock_determine:
@@ -524,10 +549,13 @@ class TestHandleRcpWorkflow:
         config.results_dir = "/test/results"
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        parse_result = RCPParseResult(
-            account_third_party_map={"account1": {"third_party1"}},
-            accounts_with_wildcards=set()
-        )
+        parse_result = [
+            RCPCheckParseResult(
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                account_third_party_map={"111111111111": {"999999999999"}},
+                accounts_with_blockers=set(),
+            )
+        ]
 
         with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
             with patch('headroom.main.determine_rcp_placement', return_value=[]):
@@ -542,10 +570,13 @@ class TestHandleRcpWorkflow:
         config.results_dir = "/test/results"
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        parse_result = RCPParseResult(
-            account_third_party_map={"account1": {"third_party1"}},
-            accounts_with_wildcards=set()
-        )
+        parse_result = [
+            RCPCheckParseResult(
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                account_third_party_map={"111111111111": {"999999999999"}},
+                accounts_with_blockers=set(),
+            )
+        ]
 
         with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
             with patch('headroom.main.determine_rcp_placement', return_value=None):
