@@ -21,8 +21,15 @@ class DenyEc2ImdsHopLimitCheck(BaseCheck[DenyEc2ImdsHopLimit]):
 
     This check identifies:
     - Instances whose IMDS hop limit exceeds 1 (violations)
-    - Instances at hop limit 1, or with IMDS disabled entirely (compliant)
+    - Instances at hop limit 1 (compliant)
     - Overall compliance status for the account
+
+    The hop limit is counted whether or not the metadata endpoint is enabled,
+    because the SCP counts it that way. AWS accepts a launch naming both a hop
+    limit and HttpEndpoint=disabled, so ec2:MetadataHttpPutResponseHopLimit is
+    present in the request context and NumericGreaterThan fires - confirmed by
+    dry run against a live account. Reporting such an instance compliant would
+    clear an account whose relaunch the SCP denies.
     """
 
     def analyze(self, session: boto3.Session) -> List[DenyEc2ImdsHopLimit]:
@@ -44,16 +51,24 @@ class DenyEc2ImdsHopLimitCheck(BaseCheck[DenyEc2ImdsHopLimit]):
         """
         Categorize a single EC2 IMDS hop limit analysis result.
 
-        An instance with the metadata endpoint disabled is compliant whatever
-        its hop limit, because there is no reachable IMDS for a hop to cross.
+        The endpoint state does not enter the decision. A disabled endpoint
+        does make the hop limit inert on the running instance - nothing is
+        listening for a hop to cross - but the SCP is evaluated against the
+        launch request, where the hop limit is present either way. Excusing
+        those instances cleared accounts whose relaunches the SCP denies.
+
+        Counting unconditionally is also the cheaper of the two fixes for the
+        operator: lowering the hop limit on an instance whose endpoint is off
+        changes no behaviour, because nothing reads it. `imds_enabled` is still
+        reported so the operator can see which violations are free to remedy.
 
         Args:
             result: Single DenyEc2ImdsHopLimit analysis result
 
         Returns:
             Tuple of (category, result_dict) where category is:
-            - CheckCategory.VIOLATION: IMDS enabled and hop limit above 1
-            - CheckCategory.COMPLIANT: hop limit 1, or IMDS disabled
+            - CheckCategory.VIOLATION: hop limit above 1
+            - CheckCategory.COMPLIANT: hop limit 1
         """
         result_dict = {
             "instance_id": result.instance_id,
@@ -62,7 +77,7 @@ class DenyEc2ImdsHopLimitCheck(BaseCheck[DenyEc2ImdsHopLimit]):
             "imds_enabled": result.imds_enabled,
         }
 
-        if result.imds_enabled and result.hop_limit > MAX_ALLOWED_HOP_LIMIT:
+        if result.hop_limit > MAX_ALLOWED_HOP_LIMIT:
             return (CheckCategory.VIOLATION, result_dict)
         else:
             return (CheckCategory.COMPLIANT, result_dict)

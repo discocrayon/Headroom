@@ -8,20 +8,59 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_ec2.client import EC2Client
 from mypy_boto3_ec2.type_defs import ImageTypeDef
+from mypy_boto3_iam.client import IAMClient
 
-from ..enums import AmiOwnerUnknownReason
+from ..constants import IMDS_EXEMPTION_TAG_KEY, IMDS_EXEMPTION_TAG_VALUE
+from ..enums import AmiOwnerUnknownReason, InstanceRoleUnresolvedReason
 from .helpers import get_all_regions
+from .iam.instance_profiles import (
+    ResolvedInstanceRole,
+    resolve_instance_profile_role,
+    unresolved_instance_role,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class DenyEc2ImdsV1:
-    """Data class for EC2 IMDS v1 analysis results."""
+    """
+    Data model for EC2 IMDSv1 analysis.
+
+    Attributes:
+        region: AWS region where the instance runs
+        instance_id: EC2 instance identifier
+        imdsv1_allowed: True when the instance does not require a session
+            token. The metadata endpoint's state does not enter it: the SCP
+            tests HttpTokens on the launch request either way, so an instance
+            with the endpoint off and tokens optional is still a violation.
+            Remedying it costs nothing, because nothing reads HttpTokens while
+            the endpoint is off
+        role_exemption_tag_present: True when the IAM role the instance runs as
+            carries the exemption tag with the exact value the SCP tests for.
+            The tag is read off the role, not the instance: the SCP exempts
+            through `aws:PrincipalTag/ExemptFromIMDSv2`, and no statement in it
+            reads instance tags
+        role_arn: The role whose tags were read, or None when no role could be
+            reached
+        role_unresolved_reason: Why no role could be reached, or None when
+            `role_arn` is populated
+    """
     region: str
     instance_id: str
-    imdsv1_allowed: bool  # Compliance status
-    exemption_tag_present: bool  # Exemption via `ExemptFromIMDSv2` tag
+    imdsv1_allowed: bool
+    role_exemption_tag_present: bool
+    role_arn: Optional[str] = None
+    role_unresolved_reason: Optional[str] = None
+
+
+@dataclass
+class _ImdsInstance:
+    """One instance's IMDS configuration, before its role has been resolved."""
+    region: str
+    instance_id: str
+    imdsv1_allowed: bool
+    instance_profile_arn: Optional[str]
 
 
 @dataclass
@@ -55,8 +94,11 @@ class DenyEc2ImdsHopLimit:
     Attributes:
         region: AWS region where instance exists
         instance_id: EC2 instance identifier
-        hop_limit: IMDS HttpPutResponseHopLimit (AWS defaults to 1 when unset)
-        imds_enabled: True if the instance metadata endpoint is enabled
+        hop_limit: IMDS HttpPutResponseHopLimit (AWS defaults to 1 when unset,
+            but an AMI carrying imds-support=v2.0 supplies a higher default)
+        imds_enabled: True if the instance metadata endpoint is enabled.
+            Reported for context only - it does not affect whether a hop limit
+            counts as a violation, because the SCP counts it either way
     """
     region: str
     instance_id: str
@@ -83,20 +125,20 @@ class DenyEc2PublicIp:
     instance_arn: str
 
 
-def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
+def _describe_imds_instances(session: Session) -> List[_ImdsInstance]:
     """
-    Analyze EC2 instances for IMDS v1 configuration across all regions.
-
-    This function calls describe_instances in a paginated, performant way
-    and returns a list of DenyEc2ImdsV1 with the relevant attributes filled in.
+    Read every non-terminated instance's IMDS configuration, in every region.
 
     Args:
         session: boto3.Session with appropriate permissions
 
     Returns:
-        List of DenyEc2ImdsV1 objects containing analysis results
+        One `_ImdsInstance` per live instance, roles not yet resolved
+
+    Raises:
+        RuntimeError: If DescribeInstances fails in any region
     """
-    results = []
+    instances = []
     regions = get_all_regions(session)
 
     for region in regions:
@@ -111,36 +153,208 @@ def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
                         if instance['State']['Name'] == 'terminated':
                             continue
 
-                        instance_id = instance['InstanceId']
-
-                        # Check IMDS configuration
                         metadata_options = instance.get('MetadataOptions', {})
                         http_tokens = metadata_options.get('HttpTokens', 'optional')
-                        http_endpoint = metadata_options.get('HttpEndpoint', 'enabled')
 
-                        # Determine if IMDSv1 is allowed
-                        # IMDSv1 is allowed if IMDS is enabled and HttpTokens is 'optional'
-                        # IMDSv1 is blocked if HttpTokens is 'required' or IMDS is disabled
-                        imdsv1_allowed = (http_endpoint == 'enabled' and http_tokens == 'optional')
+                        # HttpTokens alone decides, whether or not the metadata
+                        # endpoint is enabled. A disabled endpoint does make
+                        # IMDSv1 unreachable on the running instance, but the
+                        # SCP reads the launch request, where a request turning
+                        # the endpoint off carries no HttpTokens, leaving
+                        # ec2:MetadataHttpTokens absent and StringNotEquals
+                        # true. Excusing those instances cleared accounts whose
+                        # relaunches the SCP denies.
+                        imdsv1_allowed = http_tokens == 'optional'
 
-                        # Check for exemption tag
-                        exemption_tag_present = False
-                        for tag in instance.get('Tags', []):
-                            if tag['Key'] == 'ExemptFromIMDSv2' and tag['Value'].lower() == 'true':
-                                exemption_tag_present = True
-                                break
-
-                        results.append(DenyEc2ImdsV1(
+                        instances.append(_ImdsInstance(
                             region=region,
-                            instance_id=instance_id,
+                            instance_id=instance['InstanceId'],
                             imdsv1_allowed=imdsv1_allowed,
-                            exemption_tag_present=exemption_tag_present
+                            instance_profile_arn=instance.get(
+                                'IamInstanceProfile', {}
+                            ).get('Arn'),
                         ))
 
         except ClientError as e:
             raise RuntimeError(f"Failed to analyze EC2 instances in region {region}: {e}")
 
+    return instances
+
+
+def _resolve_profile_roles(
+    session: Session,
+    instances: List[_ImdsInstance],
+) -> Dict[str, ResolvedInstanceRole]:
+    """
+    Resolve every distinct instance profile in the fleet to its role's tags.
+
+    Instance profiles are global, so one lookup serves every region and every
+    instance behind that profile: a thousand instances sharing a profile cost
+    one pair of IAM calls. A fleet with no instance profiles reaches IAM not at
+    all.
+
+    Args:
+        session: boto3.Session for the target account
+        instances: Live instances and their IMDS configuration
+
+    Returns:
+        Mapping of instance profile ARN to the role behind it
+
+    Raises:
+        RuntimeError: If IAM fails for any reason other than a deleted profile
+            or role
+    """
+    profile_arns = sorted({
+        instance.instance_profile_arn
+        for instance in instances
+        if instance.instance_profile_arn
+    })
+    if not profile_arns:
+        return {}
+
+    iam_client: IAMClient = session.client('iam')
+    resolved_by_profile = {}
+
+    for profile_arn in profile_arns:
+        try:
+            resolved_by_profile[profile_arn] = resolve_instance_profile_role(
+                iam_client, profile_arn
+            )
+        except ClientError as e:
+            raise RuntimeError(
+                f"Failed to resolve the IAM role behind instance profile "
+                f"{profile_arn}: {e}. The deny_ec2_imds_v1 SCP exempts by role "
+                f"tag, so this check cannot report compliance without reading "
+                f"role tags, and treating the failure as an untagged role would "
+                f"turn one permission gap into a fleet of violations that look "
+                f"real. The Headroom role needs iam:GetInstanceProfile and "
+                f"iam:GetRole."
+            )
+
+    return resolved_by_profile
+
+
+def _find_exemption_tag_value(
+    tags: Dict[str, str],
+    role_arn: Optional[str],
+) -> Optional[str]:
+    """
+    Find the exemption tag's value the way IAM matches the condition key.
+
+    The two halves of the match pull opposite ways, and the scanner has to
+    follow both. IAM matches the tag key in `aws:PrincipalTag/<key>`
+    case-insensitively, so matching it exactly here would report a role tagged
+    `exemptfromimdsv2` as a violation that enforcement exempts. The value is
+    compared with StringNotEquals, which is case-sensitive, so lowercasing it
+    would report a role tagged "True" as exempt when enforcement denies it.
+
+    A role carrying the key twice in cases that differ has no determinate
+    answer. AWS documents that as an unexpected condition failure rather than a
+    match on one of them, so there is nothing to report, and guessing which one
+    IAM lands on would invent the exemption status of a live workload.
+
+    Args:
+        tags: The role's tags
+        role_arn: The role the tags came from, named in the error
+
+    Returns:
+        The tag's value, or None when the role does not carry it
+
+    Raises:
+        RuntimeError: If the role carries the key more than once, in cases that
+            differ
+    """
+    wanted_key = IMDS_EXEMPTION_TAG_KEY.lower()
+    matches = {
+        key: value for key, value in tags.items() if key.lower() == wanted_key
+    }
+
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Role {role_arn} carries {IMDS_EXEMPTION_TAG_KEY} more than once "
+            f"in cases that differ ({', '.join(sorted(matches))}). IAM matches "
+            f"the tag key in aws:PrincipalTag without regard to case, so every "
+            f"one of them matches the SCP's condition key while at most one "
+            f"value can - which AWS documents as an unexpected condition "
+            f"failure. Whether this role is exempt cannot be determined, and "
+            f"guessing would misreport whether the SCP is safe to attach here."
+        )
+
+    return next(iter(matches.values()), None)
+
+
+def _build_imds_results(
+    instances: List[_ImdsInstance],
+    resolved_by_profile: Dict[str, ResolvedInstanceRole],
+) -> List[DenyEc2ImdsV1]:
+    """
+    Pair each instance's IMDS configuration with its role's exemption tag.
+
+    Args:
+        instances: Live instances and their IMDS configuration
+        resolved_by_profile: Roles behind the fleet's instance profiles
+
+    Returns:
+        One DenyEc2ImdsV1 per instance
+    """
+    no_profile = unresolved_instance_role(
+        InstanceRoleUnresolvedReason.NO_INSTANCE_PROFILE
+    )
+
+    results = []
+    for instance in instances:
+        resolved = (
+            resolved_by_profile[instance.instance_profile_arn]
+            if instance.instance_profile_arn
+            else no_profile
+        )
+
+        exemption_value = _find_exemption_tag_value(
+            resolved.tags, resolved.role_arn
+        )
+
+        results.append(DenyEc2ImdsV1(
+            region=instance.region,
+            instance_id=instance.instance_id,
+            imdsv1_allowed=instance.imdsv1_allowed,
+            role_exemption_tag_present=exemption_value == IMDS_EXEMPTION_TAG_VALUE,
+            role_arn=resolved.role_arn,
+            role_unresolved_reason=resolved.unresolved_reason,
+        ))
+
     return results
+
+
+def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
+    """
+    Analyze EC2 instances for IMDS v1 configuration across all regions.
+
+    Algorithm:
+    1. Describe every non-terminated instance in every enabled region, reading
+       its MetadataOptions and the instance profile attached to it
+    2. Resolve each distinct instance profile to its role and that role's tags
+    3. Report each instance's IMDS setting alongside its role's exemption
+
+    The exemption is a property of the role, not of the instance. The SCP this
+    check gates exempts callers through `aws:PrincipalTag/ExemptFromIMDSv2`,
+    which reads tags on the role an instance runs as; its other statement
+    exempts through `aws:RequestTag/ExemptFromIMDSv2`, a property of a future
+    launch request that no scan of running instances can observe. Reading the
+    instance's own tags matched neither, and reported accounts as violation-free
+    while enforcement would have denied every API call those instances made.
+
+    Args:
+        session: boto3.Session with appropriate permissions
+
+    Returns:
+        List of DenyEc2ImdsV1 objects containing analysis results
+
+    Raises:
+        RuntimeError: If DescribeInstances fails in any region, or if IAM
+            fails for any reason other than a deleted profile or role
+    """
+    instances = _describe_imds_instances(session)
+    return _build_imds_results(instances, _resolve_profile_roles(session, instances))
 
 
 # DescribeImages error codes that mean the AMI ID no longer resolves at all.

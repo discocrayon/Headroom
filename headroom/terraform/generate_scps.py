@@ -81,6 +81,7 @@ def _get_allowed_iam_user_arns(
 
 
 def _build_ec2_terraform_parameters(
+    module_name: str,
     enabled_policies: set[str],
     recommendations: List[SCPPlacementRecommendations]
 ) -> List[TerraformElement]:
@@ -89,6 +90,9 @@ def _build_ec2_terraform_parameters(
 
     Returns:
         List of TerraformElement objects for EC2 policies
+
+    Raises:
+        RuntimeError: If deny_ec2_ami_owner is enabled with no AMI owners
     """
     parameters: List[TerraformElement] = []
 
@@ -97,6 +101,15 @@ def _build_ec2_terraform_parameters(
     parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
     if deny_ec2_ami_owner:
         ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
+        if not ec2_allowed_ami_owners:
+            raise RuntimeError(
+                f"Module {module_name} enables deny_ec2_ami_owner with an empty "
+                "ec2_allowed_ami_owners list. An empty allowlist denies every "
+                "ec2:RunInstances call rather than none of them, so it is never "
+                "rendered. Either the result files predate AMI owner collection "
+                "and need re-running, or no instance in the affected accounts "
+                "had a resolvable AMI owner."
+            )
         parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
 
     deny_ec2_imds_hop_limit = "deny_ec2_imds_hop_limit" in enabled_policies
@@ -208,11 +221,15 @@ def _build_scp_terraform_module(
 
     Returns:
         Complete Terraform module block as a string
+
+    Raises:
+        RuntimeError: If a policy is enabled with an allowlist that would
+            deny every request instead of the untrusted ones
     """
     enabled_policies = _get_safe_to_enable_policies(recommendations)
 
     parameters: List[TerraformElement] = []
-    parameters.extend(_build_ec2_terraform_parameters(enabled_policies, recommendations))
+    parameters.extend(_build_ec2_terraform_parameters(module_name, enabled_policies, recommendations))
     parameters.append(TerraformComment(""))
     parameters.extend(_build_eks_terraform_parameters(enabled_policies))
     parameters.append(TerraformComment(""))

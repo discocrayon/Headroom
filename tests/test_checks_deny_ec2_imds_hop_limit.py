@@ -88,10 +88,25 @@ class TestCheckDenyEc2ImdsHopLimit:
         assert len(results_data["violations"]) == 0
         assert len(results_data["compliant_instances"]) == 1
 
-    def test_imds_disabled_is_compliant_regardless_of_hop_limit(
+    def test_imds_disabled_is_still_a_violation_at_a_high_hop_limit(
         self, temp_results_dir: str
     ) -> None:
-        """A high hop limit does not matter when the metadata endpoint is disabled."""
+        """
+        The hop limit is counted whether or not the endpoint is reachable.
+
+        This test replaces one asserting the opposite, that a disabled endpoint
+        made any hop limit compliant. That reading of the resource was right -
+        no IMDS is listening, so no hop can cross - but it disagreed with the
+        SCP, which reads the request. A dry run against a live account confirms
+        MaxImdsHopLimit denies a launch specifying hop=3 alongside
+        HttpEndpoint=disabled: AWS accepts the combination, so the condition
+        key is present and NumericGreaterThan fires.
+
+        Counting the hop limit unconditionally is the simpler of the two ways
+        to close that gap, and it costs the operator nothing: lowering the hop
+        limit on an instance whose metadata endpoint is off changes no
+        behaviour, because nothing reads it.
+        """
         results_data = self.run_check(
             [
                 DenyEc2ImdsHopLimit(
@@ -104,10 +119,10 @@ class TestCheckDenyEc2ImdsHopLimit:
             temp_results_dir,
         )
 
-        assert len(results_data["violations"]) == 0
-        assert len(results_data["compliant_instances"]) == 1
-        assert results_data["compliant_instances"][0]["hop_limit"] == 3
-        assert results_data["compliant_instances"][0]["imds_enabled"] is False
+        assert len(results_data["violations"]) == 1
+        assert len(results_data["compliant_instances"]) == 0
+        assert results_data["violations"][0]["hop_limit"] == 3
+        assert results_data["violations"][0]["imds_enabled"] is False
 
     def test_mixed_results_summary(self, temp_results_dir: str) -> None:
         """Summary counts and compliance percentage reflect a mixed fleet."""

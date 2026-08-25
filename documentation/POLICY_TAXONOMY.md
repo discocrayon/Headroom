@@ -137,7 +137,7 @@ This document categorizes the different patterns of Service Control Policies (SC
 **Philosophy:** This IS an exception mechanism. Exception tags acknowledge that a resource is non-standard and requires special handling.
 
 **Examples:**
-- Allow IMDSv1 for legacy workloads tagged `ExemptFromIMDSv2=true`
+- Allow IMDSv1 for legacy workloads whose IAM role is tagged `ExemptFromIMDSv2=true`
 - Allow specific security group rules for resources tagged `NetworkExemption=legacy-app`
 
 **Implementation Example (from `deny_ec2_imds_v1`):**
@@ -158,13 +158,22 @@ This document categorizes the different patterns of Service Control Policies (SC
 }
 ```
 
-**Codebase Reference:** `test_environment/modules/scps/locals.tf` lines 8-20, 27-37
+**Codebase Reference:** `test_environment/modules/scps/locals.tf`, the
+`DenyRoleDeliveryLessThan2` and `DenyRunInstancesMetadataHttpTokensOptional`
+statements. Referenced by Sid rather than by line number, which goes stale.
 
 **Characteristics:**
 - Reactive exemption for specific resources
 - "You need an exception" signal
 - Should be audited and reviewed regularly
 - Provides clear trail of what's been exempted and why
+
+**The tag name is not the exemption; the condition key is.** The same
+`ExemptFromIMDSv2` name reads a role tag under `aws:PrincipalTag`, a launch
+request's tag under `aws:RequestTag`, and nothing at all on the instance
+itself. A scanner that decides deployability has to check the dimension the
+statement reads, or it clears an account whose instances enforcement will
+break. See AP-009 in `HOW_TO_ADD_A_CHECK.md`.
 
 ---
 
@@ -261,8 +270,13 @@ This document categorizes the different patterns of Service Control Policies (SC
 ```json
 {
   "Effect": "Deny",
-  "Action": "ec2:RunInstances",
-  "Resource": "arn:aws:ec2:*:*:instance/*",
+  "Action": [
+    "ec2:CreateFleet",
+    "ec2:RequestSpotFleet",
+    "ec2:RequestSpotInstances",
+    "ec2:RunInstances"
+  ],
+  "Resource": "arn:aws:ec2:*::image/*",
   "Condition": {
     "StringNotEquals": {
       "ec2:Owner": [
@@ -379,7 +393,7 @@ This check identifies EC2 instances whose IMDS hop limit exceeds 1. The SCP deni
 - Deny `ec2:RunInstances` on instance resources
 - When `ec2:MetadataHttpPutResponseHopLimit` is numerically greater than 1
 
-**Headroom's Role:** Scans all accounts and reports each instance's configured hop limit and whether its metadata endpoint is enabled. Instances with IMDS disabled are compliant regardless of hop limit, since there is no reachable endpoint.
+**Headroom's Role:** Scans all accounts and reports each instance's configured hop limit and whether its metadata endpoint is enabled. The hop limit is counted whether or not the endpoint is enabled, because the SCP counts it that way: AWS accepts a launch naming both a hop limit and a disabled endpoint, so the condition key is present and the deny fires. The endpoint state is reported for context - a violation on an instance whose endpoint is off is free to remedy, since nothing reads the hop limit there.
 
 **Note:** This is the first Pattern 2 policy in the codebase to use a numeric comparison rather than a string or boolean match. The pattern is unchanged -- `NumericGreaterThan` expresses the same "deny unless the condition holds" shape as `StringNotEquals` elsewhere.
 
@@ -560,10 +574,37 @@ This check lists all IAM users in accounts. The SCP uses `NotResource` to deny `
 This check identifies EC2 instances and determines the owner of the AMI used to launch each instance. The SCP denies `ec2:RunInstances` unless the AMI owner is in the allowlist.
 
 **Policy Structure:**
-- Deny `ec2:RunInstances`
+- Deny the launch paths: `ec2:RunInstances`, `ec2:CreateFleet`,
+  `ec2:RequestSpotFleet`, `ec2:RequestSpotInstances`
+- Scoped to the **image** resource, `arn:aws:ec2:*::image/*`
 - Unless `ec2:Owner` is in the approved list (e.g., "amazon", "aws-marketplace", trusted account IDs)
 
-**Headroom's Role:** Scans all accounts and reports all EC2 instances with their AMI owners. This generates a comprehensive list of unique AMI owners that can be used to populate the allowlist. The check helps identify:
+**Why those actions:** they are EC2 actions AWS authorizes against the image
+resource with `ec2:Owner`, per the machine-readable service reference at
+`https://servicereference.us-east-1.amazonaws.com/v1/ec2/ec2.json`.
+
+`ec2:ModifyFleet` supports the key as well - raising a fleet's target capacity
+starts instances from its launch template's AMI - and is excluded as a
+deliberate scope decision.
+
+`ec2:RunScheduledInstances`, `ec2:ModifySpotFleetRequest` and
+`ec2:CreateLaunchTemplateVersion` are excluded for a different reason: they
+list no image resource, so a statement scoped to `image/*` never matches them
+and adding them would read as coverage while denying nothing.
+
+**Why the image resource:** `RunInstances` is authorized against every resource
+it touches - instance, volume, network interface, image - and `ec2:Owner` exists
+only on the image. Scoped to `instance/*` the key is absent from the request
+context, `StringNotEquals` on an absent key evaluates true, and the Deny matches
+every launch regardless of AMI. The operator is deliberately not
+`StringNotEqualsIfExists`: for a Deny statement, denying when the owner cannot
+be read is the safe direction.
+
+**Why the allowlist is never empty:** an empty `ec2_allowed_ami_owners` denies
+every launch rather than none of them, so Terraform generation aborts rather
+than rendering it. See the Allowlist Guard in the Headroom Specification.
+
+**Headroom's Role:** Scans all accounts and reports all EC2 instances with their AMI owners. The unique AMI owners observed across the accounts a placement covers are unioned into `ec2_allowed_ami_owners`. The check helps identify:
 - Amazon-owned AMIs (owner: "amazon")
 - AWS Marketplace AMIs (various vendor account IDs)
 - Custom AMIs (account-owned)

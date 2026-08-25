@@ -16,7 +16,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
-from ...constants import BASE_PRINCIPAL_TYPES
+from ...constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -30,7 +30,13 @@ class InvalidFederatedPrincipalError(Exception):
     """Raised when a Federated principal has sts:AssumeRole in its actions."""
 
 
+class MalformedStatementError(Exception):
+    """Raised when a trust policy statement names neither or both action keys."""
+
+
 ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES
+
+ASSUME_ROLE_ACTION = "sts:AssumeRole"
 
 
 @dataclass
@@ -66,9 +72,10 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
         # Handle wildcard
         if principal == "*":
             return set()
-        # Extract account ID from ARN format: arn:aws:iam::111111111111:*
-        # The account ID is always in the 5th field (index 4) when split by ':'
-        arn_match = re.match(r'^arn:aws:iam::(\d{12}):', principal)
+        # Extract the account ID from any principal ARN, whatever its
+        # partition or service. A trust policy principal can be an STS
+        # session ARN as well as an IAM one.
+        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
         if arn_match:
             account_ids.add(arn_match.group(1))
         else:
@@ -97,6 +104,66 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
                     account_ids.update(_extract_account_ids_from_principal(item))
 
     return account_ids
+
+
+def _action_pattern_matches(pattern: str, action: str) -> bool:
+    """
+    Test one IAM action pattern against a concrete action name.
+
+    IAM compares action names case-insensitively and supports two wildcards
+    anywhere in the name: `*` for any run of characters and `?` for exactly
+    one. Character classes are not IAM syntax, so the pattern is escaped and
+    only those two wildcards are reinstated, rather than handing it to fnmatch.
+
+    Args:
+        pattern: Action pattern from a policy statement, e.g. "sts:Assume*"
+        action: Concrete action name to test, e.g. "sts:AssumeRole"
+
+    Returns:
+        True if IAM would consider the pattern to cover the action
+    """
+    expression = re.escape(pattern.lower()).replace(r"\*", ".*").replace(r"\?", ".")
+    return re.fullmatch(expression, action.lower()) is not None
+
+
+def _grants_assume_role(statement: Any, role_name: str) -> bool:
+    """
+    Report whether an Allow statement grants sts:AssumeRole.
+
+    Reads whichever of Action and NotAction the statement carries. NotAction
+    inverts the test: an Allow statement grants every action its NotAction
+    patterns do not cover.
+
+    Args:
+        statement: One statement from a trust policy document
+        role_name: Role the statement belongs to, used in error messages
+
+    Returns:
+        True if the statement's actions include sts:AssumeRole
+
+    Raises:
+        MalformedStatementError: If the statement carries both Action and
+            NotAction, or neither
+    """
+    has_action = "Action" in statement
+    has_not_action = "NotAction" in statement
+
+    if has_action == has_not_action:
+        named = "both Action and NotAction" if has_action else "neither Action nor NotAction"
+        raise MalformedStatementError(
+            f"Role '{role_name}' has an Allow statement naming {named}. IAM "
+            "requires exactly one, so whether the statement grants "
+            f"{ASSUME_ROLE_ACTION} cannot be determined, and guessing either "
+            "way misstates who can assume this role."
+        )
+
+    patterns = statement["Action"] if has_action else statement["NotAction"]
+    if isinstance(patterns, str):
+        patterns = [patterns]
+
+    covered = any(_action_pattern_matches(p, ASSUME_ROLE_ACTION) for p in patterns)
+
+    return covered if has_action else not covered
 
 
 def _has_wildcard_principal(principal: Any) -> bool:
@@ -173,14 +240,7 @@ def analyze_iam_roles_trust_policies(
                     if statement.get("Effect") != "Allow":
                         continue
 
-                    action = statement.get("Action", [])
-                    # Normalize action to list
-                    if isinstance(action, str):
-                        action = [action]
-
-                    # Check if this statement allows AssumeRole
-                    has_assume_role = "sts:AssumeRole" in action or "*" in action
-                    if not has_assume_role:
+                    if not _grants_assume_role(statement, role_name):
                         continue
 
                     # Extract principal
@@ -190,8 +250,18 @@ def analyze_iam_roles_trust_policies(
 
                     # Validate that Federated principals don't have sts:AssumeRole
                     # Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity
+                    #
+                    # This stays an exact match while the gate above matches
+                    # IAM's wildcards. A Federated principal paired with
+                    # `sts:*` is sloppy rather than wrong - AWS will not let a
+                    # federated identity call plain AssumeRole - and aborting
+                    # the run over it would cost more than it catches. The
+                    # literal pairing is a clearer sign of real confusion.
                     if isinstance(principal, dict) and "Federated" in principal:
-                        if "sts:AssumeRole" in action:
+                        declared_actions = statement.get("Action", [])
+                        if isinstance(declared_actions, str):
+                            declared_actions = [declared_actions]
+                        if ASSUME_ROLE_ACTION in declared_actions:
                             raise InvalidFederatedPrincipalError(
                                 f"Role '{role_name}' has Federated principal with sts:AssumeRole action. "
                                 f"Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity."

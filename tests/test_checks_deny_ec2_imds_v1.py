@@ -33,25 +33,25 @@ class TestCheckDenyEc2ImdsV1:
                 region="us-east-1",
                 instance_id="i-violation1",
                 imdsv1_allowed=True,
-                exemption_tag_present=False
+                role_exemption_tag_present=False
             ),
             DenyEc2ImdsV1(
                 region="us-east-1",
                 instance_id="i-exemption1",
                 imdsv1_allowed=True,
-                exemption_tag_present=True
+                role_exemption_tag_present=True
             ),
             DenyEc2ImdsV1(
                 region="us-west-2",
                 instance_id="i-compliant1",
                 imdsv1_allowed=False,
-                exemption_tag_present=False
+                role_exemption_tag_present=False
             ),
             DenyEc2ImdsV1(
                 region="us-west-2",
                 instance_id="i-violation2",
                 imdsv1_allowed=True,
-                exemption_tag_present=False
+                role_exemption_tag_present=False
             )
         ]
 
@@ -63,13 +63,13 @@ class TestCheckDenyEc2ImdsV1:
                 region="us-east-1",
                 instance_id="i-compliant1",
                 imdsv1_allowed=False,
-                exemption_tag_present=False
+                role_exemption_tag_present=False
             ),
             DenyEc2ImdsV1(
                 region="us-west-2",
                 instance_id="i-compliant2",
                 imdsv1_allowed=False,
-                exemption_tag_present=False
+                role_exemption_tag_present=False
             )
         ]
 
@@ -136,7 +136,7 @@ class TestCheckDenyEc2ImdsV1:
             exemptions = results_data["exemptions"]
             assert len(exemptions) == 1
             assert exemptions[0]["instance_id"] == "i-exemption1"
-            assert exemptions[0]["exemption_tag_present"] is True
+            assert exemptions[0]["role_exemption_tag_present"] is True
 
             # Check compliant instances
             compliant = results_data["compliant_instances"]
@@ -233,13 +233,13 @@ class TestCheckDenyEc2ImdsV1:
                 region="us-east-1",
                 instance_id="i-bad1",
                 imdsv1_allowed=True,
-                exemption_tag_present=False
+                role_exemption_tag_present=False
             ),
             DenyEc2ImdsV1(
                 region="us-west-2",
                 instance_id="i-bad2",
                 imdsv1_allowed=True,
-                exemption_tag_present=False
+                role_exemption_tag_present=False
             )
         ]
 
@@ -281,13 +281,13 @@ class TestCheckDenyEc2ImdsV1:
                 region="us-east-1",
                 instance_id="i-exempt1",
                 imdsv1_allowed=True,
-                exemption_tag_present=True
+                role_exemption_tag_present=True
             ),
             DenyEc2ImdsV1(
                 region="us-west-2",
                 instance_id="i-exempt2",
                 imdsv1_allowed=True,
-                exemption_tag_present=True
+                role_exemption_tag_present=True
             )
         ]
 
@@ -421,13 +421,25 @@ class TestCheckDenyEc2ImdsV1:
 
             # Verify individual result item structure
             for violation in results_data["violations"]:
-                expected_keys = {"region", "instance_id", "imdsv1_allowed", "exemption_tag_present"}
+                expected_keys = {
+                    "region", "instance_id", "imdsv1_allowed",
+                    "role_exemption_tag_present", "role_arn",
+                    "role_unresolved_reason",
+                }
                 assert set(violation.keys()) == expected_keys
 
             for exemption in results_data["exemptions"]:
-                expected_keys = {"region", "instance_id", "imdsv1_allowed", "exemption_tag_present"}
+                expected_keys = {
+                    "region", "instance_id", "imdsv1_allowed",
+                    "role_exemption_tag_present", "role_arn",
+                    "role_unresolved_reason",
+                }
                 assert set(exemption.keys()) == expected_keys
 
             for compliant in results_data["compliant_instances"]:
-                expected_keys = {"region", "instance_id", "imdsv1_allowed", "exemption_tag_present"}
+                expected_keys = {
+                    "region", "instance_id", "imdsv1_allowed",
+                    "role_exemption_tag_present", "role_arn",
+                    "role_unresolved_reason",
+                }
                 assert set(compliant.keys()) == expected_keys

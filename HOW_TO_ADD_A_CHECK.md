@@ -778,6 +778,105 @@ from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
 ```
 
+The copies drift, and they drift narrower. `roles.py`, `kms.py` and `ecr.py`
+each carried `r'^arn:aws:iam::(\d{12}):'` while `s3.py`, `sqs.py` and
+`secretsmanager.py` used the constant. The three copies silently dropped every
+STS session principal and every non-commercial partition, so the accounts
+never reached the allowlist and the RCP denied them.
+
+---
+
+### AP-008: String-Comparing IAM Policy Actions
+
+```python
+# ❌ BAD - misses sts:*, sts:Assume*, STS:AssumeRole, NotAction
+has_assume_role = "sts:AssumeRole" in action or "*" in action
+
+# ✅ GOOD - match the way IAM matches
+if _grants_assume_role(statement, role_name):
+```
+
+IAM compares action names case-insensitively and expands `*` and `?` anywhere
+in the name, and an `Allow` with `NotAction` grants everything its patterns do
+not cover. A statement your analyzer fails to recognize is dropped in
+silence - no violation, no error, just an account missing from an allowlist -
+so the comparison has to follow IAM's rules, not Python's.
+
+Prefer not gating on actions at all. Only the STS trust policy analyzer does;
+the other five read every `Allow` statement and keep actions for reporting.
+If you must gate, a statement naming both `Action` and `NotAction`, or
+neither, should raise rather than be guessed at.
+
+### AP-009: Scanning a Different Dimension Than the Policy Enforces
+
+```python
+# ❌ BAD - the SCP exempts by role tag; this reads the instance's tags
+for tag in instance.get('Tags', []):
+    if tag['Key'] == 'ExemptFromIMDSv2' and tag['Value'].lower() == 'true':
+        exemption_tag_present = True
+
+# ✅ GOOD - read the dimension the condition key reads
+resolved = resolve_instance_profile_role(iam_client, profile_arn)
+role_exemption_tag_present = (
+    resolved.tags.get(IMDS_EXEMPTION_TAG_KEY) == IMDS_EXEMPTION_TAG_VALUE
+)
+```
+
+A check decides whether a policy is safe to attach. That answer is only as
+good as the match between what the scanner measures and what the policy
+evaluates. Three ways they drift apart, all observed in this repo:
+
+1. **Wrong dimension.** `aws:PrincipalTag/X`, `aws:RequestTag/X` and a tag on
+   the resource are three different things wearing the same tag name. The
+   `deny_ec2_imds_v1` scanner read instance tags for a policy that exempts by
+   role tag, so accounts reported zero violations while enforcement would deny
+   every API call those instances made - the scan named the instances that
+   would break as its evidence the SCP was safe.
+2. **Wrong case sensitivity - in both directions at once.** A tag condition
+   key has two halves that match by opposite rules. IAM matches condition key
+   *names* without regard to case, and the tag key in
+   `aws:PrincipalTag/ExemptFromIMDSv2` is part of the name, so
+   `exemptfromimdsv2` matches. `StringNotEquals` compares the *value*
+   case-sensitively, so `True` does not match `true`. The original scanner had
+   both backwards: exact on the key, `.lower()` on the value. Check each half
+   against its own rule, and note that `StringEqualsIgnoreCase` exists when you
+   want the other comparison. Where a principal could carry the key twice in
+   cases that differ, AWS calls the result an unexpected condition failure -
+   raise rather than pick one.
+3. **Request state vs. resource state.** A condition key on a create action is
+   evaluated against the request, not against the object that results, so a
+   scan of running resources is not automatically a scan of what enforcement
+   will see. Be careful about the inverse mistake too: "the request" is not the
+   same as "the literal parameters the caller typed".
+   `ec2:MetadataHttpTokens` was measured resolving from the effective
+   configuration - an AMI with `imds-support=v2.0` populates it as `required`
+   for a request that names no `MetadataOptions` - so the naive reading
+   overstated the gap. Where a scan genuinely cannot observe the enforced
+   dimension, say so in the check's docstring instead of implying the clean
+   scan covers it.
+
+   None of this is settleable from documentation. AWS's own guide says
+   `HttpTokens` requires `HttpEndpoint=enabled`; `RunInstances` accepts the
+   combination anyway. When a condition key's behaviour is load-bearing for a
+   generated policy, prove it with `run-instances --dry-run` under a throwaway
+   role carrying the statement, with a control request that must be denied so a
+   broken probe cannot pass as a clean result.
+4. **One key read two ways.** Every condition key a statement adds is a key
+   the scanner has to mirror, and a second key is where the two drift. Both
+   IMDS statements were briefly built around a `ec2:MetadataHttpEndpoint`
+   clause, on the theory that a launch disabling IMDS must stay possible; the
+   hop-limit statement never carried it, so the pair disagreed about the same
+   fleet. Dropping it left one key, `HttpTokens`, deciding in both the policy
+   and the check. Prefer the narrower statement whose extra permission the
+   operator can buy back for free - here, naming `HttpTokens=required` on a
+   launch with no metadata service, which changes no behaviour.
+
+Before writing the analyzer, read the statement and list every condition key
+in it. For each one, name what the scanner will read to model it. A key with
+no answer is a gap to document, not to approximate.
+
+---
+
 ---
 
 ## 📝 Naming Conventions
@@ -873,6 +972,73 @@ must_modify:
       {check_name} = "{check_name}" in enabled_policies
       terraform_content += f"  {check_name} = {{str({check_name}).lower()}}\n"
     location: "alphabetical by service"
+
+# A check whose SCP statement is scoped by an allowlist needs EVERY step
+# below. Stop short anywhere and the check still reports 100% compliance,
+# the SCP is still enabled, and the allowlist renders empty - which for a
+# Deny statement denies everything rather than nothing. deny_ec2_ami_owner
+# shipped with the first and last steps only.
+if_check_has_allowlist:
+  - path: headroom/checks/{type}/{check_name}.py
+    function: "build_summary_fields"
+    add_line: "\"unique_{thing}s\": sorted(list({thing}s))"
+
+  - path: headroom/types.py
+    dataclass: "SCPCheckResult"
+    add_line: "{thing}s: Optional[List[str]] = None"
+
+  - path: headroom/parse_results.py
+    function: "_parse_single_scp_result_file"
+    add_line: "{thing}s=summary.get(\"unique_{thing}s\")"
+
+  - path: headroom/parse_results.py
+    add_function: "_build_{thing}s_for_recommendation"
+    call_from: ["_build_root_recommendation", "_build_ou_recommendation", "_build_account_recommendation"]
+    purpose: "Union the values across the accounts a placement covers"
+
+  - path: headroom/types.py
+    dataclass: "SCPPlacementRecommendations"
+    add_line: "{service}_allowed_{thing}s: Optional[List[str]] = None"
+
+  - path: headroom/terraform/generate_scps.py
+    function: "_build_{service}_terraform_parameters"
+    add_lines: |
+      Emit the list parameter, and raise RuntimeError naming the module
+      if it is empty. Never render an empty allowlist.
+
+  - path: tests/test_parse_results.py
+    must_test: [summary_field_carried, union_across_accounts, other_checks_unaffected]
+
+  - path: tests/test_generate_scps.py
+    must_test: [renders_populated_allowlist, aborts_on_empty_allowlist]
+
+if_check_has_exemptions:
+  - path: test_environment/modules/scps/locals.tf
+    read_first: |
+      List every condition key in the statement, including the ones that
+      express the exemption. For each, name what the scanner will read to
+      model it. See AP-009.
+
+  - path: headroom/aws/{service}.py
+    must_read: |
+      The dimension the condition key reads, not a same-named tag on a
+      convenient object. aws:PrincipalTag reads the calling role's tags;
+      aws:RequestTag reads the create request's; neither reads the resource's.
+
+  - path: headroom/constants.py
+    add_lines: |
+      The exemption tag key and value as constants, with a comment on the
+      operator that compares them. StringNotEquals is case-sensitive, so the
+      scanner must not lowercase what enforcement will not.
+
+  - path: headroom/checks/{type}/{check_name}.py
+    docstring: |
+      State which statements a clean scan clears and which it cannot. An
+      exemption the scan cannot observe - a launch-request tag, say - belongs
+      in the docstring, not in an implied guarantee.
+
+  - path: tests/test_aws_{service}.py
+    must_test: [right_dimension_exempts, wrong_dimension_does_not, value_case_is_exact]
 
 optional_modify:
   - path: test_environment/test_{check_name}.tf
@@ -1224,6 +1390,16 @@ step_6_e2e_optional:
 
 ```yaml
 verification_process:
+  step_0_machine_readable:
+    index: "https://servicereference.us-east-1.amazonaws.com/"
+    url: "https://servicereference.us-east-1.amazonaws.com/v1/{service}/{service}.json"
+    why: "Same data as the HTML reference below, as JSON. The HTML page renders
+      client-side, so it cannot be fetched or grepped - use this instead and
+      cite it in the policy comment."
+    shape: "Actions[].Resources[].ConditionKeys[] - the condition keys a given
+      action supports ON a given resource type"
+    example_query: "list every action whose image resource carries ec2:Owner"
+
   step_1:
     url: "https://docs.aws.amazon.com/service-authorization/latest/reference/reference_policies_actions-resources-contextkeys.html"
     action: "Find your service (e.g., Amazon RDS, Amazon EC2)"
@@ -1235,6 +1411,24 @@ verification_process:
   step_3:
     rule: "If condition key is NOT listed for an action, it CANNOT be used"
     do_not: "Assume support based on logic or web searches"
+
+  step_3b_resource_scope:
+    rule: "A resource-level condition key exists on ONE resource type. Scope the
+      statement's Resource to that type, not to whatever the action creates."
+    why: "An action is authorized against every resource it touches. On a
+      resource that does not carry the key, the key is absent - and a negated
+      operator (StringNotEquals, ArnNotLike, Bool with a false test) on an
+      absent key evaluates TRUE, so the Deny matches everything."
+    example: "ec2:Owner lives on the image resource. deny_ec2_ami_owner scoped
+      to arn:aws:ec2:*:*:instance/* denied every RunInstances call; scoped to
+      arn:aws:ec2:*::image/* it denies only untrusted AMI owners."
+    counterpart: "Use ...IfExists only where an absent key should mean allow.
+      In a Deny, that is usually the wrong direction - see BoolIfExists on
+      aws:PrincipalIsAWSService in modules/rcps/locals.tf, where it is right."
+    converse: "The same lookup decides which actions belong in the statement.
+      An action that lists no such resource type can never match a statement
+      scoped to it, so adding it reads as coverage while denying nothing -
+      ec2:RunScheduledInstances against arn:aws:ec2:*::image/*, for example."
 
   step_4_undocumented:
     if: "You want to include undocumented action"
