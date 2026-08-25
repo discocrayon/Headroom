@@ -54,6 +54,36 @@ locals {
     # Denies launching EC2 instances whose IMDS hop limit exceeds 1
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
     # A hop limit above 1 lets the metadata response cross an extra network hop
+    #
+    # Deliberately NO ec2:MetadataHttpEndpoint clause, unlike
+    # DenyRunInstancesMetadataHttpTokensOptional below. Adding one here would
+    # be a reasonable-looking change and is not wanted: the scanner counts the
+    # hop limit whether or not the endpoint is enabled, so the two agree as
+    # written. Excusing endpoint-disabled launches in the policy would put them
+    # back out of step, in the direction where the policy is looser than the
+    # scan rather than stricter.
+    #
+    # Measured against a live account with RunInstances --dry-run:
+    #
+    #   hop=3, endpoint=enabled                    DENY
+    #   hop=1, endpoint=enabled                    allow
+    #   hop=3, endpoint=disabled                   DENY   <- counted, so the
+    #                                                        scanner counts it
+    #   endpoint=disabled, no hop                  allow  (key absent, and
+    #                                                        NumericGreaterThan
+    #                                                        on an absent key
+    #                                                        is false)
+    #   no MetadataOptions, AMI imds-support=v2.0  DENY   <- the AMI supplies a
+    #                                                        hop limit above 1
+    #   no MetadataOptions, AMI without it         allow
+    #
+    # Two documented claims this disproves. AWS does NOT require HttpEndpoint
+    # enabled when HttpPutResponseHopLimit is specified, whatever the EC2 guide
+    # says about modify-instance-metadata-options; RunInstances accepts the
+    # combination. And a modern AMI defaults above this threshold, so this
+    # statement denies a default Amazon Linux 2023 launch - whether a threshold
+    # of 1 is right for such a fleet is an operator decision, not one this
+    # module makes.
     {
       include = var.deny_ec2_imds_hop_limit,
       statement = {
