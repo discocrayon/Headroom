@@ -226,8 +226,7 @@ class SCPCheckResult(CheckResult):
 class RCPCheckResult(CheckResult):
     """RCP check result for third-party access control."""
     third_party_account_ids: List[str]
-    has_wildcard: bool
-    total_roles_analyzed: Optional[int] = None
+    blocks_rcp: bool  # True if a principal here defeats any allowlist
 ```
 
 ### Placement Recommendation Models
@@ -255,10 +254,11 @@ class RCPPlacementRecommendations:
     reasoning: str
 
 @dataclass
-class RCPParseResult:
-    """Result from parsing RCP check files."""
+class RCPCheckParseResult:
+    """Third-party access findings for one RCP check, across every account."""
+    check_name: str                               # Which RCP check this is
     account_third_party_map: Dict[str, Set[str]]  # account_id -> third_party_ids
-    accounts_with_wildcards: Set[str]             # Accounts to exclude
+    accounts_with_blockers: Set[str]              # Accounts that cannot take this RCP
 ```
 
 ### Check-Specific Data Models
@@ -1228,7 +1228,7 @@ The RCP uses `aws:PrincipalAccount` condition for allowlisting. This only works 
 - ✅ **Service principals:** Exempt via `aws:PrincipalIsAWSService = "false"` condition
 
 **Deployment Safety:**
-- Accounts with wildcard principals → excluded from RCP generation
+- Accounts with wildcard principals → excluded from the S3 RCP
 - Buckets with Federated/CanonicalUser principals → marked as violations
 - Only buckets with account-based third-party access → used for allowlist generation
 - RCP policy includes `aws:ResourceTag/dp:exclude:identity = "true"` condition to exempt tagged buckets
@@ -1393,29 +1393,42 @@ SCPCheckResult(
 def parse_rcp_result_files(
     results_dir: str,
     organization_hierarchy: OrganizationHierarchy
-) -> RCPParseResult:
+) -> List[RCPCheckParseResult]:
     """
-    Parse RCP check result files for STS third-party AssumeRole check.
+    Parse result files for every registered RCP check.
+
+    Results are organized as: {results_dir}/rcps/{check_name}/*.json
 
     Algorithm:
-    1. Get check directory using get_results_dir(DENY_STS_THIRD_PARTY_ASSUMEROLE, results_dir)
-    2. Verify directory exists (raise RuntimeError if not)
-    3. For each JSON file:
-       - Parse JSON
-       - Extract summary
-       - Get unique_third_party_accounts and roles_with_wildcards
-       - Handle missing account_id via lookup
-       - If roles_with_wildcards > 0:
-         - Add to accounts_with_wildcards set
-         - Skip (don't add to account_third_party_map)
-       - Else:
-         - Add account_id -> set(third_party_accounts) to map
-    4. Return RCPParseResult
+    1. For each check name in sorted(get_check_names("rcps")):
+       a. Get check directory using get_results_dir(check_name, results_dir)
+       b. If the directory does not exist: record check_name as missing,
+          skip to the next check
+       c. For each JSON file in the directory:
+          - Parse JSON, extract summary
+          - Handle missing account_id via lookup
+          - Cross-check summary["check"] against check_name (a file with
+            no "check" field is presumed to match); raise RuntimeError on
+            a mismatch
+          - Require summary["violations"] (never defaulted); raise
+            RuntimeError if absent
+          - blocks_rcp = summary["violations"] > 0
+          - If blocks_rcp: add account_id to this check's
+            accounts_with_blockers
+          - Else: add account_id -> set(unique_third_party_accounts) to
+            this check's account_third_party_map
+       d. Append an RCPCheckParseResult for this check to the result list
+    2. If any registered check's directory was missing: raise a single
+       RuntimeError naming every missing check
+    3. Return the list of RCPCheckParseResult, one per registered RCP check
 
-    Returns: RCPParseResult(account_third_party_map, accounts_with_wildcards)
+    Returns: List[RCPCheckParseResult], one per registered RCP check
 
-    Note: Accounts with wildcards are excluded from account_third_party_map
-    to prevent unsafe RCP generation
+    Note: A check directory that exists but is empty is not an error - it
+    yields an RCPCheckParseResult with no findings, indistinguishable from
+    a check that ran and found nothing. Only an absent directory is an
+    error, since that is indistinguishable from a check that was silently
+    dropped.
     """
 ```
 
@@ -1494,31 +1507,32 @@ allowed_iam_user_arns = sorted(all_user_arns)
 # terraform/generate_rcps.py
 
 def determine_rcp_placement(
-    account_third_party_map: Dict[str, Set[str]],
-    organization_hierarchy: OrganizationHierarchy,
-    accounts_with_wildcards: Set[str]
+    parse_results: List[RCPCheckParseResult],
+    organization_hierarchy: OrganizationHierarchy
 ) -> List[RCPPlacementRecommendations]:
     """
     Determine optimal RCP placement levels using union strategy.
 
     Algorithm:
-    1. Try root level:
-       - Check: NO accounts have wildcards (len(accounts_with_wildcards) == 0)
-       - If safe: union ALL third-party IDs from all accounts
-       - Affected accounts: ALL accounts in organization
-       - Return single root-level recommendation
-
-    2. Try OU level (if root not safe):
-       - For each OU:
-         - Get all accounts in OU
-         - Check: NO accounts in OU have wildcards
-         - If safe: union third-party IDs from accounts in OU
-         - Affected accounts: accounts in OU (excluding wildcard accounts)
-         - Single-account OUs: Still get OU-level recommendations
-
-    3. Account level (for accounts with wildcards):
-       - Accounts with wildcards are EXCLUDED from all recommendations
-       - Static analysis cannot determine safe principals
+    1. For each RCPCheckParseResult in parse_results (each check runs
+       independently, against only its own accounts_with_blockers):
+       a. Accounts in this check's accounts_with_blockers were already
+          excluded from account_third_party_map by parse_rcp_result_files,
+          so they need no further filtering here
+       b. If account_third_party_map is empty: no recommendations for this check
+       c. Try root level:
+          - Check: NO accounts have this check's own blockers (len(accounts_with_blockers) == 0)
+          - If safe: union ALL third-party IDs from this check's account_third_party_map
+          - Affected accounts: ALL accounts in organization
+          - Root-level recommendation is the only recommendation returned for this check
+       d. Try OU level (if root not safe):
+          - For each OU:
+            - Check: NO accounts in OU are in this check's accounts_with_blockers
+            - If safe: union third-party IDs from this check's account_third_party_map for accounts in the OU
+            - Single-account OUs: Still get OU-level recommendations
+       e. Account level:
+          - Every account still in this check's account_third_party_map after OU-level coverage gets its own account-level recommendation
+    2. Return the recommendations from every check, concatenated
 
     Union Strategy Rationale:
     - Third-party IDs can be safely combined into single allowlist
@@ -1527,11 +1541,12 @@ def determine_rcp_placement(
     - Still safe because RCPs use allowlists (approved principals)
 
     Critical Safety Rules:
-    - Root RCP ONLY if NO accounts have wildcards
-    - OU RCP ONLY if NO accounts in that OU have wildcards
+    - Root RCP for a check ONLY if NO accounts have that check's own blockers
+    - OU RCP for a check ONLY if NO accounts in that OU have that check's own blockers
+    - A blocker is check-specific: an account blocking the S3 RCP can still receive placement for every other check
     - Affected accounts includes ALL accounts at that level (not just eligible ones)
 
-    Returns: List[RCPPlacementRecommendations]
+    Returns: List[RCPPlacementRecommendations], concatenated across every registered RCP check
     """
 ```
 
@@ -1750,24 +1765,64 @@ def generate_rcp_terraform(
        - Account: {account_name}_rcps.tf
     3. For each file:
        - Generate module call with target_id reference
-       - Add sts_third_party_assumerole_account_ids_allowlist
+       - For each registered RCP check, in `RCP_TERRAFORM_VARIABLES` order:
+         if this target has a recommendation for that check, emit its enable
+         flag as true with its third-party allowlist variable; otherwise emit
+         the enable flag as false and omit the allowlist
        - Third-party IDs are already unioned by placement logic
     4. Write to {rcps_dir}/
     """
 ```
 
+**`RCP_TERRAFORM_VARIABLES`:**
+
+The renderer never branches on a check name. `RCP_TERRAFORM_VARIABLES` maps
+each registered RCP check to the three things a module call needs from it: the
+section comment, the boolean enable variable, and the list variable holding
+its third-party allowlist. `_build_rcp_terraform_module` iterates the table, so
+the table's order fixes the order parameters are rendered in - alphabetical by
+service: ECR, KMS, S3, Secrets Manager, SQS, STS - and adding a check requires
+no edit to the renderer itself.
+
+The table is the one place a new RCP check must be declared by hand; parsing
+and placement are already driven by the check registry. A registered check with
+no table entry is collected on every run and then dropped at render time,
+emitting no module parameters at all. Because `modules/rcps` declares every
+`deny_*` flag without a default, the omission surfaces as a `terraform plan`
+failure on a missing required variable rather than as a silently disabled
+check. `test_table_covers_every_registered_rcp_check` asserts the table's keys
+equal `get_check_names("rcps")` and fails by name in CI, before any Terraform
+runs.
+
 **Generated RCP Terraform Structure:**
 ```hcl
-# Auto-generated RCP Terraform for root
-# Generated by Headroom
+# Auto-generated RCP Terraform configuration for Organization Root
+# Generated by Headroom based on third-party account analysis
 
 module "rcps_root" {
   source = "../modules/rcps"
   target_id = local.root_ou_id
 
+  # ECR
+  deny_ecr_third_party_access = false
+
+  # KMS
+  deny_kms_third_party_access = false
+
+  # S3
+  deny_s3_third_party_access = false
+
+  # Secrets Manager
+  deny_secrets_manager_third_party_access = false
+
+  # SQS
+  deny_sqs_third_party_access = false
+
+  # STS
+  deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
+    "888888888888",
     "999999999999",
-    "888888888888"
   ]
 }
 ```
@@ -1776,10 +1831,27 @@ module "rcps_root" {
 ```hcl
 # modules/rcps/variables.tf
 
+# One enable flag + one allowlist variable per registered RCP check,
+# alphabetical by service: ECR, KMS, S3, Secrets Manager, SQS, STS.
+#
+# STS is shown below. ECR, KMS, S3 and SQS follow exactly this shape.
+# Secrets Manager does not: its allowlist is named
+# `secrets_manager_third_party_account_ids_allowlist`, with no `_access_`
+# segment, while its enable flag `deny_secrets_manager_third_party_access`
+# keeps the segment. Deriving the allowlist name from the pattern produces
+# `secrets_manager_third_party_access_account_ids_allowlist`, which
+# `terraform plan` rejects with "An argument named ... is not expected here".
+# Do not normalize it.
+
+variable "deny_sts_third_party_assumerole" {
+  type        = bool
+  description = "Deny STS AssumeRole from third-party accounts except those in the allowlist."
+}
+
 variable "sts_third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
   default     = []
-  description = "Third-party account IDs approved for AssumeRole"
+  description = "Allowlist of third-party AWS account IDs that are permitted to assume roles in this target ID."
 }
 ```
 
@@ -1787,40 +1859,136 @@ variable "sts_third_party_assumerole_account_ids_allowlist" {
 # modules/rcps/locals.tf
 
 locals {
-  rcp_policy = {
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "EnforceOrgIdentities"
-        Effect = "Deny"
-        Action = "sts:AssumeRole"
-        Resource = "*"
-        Condition = {
-          StringNotEquals = {
-            "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+  # One entry per registered RCP check, each gated by its own boolean. An
+  # entry whose `include` is false is dropped from the document; it never
+  # permits anything. This is what lets six checks placed at different
+  # levels compose without one weakening another.
+  possible_rcp_1_statements = [
+    # var.deny_ecr_third_party_access
+    # -->
+    # Sid: DenyECRThirdPartyAccess
+    {
+      include = var.deny_ecr_third_party_access,
+      statement = {
+        "Sid"       = "DenyECRThirdPartyAccess"
+        "Principal" = "*"
+        "Action" = [
+          "ecr:*",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount"                = var.ecr_third_party_access_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
           }
-          StringNotEqualsIfExists = {
-            "aws:PrincipalAccount" = var.sts_third_party_assumerole_account_ids_allowlist
-          }
-          StringNotEquals = {
-            "aws:PrincipalType" = "Service"
-          }
-          Bool = {
-            "dp:exclude:identity" = false
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
           }
         }
       }
+    },
+
+    # KMS, S3, Secrets Manager and SQS entries follow, each with its own
+    # include flag, Sid, service action prefix and allowlist variable.
+
+    # var.deny_sts_third_party_assumerole
+    # -->
+    # Sid: DenySTSThirdPartyAssumeRole
+    {
+      include = var.deny_sts_third_party_assumerole,
+      statement = {
+        "Sid"       = "DenySTSThirdPartyAssumeRole"
+        "Principal" = "*"
+        "Action" = [
+          "sts:AssumeRole",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = {
+            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+            "aws:PrincipalAccount"                = var.sts_third_party_assumerole_account_ids_allowlist
+            "aws:ResourceTag/dp:exclude:identity" = "true"
+          }
+          "BoolIfExists" = {
+            "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
+  ]
+
+  # Keep only the statements whose flag is true
+  included_rcp_1_deny_statements = [
+    for rcp_1_deny_statement in local.possible_rcp_1_statements :
+    rcp_1_deny_statement.statement if rcp_1_deny_statement.include
+  ]
+
+  # Effect is merged in rather than repeated on every statement
+  rcp_1_policy = {
+    "Version" = "2012-10-17"
+    "Statement" = [
+      for statement in local.included_rcp_1_deny_statements :
+      merge(statement, { Effect = "Deny" })
     ]
   }
+
+  # jsonencode(jsondecode(...)) minimizes the rendered document
+  rcp_1_content = jsonencode(
+    jsondecode(data.aws_iam_policy_document.rcp_1.json)
+  )
+
+  # Validate the RCP maximum length at plan time rather than apply time
+  rcp_length_1 = length(local.rcp_1_content)
+  validation_check_1 = (local.rcp_length_1 <= 5120) ? "All good. This is a no-op." : error("[Error] String length exceeds 5120 characters, right now it is ${local.rcp_length_1}")
+}
+
+data "aws_iam_policy_document" "rcp_1" {
+  source_policy_documents = [jsonencode(local.rcp_1_policy)]
 }
 ```
 
 **RCP Policy Logic:**
-Denies `sts:AssumeRole` EXCEPT:
-1. Principals from organization (`aws:PrincipalOrgID`)
-2. Principals from allowlisted third-party accounts (`aws:PrincipalAccount`)
-3. AWS service principals (`aws:PrincipalType = "Service"`)
-4. Resources tagged with `dp:exclude:identity: true`
+
+Each included statement denies its own service's actions - `ecr:*`, `kms:*`,
+`s3:*`, `secretsmanager:*`, `sqs:*`, or `sts:AssumeRole` - EXCEPT when:
+1. The principal belongs to the organization (`aws:PrincipalOrgID`)
+2. The principal belongs to an allowlisted third-party account
+   (`aws:PrincipalAccount`, against that statement's own allowlist variable)
+3. The caller is an AWS service
+   (`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`)
+4. The resource carries the tag `dp:exclude:identity = "true"`
+   (`aws:ResourceTag/dp:exclude:identity`)
+
+Conditions 1, 2 and 4 share one `StringNotEqualsIfExists` block and condition 3
+is a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
+denies only a principal for which none of the four exceptions hold at once:
+outside the organization, absent from that statement's allowlist, not an AWS
+service, and acting on an untagged resource.
+
+A check whose `deny_*` flag is `false` contributes no statement at all, so
+checks placed at different levels of the hierarchy never weaken one another.
+
+**Known limitation - one 5,120-character policy per target:**
+
+`modules/rcps/rcps.tf` creates exactly one `aws_organizations_policy`, `rcp_1`,
+so every included statement shares a single RCP document. `locals.tf` computes
+`rcp_length_1 = length(local.rcp_1_content)`, and `validation_check_1` calls
+`error()` at plan time when that exceeds 5120, the AWS maximum length for an
+RCP.
+
+Until all six checks were wired through to Terraform, only STS could ever
+render `true` in a real run, so at most one statement was included and the
+budget was never approached. With six statements includable simultaneously the
+scaffolding alone costs roughly 1,900 of the 5,120 characters, and each
+additional twelve-digit account ID costs about 14 more, leaving room for a
+couple of hundred allowlist entries across all six lists combined. A large
+enough organization will hit the plan-time error.
+
+Splitting across a second policy is deliberately not implemented: changes to
+`modules/rcps/` are a non-goal for the generator, and a loud failure at plan
+time is the correct outcome - the alternative is silently truncating an
+allowlist and denying access the organization depends on.
 
 **See:** Test Environment section for complete module documentation and usage examples in `test_environment/modules/rcps/`.
 
@@ -2445,11 +2613,12 @@ class OutputHandler:
 
 ### RCP Deployment Safety
 
-**Wildcard Exclusion:**
-- Accounts with wildcard principals (`"Principal": "*"`) are excluded from RCP generation
-- Static analysis cannot determine actual assuming principals from wildcards
-- Avoids OU-level RCPs if ANY account in OU has wildcards
-- Avoids root-level RCPs if ANY account in organization has wildcards
+**Blocker Exclusion:**
+- An account is excluded from a check's RCP generation whenever that check's own violations count is nonzero; each check defines what counts as a violation for its own resource type (see `documentation/CHECKS.md`)
+- Static analysis cannot always determine the actual principals a resource policy would grant access to
+- Placement runs once per check, each against only that check's own blocked accounts, so a blocker for one RCP (e.g. S3) never suppresses placement for another (e.g. STS)
+- Avoids OU-level RCP for a check if ANY account in that OU is blocked for that check
+- Avoids root-level RCP for a check if ANY account in the organization is blocked for that check
 
 **Union Strategy:**
 - Third-party account IDs combined (unioned) at each level
@@ -2458,9 +2627,9 @@ class OutputHandler:
 - Example: Account A trusts [111], Account B trusts [222] → RCP allowlist [111, 222]
 
 **Placement Hierarchy:**
-1. **Root Level:** Only if NO accounts have wildcards; unions ALL third-party IDs
-2. **OU Level:** Only if NO accounts in OU have wildcards; unions OU third-party IDs
-3. **Account Level:** Wildcard accounts excluded; no RCP generated
+1. **Root Level:** Only if NO accounts have that check's own blockers; unions ALL third-party IDs
+2. **OU Level:** Only if NO accounts in OU have that check's own blockers; unions OU third-party IDs
+3. **Account Level:** Blocked accounts excluded; no RCP generated for them
 
 ---
 
@@ -2852,12 +3021,18 @@ Creates IAM roles with diverse trust policy patterns to test RCP third-party det
 **Rationale:** Roles are intentionally "useless" (deny-all policy) and exist solely for trust policy analysis.
 
 **Expected Behavior:**
-- Wildcard role (fort-knox) flagged as violation
-- Fort-knox account excluded from RCP generation
+- Wildcard role (fort-knox) flagged as a violation of
+  `deny_sts_third_party_assumerole`
+- Fort-knox excluded from that one check's RCP placement. The wildcard sits in
+  an IAM role trust policy, which says nothing about the account's ECR, KMS,
+  S3, Secrets Manager or SQS resource policies, so fort-knox still receives
+  recommendations for those five checks
 - Shared-foo-bar: 11 unique third-party accounts detected
 - Acme-co: 1 third-party account (CrowdStrike)
-- OU-level RCP not possible (fort-knox has wildcard)
-- Account-level RCPs generated for compliant accounts
+- OU-level STS RCP not possible while fort-knox is in the OU; the OU stays
+  eligible for the other five checks
+- Account-level RCPs generated for accounts with no blocker for the check
+  being placed
 
 #### EC2 IMDSv1 Test (`test_deny_ec2_imds_v1/`)
 
@@ -3011,28 +3186,53 @@ Production-ready RCP module used by generated Terraform files.
 ```hcl
 variable "target_id" {
   type        = string
-  description = "OU ID or account ID to attach RCP"
+  description = "Organization account, root, or unit."
 }
 
+# One enable flag + one allowlist variable per registered RCP check,
+# alphabetical by service: ECR, KMS, S3, Secrets Manager, SQS, STS.
+#
+# STS is shown below. ECR, KMS, S3 and SQS follow exactly this shape.
+# Secrets Manager does not: its allowlist is named
+# `secrets_manager_third_party_account_ids_allowlist`, with no `_access_`
+# segment, while its enable flag `deny_secrets_manager_third_party_access`
+# keeps the segment. Deriving the allowlist name from the pattern produces
+# `secrets_manager_third_party_access_account_ids_allowlist`, which
+# `terraform plan` rejects with "An argument named ... is not expected here".
+# Do not normalize it.
+
 variable "deny_sts_third_party_assumerole" {
-  type    = bool
-  default = false
+  type        = bool
+  description = "Deny STS AssumeRole from third-party accounts except those in the allowlist."
 }
 
 variable "sts_third_party_assumerole_account_ids_allowlist" {
   type        = list(string)
   default     = []
-  description = "Third-party account IDs approved for AssumeRole"
+  description = "Allowlist of third-party AWS account IDs that are permitted to assume roles in this target ID."
 }
 ```
 
 **RCP Policy Logic:**
 
-Denies `sts:AssumeRole` EXCEPT:
-1. Principals from organization (`aws:PrincipalOrgID`)
-2. Principals from allowlisted third-party accounts (`aws:PrincipalAccount`)
-3. AWS service principals (`aws:PrincipalType = "Service"`)
-4. Resources tagged with `dp:exclude:identity: true`
+Each included statement denies its own service's actions - `ecr:*`, `kms:*`,
+`s3:*`, `secretsmanager:*`, `sqs:*`, or `sts:AssumeRole` - EXCEPT when:
+1. The principal belongs to the organization (`aws:PrincipalOrgID`)
+2. The principal belongs to an allowlisted third-party account
+   (`aws:PrincipalAccount`, against that statement's own allowlist variable)
+3. The caller is an AWS service
+   (`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`)
+4. The resource carries the tag `dp:exclude:identity = "true"`
+   (`aws:ResourceTag/dp:exclude:identity`)
+
+Conditions 1, 2 and 4 share one `StringNotEqualsIfExists` block and condition 3
+is a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
+denies only a principal for which none of the four exceptions hold at once:
+outside the organization, absent from that statement's allowlist, not an AWS
+service, and acting on an untagged resource.
+
+A check whose `deny_*` flag is `false` contributes no statement at all, so
+checks placed at different levels of the hierarchy never weaken one another.
 
 **See:** [modules/rcps/README.md](https://github.com/discocrayon/Headroom/tree/main/test_environment/modules/rcps#rcps-module)
 
@@ -3175,14 +3375,28 @@ Example of OU-level RCP deployment (union of third-party accounts).
 
 ```hcl
 # Auto-generated RCP Terraform configuration for acme_acquisition OU
-# Generated by Headroom based on IAM trust policy analysis
-# Union of third-party accounts from all accounts in this OU
+# Generated by Headroom based on third-party account analysis
 
 module "rcps_acme_acquisition_ou" {
   source = "../modules/rcps"
   target_id = local.top_level_acme_acquisition_ou_id
 
-  # deny_sts_third_party_assumerole
+  # ECR
+  deny_ecr_third_party_access = false
+
+  # KMS
+  deny_kms_third_party_access = false
+
+  # S3
+  deny_s3_third_party_access = false
+
+  # Secrets Manager
+  deny_secrets_manager_third_party_access = false
+
+  # SQS
+  deny_sqs_third_party_access = false
+
+  # STS
   deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
     "749430749651",
@@ -3198,13 +3412,28 @@ Example of account-level RCP deployment.
 
 ```hcl
 # Auto-generated RCP Terraform configuration for shared-foo-bar
-# Generated by Headroom based on IAM trust policy analysis
+# Generated by Headroom based on third-party account analysis
 
 module "rcps_shared_foo_bar" {
   source = "../modules/rcps"
   target_id = local.shared_foo_bar_account_id
 
-  # deny_sts_third_party_assumerole
+  # ECR
+  deny_ecr_third_party_access = false
+
+  # KMS
+  deny_kms_third_party_access = false
+
+  # S3
+  deny_s3_third_party_access = false
+
+  # Secrets Manager
+  deny_secrets_manager_third_party_access = false
+
+  # SQS
+  deny_sqs_third_party_access = false
+
+  # STS
   deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
     "062897671886",
@@ -3546,12 +3775,20 @@ terraform destroy -target=aws_iam_role.wildcard_role
 **Initial State:** 1 role with `Principal: "*"` wildcard.
 
 **Expected Results:**
-- Account excluded from RCP generation
-- Violation flagged in results JSON
-- OU-level RCP not possible if fort-knox in same OU
+- Violation flagged in the `deny_sts_third_party_assumerole` results JSON
+- Account excluded from that check's RCP placement at every level. Placement
+  runs once per check against only that check's blocked accounts, and a
+  trust-policy wildcard blocks STS alone
+- OU-level STS RCP not possible if fort-knox is in the OU; the OU remains
+  eligible for the other five checks
+- The other five checks write a result file for fort-knox like any other
+  account and place it normally
 - CloudTrail analysis recommended (future feature)
 
-**Generated File:** None (account excluded due to wildcard).
+**Generated File:** Whichever file covers fort-knox for the five checks it does
+not block - the root file, its OU file, or `rcps/fort_knox_rcps.tf` at account
+level, depending on where each check places. Only the STS statement is switched
+off for it; one wildcard no longer excludes the account from every RCP.
 
 #### Scenario 4: EC2 IMDSv1 with Exemptions (fort-knox)
 
@@ -3570,12 +3807,17 @@ terraform destroy -target=aws_iam_role.wildcard_role
 **Initial State:** 15 roles trusting 11 unique third-party accounts + 1 wildcard.
 
 **Expected Results:**
-- Account excluded from OU/root RCPs due to wildcard
-- Account-level RCP generated for account (excluding wildcard role)
-- All 11 third-party IDs in allowlist
-- Wildcard violation flagged
+- Wildcard violation flagged for `deny_sts_third_party_assumerole`
+- Account excluded from STS RCP placement at every level, account level
+  included: a blocked account is kept out of that check's
+  `account_third_party_map` entirely, so none of its 11 trust-policy
+  third-party IDs reach an STS allowlist
+- The wildcard is in a trust policy, so it blocks STS only. The ECR, KMS, S3,
+  Secrets Manager and SQS checks place shared-foo-bar normally, and the
+  third-party IDs those checks find do reach their allowlists
 
-**Generated File:** `rcps/shared_foo_bar_rcps.tf` (account-level only).
+**Generated File:** Whichever file covers shared-foo-bar for the five checks it
+does not block. No file carries an STS statement for this account.
 
 ### Integration with Development Workflow
 

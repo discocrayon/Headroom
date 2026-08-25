@@ -9,8 +9,9 @@ import pytest
 from unittest.mock import MagicMock, patch
 from typing import Dict, Any, Generator
 from headroom.main import main
+from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
 from headroom.types import (
-    RCPParseResult,
+    RCPCheckParseResult,
     RCPPlacementRecommendations,
     OrganizationHierarchy,
     OrganizationalUnit
@@ -122,7 +123,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = []
             main()
 
         # Assert - Verify correct call sequence and parameters
@@ -167,7 +168,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = []
             main()
 
         # Assert
@@ -217,7 +218,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = []
             main()
 
         # Assert
@@ -541,7 +542,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = []
             main()
 
         # Assert
@@ -583,7 +584,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = []
             main()
 
         # Assert - Verify complete flow sequence
@@ -630,10 +631,7 @@ class TestMainIntegration:
         with (
             patch('headroom.main.analyze_scp_compliance', return_value=[]),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
-            patch('headroom.main.parse_rcp_result_files', return_value=RCPParseResult(
-                account_third_party_map={},
-                accounts_with_wildcards=set()
-            )),
+            patch('headroom.main.parse_rcp_result_files', return_value=[]),
             patch('headroom.main.generate_terraform_org_info'),
             patch('headroom.main.analyze_organization_structure'),
             patch('headroom.main.ensure_org_info_symlink')
@@ -782,10 +780,13 @@ class TestMainIntegration:
         with (
             patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
-            patch('headroom.main.parse_rcp_result_files', return_value=RCPParseResult(
-                account_third_party_map={"111111111111": {"333333333333"}},
-                accounts_with_wildcards=set()
-            )),
+            patch('headroom.main.parse_rcp_result_files', return_value=[
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map={"111111111111": {"333333333333"}},
+                    accounts_with_blockers=set(),
+                )
+            ]),
             patch('headroom.main.generate_terraform_org_info'),
             patch('headroom.main.analyze_organization_structure', return_value=mock_org_hierarchy),
             patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
