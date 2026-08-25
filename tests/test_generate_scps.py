@@ -663,8 +663,15 @@ def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners
     assert "ec2_allowed_ami_owners = [" in result
 
 
-def test_build_scp_terraform_module_with_ec2_ami_owner_check_without_allowed_owners() -> None:
-    """Should include empty ec2_allowed_ami_owners when deny_ec2_ami_owner is enabled without owners."""
+def test_build_scp_terraform_module_ec2_ami_owner_empty_allowlist_aborts() -> None:
+    """
+    An empty AMI owner allowlist aborts rather than rendering.
+
+    `ec2_allowed_ami_owners = []` denies every ec2:RunInstances call instead
+    of denying none of them, so it is never a safe thing to emit. The run
+    used to produce exactly that on every organization, because nothing
+    carried the check's observed owners into the recommendation.
+    """
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-ec2-ami-owner",
@@ -674,12 +681,11 @@ def test_build_scp_terraform_module_with_ec2_ami_owner_check_without_allowed_own
         compliance_percentage=100.0,
         reasoning="test",
     )
-    result = _build_scp_terraform_module(
-        module_name="scps_root",
-        target_id_reference="local.root_ou_id",
-        recommendations=[rec],
-        comment="Organization Root",
-        organization_hierarchy=org
-    )
-    assert "deny_ec2_ami_owner = true" in result
-    assert "ec2_allowed_ami_owners = []" in result
+    with pytest.raises(RuntimeError, match=r"scps_root enables deny_ec2_ami_owner with an empty"):
+        _build_scp_terraform_module(
+            module_name="scps_root",
+            target_id_reference="local.root_ou_id",
+            recommendations=[rec],
+            comment="Organization Root",
+            organization_hierarchy=org
+        )

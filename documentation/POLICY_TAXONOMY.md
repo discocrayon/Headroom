@@ -261,8 +261,13 @@ This document categorizes the different patterns of Service Control Policies (SC
 ```json
 {
   "Effect": "Deny",
-  "Action": "ec2:RunInstances",
-  "Resource": "arn:aws:ec2:*:*:instance/*",
+  "Action": [
+    "ec2:CreateFleet",
+    "ec2:RequestSpotFleet",
+    "ec2:RequestSpotInstances",
+    "ec2:RunInstances"
+  ],
+  "Resource": "arn:aws:ec2:*::image/*",
   "Condition": {
     "StringNotEquals": {
       "ec2:Owner": [
@@ -560,10 +565,37 @@ This check lists all IAM users in accounts. The SCP uses `NotResource` to deny `
 This check identifies EC2 instances and determines the owner of the AMI used to launch each instance. The SCP denies `ec2:RunInstances` unless the AMI owner is in the allowlist.
 
 **Policy Structure:**
-- Deny `ec2:RunInstances`
+- Deny the launch paths: `ec2:RunInstances`, `ec2:CreateFleet`,
+  `ec2:RequestSpotFleet`, `ec2:RequestSpotInstances`
+- Scoped to the **image** resource, `arn:aws:ec2:*::image/*`
 - Unless `ec2:Owner` is in the approved list (e.g., "amazon", "aws-marketplace", trusted account IDs)
 
-**Headroom's Role:** Scans all accounts and reports all EC2 instances with their AMI owners. This generates a comprehensive list of unique AMI owners that can be used to populate the allowlist. The check helps identify:
+**Why those actions:** they are EC2 actions AWS authorizes against the image
+resource with `ec2:Owner`, per the machine-readable service reference at
+`https://servicereference.us-east-1.amazonaws.com/v1/ec2/ec2.json`.
+
+`ec2:ModifyFleet` supports the key as well - raising a fleet's target capacity
+starts instances from its launch template's AMI - and is excluded as a
+deliberate scope decision.
+
+`ec2:RunScheduledInstances`, `ec2:ModifySpotFleetRequest` and
+`ec2:CreateLaunchTemplateVersion` are excluded for a different reason: they
+list no image resource, so a statement scoped to `image/*` never matches them
+and adding them would read as coverage while denying nothing.
+
+**Why the image resource:** `RunInstances` is authorized against every resource
+it touches - instance, volume, network interface, image - and `ec2:Owner` exists
+only on the image. Scoped to `instance/*` the key is absent from the request
+context, `StringNotEquals` on an absent key evaluates true, and the Deny matches
+every launch regardless of AMI. The operator is deliberately not
+`StringNotEqualsIfExists`: for a Deny statement, denying when the owner cannot
+be read is the safe direction.
+
+**Why the allowlist is never empty:** an empty `ec2_allowed_ami_owners` denies
+every launch rather than none of them, so Terraform generation aborts rather
+than rendering it. See the Allowlist Guard in the Headroom Specification.
+
+**Headroom's Role:** Scans all accounts and reports all EC2 instances with their AMI owners. The unique AMI owners observed across the accounts a placement covers are unioned into `ec2_allowed_ami_owners`. The check helps identify:
 - Amazon-owned AMIs (owner: "amazon")
 - AWS Marketplace AMIs (various vendor account IDs)
 - Custom AMIs (account-owned)

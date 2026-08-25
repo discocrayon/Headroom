@@ -6,11 +6,41 @@ locals {
     # Denies launching EC2 instances unless AMI owner is in allowlist
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
     # Uses ec2:Owner condition key which contains the AMI owner account ID or alias
+    #
+    # The resource is the AMI, not the instance. RunInstances is authorized
+    # against every resource it touches - instance, volume, network interface,
+    # image - and ec2:Owner exists only on the image. Scoped to instance/*, the
+    # key is absent from the request context, StringNotEquals on an absent key
+    # is true, and the Deny matches every launch regardless of AMI.
+    #
+    # StringNotEquals is deliberately not StringNotEqualsIfExists: should AWS
+    # ever stop populating ec2:Owner, denying the launch is the safe direction
+    # for a Deny statement.
+    #
+    # The image ARN has an empty account field: AMIs are region-scoped.
+    #
+    # The actions are launch paths AWS authorizes against the image resource
+    # with ec2:Owner, taken from the machine-readable service reference at
+    # https://servicereference.us-east-1.amazonaws.com/v1/ec2/ec2.json
+    #
+    # ec2:ModifyFleet supports the key too - raising a fleet's target capacity
+    # launches from its launch template's AMI - and is left out as a
+    # deliberate scope decision, not an oversight.
+    #
+    # Absent for a different reason: ec2:RunScheduledInstances,
+    # ec2:ModifySpotFleetRequest and ec2:CreateLaunchTemplateVersion list no
+    # image resource at all, so a statement scoped to image/* never matches
+    # them. Adding them would read as coverage while denying nothing.
     {
       include = var.deny_ec2_ami_owner,
       statement = {
-        Action   = "ec2:RunInstances"
-        Resource = "arn:aws:ec2:*:*:instance/*"
+        Action = [
+          "ec2:CreateFleet",
+          "ec2:RequestSpotFleet",
+          "ec2:RequestSpotInstances",
+          "ec2:RunInstances",
+        ]
+        Resource = "arn:aws:ec2:*::image/*"
         Condition = {
           "StringNotEquals" = {
             "ec2:Owner" = var.ec2_allowed_ami_owners
@@ -188,17 +218,17 @@ locals {
         }
       }
     },
-      # Automatic root guardrail
-      # -->
-      # Sid: DenyRootLeaveOrganization
-      # Applies when module target is the root (IDs prefixed with r-)
-      {
-        include = startswith(var.target_id, "r-"),
-        statement = {
-          Action   = "organizations:LeaveOrganization"
-          Resource = "*"
-        }
-      },
+    # Automatic root guardrail
+    # -->
+    # Sid: DenyRootLeaveOrganization
+    # Applies when module target is the root (IDs prefixed with r-)
+    {
+      include = startswith(var.target_id, "r-"),
+      statement = {
+        Action   = "organizations:LeaveOrganization"
+        Resource = "*"
+      }
+    },
   ]
   # Included SCP 1 Deny Statements
   included_scp_1_deny_statements = [

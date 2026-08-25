@@ -199,9 +199,18 @@ Unless `rds:StorageEncrypted` condition key is true.
 - Determines AMI owner for each instance
 - Identifies unique AMI owners across all instances
 
-**Policy Coverage**: Denies `ec2:RunInstances` unless the AMI owner is in the approved allowlist (e.g., "amazon", "aws-marketplace", trusted account IDs).
+**Policy Coverage**: Denies the EC2 launch paths - `ec2:RunInstances`,
+`ec2:CreateFleet`, `ec2:RequestSpotFleet` and `ec2:RequestSpotInstances` - on
+the AMI resource (`arn:aws:ec2:*::image/*`) unless `ec2:Owner` is in the
+approved allowlist (e.g., "amazon", "aws-marketplace", trusted account IDs).
+The statement is scoped to the image because `ec2:Owner` exists on no other
+resource these actions touch. `ec2:ModifyFleet` also supports the key and is
+excluded as a deliberate scope decision.
 
-**Allowlist Support**: Generates comprehensive list of unique AMI owners to inform allowlist configuration.
+**Allowlist Support**: The unique AMI owners observed across the accounts a
+placement covers are unioned into the `ec2_allowed_ami_owners` Terraform
+variable. Generation aborts rather than emitting an empty allowlist, which
+would deny every launch instead of none of them.
 
 **Unresolvable AMIs**: An instance outlives the visibility of the AMI it was
 launched from, so `DescribeImages` does not always return one. The lookup sets
