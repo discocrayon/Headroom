@@ -18,3 +18,5 @@
 .tox
 .ruff_cache
 my_config.yaml
+.superpowers/
+docs/superpowers/
