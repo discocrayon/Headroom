@@ -246,10 +246,11 @@ class TestGetImdsV1Ec2Analysis:
         assert results[1].imdsv1_allowed is False
         assert results[1].role_exemption_tag_present is False
 
-        # Check third instance (IMDS disabled)
+        # Check third instance (endpoint disabled, but tokens still optional,
+        # which the SCP counts and so does this check)
         assert results[2].region == "us-west-2"
         assert results[2].instance_id == "i-abcdef1234567890"
-        assert results[2].imdsv1_allowed is False
+        assert results[2].imdsv1_allowed is True
         assert results[2].role_exemption_tag_present is False
 
         # Check fourth instance (fallback region, IMDSv2 required)
@@ -1872,3 +1873,76 @@ class TestImdsV1RoleExemption:
 
         with pytest.raises(RuntimeError, match=r"iam:GetInstanceProfile and iam:GetRole"):
             get_ec2_imds_v1_analysis(session)
+
+
+class TestImdsV1EndpointIsNotAnExcuse:
+    """
+    HttpTokens is counted whether or not the metadata endpoint is enabled.
+
+    The check used to require both - endpoint enabled AND tokens optional -
+    which read the running instance correctly, since nothing can reach a
+    disabled endpoint. The SCP does not read the instance. It tests
+    ec2:MetadataHttpTokens on the launch request, where a request that turns
+    the endpoint off carries no HttpTokens at all, leaving the key absent and
+    StringNotEquals true. Dry runs against a live account confirm that launch
+    is denied.
+
+    So an endpoint-disabled instance whose tokens are optional is a violation.
+    Remedying it costs nothing: AWS accepts HttpTokens=required alongside a
+    disabled endpoint - also confirmed by dry run, contradicting the EC2 guide -
+    and setting it changes no behaviour, because nothing is listening.
+    """
+
+    def _one_instance(self, metadata_options: Dict[str, Any]) -> DenyEc2ImdsV1:
+        """Run the collector over a single instance with these options."""
+        session = MagicMock()
+
+        global_ec2 = MagicMock()
+        global_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        regional = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{
+            "Reservations": [{"Instances": [{
+                "InstanceId": "i-aaa",
+                "State": {"Name": "running"},
+                "MetadataOptions": metadata_options,
+                "Tags": [],
+            }]}]
+        }]
+        regional.get_paginator.return_value = paginator
+
+        def client_side_effect(
+            service: str, region_name: Optional[str] = None
+        ) -> MagicMock:
+            return global_ec2 if region_name is None else regional
+
+        session.client.side_effect = client_side_effect
+        return get_ec2_imds_v1_analysis(session)[0]
+
+    def test_endpoint_disabled_with_optional_tokens_is_a_violation(self) -> None:
+        """The endpoint being off does not excuse optional tokens."""
+        result = self._one_instance(
+            {"HttpTokens": "optional", "HttpEndpoint": "disabled"}
+        )
+
+        assert result.imdsv1_allowed is True
+
+    def test_endpoint_disabled_with_required_tokens_is_compliant(self) -> None:
+        """Setting tokens required is the free remedy, and the check honours it."""
+        result = self._one_instance(
+            {"HttpTokens": "required", "HttpEndpoint": "disabled"}
+        )
+
+        assert result.imdsv1_allowed is False
+
+    def test_endpoint_enabled_still_decided_by_tokens_alone(self) -> None:
+        """The enabled case is unchanged."""
+        assert self._one_instance(
+            {"HttpTokens": "optional", "HttpEndpoint": "enabled"}
+        ).imdsv1_allowed is True
+        assert self._one_instance(
+            {"HttpTokens": "required", "HttpEndpoint": "enabled"}
+        ).imdsv1_allowed is False

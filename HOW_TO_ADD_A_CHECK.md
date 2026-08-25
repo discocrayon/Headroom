@@ -861,6 +861,15 @@ evaluates. Three ways they drift apart, all observed in this repo:
    generated policy, prove it with `run-instances --dry-run` under a throwaway
    role carrying the statement, with a control request that must be denied so a
    broken probe cannot pass as a clean result.
+4. **One key read two ways.** Every condition key a statement adds is a key
+   the scanner has to mirror, and a second key is where the two drift. Both
+   IMDS statements were briefly built around a `ec2:MetadataHttpEndpoint`
+   clause, on the theory that a launch disabling IMDS must stay possible; the
+   hop-limit statement never carried it, so the pair disagreed about the same
+   fleet. Dropping it left one key, `HttpTokens`, deciding in both the policy
+   and the check. Prefer the narrower statement whose extra permission the
+   operator can buy back for free - here, naming `HttpTokens=required` on a
+   launch with no metadata service, which changes no behaviour.
 
 Before writing the analyzer, read the statement and list every condition key
 in it. For each one, name what the scanner will read to model it. A key with

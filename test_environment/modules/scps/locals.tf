@@ -55,13 +55,12 @@ locals {
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
     # A hop limit above 1 lets the metadata response cross an extra network hop
     #
-    # Deliberately NO ec2:MetadataHttpEndpoint clause, unlike
-    # DenyRunInstancesMetadataHttpTokensOptional below. Adding one here would
-    # be a reasonable-looking change and is not wanted: the scanner counts the
-    # hop limit whether or not the endpoint is enabled, so the two agree as
-    # written. Excusing endpoint-disabled launches in the policy would put them
-    # back out of step, in the direction where the policy is looser than the
-    # scan rather than stricter.
+    # Deliberately NO ec2:MetadataHttpEndpoint clause, matching
+    # DenyRunInstancesMetadataHttpTokensOptional below. Both statements ignore
+    # the endpoint, and both scanners count their key whether the endpoint is
+    # on or off. Adding a clause to either would be a reasonable-looking change
+    # and is not wanted: it would put policy and scan back out of step, in the
+    # direction where the policy is looser than the scan rather than stricter.
     #
     # Measured against a live account with RunInstances --dry-run:
     #
@@ -139,50 +138,42 @@ locals {
     # Denies launching an EC2 instance that would answer IMDSv1
     # Exempts requests tagged with {"ExemptFromIMDSv2": "true"}
     #
-    # Keys within one operator block are ANDed, so the launch is denied only
-    # when it asks for none of the three ways out: tokens required, metadata
-    # endpoint off, or the exemption tag.
+    # Keys within one operator block are ANDed, so the launch is denied unless
+    # it either requires tokens or carries the exemption tag.
     #
-    # The endpoint clause is what keeps the hardest configuration launchable.
-    # A launch that turns IMDS off usually names no HttpTokens - there is no
-    # metadata service left to require a token from - so without this clause
+    # Deliberately NO ec2:MetadataHttpEndpoint clause, matching MaxImdsHopLimit
+    # above. A launch that turns IMDS off usually names no HttpTokens, so
     # ec2:MetadataHttpTokens is absent, StringNotEquals on an absent key is
-    # true, and the deny fires. The SCP would forbid the one configuration no
-    # credential can be stolen from.
+    # true, and the deny fires - such a launch has to say HttpTokens=required
+    # to get through. That is accepted: AWS does NOT reject HttpTokens
+    # alongside HttpEndpoint=disabled at RunInstances, whatever the EC2 guide
+    # says about modify-instance-metadata-options, and the extra parameter
+    # changes no behaviour because nothing is listening. Requiring it keeps
+    # this statement and its scanner reading one thing, HttpTokens, instead of
+    # two.
     #
-    # Measured against a live account with RunInstances --dry-run, one probe
-    # role per policy shape. "Before" is this statement without the endpoint
-    # clause; "after" is this statement as written:
+    # Measured against a live account with RunInstances --dry-run:
     #
     #   AMI without imds-support=v2.0 (Amazon Linux 2)
-    #     tokens=required, endpoint=enabled   before: allow   after: allow
-    #     tokens=optional, endpoint=enabled   before: DENY    after: DENY
-    #     endpoint=disabled, no tokens        before: DENY    after: allow
-    #     no MetadataOptions at all           before: DENY    after: DENY
+    #     tokens=required, endpoint=enabled    allow
+    #     tokens=optional, endpoint=enabled    DENY
+    #     endpoint=disabled, no tokens         DENY   <- must set tokens
+    #     no MetadataOptions at all            DENY
     #
     #   AMI with imds-support=v2.0 (Amazon Linux 2023)
-    #     every row above                     before: same as after
+    #     every row                            allow, except tokens=optional
     #
-    # Two things that reading the documentation alone gets wrong. First, AWS
-    # does NOT reject HttpTokens alongside HttpEndpoint=disabled at
-    # RunInstances; the guide's "when you specify a value for HttpTokens, you
-    # must also set HttpEndpoint to enabled" does not hold there, and a
-    # request naming both is accepted. The endpoint clause is needed for the
-    # ordinary shape that omits HttpTokens, not because the explicit shape is
-    # impossible.
-    #
-    # Second, ec2:MetadataHttpTokens resolves from the EFFECTIVE metadata
-    # configuration, not only from literal request parameters. An AMI carrying
-    # imds-support=v2.0 populates it as "required" even when the request names
-    # no MetadataOptions, which is why the modern-AMI rows never reach the
-    # deny at all and why this clause is inert there. Whether an account-level
-    # default does the same is untested - the probe account had none set - but
-    # the AMI result makes it likely.
+    # That second block is the surprise: ec2:MetadataHttpTokens resolves from
+    # the EFFECTIVE metadata configuration, not only from literal request
+    # parameters. An AMI carrying imds-support=v2.0 populates it as "required"
+    # even when the request names no MetadataOptions, so a modern-AMI fleet
+    # never reaches this deny. Whether an account-level default does the same
+    # is untested - the probe account had none set - but the AMI result makes
+    # it likely.
     #
     # The absent-key direction is deliberate: StringNotEquals rather than the
-    # IfExists form, so a request that leaves the keys absent AND has nothing
-    # supplying a default is denied. The AL2 "no MetadataOptions" row above is
-    # that case, and denying it is right.
+    # IfExists form, so a request leaving the key absent with nothing supplying
+    # a default is denied. The AL2 rows above are that case.
     {
       include = var.deny_ec2_imds_v1,
       statement = {
@@ -191,7 +182,6 @@ locals {
         Condition = {
           "StringNotEquals" = {
             "ec2:MetadataHttpTokens"          = "required",
-            "ec2:MetadataHttpEndpoint"        = "disabled",
             "aws:RequestTag/ExemptFromIMDSv2" = "true"
           },
         }

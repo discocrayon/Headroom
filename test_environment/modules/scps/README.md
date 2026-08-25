@@ -83,22 +83,18 @@ instances running now; the second gates future launches. A fleet that passes
 the first can still be denied by the second, because the second reads a request
 parameter rather than the resulting instance.
 
-#### Keeping IMDS-disabled launches possible
+#### Launches that disable IMDS must still say `HttpTokens=required`
 
-The second statement also passes a request that sets
-`ec2:MetadataHttpEndpoint = "disabled"`. A launch that turns IMDS off usually
-names no `HttpTokens` - there is no metadata service left to require a token
-from - so without that clause `ec2:MetadataHttpTokens` is absent, its
-`StringNotEquals` is true, and the deny fires. The policy would forbid the one
-configuration no credential can be stolen from.
+Neither statement tests `ec2:MetadataHttpEndpoint`, matching `MaxImdsHopLimit`.
+A launch that turns IMDS off usually names no `HttpTokens`, so
+`ec2:MetadataHttpTokens` is absent, `StringNotEquals` on an absent key is true,
+and the deny fires. Such a launch has to name `HttpTokens=required` anyway.
 
-This was measured, not inferred: with an AMI that does not set
-`imds-support=v2.0`, a dry-run launch specifying only `HttpEndpoint=disabled`
-is denied without the clause and allowed with it. Note that AWS does *not*
-reject `HttpTokens` alongside a disabled endpoint, despite what the EC2 guide
-says about `ModifyInstanceMetadataOptions`; the clause is needed for the
-ordinary shape that omits `HttpTokens`, not because the explicit shape is
-rejected.
+That is accepted, and measured rather than inferred: AWS does *not* reject
+`HttpTokens` alongside a disabled endpoint, despite what the EC2 guide says
+about `ModifyInstanceMetadataOptions`. The extra parameter changes no
+behaviour, because nothing is listening. Requiring it keeps this statement and
+the check that gates it reading one thing, `HttpTokens`, rather than two.
 
 #### Exemptions
 
