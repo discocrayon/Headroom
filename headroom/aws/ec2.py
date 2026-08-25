@@ -30,8 +30,12 @@ class DenyEc2ImdsV1:
     Attributes:
         region: AWS region where the instance runs
         instance_id: EC2 instance identifier
-        imdsv1_allowed: True when the metadata endpoint is enabled and does not
-            require a session token, so IMDSv1 can be used
+        imdsv1_allowed: True when the instance does not require a session
+            token. The metadata endpoint's state does not enter it: the SCP
+            tests HttpTokens on the launch request either way, so an instance
+            with the endpoint off and tokens optional is still a violation.
+            Remedying it costs nothing, because nothing reads HttpTokens while
+            the endpoint is off
         role_exemption_tag_present: True when the IAM role the instance runs as
             carries the exemption tag with the exact value the SCP tests for.
             The tag is read off the role, not the instance: the SCP exempts
@@ -151,13 +155,16 @@ def _describe_imds_instances(session: Session) -> List[_ImdsInstance]:
 
                         metadata_options = instance.get('MetadataOptions', {})
                         http_tokens = metadata_options.get('HttpTokens', 'optional')
-                        http_endpoint = metadata_options.get('HttpEndpoint', 'enabled')
 
-                        # IMDSv1 is reachable only when the endpoint is on and a
-                        # session token is not required. Either one closes it.
-                        imdsv1_allowed = (
-                            http_endpoint == 'enabled' and http_tokens == 'optional'
-                        )
+                        # HttpTokens alone decides, whether or not the metadata
+                        # endpoint is enabled. A disabled endpoint does make
+                        # IMDSv1 unreachable on the running instance, but the
+                        # SCP reads the launch request, where a request turning
+                        # the endpoint off carries no HttpTokens, leaving
+                        # ec2:MetadataHttpTokens absent and StringNotEquals
+                        # true. Excusing those instances cleared accounts whose
+                        # relaunches the SCP denies.
+                        imdsv1_allowed = http_tokens == 'optional'
 
                         instances.append(_ImdsInstance(
                             region=region,

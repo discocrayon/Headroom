@@ -10,7 +10,7 @@
 
 **How it Works**:
 - Scans all AWS regions for EC2 instances
-- Checks metadata options configuration
+- Reads `MetadataOptions.HttpTokens`; `optional` means IMDSv1 is permitted
 - Identifies instances without IMDSv2 enforcement
 - Resolves each instance's instance profile to its IAM role and reads that
   role's tags
@@ -50,9 +50,15 @@ Whether an account-level metadata default behaves like the AMI default is
 untested - the probe account had none set - but the AMI result makes it
 likely.
 
-Instances with the metadata endpoint disabled are compliant and stay
-launchable: the policy carries an `ec2:MetadataHttpEndpoint` clause for exactly
-that, verified by dry run as denied without it and allowed with it.
+**The metadata endpoint's state does not enter the verdict.** An instance with
+the endpoint disabled and `HttpTokens` optional is a violation, matching
+`deny_ec2_imds_hop_limit`, which counts its hop limit the same way. A disabled
+endpoint does make IMDSv1 unreachable on the running instance, but the SCP
+reads the launch request, where a request turning the endpoint off carries no
+`HttpTokens` and so leaves the key absent for `StringNotEquals` to fire on.
+Remedying it costs nothing: AWS accepts `HttpTokens=required` alongside a
+disabled endpoint - confirmed by dry run, contradicting the EC2 guide - and the
+extra parameter changes no behaviour, because nothing is listening.
 
 **Required Permissions**: `ec2:DescribeInstances`, plus `iam:GetInstanceProfile`
 and `iam:GetRole` to read role tags. A profile or role deleted mid-scan is

@@ -48,19 +48,20 @@ This directory contains EC2 instances used for testing the `deny_ec2_imds_v1` SC
   is what let an account report zero violations while enforcement would have
   denied every API call the instance made
 
-### Instance 5: Metadata Endpoint Disabled (acme-co account)
+### Instance 5: Metadata Endpoint Disabled, Tokens Still Optional (acme-co account)
 - **Provider**: `aws.acme_co`
 - **Instance Type**: `t2.nano`
-- **IMDS Configuration**: `http_endpoint = "disabled"` (no metadata service at all)
-- **Tags**: `Name = "test-imds-disabled"`
-- **Expected Behavior**: Compliant, and the SCP must leave it launchable. The
-  launch names no `http_tokens` - there is no metadata service left to require
-  a token from - so `ec2:MetadataHttpTokens` is absent unless something else
-  supplies it, and the policy's `ec2:MetadataHttpEndpoint` clause is what keeps
-  the deny from firing. Verified by dry run: denied without the clause, allowed
-  with it, on an AMI that does not set `imds-support=v2.0`. On an AMI that does
-  set it the deny is never reached, because the AMI default populates
-  `ec2:MetadataHttpTokens` as `required`
+- **IMDS Configuration**: `http_endpoint = "disabled"`, `http_tokens = "optional"`
+- **Tags**: `Name = "test-imds-disabled-tokens-optional"`
+- **Expected Behavior**: **Violation.** Neither the check nor the SCP looks at
+  the endpoint; `http_tokens` decides on its own, matching how
+  `deny_ec2_imds_hop_limit` counts a hop limit whatever the endpoint says.
+  Nothing can reach IMDS on this instance, so the finding is free to remedy:
+  set `http_tokens = "required"`, which AWS accepts alongside a disabled
+  endpoint - verified by dry run, contradicting the EC2 guide - and which
+  changes no behaviour, because nothing is listening. `http_tokens` is named
+  explicitly here because the AMI sets `imds-support=v2.0`, whose `required`
+  default would otherwise make this instance compliant and test nothing
 
 ## Usage
 

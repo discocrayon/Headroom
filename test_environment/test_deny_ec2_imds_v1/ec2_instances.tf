@@ -76,25 +76,28 @@ resource "aws_instance" "test_imdsv1_instance_tagged_only" {
   }
 }
 
-# Instance 5: metadata endpoint disabled entirely (should pass, and stay launchable)
+# Instance 5: metadata endpoint disabled, tokens still optional (a violation)
 #
-# Nothing can reach IMDS here, so the check reports it compliant. The SCP has
-# to agree: this launch names no http_tokens, so ec2:MetadataHttpTokens is
-# absent unless the AMI or an account default supplies it, and without the
-# ec2:MetadataHttpEndpoint clause the deny fires on the absent key - the SCP
-# would forbid the hardest configuration in the fleet. The AMI here sets
-# imds-support=v2.0, which supplies "required" and masks the problem, so this
-# instance only reproduces it if the data source is pointed at an older AMI.
-resource "aws_instance" "test_imds_disabled" {
+# Nothing can reach IMDS here, but neither the check nor the SCP looks at the
+# endpoint - http_tokens decides on its own, matching how the hop limit is
+# counted. The remedy costs nothing: http_tokens = "required" is accepted
+# alongside a disabled endpoint and changes no behaviour, because nothing is
+# listening.
+#
+# http_tokens is named explicitly because this AMI sets imds-support=v2.0,
+# whose "required" default would otherwise make this instance compliant and
+# leave the case untested.
+resource "aws_instance" "test_imds_disabled_tokens_optional" {
   provider      = aws.acme_co
   ami           = data.aws_ami.amazon_linux_2023.id
   instance_type = "t2.nano"
 
   metadata_options {
     http_endpoint = "disabled"
+    http_tokens   = "optional"
   }
 
   tags = {
-    Name = "test-imds-disabled"
+    Name = "test-imds-disabled-tokens-optional"
   }
 }

@@ -557,8 +557,8 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
     2. For each region, create EC2 client
     3. Use paginator to describe_instances (handles pagination)
     4. Filter out terminated instances
-    5. IMDSv1 is allowed when HttpEndpoint is "enabled" and HttpTokens is
-       "optional"; either one closed shuts it
+    5. IMDSv1 is allowed when HttpTokens is "optional", whatever HttpEndpoint
+       says, because the SCP tests HttpTokens either way
     6. Record the instance profile ARN, if any
     7. Resolve each distinct instance profile to its role and read that role's
        tags; exempt only on ExemptFromIMDSv2 with the exact value "true"
@@ -1829,7 +1829,6 @@ locals {
         Condition = {
           StringNotEquals = {
             "ec2:MetadataHttpTokens"          = "required"
-            "ec2:MetadataHttpEndpoint"        = "disabled"
             "aws:RequestTag/ExemptFromIMDSv2" = "true"
           }
         }
@@ -2404,8 +2403,8 @@ def get_imds_v1_ec2_analysis(
        b. Use paginator for describe_instances
        c. For each instance:
           - Skip if state is "terminated"
-          - IMDSv1 is allowed when MetadataOptions.HttpEndpoint is "enabled"
-            and MetadataOptions.HttpTokens is "optional"
+          - IMDSv1 is allowed when MetadataOptions.HttpTokens is "optional",
+            whatever MetadataOptions.HttpEndpoint says
           - Record the instance profile ARN, if any
     3. Resolve each distinct instance profile to its role, once per account,
        and exempt on that role's ExemptFromIMDSv2 tag
@@ -3157,16 +3156,17 @@ Creates IAM roles with diverse trust policy patterns to test RCP third-party det
 | test-imdsv2-only | acme-co | `http_tokens = "required"` | none | Compliant |
 | test-imdsv1-exempt | fort-knox | `http_tokens = "optional"` | on its IAM **role** | **Exemption** |
 | test-imdsv1-instance-tagged-only | shared-foo-bar | `http_tokens = "optional"` | on the **instance** | **Violation** |
-| test-imds-disabled | acme-co | `http_endpoint = "disabled"` | none | Compliant |
+| test-imds-disabled-tokens-optional | acme-co | `http_endpoint = "disabled"`, `http_tokens = "optional"` | none | **Violation** |
 
 The last two are the regression cases. An instance tag exempts nothing, because
 no statement in the policy reads instance tags. An instance with the metadata
-endpoint disabled must stay launchable: such a launch names no `http_tokens`,
-so `ec2:MetadataHttpTokens` is absent unless the AMI or an account default
-supplies it, and without the `ec2:MetadataHttpEndpoint` clause the deny fires
-on that absent key - the SCP would forbid the one configuration no credential
-can be stolen from. Confirmed by dry run against a live account: denied without
-the clause, allowed with it, on an AMI that does not set `imds-support=v2.0`.
+endpoint disabled is still a violation while its tokens are optional, matching
+how `deny_ec2_imds_hop_limit` counts its hop limit. The SCP reads the launch
+request, where turning the endpoint off leaves `HttpTokens` unnamed and
+`ec2:MetadataHttpTokens` absent for `StringNotEquals` to fire on - confirmed
+denied by dry run against a live account. The remedy is to name
+`HttpTokens=required` anyway, which AWS accepts alongside a disabled endpoint
+and which changes no behaviour.
 
 **Separate Directory Structure:**
 ```
