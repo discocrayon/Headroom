@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from .models import TerraformModule, TerraformParameter, TerraformComment, TerraformElement
-from .utils import make_safe_variable_name, write_terraform_file
+from .utils import (
+    make_ou_base_names,
+    make_safe_variable_name,
+    ou_id_local_name,
+    ou_path_names,
+    write_terraform_file,
+)
 from ..checks.registry import get_check_names
 from ..types import (
     AccountThirdPartyMap,
@@ -32,7 +38,7 @@ from ..constants import (
 from ..write_results import get_results_dir
 from ..parse_results import _load_result_file_json, _extract_account_id_from_result
 from ..placement import HierarchyPlacementAnalyzer
-from ..placement.hierarchy import PlacementCandidate
+from ..placement.hierarchy import PlacementCandidate, accounts_under_ou
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -193,7 +199,9 @@ def _should_skip_ou_for_rcp(
     Determine whether an OU cannot take an OU-level RCP.
 
     One account whose policies name a principal no allowlist can express
-    makes the OU-level policy unsafe for every account beneath it.
+    makes the OU-level policy unsafe for every account beneath it. That is the
+    whole subtree, not the accounts sharing a level with it: an RCP attached
+    to an OU reaches the accounts in its child OUs just the same.
 
     Args:
         ou_id: Organizational Unit to evaluate
@@ -203,10 +211,7 @@ def _should_skip_ou_for_rcp(
     Returns:
         True if the OU should be skipped for this check
     """
-    ou_accounts_in_org = [
-        acc_id for acc_id, acc_info in organization_hierarchy.accounts.items()
-        if acc_info.parent_ou_id == ou_id
-    ]
+    ou_accounts_in_org = accounts_under_ou(ou_id, organization_hierarchy)
 
     if any(acc_id in accounts_with_blockers for acc_id in ou_accounts_in_org):
         ou_info = organization_hierarchy.organizational_units.get(ou_id)
@@ -655,18 +660,26 @@ def _generate_ou_rcp_terraform(
     if not ou_info:
         raise RuntimeError(f"OU {ou_id} not found in organization hierarchy")
 
-    ou_name = make_safe_variable_name(ou_info.name)
-    filename = f"{ou_name}_ou_rcps.tf"
+    # An OU is named for its path from the root, so a nested OU targets the
+    # local grab_org_info.tf declares for it and two OUs sharing a name in
+    # different branches cannot write to the same file.
+    base_name = make_ou_base_names(
+        organization_hierarchy.organizational_units
+    )[ou_id]
+    path_label = " / ".join(
+        ou_path_names(ou_id, organization_hierarchy.organizational_units)
+    )
+    filename = f"{base_name}_ou_rcps.tf"
     filepath = output_path / filename
 
     if not recs:
         return
 
     terraform_content = _build_rcp_terraform_module(
-        module_name=f"rcps_{ou_name}_ou",
-        target_id_reference=f"local.top_level_{ou_name}_ou_id",
+        module_name=f"rcps_{base_name}_ou",
+        target_id_reference=f"local.{ou_id_local_name(base_name)}",
         recommendations=recs,
-        comment=f"OU {ou_info.name}"
+        comment=f"OU {path_label}"
     )
     write_terraform_file(filepath, terraform_content, "RCP")
 

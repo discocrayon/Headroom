@@ -68,13 +68,13 @@ def make_analyzer(
 
 
 class TestGroupResultsByOU:
-    """Tests for _group_results_by_ou()."""
+    """Tests for _group_results_by_ou_subtree()."""
 
     def test_omits_root_parented_accounts_from_ou_grouping(self) -> None:
         """Accounts directly under the root are left out, not grouped as an OU."""
         analyzer = make_analyzer()
 
-        ou_results = analyzer._group_results_by_ou(
+        ou_results = analyzer._group_results_by_ou_subtree(
             [ROOT_PARENTED_ACCOUNT, OU_RESIDENT_ACCOUNT],
             lambda r: r
         )
@@ -85,7 +85,7 @@ class TestGroupResultsByOU:
         """A parent_ou_id holding the root ID is still not an OU."""
         analyzer = make_analyzer(root_parent_ou_id=ROOT_ID)
 
-        ou_results = analyzer._group_results_by_ou(
+        ou_results = analyzer._group_results_by_ou_subtree(
             [ROOT_PARENTED_ACCOUNT, OU_RESIDENT_ACCOUNT],
             lambda r: r
         )
@@ -97,7 +97,7 @@ class TestGroupResultsByOU:
         analyzer = make_analyzer()
 
         with pytest.raises(RuntimeError, match=r"Account \(999999999999\) not found"):
-            analyzer._group_results_by_ou(["999999999999"], lambda r: r)
+            analyzer._group_results_by_ou_subtree(["999999999999"], lambda r: r)
 
 
 class TestDeterminePlacement:

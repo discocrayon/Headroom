@@ -121,7 +121,7 @@ python -m headroom --config config.yaml
 
 **Terraform configs** in `test_environment/scps/` and `test_environment/rcps/`:
 - `root_scps.tf` - Organization-wide policies
-- `{ou_name}_rcps.tf` - OU-level policies
+- `{ou_path}_ou_rcps.tf` - OU-level policies, named for the OU's path from the root
 - `grab_org_info.tf` - Organization structure
 
 See [full examples](documentation/EXAMPLES.md).

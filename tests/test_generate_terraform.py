@@ -202,8 +202,8 @@ class TestTerraformNamedLocals:
         assert 'data "aws_organizations_organizational_unit_child_accounts" "development_accounts"' in content
 
         # Check for local variables with proper filtering
-        assert 'top_level_production_ou_id = [' in content
-        assert 'top_level_development_ou_id = [' in content
+        assert 'production_ou_id = [' in content
+        assert 'development_ou_id = [' in content
         assert 'prod_account_account_id = [' in content
         assert 'dev_account_account_id = [' in content
 
@@ -253,14 +253,12 @@ class TestTerraformNamedLocals:
 
         content = _generate_terraform_content(hierarchy)
 
-        # Should have account data sources for top-level OUs only
+        # Every OU holding accounts gets its own data source, nested included
         assert 'data "aws_organizations_organizational_unit_child_accounts" "production_accounts"' in content
         assert 'data "aws_organizations_organizational_unit_child_accounts" "development_accounts"' in content
+        assert 'data "aws_organizations_organizational_unit_child_accounts" "production_staging_accounts"' in content
 
-        # Should not have data source for nested OU (Staging)
-        assert 'data "aws_organizations_organizational_unit_child_accounts" "staging_accounts"' not in content
-
-        # Should have local variables for all accounts (grouped by top-level OU)
+        # Should have local variables for all accounts
         assert 'prod_account_account_id = [' in content
         assert 'dev_account_account_id = [' in content
         assert 'staging_account_account_id = [' in content
@@ -303,7 +301,7 @@ class TestTerraformHelperFunctions:
 
     def test_generate_ou_data_sources_should_return_empty_list_when_no_ous(self) -> None:
         """Should return empty list when organizational_units is empty."""
-        result = _generate_ou_data_sources({})
+        result = _generate_ou_data_sources({}, {})
 
         assert result == []
 
@@ -312,12 +310,15 @@ class TestTerraformHelperFunctions:
         ous = {
             "ou-1": OrganizationalUnit("ou-1", "Production", None, [], ["acc-1"]),
         }
+        accounts = {
+            "acc-1": AccountOrgPlacement("acc-1", "prod-account", "ou-1", ["Production"]),
+        }
 
-        result = _generate_ou_data_sources(ous)
+        result = _generate_ou_data_sources(ous, accounts)
         result_str = "\n".join(result)
 
         assert 'data "aws_organizations_organizational_unit_child_accounts" "production_accounts" {' in result_str
-        assert 'ou.id if ou.name == "Production"' in result_str
+        assert "parent_id = local.production_ou_id" in result_str
 
     def test_generate_ou_data_sources_should_generate_multiple_data_sources(self) -> None:
         """Should generate data sources for multiple top-level OUs."""
@@ -325,25 +326,49 @@ class TestTerraformHelperFunctions:
             "ou-1": OrganizationalUnit("ou-1", "Production", None, [], ["acc-1"]),
             "ou-2": OrganizationalUnit("ou-2", "Development", None, [], ["acc-2"]),
         }
+        accounts = {
+            "acc-1": AccountOrgPlacement("acc-1", "prod-account", "ou-1", ["Production"]),
+            "acc-2": AccountOrgPlacement("acc-2", "dev-account", "ou-2", ["Development"]),
+        }
 
-        result = _generate_ou_data_sources(ous)
+        result = _generate_ou_data_sources(ous, accounts)
         result_str = "\n".join(result)
 
         assert 'data "aws_organizations_organizational_unit_child_accounts" "production_accounts" {' in result_str
         assert 'data "aws_organizations_organizational_unit_child_accounts" "development_accounts" {' in result_str
 
-    def test_generate_ou_data_sources_should_ignore_nested_ous(self) -> None:
-        """Should only generate data sources for top-level OUs, not nested ones."""
+    def test_generate_ou_data_sources_should_cover_nested_ous(self) -> None:
+        """A nested OU gets both its accounts source and its parent's OU list."""
         ous = {
             "ou-1": OrganizationalUnit("ou-1", "Production", None, ["ou-3"], ["acc-1"]),
             "ou-3": OrganizationalUnit("ou-3", "Staging", "ou-1", [], ["acc-3"]),
         }
+        accounts = {
+            "acc-1": AccountOrgPlacement("acc-1", "prod-account", "ou-1", ["Production"]),
+            "acc-3": AccountOrgPlacement("acc-3", "staging-account", "ou-3", ["Production", "Staging"]),
+        }
 
-        result = _generate_ou_data_sources(ous)
+        result = _generate_ou_data_sources(ous, accounts)
         result_str = "\n".join(result)
 
-        assert 'data "aws_organizations_organizational_unit_child_accounts" "production_accounts" {' in result_str
-        assert 'data "aws_organizations_organizational_unit_child_accounts" "staging_accounts" {' not in result_str
+        assert 'data "aws_organizations_organizational_units" "production_children" {' in result_str
+        assert 'data "aws_organizations_organizational_unit_child_accounts" "production_staging_accounts" {' in result_str
+
+    def test_generate_ou_data_sources_should_skip_ous_holding_no_accounts(self) -> None:
+        """An OU nothing resolves through gets no child-accounts data source."""
+        ous = {
+            "ou-1": OrganizationalUnit("ou-1", "Production", None, ["ou-3"], []),
+            "ou-3": OrganizationalUnit("ou-3", "Staging", "ou-1", [], ["acc-3"]),
+        }
+        accounts = {
+            "acc-3": AccountOrgPlacement("acc-3", "staging-account", "ou-3", ["Production", "Staging"]),
+        }
+
+        result = _generate_ou_data_sources(ous, accounts)
+        result_str = "\n".join(result)
+
+        assert 'data "aws_organizations_organizational_unit_child_accounts" "production_accounts" {' not in result_str
+        assert 'data "aws_organizations_organizational_unit_child_accounts" "production_staging_accounts" {' in result_str
 
     def test_generate_root_locals_should_open_locals_block(self) -> None:
         """Should start the locals block."""
@@ -382,9 +407,9 @@ class TestTerraformHelperFunctions:
         result = _generate_ou_locals(ous)
         result_str = "\n".join(result)
 
-        assert "# Top-level OU IDs by name" in result_str
+        assert "# OU IDs by path from the root" in result_str
         assert "validation_check_production_ou" in result_str
-        assert "top_level_production_ou_id = [" in result_str
+        assert "production_ou_id = [" in result_str
 
     def test_generate_ou_locals_should_generate_multiple_local_variables(self) -> None:
         """Should generate local variables for multiple top-level OUs."""
@@ -396,13 +421,13 @@ class TestTerraformHelperFunctions:
         result = _generate_ou_locals(ous)
         result_str = "\n".join(result)
 
-        assert "top_level_production_ou_id = [" in result_str
-        assert "top_level_development_ou_id = [" in result_str
+        assert "production_ou_id = [" in result_str
+        assert "development_ou_id = [" in result_str
         assert "validation_check_production_ou" in result_str
         assert "validation_check_development_ou" in result_str
 
-    def test_generate_ou_locals_should_ignore_nested_ous(self) -> None:
-        """Should only generate locals for top-level OUs, not nested ones."""
+    def test_generate_ou_locals_should_declare_nested_ous_too(self) -> None:
+        """A nested OU needs an ID local, because a policy can target it."""
         ous = {
             "ou-1": OrganizationalUnit("ou-1", "Production", None, ["ou-3"], ["acc-1"]),
             "ou-3": OrganizationalUnit("ou-3", "Staging", "ou-1", [], ["acc-3"]),
@@ -411,8 +436,9 @@ class TestTerraformHelperFunctions:
         result = _generate_ou_locals(ous)
         result_str = "\n".join(result)
 
-        assert "top_level_production_ou_id = [" in result_str
-        assert "top_level_staging_ou_id = [" not in result_str
+        assert "  production_ou_id = [" in result_str
+        assert "  production_staging_ou_id = [" in result_str
+        assert "# Validation for Production / Staging OU" in result_str
 
     def test_generate_account_locals_should_return_empty_list_when_no_accounts(self) -> None:
         """Should return empty list when accounts dict is empty."""
@@ -455,8 +481,8 @@ class TestTerraformHelperFunctions:
         assert "validation_check_prod_account_account" in result_str
         assert "validation_check_dev_account_account" in result_str
 
-    def test_generate_account_locals_should_group_accounts_by_top_level_ou(self) -> None:
-        """Should group accounts by their top-level parent OU when dealing with nested hierarchy."""
+    def test_generate_account_locals_should_emit_a_local_per_account(self) -> None:
+        """Every account in the hierarchy gets a local, whatever its depth."""
         ous = {
             "ou-1": OrganizationalUnit("ou-1", "Production", None, ["ou-3"], ["acc-1"]),
             "ou-3": OrganizationalUnit("ou-3", "Staging", "ou-1", [], ["acc-3"]),
@@ -471,10 +497,15 @@ class TestTerraformHelperFunctions:
 
         assert "prod_account_account_id = [" in result_str
         assert "staging_account_account_id = [" in result_str
-        assert "production_accounts.accounts" in result_str
 
-    def test_generate_account_locals_should_reference_correct_data_source_for_nested_account(self) -> None:
-        """Should reference the top-level OU data source for accounts in nested OUs."""
+    def test_generate_account_locals_should_reference_the_accounts_own_ou(self) -> None:
+        """
+        A nested account resolves through its own OU, not the OU above it.
+
+        The child-accounts data source lists an OU's immediate children only,
+        so searching a top-level OU for an account two levels down found
+        nothing and the generated Terraform failed on an empty list.
+        """
         ous = {
             "ou-1": OrganizationalUnit("ou-1", "Production", None, ["ou-3"], ["acc-1"]),
             "ou-2": OrganizationalUnit("ou-2", "Development", None, [], ["acc-2"]),
@@ -489,11 +520,11 @@ class TestTerraformHelperFunctions:
         result = _generate_account_locals(accounts, ous)
 
         result_str = "\n".join(result)
-        assert "staging_account_account_id = [" in result_str
-        assert "production_accounts.accounts" in result_str
+        staging_block = result_str.split("staging_account_account_id = [")[1]
+        assert "production_staging_accounts.accounts" in staging_block
 
-    def test_generate_account_locals_should_skip_accounts_with_missing_top_level_ou(self) -> None:
-        """Test that accounts whose top-level OU is missing from organizational_units are skipped."""
+    def test_generate_account_locals_should_skip_accounts_with_missing_ou(self) -> None:
+        """Test that accounts whose parent OU is missing from organizational_units are skipped."""
         # Account's parent_ou_id points to an OU that doesn't exist in organizational_units
         # This simulates an orphaned account or data inconsistency
         accounts = {

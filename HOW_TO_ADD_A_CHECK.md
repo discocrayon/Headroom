@@ -877,6 +877,44 @@ no answer is a gap to document, not to approximate.
 
 ---
 
+### AP-010: Judging a Target by Part of What It Governs
+
+```python
+# BAD - "the OU's accounts" read as the accounts parented directly to it
+ou_accounts = [
+    acc_id for acc_id, acc in organization_hierarchy.accounts.items()
+    if acc.parent_ou_id == ou_id
+]
+
+# GOOD - the OU's accounts are everything the attachment reaches
+ou_accounts = accounts_under_ou(ou_id, organization_hierarchy)
+```
+
+A policy attached to an OU applies to every account in that OU **and in every
+OU below it**. Placement used to decide one level at a time: an OU counted as
+safe when the accounts sharing its level were safe, and the allowlist it
+carried was unioned over those same accounts. In an organization nesting more
+than one level deep that shipped a policy declared safe for accounts it had
+never examined, carrying an allowlist that omitted their resources. Nothing
+errored - the report simply did not mention them.
+
+Two habits keep this from recurring:
+
+1. **Name the blast radius, then measure exactly it.** Write down what an
+   attachment reaches before writing the query that gathers it. Root reaches
+   every account. An OU reaches its subtree. An account reaches one account.
+   Anything narrower than the blast radius is a set of accounts being
+   declared safe without being looked at.
+2. **Test generators against each other, not only alone.** The same defect had
+   a second half: `generate_scps` emitted `local.<ou>_ou_id` for OUs that
+   `generate_org_info` declared only at depth one. Both modules' tests passed -
+   one asserted the reference was written, the other asserted the declaration
+   was written - and the mismatch surfaced only at `terraform plan`.
+   `tests/test_nested_ou_hierarchy.py` now generates both from one hierarchy
+   and asserts every `local.` a policy reads is one the org info declares.
+   Where two modules must agree on a name, put the rule in one function they
+   both call - here `ou_id_local_name()` - and test the pair together.
+
 ---
 
 ## 📝 Naming Conventions

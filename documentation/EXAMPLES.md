@@ -74,7 +74,7 @@ module "scps_root" {
 
 module "rcps_acme_acquisition_ou" {
   source = "../modules/rcps"
-  target_id = local.top_level_acme_acquisition_ou_id
+  target_id = local.acme_acquisition_ou_id
 
   # deny_sts_third_party_assumerole
   deny_sts_third_party_assumerole = true
