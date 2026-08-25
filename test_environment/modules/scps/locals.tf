@@ -69,7 +69,25 @@ locals {
     # var.deny_ec2_imds_v1
     # -->
     # Sid: DenyRoleDeliveryLessThan2
-    # Exempts IAM roles tagged with {"ExemptFromIMDSv2": "true"}
+    # Denies every API call made with credentials fetched over IMDSv1
+    #
+    # ec2:RoleDelivery is a request-context key, not a property of any
+    # resource: it appears on calls made with instance-role credentials and
+    # carries the IMDS version those credentials came from. It belongs to no
+    # EC2 resource in the service reference, which is why this statement is
+    # Action "*" on Resource "*" rather than scoped to instances.
+    #
+    # The exemption is aws:PrincipalTag, so it reads tags on the IAM ROLE the
+    # instance runs as. A tag on the instance exempts nothing here. Headroom's
+    # scanner resolves each instance's instance profile to its role and reads
+    # that role's tags for exactly this reason; see
+    # headroom/aws/iam/instance_profiles.py.
+    #
+    # The key and the value match differently. IAM matches condition key
+    # names without regard to case, and the tag key after the slash is part of
+    # the name, so a role tagged "exemptfromimdsv2" is exempt too.
+    # StringNotEquals compares the value case-sensitively, so only the exact
+    # value "true" exempts and a role tagged "True" is denied.
     {
       include = var.deny_ec2_imds_v1,
       statement = {
@@ -88,7 +106,53 @@ locals {
     # var.deny_ec2_imds_v1
     # -->
     # Sid: DenyRunInstancesMetadataHttpTokensOptional
+    # Denies launching an EC2 instance that would answer IMDSv1
     # Exempts requests tagged with {"ExemptFromIMDSv2": "true"}
+    #
+    # Keys within one operator block are ANDed, so the launch is denied only
+    # when it asks for none of the three ways out: tokens required, metadata
+    # endpoint off, or the exemption tag.
+    #
+    # The endpoint clause is what keeps the hardest configuration launchable.
+    # A launch that turns IMDS off usually names no HttpTokens - there is no
+    # metadata service left to require a token from - so without this clause
+    # ec2:MetadataHttpTokens is absent, StringNotEquals on an absent key is
+    # true, and the deny fires. The SCP would forbid the one configuration no
+    # credential can be stolen from.
+    #
+    # Measured against a live account with RunInstances --dry-run, one probe
+    # role per policy shape. "Before" is this statement without the endpoint
+    # clause; "after" is this statement as written:
+    #
+    #   AMI without imds-support=v2.0 (Amazon Linux 2)
+    #     tokens=required, endpoint=enabled   before: allow   after: allow
+    #     tokens=optional, endpoint=enabled   before: DENY    after: DENY
+    #     endpoint=disabled, no tokens        before: DENY    after: allow
+    #     no MetadataOptions at all           before: DENY    after: DENY
+    #
+    #   AMI with imds-support=v2.0 (Amazon Linux 2023)
+    #     every row above                     before: same as after
+    #
+    # Two things that reading the documentation alone gets wrong. First, AWS
+    # does NOT reject HttpTokens alongside HttpEndpoint=disabled at
+    # RunInstances; the guide's "when you specify a value for HttpTokens, you
+    # must also set HttpEndpoint to enabled" does not hold there, and a
+    # request naming both is accepted. The endpoint clause is needed for the
+    # ordinary shape that omits HttpTokens, not because the explicit shape is
+    # impossible.
+    #
+    # Second, ec2:MetadataHttpTokens resolves from the EFFECTIVE metadata
+    # configuration, not only from literal request parameters. An AMI carrying
+    # imds-support=v2.0 populates it as "required" even when the request names
+    # no MetadataOptions, which is why the modern-AMI rows never reach the
+    # deny at all and why this clause is inert there. Whether an account-level
+    # default does the same is untested - the probe account had none set - but
+    # the AMI result makes it likely.
+    #
+    # The absent-key direction is deliberate: StringNotEquals rather than the
+    # IfExists form, so a request that leaves the keys absent AND has nothing
+    # supplying a default is denied. The AL2 "no MetadataOptions" row above is
+    # that case, and denying it is right.
     {
       include = var.deny_ec2_imds_v1,
       statement = {
@@ -97,6 +161,7 @@ locals {
         Condition = {
           "StringNotEquals" = {
             "ec2:MetadataHttpTokens"          = "required",
+            "ec2:MetadataHttpEndpoint"        = "disabled",
             "aws:RequestTag/ExemptFromIMDSv2" = "true"
           },
         }

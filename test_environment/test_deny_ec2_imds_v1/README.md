@@ -8,7 +8,7 @@ This directory contains EC2 instances used for testing the `deny_ec2_imds_v1` SC
 
 - **Instance Type**: `t2.nano` (smallest/cheapest available)
 - **Cost per instance**: ~$0.0058/hour (~$4.18/month if left running)
-- **Total cost for 3 instances**: ~$0.0174/hour (~$12.54/month if left running)
+- **Total cost for 5 instances**: ~$0.029/hour (~$20.90/month if left running)
 
 **⚠️ Important**: These instances should only be created when actively testing and should be destroyed immediately after testing is complete.
 
@@ -28,12 +28,39 @@ This directory contains EC2 instances used for testing the `deny_ec2_imds_v1` SC
 - **Tags**: `Name = "test-imdsv2-only"`
 - **Expected Behavior**: Should pass the `deny_ec2_imds_v1` check as compliant
 
-### Instance 3: IMDSv1 Enabled but Exempt (fort-knox account)
+### Instance 3: IMDSv1 Enabled but Exempt by Role Tag (fort-knox account)
 - **Provider**: `aws.fort_knox`
 - **Instance Type**: `t2.nano`
 - **IMDS Configuration**: `http_tokens = "optional"` (allows both IMDSv1 and IMDSv2)
-- **Tags**: `Name = "test-imdsv1-exempt"`, `ExemptFromIMDSv2 = "true"`
-- **Expected Behavior**: Should pass the `deny_ec2_imds_v1` check due to exemption tag
+- **Tags**: `Name = "test-imdsv1-exempt"`
+- **IAM Role**: runs as `test-imdsv1-exempt`, which carries `ExemptFromIMDSv2 = "true"`
+- **Expected Behavior**: Should pass the `deny_ec2_imds_v1` check, because the SCP
+  exempts through `aws:PrincipalTag/ExemptFromIMDSv2` and that tag is on the role
+
+### Instance 4: IMDSv1 Enabled, Instance Tagged but Role Not (shared-foo-bar account)
+- **Provider**: `aws.shared_foo_bar`
+- **Instance Type**: `t2.nano`
+- **IMDS Configuration**: `http_tokens = "optional"` (allows both IMDSv1 and IMDSv2)
+- **Tags**: `Name = "test-imdsv1-instance-tagged-only"`, `ExemptFromIMDSv2 = "true"`
+- **IAM Role**: none
+- **Expected Behavior**: **Violation.** No statement in the SCP reads instance
+  tags, so this tag exempts nothing. This instance used to read as exempt, which
+  is what let an account report zero violations while enforcement would have
+  denied every API call the instance made
+
+### Instance 5: Metadata Endpoint Disabled (acme-co account)
+- **Provider**: `aws.acme_co`
+- **Instance Type**: `t2.nano`
+- **IMDS Configuration**: `http_endpoint = "disabled"` (no metadata service at all)
+- **Tags**: `Name = "test-imds-disabled"`
+- **Expected Behavior**: Compliant, and the SCP must leave it launchable. The
+  launch names no `http_tokens` - there is no metadata service left to require
+  a token from - so `ec2:MetadataHttpTokens` is absent unless something else
+  supplies it, and the policy's `ec2:MetadataHttpEndpoint` clause is what keeps
+  the deny from firing. Verified by dry run: denied without the clause, allowed
+  with it, on an AMI that does not set `imds-support=v2.0`. On an AMI that does
+  set it the deny is never reached, because the AMI default populates
+  `ec2:MetadataHttpTokens` as `required`
 
 ## Usage
 

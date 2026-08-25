@@ -137,7 +137,7 @@ This document categorizes the different patterns of Service Control Policies (SC
 **Philosophy:** This IS an exception mechanism. Exception tags acknowledge that a resource is non-standard and requires special handling.
 
 **Examples:**
-- Allow IMDSv1 for legacy workloads tagged `ExemptFromIMDSv2=true`
+- Allow IMDSv1 for legacy workloads whose IAM role is tagged `ExemptFromIMDSv2=true`
 - Allow specific security group rules for resources tagged `NetworkExemption=legacy-app`
 
 **Implementation Example (from `deny_ec2_imds_v1`):**
@@ -158,13 +158,22 @@ This document categorizes the different patterns of Service Control Policies (SC
 }
 ```
 
-**Codebase Reference:** `test_environment/modules/scps/locals.tf` lines 8-20, 27-37
+**Codebase Reference:** `test_environment/modules/scps/locals.tf`, the
+`DenyRoleDeliveryLessThan2` and `DenyRunInstancesMetadataHttpTokensOptional`
+statements. Referenced by Sid rather than by line number, which goes stale.
 
 **Characteristics:**
 - Reactive exemption for specific resources
 - "You need an exception" signal
 - Should be audited and reviewed regularly
 - Provides clear trail of what's been exempted and why
+
+**The tag name is not the exemption; the condition key is.** The same
+`ExemptFromIMDSv2` name reads a role tag under `aws:PrincipalTag`, a launch
+request's tag under `aws:RequestTag`, and nothing at all on the instance
+itself. A scanner that decides deployability has to check the dimension the
+statement reads, or it clears an account whose instances enforcement will
+break. See AP-009 in `HOW_TO_ADD_A_CHECK.md`.
 
 ---
 

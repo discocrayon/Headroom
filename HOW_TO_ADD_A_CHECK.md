@@ -807,6 +807,67 @@ the other five read every `Allow` statement and keep actions for reporting.
 If you must gate, a statement naming both `Action` and `NotAction`, or
 neither, should raise rather than be guessed at.
 
+### AP-009: Scanning a Different Dimension Than the Policy Enforces
+
+```python
+# ❌ BAD - the SCP exempts by role tag; this reads the instance's tags
+for tag in instance.get('Tags', []):
+    if tag['Key'] == 'ExemptFromIMDSv2' and tag['Value'].lower() == 'true':
+        exemption_tag_present = True
+
+# ✅ GOOD - read the dimension the condition key reads
+resolved = resolve_instance_profile_role(iam_client, profile_arn)
+role_exemption_tag_present = (
+    resolved.tags.get(IMDS_EXEMPTION_TAG_KEY) == IMDS_EXEMPTION_TAG_VALUE
+)
+```
+
+A check decides whether a policy is safe to attach. That answer is only as
+good as the match between what the scanner measures and what the policy
+evaluates. Three ways they drift apart, all observed in this repo:
+
+1. **Wrong dimension.** `aws:PrincipalTag/X`, `aws:RequestTag/X` and a tag on
+   the resource are three different things wearing the same tag name. The
+   `deny_ec2_imds_v1` scanner read instance tags for a policy that exempts by
+   role tag, so accounts reported zero violations while enforcement would deny
+   every API call those instances made - the scan named the instances that
+   would break as its evidence the SCP was safe.
+2. **Wrong case sensitivity - in both directions at once.** A tag condition
+   key has two halves that match by opposite rules. IAM matches condition key
+   *names* without regard to case, and the tag key in
+   `aws:PrincipalTag/ExemptFromIMDSv2` is part of the name, so
+   `exemptfromimdsv2` matches. `StringNotEquals` compares the *value*
+   case-sensitively, so `True` does not match `true`. The original scanner had
+   both backwards: exact on the key, `.lower()` on the value. Check each half
+   against its own rule, and note that `StringEqualsIgnoreCase` exists when you
+   want the other comparison. Where a principal could carry the key twice in
+   cases that differ, AWS calls the result an unexpected condition failure -
+   raise rather than pick one.
+3. **Request state vs. resource state.** A condition key on a create action is
+   evaluated against the request, not against the object that results, so a
+   scan of running resources is not automatically a scan of what enforcement
+   will see. Be careful about the inverse mistake too: "the request" is not the
+   same as "the literal parameters the caller typed".
+   `ec2:MetadataHttpTokens` was measured resolving from the effective
+   configuration - an AMI with `imds-support=v2.0` populates it as `required`
+   for a request that names no `MetadataOptions` - so the naive reading
+   overstated the gap. Where a scan genuinely cannot observe the enforced
+   dimension, say so in the check's docstring instead of implying the clean
+   scan covers it.
+
+   None of this is settleable from documentation. AWS's own guide says
+   `HttpTokens` requires `HttpEndpoint=enabled`; `RunInstances` accepts the
+   combination anyway. When a condition key's behaviour is load-bearing for a
+   generated policy, prove it with `run-instances --dry-run` under a throwaway
+   role carrying the statement, with a control request that must be denied so a
+   broken probe cannot pass as a clean result.
+
+Before writing the analyzer, read the statement and list every condition key
+in it. For each one, name what the scanner will read to model it. A key with
+no answer is a gap to document, not to approximate.
+
+---
+
 ---
 
 ## 📝 Naming Conventions
@@ -941,6 +1002,34 @@ if_check_has_allowlist:
 
   - path: tests/test_generate_scps.py
     must_test: [renders_populated_allowlist, aborts_on_empty_allowlist]
+
+if_check_has_exemptions:
+  - path: test_environment/modules/scps/locals.tf
+    read_first: |
+      List every condition key in the statement, including the ones that
+      express the exemption. For each, name what the scanner will read to
+      model it. See AP-009.
+
+  - path: headroom/aws/{service}.py
+    must_read: |
+      The dimension the condition key reads, not a same-named tag on a
+      convenient object. aws:PrincipalTag reads the calling role's tags;
+      aws:RequestTag reads the create request's; neither reads the resource's.
+
+  - path: headroom/constants.py
+    add_lines: |
+      The exemption tag key and value as constants, with a comment on the
+      operator that compares them. StringNotEquals is case-sensitive, so the
+      scanner must not lowercase what enforcement will not.
+
+  - path: headroom/checks/{type}/{check_name}.py
+    docstring: |
+      State which statements a clean scan clears and which it cannot. An
+      exemption the scan cannot observe - a launch-request tag, say - belongs
+      in the docstring, not in an implied guarantee.
+
+  - path: tests/test_aws_{service}.py
+    must_test: [right_dimension_exempts, wrong_dimension_does_not, value_case_is_exact]
 
 optional_modify:
   - path: test_environment/test_{check_name}.tf

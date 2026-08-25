@@ -12,25 +12,69 @@
 - Scans all AWS regions for EC2 instances
 - Checks metadata options configuration
 - Identifies instances without IMDSv2 enforcement
+- Resolves each instance's instance profile to its IAM role and reads that
+  role's tags
 
-**Policy Coverage**: Denies EC2 operations that would create instances without IMDSv2 enforcement.
+**Policy Coverage**: Two statements. `DenyRoleDeliveryLessThan2` denies any API
+call made with credentials fetched over IMDSv1.
+`DenyRunInstancesMetadataHttpTokensOptional` denies launching an instance that
+would answer IMDSv1.
 
-**Exemption Support**: Resources tagged with `ExemptFromIMDSv2` (case-insensitive) are excluded from violation reporting.
+**Exemption Support**: Instances whose **IAM role** is tagged
+`ExemptFromIMDSv2 = "true"` are excluded from violation reporting.
+
+The tag is read off the role, not the instance. The SCP exempts through
+`aws:PrincipalTag/ExemptFromIMDSv2`, which reads role tags; no statement in it
+reads instance tags.
+
+The key and the value are matched differently. IAM matches condition key names
+without regard to case, so a role tagged `exemptfromimdsv2` is exempt. The
+value is matched exactly, because `StringNotEquals` is case-sensitive - a role
+tagged `True` is denied. A role carrying the key twice in cases that differ
+aborts the check, because AWS treats that as an unexpected condition failure
+rather than a match, leaving the role's exemption status undetermined.
+
+**What a Clean Scan Proves**: That no instance running today can have its API
+calls denied by `DenyRoleDeliveryLessThan2`. It does not prove that future
+launches will pass `DenyRunInstancesMetadataHttpTokensOptional`, which is
+evaluated against the launch request rather than against any instance the scan
+can see - a launch template the scan never reads can still be denied.
+
+`ec2:MetadataHttpTokens` resolves from the **effective** metadata
+configuration, not only from literal request parameters. Dry runs against a
+live account show an AMI carrying `imds-support=v2.0` populating it as
+`required` even when the request names no `MetadataOptions` at all, so a fleet
+on modern Amazon Linux passes the statement without ever specifying the
+parameter. On an AMI without that attribute the same request is denied.
+Whether an account-level metadata default behaves like the AMI default is
+untested - the probe account had none set - but the AMI result makes it
+likely.
+
+Instances with the metadata endpoint disabled are compliant and stay
+launchable: the policy carries an `ec2:MetadataHttpEndpoint` clause for exactly
+that, verified by dry run as denied without it and allowed with it.
+
+**Required Permissions**: `ec2:DescribeInstances`, plus `iam:GetInstanceProfile`
+and `iam:GetRole` to read role tags. A profile or role deleted mid-scan is
+recorded as unresolved; any other IAM failure aborts the check rather than
+reading as an untagged role.
 
 **Output**:
 - List of non-compliant instances (violations)
 - List of exempt instances
 - List of compliant instances
+- The IAM role each instance runs as, or why none was resolved
 - Compliance percentage
 
 **Example Violation**:
 ```json
 {
-  "instance_id": "i-1234567890abcdef0",
   "region": "us-east-1",
-  "metadata_options": {
-    "HttpTokens": "optional"
-  }
+  "instance_id": "i-1234567890abcdef0",
+  "imdsv1_allowed": true,
+  "role_exemption_tag_present": false,
+  "role_arn": "arn:aws:iam::111111111111:role/app-server",
+  "role_unresolved_reason": null
 }
 ```
 
@@ -684,7 +728,7 @@ China ARNs all resolve.
 
 ### Some Checks Include
 
-- **Exemption Support**: Tag-based exemptions (EC2 IMDSv1, S3)
+- **Exemption Support**: Tag-based exemptions (EC2 IMDSv1 by role tag, S3)
 - **Allowlist Generation**: Auto-generated allowlists (IAM users, third-party accounts)
 - **Safety Mechanisms**: Prevents breaking existing access patterns (S3 Federated principals)
 - **Wildcard Detection**: Identifies principals requiring CloudTrail analysis
