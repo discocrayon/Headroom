@@ -393,7 +393,7 @@ This check identifies EC2 instances whose IMDS hop limit exceeds 1. The SCP deni
 - Deny `ec2:RunInstances` on instance resources
 - When `ec2:MetadataHttpPutResponseHopLimit` is numerically greater than 1
 
-**Headroom's Role:** Scans all accounts and reports each instance's configured hop limit and whether its metadata endpoint is enabled. Instances with IMDS disabled are compliant regardless of hop limit, since there is no reachable endpoint.
+**Headroom's Role:** Scans all accounts and reports each instance's configured hop limit and whether its metadata endpoint is enabled. The hop limit is counted whether or not the endpoint is enabled, because the SCP counts it that way: AWS accepts a launch naming both a hop limit and a disabled endpoint, so the condition key is present and the deny fires. The endpoint state is reported for context - a violation on an instance whose endpoint is off is free to remedy, since nothing reads the hop limit there.
 
 **Note:** This is the first Pattern 2 policy in the codebase to use a numeric comparison rather than a string or boolean match. The pattern is unchanged -- `NumericGreaterThan` expresses the same "deny unless the condition holds" shape as `StringNotEquals` elsewhere.
 

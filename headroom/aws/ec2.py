@@ -90,8 +90,11 @@ class DenyEc2ImdsHopLimit:
     Attributes:
         region: AWS region where instance exists
         instance_id: EC2 instance identifier
-        hop_limit: IMDS HttpPutResponseHopLimit (AWS defaults to 1 when unset)
-        imds_enabled: True if the instance metadata endpoint is enabled
+        hop_limit: IMDS HttpPutResponseHopLimit (AWS defaults to 1 when unset,
+            but an AMI carrying imds-support=v2.0 supplies a higher default)
+        imds_enabled: True if the instance metadata endpoint is enabled.
+            Reported for context only - it does not affect whether a hop limit
+            counts as a violation, because the SCP counts it either way
     """
     region: str
     instance_id: str

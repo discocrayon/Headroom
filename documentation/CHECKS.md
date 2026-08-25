@@ -96,12 +96,15 @@ reading as an untagged role.
 
 **Compliance Requirements**:
 - An instance at hop limit 1 is compliant
-- An instance with `HttpEndpoint` disabled is compliant whatever its hop limit, because there is no reachable IMDS for a hop to cross
-- Any other instance with a hop limit above 1 is a violation
+- Any instance above hop limit 1 is a violation, **including one with the metadata endpoint disabled**
+
+The endpoint state is reported but does not affect the verdict. A disabled endpoint does make the hop limit inert on the running instance, but the SCP is evaluated against the launch request, and AWS accepts a launch naming both a hop limit and `HttpEndpoint=disabled` - confirmed by dry run, where `MaxImdsHopLimit` denied exactly that request. Excusing those instances would clear an account whose relaunch the SCP denies. Remediation is free: lowering the hop limit on an instance whose endpoint is off changes no behaviour, because nothing reads it.
 
 **Launch-Time Only**: `ec2:ModifyInstanceMetadataOptions` has no fine-grained condition keys, so this SCP cannot prevent the hop limit being raised after launch. Closing that gap requires denying the action outright or restricting it by `aws:PrincipalArn`, which is a separate policy decision and is not part of this check.
 
-**Container Impact**: Containers add a network hop, so workloads on ECS, EKS, or plain Docker generally need a hop limit of at least 2 to reach IMDS. Expect containerized instances to appear as violations; the placement engine will only recommend enabling the SCP once every account reports full compliance.
+**Expect Widespread Violations**: An AMI carrying `imds-support=v2.0`, which includes current Amazon Linux 2023, supplies a hop limit above 1 to launches that name no `MetadataOptions` at all. A dry run against a live account confirms `MaxImdsHopLimit` denies that default launch. So the violations this check reports are not an edge case - on a modern fleet they are the norm, and a default AL2023 instance is a violation before anyone configures anything.
+
+Containers compound it: they add a network hop, so workloads on ECS, EKS, or plain Docker generally need a hop limit of at least 2 to reach IMDS. The placement engine only recommends enabling the SCP once every account reports full compliance, so in practice this check stays unplaced until a fleet explicitly pins hop limit 1 everywhere. Whether a threshold of 1 is the right policy for a fleet on modern AMIs is a decision for the operator, not something this check assumes.
 
 **Output**:
 - Instance IDs and regions
