@@ -36,7 +36,8 @@ module "scps" {
 
 ### Security Policy Variables
 
-- **`deny_ec2_ami_owner`** (bool): Deny EC2 instances from launching with AMIs not from approved owners
+- **`deny_ec2_ami_owner`** (bool): Deny EC2 instances from launching with AMIs not from approved owners.
+  Covers `RunInstances`, `CreateFleet`, `RequestSpotFleet` and `RequestSpotInstances`
 - **`ec2_allowed_ami_owners`** (list(string)): List of allowed AMI owner account IDs or aliases (e.g., "amazon", "self")
 - **`deny_ec2_imds_v1`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
 - **`deny_ec2_public_ip`** (bool): Deny EC2 instances from being launched with public IP addresses

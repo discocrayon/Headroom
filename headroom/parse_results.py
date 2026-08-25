@@ -128,7 +128,8 @@ def _parse_single_scp_result_file(
         compliant=summary.get("compliant", 0),
         total_instances=summary.get("total_instances"),
         compliance_percentage=summary.get("compliance_percentage", 0.0),
-        iam_user_arns=iam_user_arns
+        iam_user_arns=iam_user_arns,
+        ami_owners=summary.get("unique_ami_owners")
     )
 
 
@@ -258,6 +259,29 @@ def _build_iam_user_arns_for_recommendation(
     return sorted(list(iam_user_arns_set)) if iam_user_arns_set else []
 
 
+def _build_ami_owners_for_recommendation(
+    check_name: str,
+    check_results: List[SCPCheckResult],
+    affected_accounts: List[str]
+) -> List[str]:
+    """
+    Build list of allowed AMI owners for the deny_ec2_ami_owner check.
+
+    Returns a sorted list of the unique AMI owners observed across all
+    affected accounts. Returns empty list if check is not deny_ec2_ami_owner
+    or no owners were observed.
+    """
+    if check_name != "deny_ec2_ami_owner":
+        return []
+
+    ami_owners_set = set()
+    for result in check_results:
+        if result.account_id in affected_accounts and result.ami_owners:
+            ami_owners_set.update(result.ami_owners)
+
+    return sorted(list(ami_owners_set)) if ami_owners_set else []
+
+
 def _build_root_recommendation(
     check_name: str,
     affected_accounts: List[str],
@@ -286,6 +310,15 @@ def _build_root_recommendation(
 
     if allowed_iam_user_arns:
         recommendation.allowed_iam_user_arns = allowed_iam_user_arns
+
+    ec2_allowed_ami_owners = _build_ami_owners_for_recommendation(
+        check_name,
+        check_results,
+        affected_accounts
+    )
+
+    if ec2_allowed_ami_owners:
+        recommendation.ec2_allowed_ami_owners = ec2_allowed_ami_owners
 
     return recommendation
 
@@ -318,6 +351,12 @@ def _build_ou_recommendation(
         affected_accounts
     )
 
+    ec2_allowed_ami_owners = _build_ami_owners_for_recommendation(
+        check_name,
+        check_results,
+        affected_accounts
+    )
+
     return SCPPlacementRecommendations(
         check_name=check_name,
         recommended_level="ou",
@@ -325,7 +364,8 @@ def _build_ou_recommendation(
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
         reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level",
-        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None
+        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None,
+        ec2_allowed_ami_owners=ec2_allowed_ami_owners if ec2_allowed_ami_owners else None
     )
 
 
@@ -349,6 +389,12 @@ def _build_account_recommendation(
         affected_accounts
     )
 
+    ec2_allowed_ami_owners = _build_ami_owners_for_recommendation(
+        check_name,
+        safe_check_results,
+        affected_accounts
+    )
+
     return SCPPlacementRecommendations(
         check_name=check_name,
         recommended_level="account",
@@ -356,7 +402,8 @@ def _build_account_recommendation(
         affected_accounts=affected_accounts,
         compliance_percentage=compliance_pct,
         reasoning=f"Only {len(safe_check_results)} out of {total_results} accounts have zero violations - deploy at individual account level",
-        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None
+        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None,
+        ec2_allowed_ami_owners=ec2_allowed_ami_owners if ec2_allowed_ami_owners else None
     )
 
 

@@ -874,6 +874,45 @@ must_modify:
       terraform_content += f"  {check_name} = {{str({check_name}).lower()}}\n"
     location: "alphabetical by service"
 
+# A check whose SCP statement is scoped by an allowlist needs EVERY step
+# below. Stop short anywhere and the check still reports 100% compliance,
+# the SCP is still enabled, and the allowlist renders empty - which for a
+# Deny statement denies everything rather than nothing. deny_ec2_ami_owner
+# shipped with the first and last steps only.
+if_check_has_allowlist:
+  - path: headroom/checks/{type}/{check_name}.py
+    function: "build_summary_fields"
+    add_line: "\"unique_{thing}s\": sorted(list({thing}s))"
+
+  - path: headroom/types.py
+    dataclass: "SCPCheckResult"
+    add_line: "{thing}s: Optional[List[str]] = None"
+
+  - path: headroom/parse_results.py
+    function: "_parse_single_scp_result_file"
+    add_line: "{thing}s=summary.get(\"unique_{thing}s\")"
+
+  - path: headroom/parse_results.py
+    add_function: "_build_{thing}s_for_recommendation"
+    call_from: ["_build_root_recommendation", "_build_ou_recommendation", "_build_account_recommendation"]
+    purpose: "Union the values across the accounts a placement covers"
+
+  - path: headroom/types.py
+    dataclass: "SCPPlacementRecommendations"
+    add_line: "{service}_allowed_{thing}s: Optional[List[str]] = None"
+
+  - path: headroom/terraform/generate_scps.py
+    function: "_build_{service}_terraform_parameters"
+    add_lines: |
+      Emit the list parameter, and raise RuntimeError naming the module
+      if it is empty. Never render an empty allowlist.
+
+  - path: tests/test_parse_results.py
+    must_test: [summary_field_carried, union_across_accounts, other_checks_unaffected]
+
+  - path: tests/test_generate_scps.py
+    must_test: [renders_populated_allowlist, aborts_on_empty_allowlist]
+
 optional_modify:
   - path: test_environment/test_{check_name}.tf
     purpose: "Test infrastructure (if needed for E2E)"
@@ -1224,6 +1263,16 @@ step_6_e2e_optional:
 
 ```yaml
 verification_process:
+  step_0_machine_readable:
+    index: "https://servicereference.us-east-1.amazonaws.com/"
+    url: "https://servicereference.us-east-1.amazonaws.com/v1/{service}/{service}.json"
+    why: "Same data as the HTML reference below, as JSON. The HTML page renders
+      client-side, so it cannot be fetched or grepped - use this instead and
+      cite it in the policy comment."
+    shape: "Actions[].Resources[].ConditionKeys[] - the condition keys a given
+      action supports ON a given resource type"
+    example_query: "list every action whose image resource carries ec2:Owner"
+
   step_1:
     url: "https://docs.aws.amazon.com/service-authorization/latest/reference/reference_policies_actions-resources-contextkeys.html"
     action: "Find your service (e.g., Amazon RDS, Amazon EC2)"
@@ -1235,6 +1284,24 @@ verification_process:
   step_3:
     rule: "If condition key is NOT listed for an action, it CANNOT be used"
     do_not: "Assume support based on logic or web searches"
+
+  step_3b_resource_scope:
+    rule: "A resource-level condition key exists on ONE resource type. Scope the
+      statement's Resource to that type, not to whatever the action creates."
+    why: "An action is authorized against every resource it touches. On a
+      resource that does not carry the key, the key is absent - and a negated
+      operator (StringNotEquals, ArnNotLike, Bool with a false test) on an
+      absent key evaluates TRUE, so the Deny matches everything."
+    example: "ec2:Owner lives on the image resource. deny_ec2_ami_owner scoped
+      to arn:aws:ec2:*:*:instance/* denied every RunInstances call; scoped to
+      arn:aws:ec2:*::image/* it denies only untrusted AMI owners."
+    counterpart: "Use ...IfExists only where an absent key should mean allow.
+      In a Deny, that is usually the wrong direction - see BoolIfExists on
+      aws:PrincipalIsAWSService in modules/rcps/locals.tf, where it is right."
+    converse: "The same lookup decides which actions belong in the statement.
+      An action that lists no such resource type can never match a statement
+      scoped to it, so adding it reads as coverage while denying nothing -
+      ec2:RunScheduledInstances against arn:aws:ec2:*::image/*, for example."
 
   step_4_undocumented:
     if: "You want to include undocumented action"

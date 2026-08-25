@@ -221,6 +221,7 @@ class SCPCheckResult(CheckResult):
     compliance_percentage: float
     total_instances: Optional[int] = None          # For instance-based checks
     iam_user_arns: Optional[List[str]] = None      # For IAM user checks
+    ami_owners: Optional[List[str]] = None         # For the AMI owner check
 
 @dataclass
 class RCPCheckResult(CheckResult):
@@ -242,7 +243,8 @@ class SCPPlacementRecommendations:
     affected_accounts: List[str]                  # Account IDs covered
     compliance_percentage: float
     reasoning: str
-    allowed_iam_user_arns: Optional[List[str]] = None  # For IAM user checks
+    allowed_iam_user_arns: Optional[List[str]] = None   # For IAM user checks
+    ec2_allowed_ami_owners: Optional[List[str]] = None  # For the AMI owner check
 
 @dataclass
 class RCPPlacementRecommendations:
@@ -1464,6 +1466,9 @@ def determine_scp_placement(
           - Union all IAM user ARNs from affected accounts
           - Un-redact ARNs (replace "REDACTED" with actual account_id)
           - Attach to allowed_iam_user_arns field
+       g. For deny_ec2_ami_owner check:
+          - Union all AMI owners from affected accounts
+          - Attach to ec2_allowed_ami_owners field
     3. Return List[SCPPlacementRecommendations]
 
     Safety Principle: Only deploy at levels with 100% compliance (zero violations)
@@ -1662,6 +1667,9 @@ def generate_scp_terraform(
        - For deny_iam_user_creation:
          - Transform ARNs: replace account IDs with ${local.X_account_id}
          - Add allowed_iam_users list
+       - For deny_ec2_ami_owner:
+         - Add ec2_allowed_ami_owners list
+         - Abort if that list is empty (see Allowlist Guard below)
     5. Write to {scps_dir}/
 
     ARN Transformation Algorithm:
@@ -1671,6 +1679,25 @@ def generate_scp_terraform(
     4. Replace: arn:aws:iam::${local.account_name_account_id}:user/PATH/NAME
     """
 ```
+
+**Allowlist Guard:**
+
+A check whose SCP statement is scoped by an allowlist is only safe to enable
+once that allowlist is populated. `deny_ec2_ami_owner` denies
+`ec2:RunInstances` unless `ec2:Owner` matches `ec2_allowed_ami_owners`, so an
+empty list denies every launch rather than none of them - the exact inversion
+of what a check reporting 100% compliance is asserting. Rendering
+`ec2_allowed_ami_owners = []` is therefore never correct, and generation aborts
+by module name instead. Two things reach that state: result files that predate
+AMI owner collection, and affected accounts where no instance had a resolvable
+AMI owner. Both need a decision from the operator, not a default.
+
+This exists because the collected owners had no path into the recommendation:
+`SCPCheckResult` carried no field for them, so every run enabled the SCP at the
+highest compliant level with an empty allowlist. A check that adds an allowlist
+variable to `modules/scps` must add the matching field on `SCPCheckResult`,
+populate it in `parse_scp_result_files`, and union it in the placement
+builders; the module variable alone does nothing.
 
 **Generated SCP Terraform Structure:**
 ```hcl

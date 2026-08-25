@@ -7,7 +7,7 @@ Tests SCP/RCP compliance results analysis and placement recommendations.
 import json
 import tempfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 from unittest.mock import Mock, patch
 
 import pytest
@@ -1682,3 +1682,149 @@ class TestCoverageIsIndependentOfOtherOUs:
     def test_violating_account_is_never_recommended(self) -> None:
         """Widening coverage must not recommend an account that has violations."""
         assert "444444444444" not in self.covered_accounts(staging_violations=0)
+
+
+class TestAmiOwnerAllowlistWiring:
+    """
+    Tests that observed AMI owners reach the placement recommendation.
+
+    The check has always reported `unique_ami_owners`, and the SCP module has
+    always taken an `ec2_allowed_ami_owners` list, but nothing joined the two:
+    `SCPCheckResult` had no field for the owners, so every recommendation
+    carried `ec2_allowed_ami_owners=None` and Terraform enabled the policy with
+    an empty allowlist. An empty allowlist denies every `ec2:RunInstances`
+    call, so the generated SCP was an EC2 outage wherever it landed.
+    """
+
+    OWNERS_ACCOUNT_1 = ["amazon", "aws-marketplace"]
+    OWNERS_ACCOUNT_2 = ["222222222222", "amazon"]
+    UNIONED_OWNERS = ["222222222222", "amazon", "aws-marketplace"]
+
+    def make_result(
+        self,
+        account_id: str,
+        account_name: str,
+        violations: int,
+        ami_owners: List[str]
+    ) -> SCPCheckResult:
+        """Build one account's AMI owner check result."""
+        return SCPCheckResult(
+            account_id=account_id,
+            account_name=account_name,
+            check_name="deny_ec2_ami_owner",
+            violations=violations,
+            exemptions=0,
+            compliant=2,
+            compliance_percentage=100.0 if violations == 0 else 50.0,
+            total_instances=2,
+            ami_owners=ami_owners
+        )
+
+    def test_parse_carries_unique_ami_owners_from_summary(self) -> None:
+        """The summary's unique_ami_owners survives into the check result."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_ami_owner"
+            check_dir.mkdir(parents=True)
+
+            test_data = {
+                "summary": {
+                    "account_name": "test-account-1",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_ami_owner",
+                    "total_instances": 2,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 2,
+                    "compliance_percentage": 100.0,
+                    "unique_ami_owners": self.OWNERS_ACCOUNT_1,
+                    "unknown_ami_owners": {}
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+
+            with open(check_dir / "test-account-1_111111111111.json", 'w') as f:
+                json.dump(test_data, f)
+
+            result = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+            assert len(result) == 1
+            assert result[0].ami_owners == self.OWNERS_ACCOUNT_1
+
+    def test_root_recommendation_unions_ami_owners(self) -> None:
+        """Root placement allowlists every owner seen in any affected account."""
+        results_data = [
+            self.make_result("111111111111", "account-1", 0, self.OWNERS_ACCOUNT_1),
+            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
+        ]
+
+        result = determine_scp_placement(results_data, make_test_org_hierarchy())
+
+        assert len(result) == 1
+        assert result[0].recommended_level == "root"
+        assert result[0].ec2_allowed_ami_owners == self.UNIONED_OWNERS
+
+    def test_ou_recommendation_carries_ami_owners(self) -> None:
+        """OU placement allowlists the owners seen in that OU's accounts."""
+        results_data = [
+            self.make_result("111111111111", "account-1", 2, self.OWNERS_ACCOUNT_1),
+            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
+        ]
+
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"])
+            }
+        )
+
+        result = determine_scp_placement(results_data, hierarchy)
+
+        assert len(result) == 1
+        assert result[0].recommended_level == "ou"
+        assert result[0].ec2_allowed_ami_owners == self.OWNERS_ACCOUNT_2
+
+    def test_account_recommendation_carries_ami_owners(self) -> None:
+        """Account placement allowlists the owners seen in that account."""
+        results_data = [
+            self.make_result("111111111111", "account-1", 2, self.OWNERS_ACCOUNT_1),
+            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
+            self.make_result("333333333333", "account-3", 1, self.OWNERS_ACCOUNT_1),
+        ]
+
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1234": OrganizationalUnit(
+                    "ou-1234", "Production", None, [], ["222222222222", "333333333333"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"]),
+                "333333333333": AccountOrgPlacement("333333333333", "account-3", "ou-1234", ["Production"])
+            }
+        )
+
+        result = determine_scp_placement(results_data, hierarchy)
+
+        assert len(result) == 1
+        assert result[0].recommended_level == "account"
+        assert result[0].ec2_allowed_ami_owners == self.OWNERS_ACCOUNT_2
+
+    def test_other_checks_carry_no_ami_owners(self) -> None:
+        """The allowlist belongs to one check and is not attached to others."""
+        results_data = [
+            SCPCheckResult("111111111111", "account-1", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("222222222222", "account-2", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
+        ]
+
+        result = determine_scp_placement(results_data, make_test_org_hierarchy())
+
+        assert len(result) == 1
+        assert result[0].ec2_allowed_ami_owners is None

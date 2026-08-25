@@ -80,6 +80,13 @@ class SCPCheckResult(CheckResult):
     organizational policies. They track violations, exemptions, and
     compliant resources.
 
+    Checks that inform an allowlist carry the values they observed:
+    `iam_user_arns` for deny_iam_user_creation, `ami_owners` for
+    deny_ec2_ami_owner. A check whose allowlist variable exists in the
+    Terraform module but has no field here cannot populate it, and the
+    module is enabled with an empty list - which for a Deny statement
+    denies everything rather than nothing.
+
     TODO: As more SCP checks are added, consider moving check-specific
     fields (like total_instances) to per-check subclasses if the fields
     diverge significantly across different SCP check types.
@@ -90,6 +97,7 @@ class SCPCheckResult(CheckResult):
     compliance_percentage: float
     total_instances: Optional[int] = None
     iam_user_arns: Optional[List[str]] = None
+    ami_owners: Optional[List[str]] = None
 
 
 @dataclass
