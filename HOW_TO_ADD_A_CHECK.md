@@ -778,6 +778,35 @@ from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
 ```
 
+The copies drift, and they drift narrower. `roles.py`, `kms.py` and `ecr.py`
+each carried `r'^arn:aws:iam::(\d{12}):'` while `s3.py`, `sqs.py` and
+`secretsmanager.py` used the constant. The three copies silently dropped every
+STS session principal and every non-commercial partition, so the accounts
+never reached the allowlist and the RCP denied them.
+
+---
+
+### AP-008: String-Comparing IAM Policy Actions
+
+```python
+# ❌ BAD - misses sts:*, sts:Assume*, STS:AssumeRole, NotAction
+has_assume_role = "sts:AssumeRole" in action or "*" in action
+
+# ✅ GOOD - match the way IAM matches
+if _grants_assume_role(statement, role_name):
+```
+
+IAM compares action names case-insensitively and expands `*` and `?` anywhere
+in the name, and an `Allow` with `NotAction` grants everything its patterns do
+not cover. A statement your analyzer fails to recognize is dropped in
+silence - no violation, no error, just an account missing from an allowlist -
+so the comparison has to follow IAM's rules, not Python's.
+
+Prefer not gating on actions at all. Only the STS trust policy analyzer does;
+the other five read every `Allow` statement and keep actions for reporting.
+If you must gate, a statement naming both `Action` and `NotAction`, or
+neither, should raise rather than be guessed at.
+
 ---
 
 ## 📝 Naming Conventions

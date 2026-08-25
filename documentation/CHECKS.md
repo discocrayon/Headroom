@@ -388,6 +388,20 @@ to unauthenticated access on URLs that already exist.
 - Wildcard principals (`*`)
 - Cross-account access patterns
 
+**Action Matching**: A statement counts as granting AssumeRole under the same
+rules IAM applies, not by string equality. Matching is case-insensitive, `*`
+and `?` expand anywhere in the action name (`sts:*`, `sts:Assume*`,
+`sts:*Role`, `sts:AssumeRol?`), and an Allow with `NotAction` grants
+AssumeRole unless one of its patterns covers it. A statement naming both
+`Action` and `NotAction`, or neither, aborts the run rather than being
+guessed at - an unrecognized grant leaves a partner account out of the
+allowlist, and the RCP then denies it.
+
+**Principal Forms**: Account IDs are read from any principal ARN regardless of
+partition or service, so STS session principals
+(`arn:aws:sts::{account}:assumed-role/{role}/{session}`) and GovCloud and
+China ARNs all resolve.
+
 **Allowlisting**: Generates allowlists for RCP modules to permit known third-party access.
 
 **Output**:

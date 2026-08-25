@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_ecr.client import ECRClient
 from mypy_boto3_ecr.type_defs import RepositoryTypeDef
 
+from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from .helpers import get_all_regions, paginate
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
     if isinstance(principal, str):
         if principal == "*":
             return set()
-        arn_match = re.match(r'^arn:aws:iam::(\d{12}):', principal)
+        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
         if arn_match:
             account_ids.add(arn_match.group(1))
         else:

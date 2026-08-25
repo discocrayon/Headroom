@@ -955,7 +955,8 @@ def analyze_iam_roles_trust_policies(
     1. List all roles with paginator (list_roles)
     2. For each role, get AssumeRolePolicyDocument
     3. Parse JSON policy document
-    4. For each Statement, check if Action is sts:AssumeRole
+    4. For each Allow Statement, decide whether it grants sts:AssumeRole
+       (see Action Matching below)
     5. Extract account IDs from Principal field
     6. Detect wildcard principals
     7. Filter to third-party accounts (not in org_account_ids)
@@ -964,6 +965,8 @@ def analyze_iam_roles_trust_policies(
     Raises:
     - UnknownPrincipalTypeError: if principal type not in ALLOWED_PRINCIPAL_TYPES
     - InvalidFederatedPrincipalError: if Federated principal uses sts:AssumeRole
+    - MalformedStatementError: if a statement names both Action and NotAction,
+      or neither
     """
 
 def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
@@ -990,6 +993,42 @@ def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
 def _has_wildcard_principal(principal: Any) -> bool:
     """Check if principal contains "*" (wildcard)."""
 ```
+
+**Action Matching:**
+
+This is the only analyzer that decides anything from a statement's actions;
+the S3, SQS, KMS, ECR and Secrets Manager analyzers read every Allow statement
+and record actions for reporting only. Because a statement this one fails to
+recognize is dropped in silence - no violation, no error, the account merely
+absent from the allowlist that keeps it reachable - the match must follow IAM's
+own rules rather than compare strings:
+
+- **Case-insensitive.** IAM documents `iam:ListAccessKeys` and
+  `IAM:listaccesskeys` as the same action.
+- **`*` and `?` expand anywhere in the name**, not just as a whole-action
+  wildcard. `sts:*`, `sts:Assume*`, `sts:*Role` and `sts:AssumeRol?` all cover
+  `sts:AssumeRole`. Character classes are not IAM syntax and are matched
+  literally.
+- **`NotAction` inverts the test.** An Allow statement with `NotAction` grants
+  every action its patterns do not cover, so it grants `sts:AssumeRole` unless
+  one of them matches it.
+- **Exactly one of `Action` and `NotAction`.** A statement carrying both, or
+  neither, raises `MalformedStatementError`. IAM would not have stored it, and
+  either guess misstates who can assume the role.
+
+The `InvalidFederatedPrincipalError` guard deliberately keeps an exact match
+instead. A Federated principal paired with `sts:*` is sloppy rather than
+wrong - AWS does not let a federated identity call plain `AssumeRole` - and
+aborting a run over it would cost more than it catches.
+
+**Principal ARNs:**
+
+Account IDs come from `AWS_ARN_ACCOUNT_ID_PATTERN`, which constrains neither
+the partition nor the service segment. A trust policy principal may be an STS
+session ARN (`arn:aws:sts::{account}:assumed-role/{role}/{session}` or
+`.../federated-user/{name}`) as readily as an IAM one, and GovCloud and China
+ARNs carry account IDs that matter just as much. Pinning either segment drops
+the account silently.
 
 **Custom Exceptions:**
 ```python
