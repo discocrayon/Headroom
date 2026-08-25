@@ -13,8 +13,25 @@ BASE_PRINCIPAL_TYPES = frozenset({"AWS", "Service", "Federated"})
 
 # AWS ARN Regex Pattern
 # Pattern to extract 12-digit account ID from AWS ARN
-# Format: arn:aws:service:region:account-id:resource
-AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws:[^:]+:[^:]*:(\d{12}):'
+# Format: arn:partition:service:region:account-id:resource
+#
+# The service segment is deliberately unconstrained: a resource policy
+# principal can be an STS session ARN (arn:aws:sts::{account}:assumed-role/...)
+# as readily as an IAM one, and pinning the segment to `iam` drops the account.
+# The partition is matched the same way, so GovCloud and China ARNs resolve.
+AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws[a-z0-9-]*:[^:]+:[^:]*:(\d{12}):'
+
+# EC2 IMDSv2 Exemption Tag
+# The tag the deny_ec2_imds_v1 SCP exempts on, via
+# aws:PrincipalTag/ExemptFromIMDSv2 on the calling role.
+#
+# The two halves are matched differently, and a scanner has to follow both.
+# IAM matches condition key names - including the tag key after the slash -
+# without regard to case, so `exemptfromimdsv2` exempts too. The value is
+# compared with StringNotEquals, which is case-sensitive, so a role tagged
+# "True" is not exempt to enforcement and must not be reported exempt.
+IMDS_EXEMPTION_TAG_KEY = "ExemptFromIMDSv2"
+IMDS_EXEMPTION_TAG_VALUE = "true"
 
 # Check name constants
 

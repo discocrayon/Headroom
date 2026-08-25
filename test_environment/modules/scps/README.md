@@ -36,7 +36,8 @@ module "scps" {
 
 ### Security Policy Variables
 
-- **`deny_ec2_ami_owner`** (bool): Deny EC2 instances from launching with AMIs not from approved owners
+- **`deny_ec2_ami_owner`** (bool): Deny EC2 instances from launching with AMIs not from approved owners.
+  Covers `RunInstances`, `CreateFleet`, `RequestSpotFleet` and `RequestSpotInstances`
 - **`ec2_allowed_ami_owners`** (list(string)): List of allowed AMI owner account IDs or aliases (e.g., "amazon", "self")
 - **`deny_ec2_imds_v1`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
 - **`deny_ec2_public_ip`** (bool): Deny EC2 instances from being launched with public IP addresses
@@ -74,14 +75,45 @@ Policy statements are conditionally included using the pattern in `locals.tf`:
 
 When enabled, this policy enforces IMDSv2 (Instance Metadata Service version 2) for EC2 instances through two statements:
 
-1. **DenyRoleDeliveryLessThan2**: Denies all actions when `ec2:RoleDelivery < 2.0`
-2. **DenyRunInstancesMetadataHttpTokensOptional**: Denies `ec2:RunInstances` when `ec2:MetadataHttpTokens != "required"`
+1. **DenyRoleDeliveryLessThan2**: Denies all actions when `ec2:RoleDelivery < 2.0` - that is, any API call made with credentials fetched over IMDSv1
+2. **DenyRunInstancesMetadataHttpTokensOptional**: Denies `ec2:RunInstances` unless the request requires IMDSv2 or disables the metadata endpoint
+
+The two statements gate different things. The first gates calls made by
+instances running now; the second gates future launches. A fleet that passes
+the first can still be denied by the second, because the second reads a request
+parameter rather than the resulting instance.
+
+#### Launches that disable IMDS must still say `HttpTokens=required`
+
+Neither statement tests `ec2:MetadataHttpEndpoint`, matching `MaxImdsHopLimit`.
+A launch that turns IMDS off usually names no `HttpTokens`, so
+`ec2:MetadataHttpTokens` is absent, `StringNotEquals` on an absent key is true,
+and the deny fires. Such a launch has to name `HttpTokens=required` anyway.
+
+That is accepted, and measured rather than inferred: AWS does *not* reject
+`HttpTokens` alongside a disabled endpoint, despite what the EC2 guide says
+about `ModifyInstanceMetadataOptions`. The extra parameter changes no
+behaviour, because nothing is listening. Requiring it keeps this statement and
+the check that gates it reading one thing, `HttpTokens`, rather than two.
 
 #### Exemptions
 
-Resources can be exempted from IMDSv2 enforcement using the tag `ExemptFromIMDSv2: "true"`:
-- IAM roles: Tag the role with `ExemptFromIMDSv2 = "true"` to exempt all instances using that role
-- EC2 instances: Include `ExemptFromIMDSv2 = "true"` in request tags when launching instances
+Each statement has its own exemption, and they are different dimensions of the
+same tag name. Tagging the **instance** exempts neither.
+
+- **DenyRoleDeliveryLessThan2** exempts on `aws:PrincipalTag/ExemptFromIMDSv2`:
+  tag the **IAM role** with `ExemptFromIMDSv2 = "true"` to exempt every instance
+  running as that role.
+- **DenyRunInstancesMetadataHttpTokensOptional** exempts on
+  `aws:RequestTag/ExemptFromIMDSv2`: include `ExemptFromIMDSv2 = "true"` in the
+  launch request's instance tag specifications.
+
+Both are matched with `StringNotEquals`, which is case-sensitive: only the exact
+value `"true"` exempts, and `"True"` is denied. The tag *key* is the opposite -
+IAM matches condition key names without regard to case, so `exemptfromimdsv2`
+works as well as `ExemptFromIMDSv2`. Do not rely on that; tag one way and stay
+consistent, because a principal carrying both spellings hits what AWS calls an
+unexpected condition failure.
 
 ### EKS Paved Road Enforcement (`deny_eks_create_cluster_without_tag`)
 

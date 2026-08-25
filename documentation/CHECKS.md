@@ -10,27 +10,77 @@
 
 **How it Works**:
 - Scans all AWS regions for EC2 instances
-- Checks metadata options configuration
+- Reads `MetadataOptions.HttpTokens`; `optional` means IMDSv1 is permitted
 - Identifies instances without IMDSv2 enforcement
+- Resolves each instance's instance profile to its IAM role and reads that
+  role's tags
 
-**Policy Coverage**: Denies EC2 operations that would create instances without IMDSv2 enforcement.
+**Policy Coverage**: Two statements. `DenyRoleDeliveryLessThan2` denies any API
+call made with credentials fetched over IMDSv1.
+`DenyRunInstancesMetadataHttpTokensOptional` denies launching an instance that
+would answer IMDSv1.
 
-**Exemption Support**: Resources tagged with `ExemptFromIMDSv2` (case-insensitive) are excluded from violation reporting.
+**Exemption Support**: Instances whose **IAM role** is tagged
+`ExemptFromIMDSv2 = "true"` are excluded from violation reporting.
+
+The tag is read off the role, not the instance. The SCP exempts through
+`aws:PrincipalTag/ExemptFromIMDSv2`, which reads role tags; no statement in it
+reads instance tags.
+
+The key and the value are matched differently. IAM matches condition key names
+without regard to case, so a role tagged `exemptfromimdsv2` is exempt. The
+value is matched exactly, because `StringNotEquals` is case-sensitive - a role
+tagged `True` is denied. A role carrying the key twice in cases that differ
+aborts the check, because AWS treats that as an unexpected condition failure
+rather than a match, leaving the role's exemption status undetermined.
+
+**What a Clean Scan Proves**: That no instance running today can have its API
+calls denied by `DenyRoleDeliveryLessThan2`. It does not prove that future
+launches will pass `DenyRunInstancesMetadataHttpTokensOptional`, which is
+evaluated against the launch request rather than against any instance the scan
+can see - a launch template the scan never reads can still be denied.
+
+`ec2:MetadataHttpTokens` resolves from the **effective** metadata
+configuration, not only from literal request parameters. Dry runs against a
+live account show an AMI carrying `imds-support=v2.0` populating it as
+`required` even when the request names no `MetadataOptions` at all, so a fleet
+on modern Amazon Linux passes the statement without ever specifying the
+parameter. On an AMI without that attribute the same request is denied.
+Whether an account-level metadata default behaves like the AMI default is
+untested - the probe account had none set - but the AMI result makes it
+likely.
+
+**The metadata endpoint's state does not enter the verdict.** An instance with
+the endpoint disabled and `HttpTokens` optional is a violation, matching
+`deny_ec2_imds_hop_limit`, which counts its hop limit the same way. A disabled
+endpoint does make IMDSv1 unreachable on the running instance, but the SCP
+reads the launch request, where a request turning the endpoint off carries no
+`HttpTokens` and so leaves the key absent for `StringNotEquals` to fire on.
+Remedying it costs nothing: AWS accepts `HttpTokens=required` alongside a
+disabled endpoint - confirmed by dry run, contradicting the EC2 guide - and the
+extra parameter changes no behaviour, because nothing is listening.
+
+**Required Permissions**: `ec2:DescribeInstances`, plus `iam:GetInstanceProfile`
+and `iam:GetRole` to read role tags. A profile or role deleted mid-scan is
+recorded as unresolved; any other IAM failure aborts the check rather than
+reading as an untagged role.
 
 **Output**:
 - List of non-compliant instances (violations)
 - List of exempt instances
 - List of compliant instances
+- The IAM role each instance runs as, or why none was resolved
 - Compliance percentage
 
 **Example Violation**:
 ```json
 {
-  "instance_id": "i-1234567890abcdef0",
   "region": "us-east-1",
-  "metadata_options": {
-    "HttpTokens": "optional"
-  }
+  "instance_id": "i-1234567890abcdef0",
+  "imdsv1_allowed": true,
+  "role_exemption_tag_present": false,
+  "role_arn": "arn:aws:iam::111111111111:role/app-server",
+  "role_unresolved_reason": null
 }
 ```
 
@@ -52,12 +102,15 @@
 
 **Compliance Requirements**:
 - An instance at hop limit 1 is compliant
-- An instance with `HttpEndpoint` disabled is compliant whatever its hop limit, because there is no reachable IMDS for a hop to cross
-- Any other instance with a hop limit above 1 is a violation
+- Any instance above hop limit 1 is a violation, **including one with the metadata endpoint disabled**
+
+The endpoint state is reported but does not affect the verdict. A disabled endpoint does make the hop limit inert on the running instance, but the SCP is evaluated against the launch request, and AWS accepts a launch naming both a hop limit and `HttpEndpoint=disabled` - confirmed by dry run, where `MaxImdsHopLimit` denied exactly that request. Excusing those instances would clear an account whose relaunch the SCP denies. Remediation is free: lowering the hop limit on an instance whose endpoint is off changes no behaviour, because nothing reads it.
 
 **Launch-Time Only**: `ec2:ModifyInstanceMetadataOptions` has no fine-grained condition keys, so this SCP cannot prevent the hop limit being raised after launch. Closing that gap requires denying the action outright or restricting it by `aws:PrincipalArn`, which is a separate policy decision and is not part of this check.
 
-**Container Impact**: Containers add a network hop, so workloads on ECS, EKS, or plain Docker generally need a hop limit of at least 2 to reach IMDS. Expect containerized instances to appear as violations; the placement engine will only recommend enabling the SCP once every account reports full compliance.
+**Expect Widespread Violations**: An AMI carrying `imds-support=v2.0`, which includes current Amazon Linux 2023, supplies a hop limit above 1 to launches that name no `MetadataOptions` at all. A dry run against a live account confirms `MaxImdsHopLimit` denies that default launch. So the violations this check reports are not an edge case - on a modern fleet they are the norm, and a default AL2023 instance is a violation before anyone configures anything.
+
+Containers compound it: they add a network hop, so workloads on ECS, EKS, or plain Docker generally need a hop limit of at least 2 to reach IMDS. The placement engine only recommends enabling the SCP once every account reports full compliance, so in practice this check stays unplaced until a fleet explicitly pins hop limit 1 everywhere. Whether a threshold of 1 is the right policy for a fleet on modern AMIs is a decision for the operator, not something this check assumes.
 
 **Output**:
 - Instance IDs and regions
@@ -199,9 +252,18 @@ Unless `rds:StorageEncrypted` condition key is true.
 - Determines AMI owner for each instance
 - Identifies unique AMI owners across all instances
 
-**Policy Coverage**: Denies `ec2:RunInstances` unless the AMI owner is in the approved allowlist (e.g., "amazon", "aws-marketplace", trusted account IDs).
+**Policy Coverage**: Denies the EC2 launch paths - `ec2:RunInstances`,
+`ec2:CreateFleet`, `ec2:RequestSpotFleet` and `ec2:RequestSpotInstances` - on
+the AMI resource (`arn:aws:ec2:*::image/*`) unless `ec2:Owner` is in the
+approved allowlist (e.g., "amazon", "aws-marketplace", trusted account IDs).
+The statement is scoped to the image because `ec2:Owner` exists on no other
+resource these actions touch. `ec2:ModifyFleet` also supports the key and is
+excluded as a deliberate scope decision.
 
-**Allowlist Support**: Generates comprehensive list of unique AMI owners to inform allowlist configuration.
+**Allowlist Support**: The unique AMI owners observed across the accounts a
+placement covers are unioned into the `ec2_allowed_ami_owners` Terraform
+variable. Generation aborts rather than emitting an empty allowlist, which
+would deny every launch instead of none of them.
 
 **Unresolvable AMIs**: An instance outlives the visibility of the AMI it was
 launched from, so `DescribeImages` does not always return one. The lookup sets
@@ -378,6 +440,20 @@ to unauthenticated access on URLs that already exist.
 - Third-party account IDs from principals
 - Wildcard principals (`*`)
 - Cross-account access patterns
+
+**Action Matching**: A statement counts as granting AssumeRole under the same
+rules IAM applies, not by string equality. Matching is case-insensitive, `*`
+and `?` expand anywhere in the action name (`sts:*`, `sts:Assume*`,
+`sts:*Role`, `sts:AssumeRol?`), and an Allow with `NotAction` grants
+AssumeRole unless one of its patterns covers it. A statement naming both
+`Action` and `NotAction`, or neither, aborts the run rather than being
+guessed at - an unrecognized grant leaves a partner account out of the
+allowlist, and the RCP then denies it.
+
+**Principal Forms**: Account IDs are read from any principal ARN regardless of
+partition or service, so STS session principals
+(`arn:aws:sts::{account}:assumed-role/{role}/{session}`) and GovCloud and
+China ARNs all resolve.
 
 **Allowlisting**: Generates allowlists for RCP modules to permit known third-party access.
 
@@ -661,7 +737,7 @@ to unauthenticated access on URLs that already exist.
 
 ### Some Checks Include
 
-- **Exemption Support**: Tag-based exemptions (EC2 IMDSv1, S3)
+- **Exemption Support**: Tag-based exemptions (EC2 IMDSv1 by role tag, S3)
 - **Allowlist Generation**: Auto-generated allowlists (IAM users, third-party accounts)
 - **Safety Mechanisms**: Prevents breaking existing access patterns (S3 Federated principals)
 - **Wildcard Detection**: Identifies principals requiring CloudTrail analysis

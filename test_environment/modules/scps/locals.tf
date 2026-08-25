@@ -6,11 +6,41 @@ locals {
     # Denies launching EC2 instances unless AMI owner is in allowlist
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
     # Uses ec2:Owner condition key which contains the AMI owner account ID or alias
+    #
+    # The resource is the AMI, not the instance. RunInstances is authorized
+    # against every resource it touches - instance, volume, network interface,
+    # image - and ec2:Owner exists only on the image. Scoped to instance/*, the
+    # key is absent from the request context, StringNotEquals on an absent key
+    # is true, and the Deny matches every launch regardless of AMI.
+    #
+    # StringNotEquals is deliberately not StringNotEqualsIfExists: should AWS
+    # ever stop populating ec2:Owner, denying the launch is the safe direction
+    # for a Deny statement.
+    #
+    # The image ARN has an empty account field: AMIs are region-scoped.
+    #
+    # The actions are launch paths AWS authorizes against the image resource
+    # with ec2:Owner, taken from the machine-readable service reference at
+    # https://servicereference.us-east-1.amazonaws.com/v1/ec2/ec2.json
+    #
+    # ec2:ModifyFleet supports the key too - raising a fleet's target capacity
+    # launches from its launch template's AMI - and is left out as a
+    # deliberate scope decision, not an oversight.
+    #
+    # Absent for a different reason: ec2:RunScheduledInstances,
+    # ec2:ModifySpotFleetRequest and ec2:CreateLaunchTemplateVersion list no
+    # image resource at all, so a statement scoped to image/* never matches
+    # them. Adding them would read as coverage while denying nothing.
     {
       include = var.deny_ec2_ami_owner,
       statement = {
-        Action   = "ec2:RunInstances"
-        Resource = "arn:aws:ec2:*:*:instance/*"
+        Action = [
+          "ec2:CreateFleet",
+          "ec2:RequestSpotFleet",
+          "ec2:RequestSpotInstances",
+          "ec2:RunInstances",
+        ]
+        Resource = "arn:aws:ec2:*::image/*"
         Condition = {
           "StringNotEquals" = {
             "ec2:Owner" = var.ec2_allowed_ami_owners
@@ -24,6 +54,35 @@ locals {
     # Denies launching EC2 instances whose IMDS hop limit exceeds 1
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
     # A hop limit above 1 lets the metadata response cross an extra network hop
+    #
+    # Deliberately NO ec2:MetadataHttpEndpoint clause, matching
+    # DenyRunInstancesMetadataHttpTokensOptional below. Both statements ignore
+    # the endpoint, and both scanners count their key whether the endpoint is
+    # on or off. Adding a clause to either would be a reasonable-looking change
+    # and is not wanted: it would put policy and scan back out of step, in the
+    # direction where the policy is looser than the scan rather than stricter.
+    #
+    # Measured against a live account with RunInstances --dry-run:
+    #
+    #   hop=3, endpoint=enabled                    DENY
+    #   hop=1, endpoint=enabled                    allow
+    #   hop=3, endpoint=disabled                   DENY   <- counted, so the
+    #                                                        scanner counts it
+    #   endpoint=disabled, no hop                  allow  (key absent, and
+    #                                                        NumericGreaterThan
+    #                                                        on an absent key
+    #                                                        is false)
+    #   no MetadataOptions, AMI imds-support=v2.0  DENY   <- the AMI supplies a
+    #                                                        hop limit above 1
+    #   no MetadataOptions, AMI without it         allow
+    #
+    # Two documented claims this disproves. AWS does NOT require HttpEndpoint
+    # enabled when HttpPutResponseHopLimit is specified, whatever the EC2 guide
+    # says about modify-instance-metadata-options; RunInstances accepts the
+    # combination. And a modern AMI defaults above this threshold, so this
+    # statement denies a default Amazon Linux 2023 launch - whether a threshold
+    # of 1 is right for such a fleet is an operator decision, not one this
+    # module makes.
     {
       include = var.deny_ec2_imds_hop_limit,
       statement = {
@@ -39,7 +98,25 @@ locals {
     # var.deny_ec2_imds_v1
     # -->
     # Sid: DenyRoleDeliveryLessThan2
-    # Exempts IAM roles tagged with {"ExemptFromIMDSv2": "true"}
+    # Denies every API call made with credentials fetched over IMDSv1
+    #
+    # ec2:RoleDelivery is a request-context key, not a property of any
+    # resource: it appears on calls made with instance-role credentials and
+    # carries the IMDS version those credentials came from. It belongs to no
+    # EC2 resource in the service reference, which is why this statement is
+    # Action "*" on Resource "*" rather than scoped to instances.
+    #
+    # The exemption is aws:PrincipalTag, so it reads tags on the IAM ROLE the
+    # instance runs as. A tag on the instance exempts nothing here. Headroom's
+    # scanner resolves each instance's instance profile to its role and reads
+    # that role's tags for exactly this reason; see
+    # headroom/aws/iam/instance_profiles.py.
+    #
+    # The key and the value match differently. IAM matches condition key
+    # names without regard to case, and the tag key after the slash is part of
+    # the name, so a role tagged "exemptfromimdsv2" is exempt too.
+    # StringNotEquals compares the value case-sensitively, so only the exact
+    # value "true" exempts and a role tagged "True" is denied.
     {
       include = var.deny_ec2_imds_v1,
       statement = {
@@ -58,7 +135,45 @@ locals {
     # var.deny_ec2_imds_v1
     # -->
     # Sid: DenyRunInstancesMetadataHttpTokensOptional
+    # Denies launching an EC2 instance that would answer IMDSv1
     # Exempts requests tagged with {"ExemptFromIMDSv2": "true"}
+    #
+    # Keys within one operator block are ANDed, so the launch is denied unless
+    # it either requires tokens or carries the exemption tag.
+    #
+    # Deliberately NO ec2:MetadataHttpEndpoint clause, matching MaxImdsHopLimit
+    # above. A launch that turns IMDS off usually names no HttpTokens, so
+    # ec2:MetadataHttpTokens is absent, StringNotEquals on an absent key is
+    # true, and the deny fires - such a launch has to say HttpTokens=required
+    # to get through. That is accepted: AWS does NOT reject HttpTokens
+    # alongside HttpEndpoint=disabled at RunInstances, whatever the EC2 guide
+    # says about modify-instance-metadata-options, and the extra parameter
+    # changes no behaviour because nothing is listening. Requiring it keeps
+    # this statement and its scanner reading one thing, HttpTokens, instead of
+    # two.
+    #
+    # Measured against a live account with RunInstances --dry-run:
+    #
+    #   AMI without imds-support=v2.0 (Amazon Linux 2)
+    #     tokens=required, endpoint=enabled    allow
+    #     tokens=optional, endpoint=enabled    DENY
+    #     endpoint=disabled, no tokens         DENY   <- must set tokens
+    #     no MetadataOptions at all            DENY
+    #
+    #   AMI with imds-support=v2.0 (Amazon Linux 2023)
+    #     every row                            allow, except tokens=optional
+    #
+    # That second block is the surprise: ec2:MetadataHttpTokens resolves from
+    # the EFFECTIVE metadata configuration, not only from literal request
+    # parameters. An AMI carrying imds-support=v2.0 populates it as "required"
+    # even when the request names no MetadataOptions, so a modern-AMI fleet
+    # never reaches this deny. Whether an account-level default does the same
+    # is untested - the probe account had none set - but the AMI result makes
+    # it likely.
+    #
+    # The absent-key direction is deliberate: StringNotEquals rather than the
+    # IfExists form, so a request leaving the key absent with nothing supplying
+    # a default is denied. The AL2 rows above are that case.
     {
       include = var.deny_ec2_imds_v1,
       statement = {
@@ -188,17 +303,17 @@ locals {
         }
       }
     },
-      # Automatic root guardrail
-      # -->
-      # Sid: DenyRootLeaveOrganization
-      # Applies when module target is the root (IDs prefixed with r-)
-      {
-        include = startswith(var.target_id, "r-"),
-        statement = {
-          Action   = "organizations:LeaveOrganization"
-          Resource = "*"
-        }
-      },
+    # Automatic root guardrail
+    # -->
+    # Sid: DenyRootLeaveOrganization
+    # Applies when module target is the root (IDs prefixed with r-)
+    {
+      include = startswith(var.target_id, "r-"),
+      statement = {
+        Action   = "organizations:LeaveOrganization"
+        Resource = "*"
+      }
+    },
   ]
   # Included SCP 1 Deny Statements
   included_scp_1_deny_statements = [

@@ -7,7 +7,10 @@ module "scps_root" {
 
   # EC2
   deny_ec2_ami_owner = true
-  ec2_allowed_ami_owners = []
+  ec2_allowed_ami_owners = [
+    "444444444444",
+    "amazon",
+  ]
   deny_ec2_imds_v1 = false
 
   # EKS
