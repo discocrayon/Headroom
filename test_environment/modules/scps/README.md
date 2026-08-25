@@ -75,14 +75,49 @@ Policy statements are conditionally included using the pattern in `locals.tf`:
 
 When enabled, this policy enforces IMDSv2 (Instance Metadata Service version 2) for EC2 instances through two statements:
 
-1. **DenyRoleDeliveryLessThan2**: Denies all actions when `ec2:RoleDelivery < 2.0`
-2. **DenyRunInstancesMetadataHttpTokensOptional**: Denies `ec2:RunInstances` when `ec2:MetadataHttpTokens != "required"`
+1. **DenyRoleDeliveryLessThan2**: Denies all actions when `ec2:RoleDelivery < 2.0` - that is, any API call made with credentials fetched over IMDSv1
+2. **DenyRunInstancesMetadataHttpTokensOptional**: Denies `ec2:RunInstances` unless the request requires IMDSv2 or disables the metadata endpoint
+
+The two statements gate different things. The first gates calls made by
+instances running now; the second gates future launches. A fleet that passes
+the first can still be denied by the second, because the second reads a request
+parameter rather than the resulting instance.
+
+#### Keeping IMDS-disabled launches possible
+
+The second statement also passes a request that sets
+`ec2:MetadataHttpEndpoint = "disabled"`. A launch that turns IMDS off usually
+names no `HttpTokens` - there is no metadata service left to require a token
+from - so without that clause `ec2:MetadataHttpTokens` is absent, its
+`StringNotEquals` is true, and the deny fires. The policy would forbid the one
+configuration no credential can be stolen from.
+
+This was measured, not inferred: with an AMI that does not set
+`imds-support=v2.0`, a dry-run launch specifying only `HttpEndpoint=disabled`
+is denied without the clause and allowed with it. Note that AWS does *not*
+reject `HttpTokens` alongside a disabled endpoint, despite what the EC2 guide
+says about `ModifyInstanceMetadataOptions`; the clause is needed for the
+ordinary shape that omits `HttpTokens`, not because the explicit shape is
+rejected.
 
 #### Exemptions
 
-Resources can be exempted from IMDSv2 enforcement using the tag `ExemptFromIMDSv2: "true"`:
-- IAM roles: Tag the role with `ExemptFromIMDSv2 = "true"` to exempt all instances using that role
-- EC2 instances: Include `ExemptFromIMDSv2 = "true"` in request tags when launching instances
+Each statement has its own exemption, and they are different dimensions of the
+same tag name. Tagging the **instance** exempts neither.
+
+- **DenyRoleDeliveryLessThan2** exempts on `aws:PrincipalTag/ExemptFromIMDSv2`:
+  tag the **IAM role** with `ExemptFromIMDSv2 = "true"` to exempt every instance
+  running as that role.
+- **DenyRunInstancesMetadataHttpTokensOptional** exempts on
+  `aws:RequestTag/ExemptFromIMDSv2`: include `ExemptFromIMDSv2 = "true"` in the
+  launch request's instance tag specifications.
+
+Both are matched with `StringNotEquals`, which is case-sensitive: only the exact
+value `"true"` exempts, and `"True"` is denied. The tag *key* is the opposite -
+IAM matches condition key names without regard to case, so `exemptfromimdsv2`
+works as well as `ExemptFromIMDSv2`. Do not rely on that; tag one way and stay
+consistent, because a principal carrying both spellings hits what AWS calls an
+unexpected condition failure.
 
 ### EKS Paved Road Enforcement (`deny_eks_create_cluster_without_tag`)
 

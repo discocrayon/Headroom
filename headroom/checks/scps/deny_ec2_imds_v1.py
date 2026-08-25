@@ -19,8 +19,16 @@ class DenyEc2ImdsV1Check(BaseCheck[DenyEc2ImdsV1]):
 
     This check identifies:
     - Instances that have IMDSv1 enabled (potential violations)
-    - Instances that are exempt via ExemptFromIMDSv2 tag
+    - Instances whose IAM role carries the ExemptFromIMDSv2 tag (exemptions),
+      the key matched without regard to case and the value exactly, as IAM
+      matches them
     - Overall compliance status for the account
+
+    The exemption is read off the role the instance runs as, because that is
+    what the SCP's DenyRoleDelivery statement tests. The SCP's other statement
+    exempts a launch request by `aws:RequestTag/ExemptFromIMDSv2`, which no
+    scan of running instances can observe; an account reported clean here is
+    therefore safe from the first statement, not from the second.
     """
 
     def analyze(self, session: Session) -> List[DenyEc2ImdsV1]:
@@ -49,11 +57,13 @@ class DenyEc2ImdsV1Check(BaseCheck[DenyEc2ImdsV1]):
             "region": result.region,
             "instance_id": result.instance_id,
             "imdsv1_allowed": result.imdsv1_allowed,
-            "exemption_tag_present": result.exemption_tag_present,
+            "role_exemption_tag_present": result.role_exemption_tag_present,
+            "role_arn": result.role_arn,
+            "role_unresolved_reason": result.role_unresolved_reason,
         }
 
         if result.imdsv1_allowed:
-            if result.exemption_tag_present:
+            if result.role_exemption_tag_present:
                 return (CheckCategory.EXEMPTION, result_dict)
             else:
                 return (CheckCategory.VIOLATION, result_dict)

@@ -38,3 +38,17 @@ class AmiOwnerUnknownReason(str, Enum):
     # The AMI ID no longer resolves at all, which is what deregistration leaves
     # behind on a long-lived instance.
     DEREGISTERED = "deregistered"
+
+
+class InstanceRoleUnresolvedReason(str, Enum):
+    """Reasons the IAM role behind an EC2 instance cannot be reached."""
+    # The instance runs with no instance profile at all, so it holds no role
+    # credentials and no role tag can exempt it.
+    NO_INSTANCE_PROFILE = "no_instance_profile"
+    # GetInstanceProfile returned NoSuchEntity: the profile was detached or
+    # deleted between describing the instance and resolving its role.
+    PROFILE_NOT_FOUND = "profile_not_found"
+    # The instance profile exists but carries no role.
+    PROFILE_HAS_NO_ROLE = "profile_has_no_role"
+    # GetRole returned NoSuchEntity: the role went away between the two calls.
+    ROLE_NOT_FOUND = "role_not_found"

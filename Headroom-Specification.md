@@ -34,7 +34,7 @@
 - Session management with proper credential handling
 
 ### 3. SCP Compliance Analysis
-- **EC2 IMDS v1 Check:** Multi-region scanning with exemption tag support
+- **EC2 IMDS v1 Check:** Multi-region scanning, with exemptions read from the IAM role each instance runs as
 - **IAM User Creation Check:** Automatic allowlist generation from discovered users
 - **RDS Encryption Check:** Multi-region RDS instance and Aurora cluster encryption analysis
 - **SAML Provider Guardrail:** Blocks custom IAM SAML providers so only a single AWS SSO-managed provider exists per account
@@ -272,7 +272,9 @@ class DenyImdsV1Ec2:
     region: str
     instance_id: str
     imdsv1_allowed: bool                # True if IMDSv1 enabled (violation)
-    exemption_tag_present: bool         # True if ExemptFromIMDSv2 tag exists
+    role_exemption_tag_present: bool    # True if the instance's ROLE is tagged
+    role_arn: Optional[str] = None      # Role whose tags were read
+    role_unresolved_reason: Optional[str] = None   # Set when no role resolved
 
 # aws/iam/users.py
 @dataclass
@@ -497,7 +499,8 @@ _discover_and_register_checks()
 
 ### Deny IMDSv1 (EC2)
 
-**Purpose:** Identify EC2 instances with IMDSv1 enabled (violation) or exempted via tag.
+**Purpose:** Identify EC2 instances with IMDSv1 enabled (violation) or exempted
+by their IAM role's tag.
 
 **Data Model:**
 ```python
@@ -506,8 +509,41 @@ class DenyImdsV1Ec2:
     region: str
     instance_id: str
     imdsv1_allowed: bool                # True = violation
-    exemption_tag_present: bool         # True = exempted
+    role_exemption_tag_present: bool    # True = exempted
+    role_arn: Optional[str] = None      # Role whose tags were read
+    role_unresolved_reason: Optional[str] = None   # Set when no role resolved
 ```
+
+**Exemption Dimension:** The exemption is a property of the IAM role, not of
+the instance. The SCP's `DenyRoleDeliveryLessThan2` statement exempts callers
+through `aws:PrincipalTag/ExemptFromIMDSv2`, which reads tags on the role an
+instance runs as; its `DenyRunInstancesMetadataHttpTokensOptional` statement
+exempts a launch through `aws:RequestTag/ExemptFromIMDSv2`, a property of a
+future request that no scan of running instances can observe. Instance tags
+match neither. A scan that read them reported accounts as violation-free while
+enforcement would have denied every API call those instances made - the
+instances that would break were counted as the evidence the SCP was safe.
+
+**Tag matching:** the key and the value are matched differently, and the scan
+follows both. IAM matches condition key names without regard to case, and the
+tag key after the slash is part of the name, so a role tagged
+`exemptfromimdsv2` is exempt. The value is compared with `StringNotEquals`,
+which is case-sensitive, so a role tagged `True` is not exempt and must not be
+reported exempt by the scan. A role carrying the key twice in cases that differ
+raises: AWS documents that as an unexpected condition failure rather than a
+match on one of them, so guessing which one IAM lands on would invent the
+exemption status of a live workload.
+
+**Resolving the role:** `describe_instances` reports only an instance profile
+ARN, so the role behind it is resolved with `iam:GetInstanceProfile` followed
+by `iam:GetRole`. Tags are taken from `GetRole` rather than from the role
+embedded in the `GetInstanceProfile` response, which declares `Tags` as
+optional and is not promised to carry them. Profiles are global, so each
+distinct profile is resolved once for the whole account across every region.
+A profile or role deleted mid-scan is recorded in `role_unresolved_reason`
+rather than raised; any other IAM failure aborts, because reading AccessDenied
+as an untagged role would turn one permission gap into a fleet of violations
+that look real.
 
 **Analysis Function:**
 ```python
@@ -521,9 +557,12 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
     2. For each region, create EC2 client
     3. Use paginator to describe_instances (handles pagination)
     4. Filter out terminated instances
-    5. Check HttpTokens: "optional" = IMDSv1 allowed
-    6. Check for ExemptFromIMDSv2 tag (case-insensitive)
-    7. Return DenyImdsV1Ec2 for each instance
+    5. IMDSv1 is allowed when HttpEndpoint is "enabled" and HttpTokens is
+       "optional"; either one closed shuts it
+    6. Record the instance profile ARN, if any
+    7. Resolve each distinct instance profile to its role and read that role's
+       tags; exempt only on ExemptFromIMDSv2 with the exact value "true"
+    8. Return DenyImdsV1Ec2 for each instance
     """
 ```
 
@@ -532,7 +571,7 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
 def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, Dict[str, Any]]:
     result_dict = asdict(result)
 
-    if result.imdsv1_allowed and result.exemption_tag_present:
+    if result.imdsv1_allowed and result.role_exemption_tag_present:
         return ("exemption", result_dict)
     elif result.imdsv1_allowed:
         return ("violation", result_dict)
@@ -570,7 +609,7 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
     "compliance_percentage": 100.0
   },
   "violations": [
-    {"region": "us-east-1", "instance_id": "i-xxx", "imdsv1_allowed": true, "exemption_tag_present": false}
+    {"region": "us-east-1", "instance_id": "i-xxx", "imdsv1_allowed": true, "role_exemption_tag_present": false, "role_arn": "arn:aws:iam::111111111111:role/app", "role_unresolved_reason": null}
   ],
   "exemptions": [],
   "compliant_instances": []
@@ -1789,7 +1828,9 @@ locals {
         Action = "ec2:RunInstances"
         Condition = {
           StringNotEquals = {
-            "ec2:MetadataHttpTokens" = "required"
+            "ec2:MetadataHttpTokens"          = "required"
+            "ec2:MetadataHttpEndpoint"        = "disabled"
+            "aws:RequestTag/ExemptFromIMDSv2" = "true"
           }
         }
       }
@@ -2363,10 +2404,12 @@ def get_imds_v1_ec2_analysis(
        b. Use paginator for describe_instances
        c. For each instance:
           - Skip if state is "terminated"
-          - Check MetadataOptions.HttpTokens: "optional" = IMDSv1 allowed
-          - Check for ExemptFromIMDSv2 tag (case-insensitive)
-          - Create DenyImdsV1Ec2 result
-    3. Return all results
+          - IMDSv1 is allowed when MetadataOptions.HttpEndpoint is "enabled"
+            and MetadataOptions.HttpTokens is "optional"
+          - Record the instance profile ARN, if any
+    3. Resolve each distinct instance profile to its role, once per account,
+       and exempt on that role's ExemptFromIMDSv2 tag
+    4. Return all results
 
     Pagination: Handles accounts with many instances
     """
@@ -3104,15 +3147,26 @@ Creates IAM roles with diverse trust policy patterns to test RCP third-party det
 
 **⚠️ Cost Warning:** This directory is **separate** because EC2 instances incur ongoing costs. Instances should only be created during active testing.
 
-**Cost:** ~$0.0174/hour (~$12.54/month) for 3 t2.nano instances.
+**Cost:** ~$0.029/hour (~$20.90/month) for 5 t2.nano instances.
 
 **Test Instances:**
 
-| Instance | Account | IMDS Config | Tags | Expected Result |
-|----------|---------|-------------|------|-----------------|
-| test-imdsv1-enabled | shared-foo-bar | `http_tokens = "optional"` | `Name` only | **Violation** |
-| test-imdsv2-only | acme-co | `http_tokens = "required"` | `Name` only | Compliant |
-| test-imdsv1-exempt | fort-knox | `http_tokens = "optional"` | `Name`, `ExemptFromIMDSv2 = "true"` | **Exemption** |
+| Instance | Account | IMDS Config | Exemption tag | Expected Result |
+|----------|---------|-------------|---------------|-----------------|
+| test-imdsv1-enabled | shared-foo-bar | `http_tokens = "optional"` | none | **Violation** |
+| test-imdsv2-only | acme-co | `http_tokens = "required"` | none | Compliant |
+| test-imdsv1-exempt | fort-knox | `http_tokens = "optional"` | on its IAM **role** | **Exemption** |
+| test-imdsv1-instance-tagged-only | shared-foo-bar | `http_tokens = "optional"` | on the **instance** | **Violation** |
+| test-imds-disabled | acme-co | `http_endpoint = "disabled"` | none | Compliant |
+
+The last two are the regression cases. An instance tag exempts nothing, because
+no statement in the policy reads instance tags. An instance with the metadata
+endpoint disabled must stay launchable: such a launch names no `http_tokens`,
+so `ec2:MetadataHttpTokens` is absent unless the AMI or an account default
+supplies it, and without the `ec2:MetadataHttpEndpoint` clause the deny fires
+on that absent key - the SCP would forbid the one configuration no credential
+can be stolen from. Confirmed by dry run against a live account: denied without
+the clause, allowed with it, on an AMI that does not set `imds-support=v2.0`.
 
 **Separate Directory Structure:**
 ```
@@ -3562,7 +3616,9 @@ headroom_results/
       "region": "us-east-1",
       "instance_id": "i-0028862fcc86a6d7c",
       "imdsv1_allowed": false,
-      "exemption_tag_present": false
+      "role_exemption_tag_present": false,
+      "role_arn": "arn:aws:iam::111111111111:role/app",
+      "role_unresolved_reason": null
     }
   ]
 }
@@ -4000,7 +4056,7 @@ The test environment serves as executable documentation:
 - **Trusted By:** Security analysis account
 - **Permissions:**
   - **EC2:** `ec2:DescribeRegions`, `ec2:DescribeInstances`
-  - **IAM:** `iam:ListUsers`, `iam:ListRoles`, `iam:GetRole`
+  - **IAM:** `iam:ListUsers`, `iam:ListRoles`, `iam:GetRole`, `iam:GetInstanceProfile` (all covered by AWS managed `SecurityAudit`, which grants `iam:Get*` and `iam:List*`)
 - **Purpose:** Execute compliance checks in each account
 - **Reference Implementation:** See `test_environment/modules/headroom_role/` and `test_environment/headroom_roles.tf`
 
