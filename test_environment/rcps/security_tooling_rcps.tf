@@ -8,8 +8,17 @@ module "rcps_security_tooling" {
   # ECR
   deny_ecr_third_party_access = false
 
+  # KMS
+  deny_kms_third_party_access = false
+
   # S3
   deny_s3_third_party_access = false
+
+  # Secrets Manager
+  deny_secrets_manager_third_party_access = false
+
+  # SQS
+  deny_sqs_third_party_access = false
 
   # STS
   deny_sts_third_party_assumerole = true
