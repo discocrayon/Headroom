@@ -363,7 +363,11 @@ def _build_ou_recommendation(
         target_ou_id=target_ou_id,
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
-        reasoning=f"All accounts in OU '{ou_name}' have zero violations - safe to deploy at OU level",
+        reasoning=(
+            f"All {len(affected_accounts)} accounts under OU '{ou_name}', "
+            "including those in its child OUs, have zero violations - safe to "
+            "deploy at OU level"
+        ),
         allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None,
         ec2_allowed_ami_owners=ec2_allowed_ami_owners if ec2_allowed_ami_owners else None
     )

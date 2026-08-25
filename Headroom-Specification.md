@@ -1535,13 +1535,19 @@ def determine_scp_placement(
        b. If NO compliant accounts: return empty list for this check
        c. Try root level:
           - If ALL org accounts are compliant: recommend root
-       d. Try OU level:
-          - For each OU, check if ALL accounts in OU are compliant
-          - Recommend OU-level for OUs where all accounts compliant
+       d. Try OU level, walking the hierarchy from the top down:
+          - An OU is safe when EVERY account in its subtree is compliant -
+            the accounts directly in it and the accounts in its child OUs,
+            because the policy reaches all of them
+          - Recommend OU-level at the highest safe OU and stop descending;
+            its child OUs inherit the policy rather than collecting a second
+            copy of it
+          - An unsafe OU hands the question to its child OUs
        e. Account level:
           - For remaining compliant accounts, recommend account-level
        f. For deny_iam_user_creation check:
-          - Union all IAM user ARNs from affected accounts
+          - Union all IAM user ARNs from affected accounts, which for an
+            OU-level recommendation is the OU's whole subtree
           - Un-redact ARNs (replace "REDACTED" with actual account_id)
           - Attach to allowed_iam_user_arns field
        g. For deny_ec2_ami_owner check:
@@ -1608,10 +1614,13 @@ def determine_rcp_placement(
           - If safe: union ALL third-party IDs from this check's account_third_party_map
           - Affected accounts: ALL accounts in organization
           - Root-level recommendation is the only recommendation returned for this check
-       d. Try OU level (if root not safe):
+       d. Try OU level (if root not safe), walking from the top down:
           - For each OU:
-            - Check: NO accounts in OU are in this check's accounts_with_blockers
-            - If safe: union third-party IDs from this check's account_third_party_map for accounts in the OU
+            - Check: NO account in the OU's SUBTREE - the OU and every OU
+              below it - is in this check's accounts_with_blockers
+            - If safe: union third-party IDs from this check's
+              account_third_party_map for every account in that subtree, and
+              stop descending; the child OUs inherit the policy
             - Single-account OUs: Still get OU-level recommendations
        e. Account level:
           - Every account still in this check's account_third_party_map after OU-level coverage gets its own account-level recommendation
@@ -1651,20 +1660,29 @@ def generate_terraform_org_info(
 
     Algorithm:
     1. Call analyze_organization_structure() to get OrganizationHierarchy
-    2. Generate data sources:
+    2. Name every OU for its path down from the root ({ou_path} below), so
+       two OUs sharing a name under different parents stay apart. Colliding
+       or reserved names abort the run.
+    3. Generate data sources:
        - aws_organizations_organization for root
-       - aws_organizations_organizational_units for each level
-       - aws_organizations_organizational_unit_child_accounts for each OU
-    3. Generate locals with validation:
+       - aws_organizations_organizational_units for the root's children, and
+         one per OU that has child OUs, parented by that OU's own ID local -
+         this chain is what resolves an OU at any depth
+       - aws_organizations_organizational_unit_child_accounts for each OU that
+         holds accounts, parented by that OU's own ID local
+    4. Generate locals with validation:
        - validation_check_root: ensure exactly 1 root
        - root_ou_id: data.aws_organizations_organization.org.roots[0].id
-       - For each OU:
-         - validation_check_{ou_name}_ou: ensure exactly 1 match
-         - top_level_{ou_name}_ou_id: filtered OU ID
+       - For each OU, at every depth:
+         - validation_check_{ou_path}_ou: ensure exactly 1 match
+         - {ou_path}_ou_id: filtered OU ID
        - For each account:
          - validation_check_{account_name}_account: ensure exactly 1 match
-         - {account_name}_account_id: filtered account ID
-    4. Write to {scps_dir}/grab_org_info.tf
+         - {account_name}_account_id: filtered account ID, searched in the
+           account's OWN parent OU. The child-accounts data source lists an
+           OU's immediate children only, so searching the top-level OU above
+           a nested account finds nothing.
+    5. Write to {scps_dir}/grab_org_info.tf
 
     Validation Pattern:
     validation_check = (length(filter_result) == 1) ?
@@ -1684,10 +1702,17 @@ data "aws_organizations_organizational_units" "root_ou" {
 }
 
 data "aws_organizations_organizational_unit_child_accounts" "production_accounts" {
-  parent_id = [
-    for ou in data.aws_organizations_organizational_units.root_ou.children :
-    ou.id if ou.name == "Production"
-  ][0]
+  parent_id = local.production_ou_id
+}
+
+# Emitted because Production has child OUs; this is what lets a nested OU be
+# resolved without hardcoding its ID.
+data "aws_organizations_organizational_units" "production_children" {
+  parent_id = local.production_ou_id
+}
+
+data "aws_organizations_organizational_unit_child_accounts" "production_payments_accounts" {
+  parent_id = local.production_payments_ou_id
 }
 
 locals {
@@ -1702,9 +1727,15 @@ locals {
   validation_check_production_ou = (length([for ou in ... if ou.name == "Production"]) == 1) ?
     "All good." : error("[Error] Expected 1 Production OU")
 
-  top_level_production_ou_id = [
+  production_ou_id = [
     for ou in data.aws_organizations_organizational_units.root_ou.children :
     ou.id if ou.name == "Production"
+  ][0]
+
+  # A nested OU is found among its own parent's children
+  production_payments_ou_id = [
+    for ou in data.aws_organizations_organizational_units.production_children.children :
+    ou.id if ou.name == "Payments"
   ][0]
 
   # Accounts
@@ -1713,6 +1744,12 @@ locals {
   prod_account_account_id = [
     for account in data...production_accounts.accounts :
     account.id if account.name == "prod-account"
+  ][0]
+
+  # A nested account is found in its own OU, not the top-level OU above it
+  payments_core_account_id = [
+    for account in data...production_payments_accounts.accounts :
+    account.id if account.name == "payments-core"
   ][0]
 }
 ```
@@ -1737,7 +1774,7 @@ def generate_scp_terraform(
     2. Group by recommended_level (root/ou/account)
     3. For each group, generate Terraform file:
        - Root: root_scps.tf
-       - OU: {ou_name}_ou_scps.tf
+       - OU: {ou_path}_ou_scps.tf
        - Account: {account_name}_scps.tf
     4. For each file:
        - Generate module call with target_id reference
@@ -1867,7 +1904,7 @@ def generate_rcp_terraform(
     1. Group by recommended_level (root/ou/account)
     2. For each group, generate Terraform file:
        - Root: root_rcps.tf
-       - OU: {ou_name}_ou_rcps.tf
+       - OU: {ou_path}_ou_rcps.tf
        - Account: {account_name}_rcps.tf
     3. For each file:
        - Generate module call with target_id reference
@@ -2725,7 +2762,7 @@ class OutputHandler:
 - An account is excluded from a check's RCP generation whenever that check's own violations count is nonzero; each check defines what counts as a violation for its own resource type (see `documentation/CHECKS.md`)
 - Static analysis cannot always determine the actual principals a resource policy would grant access to
 - Placement runs once per check, each against only that check's own blocked accounts, so a blocker for one RCP (e.g. S3) never suppresses placement for another (e.g. STS)
-- Avoids OU-level RCP for a check if ANY account in that OU is blocked for that check
+- Avoids OU-level RCP for a check if ANY account beneath that OU is blocked for that check, including accounts inside its child OUs, because the policy reaches them too
 - Avoids root-level RCP for a check if ANY account in the organization is blocked for that check
 
 **Union Strategy:**
@@ -2863,11 +2900,13 @@ test_environment/
 ├── scps/                                # Generated SCP Terraform
 │   ├── grab_org_info.tf                 # Auto-generated org data sources
 │   ├── root_scps.tf                     # Root-level SCPs
-│   ├── {ou_name}_ou_scps.tf            # OU-level SCPs
+│   ├── {ou_path}_ou_scps.tf            # OU-level SCPs, named for the OU's
+│   │                                   # path from the root (production,
+│   │                                   # production_payments, ...)
 │   └── {account_name}_scps.tf          # Account-level SCPs
 ├── rcps/                                # Generated RCP Terraform
 │   ├── grab_org_info.tf                 # Auto-generated org data sources
-│   ├── {ou_name}_ou_rcps.tf            # OU-level RCPs
+│   ├── {ou_path}_ou_rcps.tf            # OU-level RCPs
 │   └── {account_name}_rcps.tf          # Account-level RCPs
 ├── headroom_results/                    # JSON analysis results
 │   ├── scps/
@@ -3374,10 +3413,7 @@ data "aws_organizations_organizational_units" "root_ou" {
 }
 
 data "aws_organizations_organizational_unit_child_accounts" "high_value_assets_accounts" {
-  parent_id = [
-    for ou in data.aws_organizations_organizational_units.root_ou.children :
-    ou.id if ou.name == "high_value_assets"
-  ][0]
+  parent_id = local.high_value_assets_ou_id
 }
 
 locals {
@@ -3394,7 +3430,7 @@ locals {
     ou.id if ou.name == "high_value_assets"
   ]) == 1) ? "All good." : error("[Error] Expected 1 high_value_assets OU")
 
-  top_level_high_value_assets_ou_id = [
+  high_value_assets_ou_id = [
     for ou in data.aws_organizations_organizational_units.root_ou.children :
     ou.id if ou.name == "high_value_assets"
   ][0]
@@ -3443,7 +3479,7 @@ module "scps_root" {
 
 **Note:** `deny_ec2_imds_v1 = false` because EC2 test instances create violations. In real environment with 100% compliance, this would be `true`.
 
-**`{ou_name}_ou_scps.tf`**
+**`{ou_path}_ou_scps.tf`**
 
 Example of OU-level SCP deployment.
 
@@ -3453,7 +3489,7 @@ Example of OU-level SCP deployment.
 
 module "scps_high_value_assets_ou" {
   source = "../modules/scps"
-  target_id = local.top_level_high_value_assets_ou_id
+  target_id = local.high_value_assets_ou_id
 
   # EC2
   deny_ec2_imds_v1 = true
@@ -3489,7 +3525,7 @@ module "scps_fort_knox" {
 
 Identical structure to `scps/grab_org_info.tf` (Organization data sources with validation).
 
-**`{ou_name}_ou_rcps.tf`**
+**`{ou_path}_ou_rcps.tf`**
 
 Example of OU-level RCP deployment (union of third-party accounts).
 
@@ -3499,7 +3535,7 @@ Example of OU-level RCP deployment (union of third-party accounts).
 
 module "rcps_acme_acquisition_ou" {
   source = "../modules/rcps"
-  target_id = local.top_level_acme_acquisition_ou_id
+  target_id = local.acme_acquisition_ou_id
 
   # ECR
   deny_ecr_third_party_access = false

@@ -3,7 +3,7 @@
 
 module "scps_acme_acquisition_ou" {
   source = "../modules/scps"
-  target_id = local.top_level_acme_acquisition_ou_id
+  target_id = local.acme_acquisition_ou_id
 
   # EC2
   deny_ec2_ami_owner = false

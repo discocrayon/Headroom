@@ -3,7 +3,7 @@
 
 module "scps_high_value_assets_ou" {
   source = "../modules/scps"
-  target_id = local.top_level_high_value_assets_ou_id
+  target_id = local.high_value_assets_ou_id
 
   # EC2
   deny_ec2_ami_owner = false

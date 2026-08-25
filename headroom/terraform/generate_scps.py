@@ -10,7 +10,13 @@ from pathlib import Path
 from typing import List
 
 from .models import TerraformModule, TerraformParameter, TerraformComment, TerraformElement
-from .utils import make_safe_variable_name, write_terraform_file
+from .utils import (
+    make_ou_base_names,
+    make_safe_variable_name,
+    ou_id_local_name,
+    ou_path_names,
+    write_terraform_file,
+)
 from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlacementRecommendations
 
 # Set up logging
@@ -306,17 +312,24 @@ def _generate_ou_scp_terraform(
     if not ou_info:
         raise RuntimeError(f"OU {ou_id} not found in organization hierarchy")
 
-    # Convert OU name to terraform-friendly format
-    ou_name = make_safe_variable_name(ou_info.name)
-    filename = f"{ou_name}_ou_scps.tf"
+    # An OU is named for its path from the root, so a nested OU targets the
+    # local grab_org_info.tf declares for it and two OUs sharing a name in
+    # different branches cannot write to the same file.
+    base_name = make_ou_base_names(
+        organization_hierarchy.organizational_units
+    )[ou_id]
+    path_label = " / ".join(
+        ou_path_names(ou_id, organization_hierarchy.organizational_units)
+    )
+    filename = f"{base_name}_ou_scps.tf"
     filepath = output_path / filename
 
     # Generate Terraform content
     terraform_content = _build_scp_terraform_module(
-        module_name=f"scps_{ou_name}_ou",
-        target_id_reference=f"local.top_level_{ou_name}_ou_id",
+        module_name=f"scps_{base_name}_ou",
+        target_id_reference=f"local.{ou_id_local_name(base_name)}",
         recommendations=ou_recs,
-        comment=f"OU {ou_info.name}",
+        comment=f"OU {path_label}",
         organization_hierarchy=organization_hierarchy
     )
 
