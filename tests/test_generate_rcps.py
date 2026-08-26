@@ -1601,7 +1601,7 @@ class TestGenerateRcpTerraform:
 
         content = ou_file.read_text()
         assert "module \"rcps_production_ou\"" in content
-        assert "local.top_level_production_ou_id" in content
+        assert "local.production_ou_id" in content
         assert "999999999999" in content
         assert "deny_sts_third_party_assumerole = true" in content
 
@@ -2184,7 +2184,7 @@ class TestGenerateOuRcpTerraform:
         assert expected_file.exists()
         content = expected_file.read_text()
         assert "rcps_test_ou_ou" in content
-        assert "local.top_level_test_ou_ou_id" in content
+        assert "local.test_ou_ou_id" in content
         assert '"999999999999"' in content
         expected_file.unlink()
         output_path.rmdir()
