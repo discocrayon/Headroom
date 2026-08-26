@@ -662,7 +662,8 @@ class TestSCPPlacementDetermination:
         assert result[0].recommended_level == "ou"
         assert result[0].target_ou_id == "ou-1234"
         assert result[0].compliance_percentage == 100.0
-        assert "All accounts in OU 'Production' have zero violations" in result[0].reasoning
+        assert "under OU 'Production'" in result[0].reasoning
+        assert "including those in its child OUs" in result[0].reasoning
 
     def test_determine_scp_placement_account_level(self) -> None:
         """Test recommendation for account level deployment."""
@@ -1210,7 +1211,7 @@ class TestGenerateSCPTerraform:
                 assert "Production" in content
                 assert "deny_ec2_imds_v1" in content
                 assert "deny_ec2_imds_v1 = true" in content
-                assert "local.top_level_production_ou_id" in content
+                assert "local.production_ou_id" in content
 
     def test_generate_scp_terraform_root_level(self) -> None:
         """Test generating Terraform files for root-level SCP recommendations."""

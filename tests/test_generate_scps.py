@@ -465,7 +465,7 @@ def test_generate_ou_scp_terraform_creates_file_with_correct_name() -> None:
     assert expected_file.exists()
     content = expected_file.read_text()
     assert "scps_test_ou_ou" in content
-    assert "local.top_level_test_ou_ou_id" in content
+    assert "local.test_ou_ou_id" in content
     assert "deny_ec2_imds_v1 = true" in content
     assert "deny_iam_saml_provider_not_aws_sso = false" in content
     expected_file.unlink()

@@ -3,7 +3,7 @@
 
 module "rcps_acme_acquisition_ou" {
   source = "../modules/rcps"
-  target_id = local.top_level_acme_acquisition_ou_id
+  target_id = local.acme_acquisition_ou_id
 
   # ECR
   deny_ecr_third_party_access = false

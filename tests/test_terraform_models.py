@@ -258,7 +258,7 @@ module "scps_root" {
         module = TerraformModule(
             name="scps_security_tooling_ou",
             source="../modules/scps",
-            target_id="local.top_level_security_tooling_ou_id",
+            target_id="local.security_tooling_ou_id",
             parameters=[
                 TerraformParameter("deny_ec2_ami_owner", True),
                 TerraformParameter("ec2_allowed_ami_owners", ["111111111111"]),
@@ -275,7 +275,7 @@ module "scps_root" {
 
         assert 'module "scps_security_tooling_ou" {' in result
         assert 'source = "../modules/scps"' in result
-        assert "target_id = local.top_level_security_tooling_ou_id" in result
+        assert "target_id = local.security_tooling_ou_id" in result
         assert "deny_ec2_ami_owner = true" in result
         assert '"111111111111"' in result
         assert "deny_ec2_imds_v1 = false" in result
