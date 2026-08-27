@@ -129,7 +129,7 @@ See [full examples](documentation/EXAMPLES.md).
 ## Features
 
 ### SCP Checks
-- **EC2 IMDSv1**: Enforce IMDSv2 on all instances (exempt an instance by tagging the IAM role it runs as)
+- **EC2 IMDSv1**: Require IMDSv2 on newly launched instances (launches only; exempt one by tagging the instance `ExemptFromIMDSv2=true`)
 - **EC2 AMI Owner**: Restrict AMI usage to approved owners
 - **EC2 Public IP**: Block public IP allocation on instances
 - **EC2 IMDS Hop Limit**: Block instance launches with an IMDS hop limit above 1
