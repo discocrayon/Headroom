@@ -137,7 +137,7 @@ This document categorizes the different patterns of Service Control Policies (SC
 **Philosophy:** This IS an exception mechanism. Exception tags acknowledge that a resource is non-standard and requires special handling.
 
 **Examples:**
-- Allow IMDSv1 for legacy workloads whose IAM role is tagged `ExemptFromIMDSv2=true`
+- Allow a launch to answer IMDSv1 when the `RunInstances` request is tagged `ExemptFromIMDSv2=true` (visible afterwards as the instance's own tag)
 - Allow specific security group rules for resources tagged `NetworkExemption=legacy-app`
 
 **Implementation Example (from `deny_ec2_imds_v1`):**
@@ -145,22 +145,20 @@ This document categorizes the different patterns of Service Control Policies (SC
 ```json
 {
   "Effect": "Deny",
-  "Action": "*",
-  "Resource": "*",
+  "Action": "ec2:RunInstances",
+  "Resource": "arn:aws:ec2:*:*:instance/*",
   "Condition": {
-    "NumericLessThan": {
-      "ec2:RoleDelivery": "2.0"
-    },
     "StringNotEquals": {
-      "aws:PrincipalTag/ExemptFromIMDSv2": "true"
+      "ec2:MetadataHttpTokens": "required",
+      "aws:RequestTag/ExemptFromIMDSv2": "true"
     }
   }
 }
 ```
 
 **Codebase Reference:** `test_environment/modules/scps/locals.tf`, the
-`DenyRoleDeliveryLessThan2` and `DenyRunInstancesMetadataHttpTokensOptional`
-statements. Referenced by Sid rather than by line number, which goes stale.
+`DenyRunInstancesMetadataHttpTokensOptional` statement. Referenced by Sid
+rather than by line number, which goes stale.
 
 **Characteristics:**
 - Reactive exemption for specific resources
@@ -169,11 +167,27 @@ statements. Referenced by Sid rather than by line number, which goes stale.
 - Provides clear trail of what's been exempted and why
 
 **The tag name is not the exemption; the condition key is.** The same
-`ExemptFromIMDSv2` name reads a role tag under `aws:PrincipalTag`, a launch
-request's tag under `aws:RequestTag`, and nothing at all on the instance
+`ExemptFromIMDSv2` name reads a launch request's tag under `aws:RequestTag`, a
+role's tag under `aws:PrincipalTag`, and nothing at all on the instance
 itself. A scanner that decides deployability has to check the dimension the
-statement reads, or it clears an account whose instances enforcement will
+statement reads, or it clears an account whose launches enforcement will
 break. See AP-009 in `HOW_TO_ADD_A_CHECK.md`.
+
+**An exemption on a key the scan cannot read needs a proxy, chosen on
+purpose.** This one lives on a `RunInstances` request in flight, which no scan
+observes. `deny_ec2_imds_v1` reads the *instance's* tag instead, because the
+`TagSpecifications` entry that supplies the request tag is what puts the tag
+on the instance - so the tag on a running instance is the trace of the
+exemption that let it launch, and evidence its relaunch will be exempt too.
+
+A proxy is a judgement, not a lookup, and it must be argued rather than
+assumed. This one is wrong when a tag was applied after launch with
+`CreateTags`, or when the thing that recreates the instance does not declare
+the tag; both leave a tagged instance whose relaunch enforcement denies. That
+is accepted here as the cost of honouring a declared exemption. What is not
+acceptable is reaching for a same-named tag on a *different* condition key -
+`aws:PrincipalTag` is not `aws:RequestTag`, and substituting one for the other
+is AP-009, not a proxy.
 
 ---
 

@@ -97,49 +97,28 @@ locals {
     },
     # var.deny_ec2_imds_v1
     # -->
-    # Sid: DenyRoleDeliveryLessThan2
-    # Denies every API call made with credentials fetched over IMDSv1
-    #
-    # ec2:RoleDelivery is a request-context key, not a property of any
-    # resource: it appears on calls made with instance-role credentials and
-    # carries the IMDS version those credentials came from. It belongs to no
-    # EC2 resource in the service reference, which is why this statement is
-    # Action "*" on Resource "*" rather than scoped to instances.
-    #
-    # The exemption is aws:PrincipalTag, so it reads tags on the IAM ROLE the
-    # instance runs as. A tag on the instance exempts nothing here. Headroom's
-    # scanner resolves each instance's instance profile to its role and reads
-    # that role's tags for exactly this reason; see
-    # headroom/aws/iam/instance_profiles.py.
-    #
-    # The key and the value match differently. IAM matches condition key
-    # names without regard to case, and the tag key after the slash is part of
-    # the name, so a role tagged "exemptfromimdsv2" is exempt too.
-    # StringNotEquals compares the value case-sensitively, so only the exact
-    # value "true" exempts and a role tagged "True" is denied.
-    {
-      include = var.deny_ec2_imds_v1,
-      statement = {
-        Action   = "*"
-        Resource = "*"
-        Condition = {
-          "NumericLessThan" = {
-            "ec2:RoleDelivery" = "2.0"
-          },
-          "StringNotEquals" = {
-            "aws:PrincipalTag/ExemptFromIMDSv2" = "true"
-          }
-        }
-      }
-    },
-    # var.deny_ec2_imds_v1
-    # -->
     # Sid: DenyRunInstancesMetadataHttpTokensOptional
     # Denies launching an EC2 instance that would answer IMDSv1
     # Exempts requests tagged with {"ExemptFromIMDSv2": "true"}
     #
     # Keys within one operator block are ANDed, so the launch is denied unless
     # it either requires tokens or carries the exemption tag.
+    #
+    # This is the whole of var.deny_ec2_imds_v1. It governs launches and
+    # nothing else: an instance already running with IMDSv1 available is
+    # outside what this variable denies, and stays reachable over IMDSv1 for
+    # as long as it lives. That is a scope decision, not a gap - such
+    # instances are expected to be migrated, and the SCP's job is to stop new
+    # ones appearing while that happens.
+    #
+    # A DenyRoleDeliveryLessThan2 statement used to sit above this one, on the
+    # same variable, denying every API call made with credentials fetched over
+    # IMDSv1 and exempting by aws:PrincipalTag/ExemptFromIMDSv2 on the calling
+    # role. It was removed rather than split. One variable gating two
+    # statements meant one scan verdict licensing two different pieces of
+    # evidence, and a role-tagged IMDSv1 instance was reported as a clean
+    # exemption while this statement - which reads no role tag - would have
+    # denied that account's next launch.
     #
     # Deliberately NO ec2:MetadataHttpEndpoint clause, matching MaxImdsHopLimit
     # above. A launch that turns IMDS off usually names no HttpTokens, so

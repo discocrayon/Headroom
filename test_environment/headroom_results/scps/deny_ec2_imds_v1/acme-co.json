@@ -13,7 +13,7 @@
   "compliant_instances": [
     {
       "region": "us-east-1",
-      "instance_id": "i-0028862fcc86a6d7c",
+      "instance_id": "i-fake0acmeco000001",
       "imdsv1_allowed": false,
       "exemption_tag_present": false
     }

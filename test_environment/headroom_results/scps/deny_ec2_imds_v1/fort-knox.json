@@ -12,7 +12,7 @@
   "exemptions": [
     {
       "region": "us-east-1",
-      "instance_id": "i-07d2eca5020b44842",
+      "instance_id": "i-fake0fortknox00001",
       "imdsv1_allowed": true,
       "exemption_tag_present": true
     }

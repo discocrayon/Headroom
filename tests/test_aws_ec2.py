@@ -32,27 +32,12 @@ class TestDenyEc2ImdsV1:
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
-            role_exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         assert result.region == "us-east-1"
         assert result.instance_id == "i-1234567890abcdef0"
         assert result.imdsv1_allowed is True
-        assert result.role_exemption_tag_present is False
-
-    def test_deny_ec2_imds_v1_with_exemption(self) -> None:
-        """Test DenyEc2ImdsV1 with exemption tag present."""
-        result = DenyEc2ImdsV1(
-            region="us-west-2",
-            instance_id="i-0987654321fedcba0",
-            imdsv1_allowed=True,
-            role_exemption_tag_present=True
-        )
-
-        assert result.region == "us-west-2"
-        assert result.instance_id == "i-0987654321fedcba0"
-        assert result.imdsv1_allowed is True
-        assert result.role_exemption_tag_present is True
 
     def test_deny_ec2_imds_v1_imdsv2_enforced(self) -> None:
         """Test DenyEc2ImdsV1 with IMDSv2 enforced."""
@@ -60,13 +45,28 @@ class TestDenyEc2ImdsV1:
             region="eu-west-1",
             instance_id="i-abcdef1234567890",
             imdsv1_allowed=False,
-            role_exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         assert result.region == "eu-west-1"
         assert result.instance_id == "i-abcdef1234567890"
         assert result.imdsv1_allowed is False
-        assert result.role_exemption_tag_present is False
+
+    def test_deny_ec2_imds_v1_carries_nothing_about_roles(self) -> None:
+        """
+        The model holds what the surviving statement reads, and no more.
+
+        The exemption is the INSTANCE's tag, standing in for the launch
+        request's. `aws:PrincipalTag` belonged to `DenyRoleDeliveryLessThan2`,
+        which this module no longer generates, so a role field here would
+        invite an exemption branch enforcement does not honour.
+        """
+        assert set(DenyEc2ImdsV1.__dataclass_fields__) == {
+            "region",
+            "instance_id",
+            "imdsv1_allowed",
+            "exemption_tag_present",
+        }
 
     def test_deny_ec2_imds_v1_equality(self) -> None:
         """Test DenyEc2ImdsV1 equality comparison."""
@@ -74,21 +74,21 @@ class TestDenyEc2ImdsV1:
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
-            role_exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         result2 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
-            role_exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         result3 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-different",
             imdsv1_allowed=True,
-            role_exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         assert result1 == result2
@@ -100,7 +100,7 @@ class TestDenyEc2ImdsV1:
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
-            role_exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         repr_str = repr(result)
@@ -237,27 +237,22 @@ class TestGetImdsV1Ec2Analysis:
         assert results[0].region == "us-east-1"
         assert results[0].instance_id == "i-1234567890abcdef0"
         assert results[0].imdsv1_allowed is True
-        assert results[0].role_exemption_tag_present is False
 
-        # Check second instance (IMDSv2 required; its instance tag is the
-        # wrong dimension and does not exempt)
+        # Check second instance (IMDSv2 required)
         assert results[1].region == "us-east-1"
         assert results[1].instance_id == "i-0987654321fedcba0"
         assert results[1].imdsv1_allowed is False
-        assert results[1].role_exemption_tag_present is False
 
         # Check third instance (endpoint disabled, but tokens still optional,
         # which the SCP counts and so does this check)
         assert results[2].region == "us-west-2"
         assert results[2].instance_id == "i-abcdef1234567890"
         assert results[2].imdsv1_allowed is True
-        assert results[2].role_exemption_tag_present is False
 
         # Check fourth instance (fallback region, IMDSv2 required)
         assert results[3].region == "eu-west-1"
         assert results[3].instance_id == "i-fallback123456789"
         assert results[3].imdsv1_allowed is False
-        assert results[3].role_exemption_tag_present is False
 
     def test_get_ec2_imds_v1_analysis_no_regions_raises_error(self) -> None:
         """Test that describe_regions failure raises ClientError."""
@@ -382,17 +377,17 @@ class TestGetImdsV1Ec2Analysis:
         with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances in region us-west-2"):
             get_ec2_imds_v1_analysis(mock_session)
 
-    def test_instance_tags_never_exempt_whatever_their_case(self) -> None:
+    def test_no_tag_of_any_kind_spares_an_imdsv1_instance(self) -> None:
         """
-        The tag on the instance is not the tag the SCP reads.
+        Nothing observable exempts, so an ExemptFromIMDSv2 tag changes nothing.
 
-        This test replaces one that pinned the opposite: it asserted the
-        instance tag exempted, and accepted "TRUE" and "True" as well as
-        "true". Both halves were wrong. The SCP exempts on
-        `aws:PrincipalTag/ExemptFromIMDSv2`, so instance tags are the wrong
-        dimension entirely, and it tests that key with StringNotEquals, which
-        is case-sensitive, so only the exact value would have exempted even on
-        the right dimension. TestImdsV1RoleExemption covers the role tag.
+        The surviving statement,
+        `DenyRunInstancesMetadataHttpTokensOptional`, exempts a launch through
+        `aws:RequestTag/ExemptFromIMDSv2` - a property of a request in flight.
+        No tag on any instance, and no tag on any role, is that key. This test
+        guards the path back: two earlier revisions honoured a tag here, first
+        the instance's and then the role behind it, and each cleared accounts
+        whose next launch this statement denies.
         """
         mock_session = MagicMock()
 
@@ -431,8 +426,9 @@ class TestGetImdsV1Ec2Analysis:
 
         results = get_ec2_imds_v1_analysis(mock_session)
 
+        # Every one of them answers IMDSv1, tag or no tag.
         assert len(results) == 4
-        assert not any(r.role_exemption_tag_present for r in results)
+        assert all(r.imdsv1_allowed for r in results)
 
     def test_get_ec2_imds_v1_analysis_no_instances(self) -> None:
         """Test function with no instances in any region."""
@@ -1619,262 +1615,6 @@ class TestGetEc2ImdsHopLimitAnalysis:
             get_ec2_imds_hop_limit_analysis(mock_session)
 
 
-class TestImdsV1RoleExemption:
-    """
-    Exemption is read off the instance's IAM role, not the instance.
-
-    The deny_ec2_imds_v1 SCP's DenyRoleDelivery statement exempts callers with
-    `aws:PrincipalTag/ExemptFromIMDSv2`, a tag on the role the instance runs
-    as. Reading the instance's own tags instead reported accounts as having
-    zero violations while enforcement would deny every API call those
-    instances made - the scan named the instances that would break as the
-    evidence the SCP was safe to attach.
-    """
-
-    PROFILE_ARN = "arn:aws:iam::111111111111:instance-profile/app"
-    ROLE_ARN = "arn:aws:iam::111111111111:role/app-role"
-
-    def _session(
-        self,
-        instances_by_region: Dict[str, List[dict]],
-        iam_client: Optional[MagicMock] = None,
-    ) -> MagicMock:
-        """Build a session whose regional EC2 clients return the given instances."""
-        session = MagicMock()
-
-        global_ec2 = MagicMock()
-        global_ec2.describe_regions.return_value = {
-            "Regions": [{"RegionName": r} for r in instances_by_region]
-        }
-
-        regional: Dict[str, MagicMock] = {}
-        for region, instances in instances_by_region.items():
-            client = MagicMock()
-            paginator = MagicMock()
-            paginator.paginate.return_value = [
-                {"Reservations": [{"Instances": instances}]}
-            ]
-            client.get_paginator.return_value = paginator
-            regional[region] = client
-
-        def client_side_effect(
-            service: str, region_name: Optional[str] = None
-        ) -> MagicMock:
-            if service == "iam":
-                assert iam_client is not None, "IAM client was not expected"
-                return iam_client
-            if region_name is None:
-                return global_ec2
-            return regional[region_name]
-
-        session.client.side_effect = client_side_effect
-        return session
-
-    def _instance(
-        self,
-        instance_id: str,
-        http_tokens: str = "optional",
-        profile_arn: Optional[str] = None,
-        tags: Optional[List[dict]] = None,
-    ) -> dict:
-        """Build one describe_instances instance entry."""
-        instance: Dict[str, Any] = {
-            "InstanceId": instance_id,
-            "State": {"Name": "running"},
-            "MetadataOptions": {
-                "HttpTokens": http_tokens,
-                "HttpEndpoint": "enabled",
-            },
-            "Tags": tags or [],
-        }
-        if profile_arn:
-            instance["IamInstanceProfile"] = {"Arn": profile_arn}
-        return instance
-
-    def _iam(self, role_tags: List[dict]) -> MagicMock:
-        """Build an IAM client resolving one profile to a role with these tags."""
-        iam = MagicMock()
-        iam.get_instance_profile.return_value = {
-            "InstanceProfile": {"Roles": [{"RoleName": "app-role"}]}
-        }
-        iam.get_role.return_value = {
-            "Role": {"Arn": self.ROLE_ARN, "Tags": role_tags}
-        }
-        return iam
-
-    def test_role_tagged_exempt_is_exempt(self) -> None:
-        """A role tagged ExemptFromIMDSv2=true exempts the instances using it."""
-        session = self._session(
-            {"us-east-1": [self._instance("i-aaa", profile_arn=self.PROFILE_ARN)]},
-            self._iam([{"Key": "ExemptFromIMDSv2", "Value": "true"}]),
-        )
-
-        results = get_ec2_imds_v1_analysis(session)
-
-        assert results[0].imdsv1_allowed is True
-        assert results[0].role_exemption_tag_present is True
-        assert results[0].role_arn == self.ROLE_ARN
-        assert results[0].role_unresolved_reason is None
-
-    def test_instance_tag_does_not_exempt(self) -> None:
-        """
-        The tag on the instance is the wrong dimension.
-
-        No statement in the deny_ec2_imds_v1 SCP reads instance tags, so an
-        instance tagged exempt whose role is not tagged is a violation.
-        """
-        session = self._session(
-            {"us-east-1": [self._instance(
-                "i-aaa",
-                profile_arn=self.PROFILE_ARN,
-                tags=[{"Key": "ExemptFromIMDSv2", "Value": "true"}],
-            )]},
-            self._iam([]),
-        )
-
-        results = get_ec2_imds_v1_analysis(session)
-
-        assert results[0].role_exemption_tag_present is False
-        assert results[0].role_arn == self.ROLE_ARN
-
-    @pytest.mark.parametrize("value", ["True", "TRUE", "tRuE"])
-    def test_exemption_tag_value_is_case_sensitive(self, value: str) -> None:
-        """
-        StringNotEquals is case-sensitive, so only the exact value exempts.
-
-        Accepting "True" here would report an account clean while enforcement
-        denied every call its instances made.
-        """
-        session = self._session(
-            {"us-east-1": [self._instance("i-aaa", profile_arn=self.PROFILE_ARN)]},
-            self._iam([{"Key": "ExemptFromIMDSv2", "Value": value}]),
-        )
-
-        results = get_ec2_imds_v1_analysis(session)
-
-        assert results[0].role_exemption_tag_present is False
-
-    @pytest.mark.parametrize(
-        "key", ["exemptfromimdsv2", "EXEMPTFROMIMDSV2", "ExemptFromIMDSV2"]
-    )
-    def test_exemption_tag_key_is_case_insensitive(self, key: str) -> None:
-        """
-        IAM matches the tag key in aws:PrincipalTag case-insensitively.
-
-        The key and the value pull opposite ways: the key is matched without
-        regard to case, the value with StringNotEquals, which is
-        case-sensitive. Matching the key exactly would report a role that
-        enforcement exempts as a violation.
-        """
-        session = self._session(
-            {"us-east-1": [self._instance("i-aaa", profile_arn=self.PROFILE_ARN)]},
-            self._iam([{"Key": key, "Value": "true"}]),
-        )
-
-        results = get_ec2_imds_v1_analysis(session)
-
-        assert results[0].role_exemption_tag_present is True
-
-    def test_exemption_tag_key_twice_in_different_cases_aborts(self) -> None:
-        """
-        A role carrying the key twice has no determinate exemption status.
-
-        AWS documents this as an unexpected condition failure rather than a
-        match on one of them, so there is nothing to report, and guessing
-        which one IAM lands on would invent the status of a live workload.
-        """
-        session = self._session(
-            {"us-east-1": [self._instance("i-aaa", profile_arn=self.PROFILE_ARN)]},
-            self._iam([
-                {"Key": "ExemptFromIMDSv2", "Value": "true"},
-                {"Key": "exemptfromimdsv2", "Value": "false"},
-            ]),
-        )
-
-        with pytest.raises(RuntimeError, match=r"more than once in cases that differ"):
-            get_ec2_imds_v1_analysis(session)
-
-    def test_unrelated_tags_do_not_exempt(self) -> None:
-        """A role tagged with something else entirely is not exempt."""
-        session = self._session(
-            {"us-east-1": [self._instance("i-aaa", profile_arn=self.PROFILE_ARN)]},
-            self._iam([{"Key": "Owner", "Value": "true"}]),
-        )
-
-        results = get_ec2_imds_v1_analysis(session)
-
-        assert results[0].role_exemption_tag_present is False
-
-    def test_instance_without_profile_records_the_reason(self) -> None:
-        """An instance with no role reaches IAM not at all."""
-        session = self._session({"us-east-1": [self._instance("i-aaa")]})
-
-        results = get_ec2_imds_v1_analysis(session)
-
-        assert results[0].role_exemption_tag_present is False
-        assert results[0].role_arn is None
-        assert results[0].role_unresolved_reason == "no_instance_profile"
-
-    def test_profile_is_resolved_once_across_regions(self) -> None:
-        """Instances sharing a profile cost one pair of IAM calls, not one each."""
-        iam = self._iam([{"Key": "ExemptFromIMDSv2", "Value": "true"}])
-        session = self._session(
-            {
-                "us-east-1": [
-                    self._instance("i-aaa", profile_arn=self.PROFILE_ARN),
-                    self._instance("i-bbb", profile_arn=self.PROFILE_ARN),
-                ],
-                "us-west-2": [self._instance("i-ccc", profile_arn=self.PROFILE_ARN)],
-            },
-            iam,
-        )
-
-        results = get_ec2_imds_v1_analysis(session)
-
-        assert len(results) == 3
-        assert all(r.role_exemption_tag_present for r in results)
-        assert iam.get_instance_profile.call_count == 1
-        assert iam.get_role.call_count == 1
-
-    def test_compliant_instance_still_reports_its_role(self) -> None:
-        """
-        The role is resolved whatever the instance's IMDS setting.
-
-        Naming the role is what tells an operator where the exemption tag
-        would have to go.
-        """
-        session = self._session(
-            {"us-east-1": [self._instance(
-                "i-aaa", http_tokens="required", profile_arn=self.PROFILE_ARN
-            )]},
-            self._iam([]),
-        )
-
-        results = get_ec2_imds_v1_analysis(session)
-
-        assert results[0].imdsv1_allowed is False
-        assert results[0].role_arn == self.ROLE_ARN
-
-    def test_iam_access_denied_names_the_missing_permissions(self) -> None:
-        """
-        A missing IAM permission must abort, not read as a fleet of violations.
-
-        Reading AccessDenied as "role not tagged" would turn one permission
-        gap into violations that look like real findings.
-        """
-        iam = MagicMock()
-        iam.get_instance_profile.side_effect = ClientError(
-            {"Error": {"Code": "AccessDenied", "Message": "no"}}, "GetInstanceProfile"
-        )
-        session = self._session(
-            {"us-east-1": [self._instance("i-aaa", profile_arn=self.PROFILE_ARN)]},
-            iam,
-        )
-
-        with pytest.raises(RuntimeError, match=r"iam:GetInstanceProfile and iam:GetRole"):
-            get_ec2_imds_v1_analysis(session)
-
-
 class TestImdsV1EndpointIsNotAnExcuse:
     """
     HttpTokens is counted whether or not the metadata endpoint is enabled.
@@ -1946,3 +1686,151 @@ class TestImdsV1EndpointIsNotAnExcuse:
         assert self._one_instance(
             {"HttpTokens": "required", "HttpEndpoint": "enabled"}
         ).imdsv1_allowed is False
+
+
+class TestImdsV1InstanceTagExemption:
+    """
+    The instance's own tag exempts, as a proxy for aws:RequestTag.
+
+    `DenyRunInstancesMetadataHttpTokensOptional` exempts a launch carrying
+    `ExemptFromIMDSv2=true` in its TagSpecifications, which is also what puts
+    the tag on the instance. So an instance wearing the tag today is evidence
+    that its relaunch will carry the same tag and be exempt. Measured against
+    a live account: the tagged launch is allowed, `True` is not.
+
+    The tag is read off the INSTANCE. No role is resolved and no IAM call is
+    made - `aws:PrincipalTag` belongs to a statement this module no longer
+    generates.
+    """
+
+    def _analysis(self, tags: Optional[List[dict]], http_tokens: str = "optional") -> List[DenyEc2ImdsV1]:
+        mock_session = MagicMock()
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {"Regions": [{"RegionName": "us-east-1"}]}
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{
+            "Reservations": [{"Instances": [{
+                "InstanceId": "i-fake0",
+                "State": {"Name": "running"},
+                "MetadataOptions": {"HttpTokens": http_tokens, "HttpEndpoint": "enabled"},
+                "Tags": tags if tags is not None else [],
+            }]}]
+        }]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            return mock_ec2 if region_name is None else mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+        mock_session.region_name = "us-east-1"
+        return get_ec2_imds_v1_analysis(mock_session)
+
+    def test_exact_tag_exempts(self) -> None:
+        """The measured case: ExemptFromIMDSv2=true allows the relaunch."""
+        results = self._analysis([{"Key": "ExemptFromIMDSv2", "Value": "true"}])
+
+        assert results[0].imdsv1_allowed is True
+        assert results[0].exemption_tag_present is True
+
+    @pytest.mark.parametrize("key", ["exemptfromimdsv2", "EXEMPTFROMIMDSV2", "ExemptFromIMDSV2"])
+    def test_tag_key_is_matched_without_regard_to_case(self, key: str) -> None:
+        """
+        IAM matches condition key names case-insensitively.
+
+        The tag key after the slash in `aws:RequestTag/ExemptFromIMDSv2` is
+        part of the key name, so a launch tagged `exemptfromimdsv2` is exempt
+        and reporting it as a violation would name a launch enforcement allows.
+        """
+        results = self._analysis([{"Key": key, "Value": "true"}])
+
+        assert results[0].exemption_tag_present is True
+
+    @pytest.mark.parametrize("value", ["True", "TRUE", "tRuE"])
+    def test_tag_value_is_matched_exactly(self, value: str) -> None:
+        """
+        StringNotEquals is case-sensitive, measured: "True" does not exempt.
+
+        Lowercasing here would report an instance as exempt whose relaunch
+        enforcement denies.
+        """
+        results = self._analysis([{"Key": "ExemptFromIMDSv2", "Value": value}])
+
+        assert results[0].exemption_tag_present is False
+
+    def test_untagged_imdsv1_instance_is_not_exempt(self) -> None:
+        """Nothing to exempt on, so the instance counts."""
+        results = self._analysis(None)
+
+        assert results[0].exemption_tag_present is False
+
+    def test_unrelated_tags_do_not_exempt(self) -> None:
+        """A tag that is not the exemption tag exempts nothing."""
+        results = self._analysis([
+            {"Key": "Name", "Value": "legacy-app"},
+            {"Key": "ExemptFromIMDSv3", "Value": "true"},
+        ])
+
+        assert results[0].exemption_tag_present is False
+
+    def test_tag_is_read_even_when_imdsv2_is_required(self) -> None:
+        """
+        A compliant instance still reports its tag.
+
+        The check decides what an exemption means; this layer only reports
+        what it saw, matching how the AMI owner and hop limit scans behave.
+        """
+        results = self._analysis(
+            [{"Key": "ExemptFromIMDSv2", "Value": "true"}], http_tokens="required"
+        )
+
+        assert results[0].imdsv1_allowed is False
+        assert results[0].exemption_tag_present is True
+
+    def test_key_twice_in_differing_cases_aborts(self) -> None:
+        """
+        Two spellings both match the condition key; at most one value can.
+
+        AWS calls that an unexpected condition failure rather than a match on
+        one of them, so this instance's exemption status has no determinate
+        answer and guessing would invent it.
+        """
+        with pytest.raises(RuntimeError, match=r"more than once in cases that differ"):
+            self._analysis([
+                {"Key": "ExemptFromIMDSv2", "Value": "true"},
+                {"Key": "exemptfromimdsv2", "Value": "false"},
+            ])
+
+    def test_no_iam_client_is_ever_created(self) -> None:
+        """
+        Role resolution is gone and must not creep back.
+
+        The exemption is read off the instance. An IAM call here would mean
+        someone reintroduced aws:PrincipalTag, whose statement no longer
+        exists, and would need permissions this check no longer asks for.
+        """
+        mock_session = MagicMock()
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {"Regions": [{"RegionName": "us-east-1"}]}
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{
+            "Reservations": [{"Instances": [{
+                "InstanceId": "i-fake0",
+                "State": {"Name": "running"},
+                "MetadataOptions": {"HttpTokens": "optional", "HttpEndpoint": "enabled"},
+                "IamInstanceProfile": {"Arn": "arn:aws:iam::111111111111:instance-profile/fake"},
+                "Tags": [],
+            }]}]
+        }]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            assert service != "iam", "the IMDS scan must not reach IAM"
+            return mock_ec2 if region_name is None else mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+        mock_session.region_name = "us-east-1"
+
+        assert get_ec2_imds_v1_analysis(mock_session)[0].exemption_tag_present is False
