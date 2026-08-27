@@ -1108,6 +1108,14 @@ must_modify:
 # the SCP is still enabled, and the allowlist renders empty - which for a
 # Deny statement denies everything rather than nothing. deny_ec2_ami_owner
 # shipped with the first and last steps only.
+#
+# Collect the value the CONDITION KEY will hold, not the field of the same
+# name in the describe call. They can differ: ec2:Owner is an AMI's
+# ImageOwnerAlias when it has one and its numeric OwnerId otherwise, so
+# deny_ec2_ami_owner's allowlist of OwnerIds denied every Amazon and
+# Marketplace AMI the scan had just cleared. Measure it with a --dry-run
+# probe before believing either field, and shape the fixtures like real API
+# responses - an unrealistic one (OwnerId: "amazon") hid this for a release.
 if_check_has_allowlist:
   - path: headroom/checks/{type}/{check_name}.py
     function: "build_summary_fields"
@@ -1133,14 +1141,19 @@ if_check_has_allowlist:
   - path: headroom/terraform/generate_scps.py
     function: "_build_{service}_terraform_parameters"
     add_lines: |
-      Emit the list parameter, and raise RuntimeError naming the module
-      if it is empty. Never render an empty allowlist.
+      Emit the list parameter only when it has entries. An empty allowlist
+      leaves the policy off, with a TerraformComment saying why - an empty
+      list on a Deny denies everything rather than nothing, and accounts
+      that own none of the resource legitimately report none. A result file
+      that predates the collection is the other cause, and parsing rejects
+      that outright: an absent summary key and an empty one mean opposite
+      things, and only the file itself can tell them apart.
 
   - path: tests/test_parse_results.py
     must_test: [summary_field_carried, union_across_accounts, other_checks_unaffected]
 
   - path: tests/test_generate_scps.py
-    must_test: [renders_populated_allowlist, aborts_on_empty_allowlist]
+    must_test: [renders_populated_allowlist, empty_allowlist_leaves_policy_off]
 
 if_check_has_exemptions:
   - path: test_environment/modules/scps/locals.tf

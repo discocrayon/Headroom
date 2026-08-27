@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from .models import TerraformPlan
 from ..types import OrganizationalUnit
 from ..utils import make_safe_variable_name
 
@@ -19,6 +20,7 @@ __all__ = [
     "ou_id_local_name",
     "ou_path_names",
     "write_terraform_file",
+    "write_terraform_plan",
 ]
 
 # Identifiers grab_org_info.tf already spends on the organization root. An OU
@@ -139,13 +141,41 @@ def make_ou_base_names(
 
 def write_terraform_file(filepath: Path, content: str, policy_type: str) -> None:
     """
-    Write Terraform content to a file with logging.
+    Write Terraform content to a file, unless the file already says that.
+
+    A run that changes nothing must leave the filesystem alone: these
+    directories are committed, and rewriting identical bytes turns every run
+    into apparent churn.
 
     Args:
         filepath: Path object for the file to write
         content: Terraform content to write
         policy_type: Type of policy being written (e.g., "SCP", "RCP")
     """
+    try:
+        if filepath.read_text() == content:
+            logger.debug(f"Unchanged {policy_type} Terraform file: {filepath}")
+            return
+    except (OSError, UnicodeDecodeError):
+        # Absent, or holding bytes that cannot be compared. Either way the
+        # rendered content is what should be there.
+        pass
+
     with open(filepath, 'w') as f:
         f.write(content)
     logger.info(f"Generated {policy_type} Terraform file: {filepath}")
+
+
+def write_terraform_plan(plan: TerraformPlan, policy_type: str) -> None:
+    """
+    Write every file in a rendered plan.
+
+    The plan is rendered in full before this is called, so a generation that
+    raises partway through has replaced none of the previous output.
+
+    Args:
+        plan: Rendered file contents, keyed by destination path
+        policy_type: Type of policy being written (e.g., "SCP", "RCP")
+    """
+    for filepath in sorted(plan):
+        write_terraform_file(filepath, plan[filepath], policy_type)

@@ -8,7 +8,7 @@ levels (root, OU, account) based on violation patterns and organization structur
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from .config import HeadroomConfig
 from .types import (
@@ -16,6 +16,7 @@ from .types import (
     SCPPlacementRecommendations, RCPPlacementRecommendations
 )
 from .aws.organization import lookup_account_id_by_name
+from .constants import DENY_EC2_AMI_OWNER
 from .placement import HierarchyPlacementAnalyzer
 from .output import OutputHandler
 
@@ -86,6 +87,49 @@ def _extract_account_id_from_result(
     )
 
 
+def _extract_ami_owners(
+    summary: Dict[str, Any],
+    check_name: str,
+    result_file: Path
+) -> Optional[List[str]]:
+    """
+    Read the AMI owners a deny_ec2_ami_owner result observed.
+
+    A file with no `unique_ami_owners` key at all predates AMI owner
+    collection. Once parsed it is indistinguishable from an account that ran
+    no instances - both produce an empty allowlist - and the two need opposite
+    handling: one is a stale artifact to re-run, the other is a fact about the
+    account that leaves the policy off. The distinction only exists while the
+    file is in hand, so it is drawn here.
+
+    Args:
+        summary: The result file's summary block
+        check_name: Check the result belongs to, taken from the file itself
+        result_file: Path to the file, used in the error
+
+    Returns:
+        The observed owners for deny_ec2_ami_owner, else None
+
+    Raises:
+        RuntimeError: If a deny_ec2_ami_owner result predates AMI owner
+            collection
+    """
+    if check_name != DENY_EC2_AMI_OWNER:
+        return None
+
+    if "unique_ami_owners" not in summary:
+        raise RuntimeError(
+            f"{result_file} predates AMI owner collection: its summary has no "
+            f"unique_ami_owners. Placement cannot tell that apart from an "
+            f"account running no instances, and would build the allowlist from "
+            f"whatever the other accounts happened to observe. Re-run the "
+            f"{DENY_EC2_AMI_OWNER} check for this account."
+        )
+
+    owners: Optional[List[str]] = summary["unique_ami_owners"]
+    return owners
+
+
 def _parse_single_scp_result_file(
     result_file: Path,
     check_name: str,
@@ -119,17 +163,19 @@ def _parse_single_scp_result_file(
     if iam_user_arns and account_id:
         iam_user_arns = [arn.replace("REDACTED", account_id) for arn in iam_user_arns]
 
+    resolved_check_name = summary.get("check", check_name)
+
     return SCPCheckResult(
         account_id=account_id,
         account_name=summary.get("account_name", ""),
-        check_name=summary.get("check", check_name),
+        check_name=resolved_check_name,
         violations=summary.get("violations", 0),
         exemptions=summary.get("exemptions", 0),
         compliant=summary.get("compliant", 0),
         total_instances=summary.get("total_instances"),
         compliance_percentage=summary.get("compliance_percentage", 0.0),
         iam_user_arns=iam_user_arns,
-        ami_owners=summary.get("unique_ami_owners")
+        ami_owners=_extract_ami_owners(summary, resolved_check_name, result_file)
     )
 
 
@@ -271,7 +317,7 @@ def _build_ami_owners_for_recommendation(
     affected accounts. Returns empty list if check is not deny_ec2_ami_owner
     or no owners were observed.
     """
-    if check_name != "deny_ec2_ami_owner":
+    if check_name != DENY_EC2_AMI_OWNER:
         return []
 
     ami_owners_set = set()
@@ -382,10 +428,16 @@ def _build_account_recommendation(
     Build account-level placement recommendation.
 
     Creates recommendation for deploying SCP at individual account level.
-    Calculates compliance percentage and includes allowed IAM user ARNs if applicable.
+
+    `compliance_percentage` reports the affected accounts, which are the
+    zero-violation subset - the same 100.0 that root and OU recommendations
+    carry. It used to hold the org-wide coverage fraction instead, which
+    generation read as the safety signal and which account placement can
+    never drive to 100%: the tier only exists when some other account
+    violates the check. Coverage is in `reasoning`, where it describes reach
+    rather than gating deployment.
     """
     affected_accounts = [r.account_id for r in safe_check_results]
-    compliance_pct = len(safe_check_results) / total_results * 100.0
 
     allowed_iam_user_arns = _build_iam_user_arns_for_recommendation(
         check_name,
@@ -404,7 +456,7 @@ def _build_account_recommendation(
         recommended_level="account",
         target_ou_id=None,
         affected_accounts=affected_accounts,
-        compliance_percentage=compliance_pct,
+        compliance_percentage=100.0,
         reasoning=f"Only {len(safe_check_results)} out of {total_results} accounts have zero violations - deploy at individual account level",
         allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None,
         ec2_allowed_ami_owners=ec2_allowed_ami_owners if ec2_allowed_ami_owners else None
@@ -554,7 +606,7 @@ def print_policy_recommendations(
 
             # Print type-specific fields
             if isinstance(rec, SCPPlacementRecommendations):
-                print(f"  Compliance: {rec.compliance_percentage:.1f}%")
+                print(f"  Compliance (affected accounts): {rec.compliance_percentage:.1f}%")
             elif isinstance(rec, RCPPlacementRecommendations):
                 print(f"  Third-Party Accounts: {len(rec.third_party_account_ids)}")
 
@@ -586,9 +638,21 @@ def analyze_scp_compliance(
     logger.info(f"Parsing result files from {config.results_dir}")
     results_data = parse_scp_result_files(config.results_dir, organization_hierarchy)
 
+    # An empty list here means nothing was read, not that nothing needs a
+    # policy. The caller reconciles the SCP directory against this function's
+    # output, so returning [] would delete every generated policy file and
+    # detach every SCP in the organization on the next apply - turning a
+    # credential or path problem into a silent removal of the controls.
+    # Placement legitimately finding no safe target is a different answer, and
+    # it arrives as recommendations that name no placement.
     if not results_data:
-        logger.warning("No result files found to analyze")
-        return []
+        raise RuntimeError(
+            f"No SCP result files were parsed from {config.results_dir}. Every "
+            "generated policy file is deleted when a run places nothing, so a "
+            "run that read nothing cannot be told apart from an organization "
+            "that needs no policies. Check that the analysis wrote results to "
+            "this directory before generating Terraform."
+        )
 
     logger.info(f"Parsed {len(results_data)} result entries")
 

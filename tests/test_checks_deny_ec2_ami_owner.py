@@ -33,15 +33,17 @@ class TestCheckDenyEc2AmiOwner:
                 instance_id="i-amazon-ami",
                 region="us-east-1",
                 ami_id="ami-12345678",
-                ami_owner="amazon",
+                ami_owner="444444444444",
                 ami_name="Amazon Linux 2",
+                ami_owner_alias="amazon",
             ),
             DenyEc2AmiOwner(
                 instance_id="i-marketplace-ami",
                 region="us-east-1",
                 ami_id="ami-87654321",
-                ami_owner="aws-marketplace",
+                ami_owner="555555555555",
                 ami_name="Marketplace AMI",
+                ami_owner_alias="aws-marketplace",
             ),
             DenyEc2AmiOwner(
                 instance_id="i-custom-ami",
@@ -67,15 +69,17 @@ class TestCheckDenyEc2AmiOwner:
                 instance_id="i-amazon-1",
                 region="us-east-1",
                 ami_id="ami-12345678",
-                ami_owner="amazon",
+                ami_owner="444444444444",
                 ami_name="Amazon Linux 2",
+                ami_owner_alias="amazon",
             ),
             DenyEc2AmiOwner(
                 instance_id="i-amazon-2",
                 region="us-west-2",
                 ami_id="ami-87654321",
-                ami_owner="amazon",
+                ami_owner="444444444444",
                 ami_name="Amazon Linux 2023",
+                ami_owner_alias="amazon",
             ),
         ]
 
@@ -193,15 +197,16 @@ class TestCheckDenyEc2AmiOwner:
             instance_id="i-test",
             region="us-east-1",
             ami_id="ami-12345678",
-            ami_owner="amazon",
-            ami_name="Amazon Linux 2"
+            ami_owner="444444444444",
+            ami_name="Amazon Linux 2",
+            ami_owner_alias="amazon"
         )
 
         category, result_dict = check.categorize_result(result)
 
         assert category == "compliant"
         assert result_dict["instance_id"] == "i-test"
-        assert result_dict["ami_owner"] == "amazon"
+        assert result_dict["ami_owner"] == "444444444444"
 
     def test_categorize_result_with_none_ami_name(self) -> None:
         """Test categorization when AMI name is None."""
@@ -262,14 +267,91 @@ class TestCheckDenyEc2AmiOwner:
             instance_id="i-test",
             region="us-east-1",
             ami_id="ami-12345678",
-            ami_owner="amazon",
+            ami_owner="444444444444",
             ami_name="Amazon Linux 2",
+            ami_owner_alias="amazon",
         )
 
         category, result_dict = check.categorize_result(result)
 
         assert category == "compliant"
         assert result_dict["owner_unknown_reason"] is None
+
+    def test_summary_records_the_value_ec2_owner_will_carry(
+        self,
+        temp_results_dir: str,
+    ) -> None:
+        """
+        unique_ami_owners holds the alias when there is one, the account when not.
+
+        The allowlist is pasted straight into an ec2:Owner StringNotEquals, so
+        an aliased AMI recorded by its numeric owner would deny the very
+        instance that produced the clean scan.
+        """
+        mock_session = MagicMock()
+
+        with (
+            patch("headroom.checks.scps.deny_ec2_ami_owner.get_ec2_ami_owner_analysis") as mock_analysis,
+            patch("headroom.checks.base.write_check_results") as mock_write,
+            patch("builtins.print")
+        ):
+            mock_analysis.return_value = [
+                DenyEc2AmiOwner(
+                    instance_id="i-from-amazon",
+                    region="us-east-1",
+                    ami_id="ami-12345678",
+                    ami_owner="444444444444",
+                    ami_name="al2023",
+                    ami_owner_alias="amazon",
+                ),
+                DenyEc2AmiOwner(
+                    instance_id="i-from-own-golden-image",
+                    region="us-east-1",
+                    ami_id="ami-87654321",
+                    ami_owner="222222222222",
+                    ami_name="golden-base",
+                    ami_owner_alias=None,
+                ),
+            ]
+
+            check = DenyEc2AmiOwnerCheck(
+                check_name=DENY_EC2_AMI_OWNER,
+                account_name="test-account",
+                account_id="111111111111",
+                results_dir=temp_results_dir,
+            )
+            check.execute(mock_session)
+
+            results_data = mock_write.call_args.kwargs['results_data']
+
+            assert results_data["summary"]["unique_ami_owners"] == [
+                "222222222222",
+                "amazon",
+            ]
+            assert "444444444444" not in results_data["summary"]["unique_ami_owners"]
+
+    def test_categorize_result_keeps_both_the_owner_and_its_alias(self) -> None:
+        """The numeric owner stays in the record even though the alias drives the allowlist."""
+        check = DenyEc2AmiOwnerCheck(
+            check_name=DENY_EC2_AMI_OWNER,
+            account_name="test",
+            account_id="111111111111",
+            results_dir=DEFAULT_RESULTS_DIR,
+        )
+
+        result = DenyEc2AmiOwner(
+            instance_id="i-test",
+            region="us-east-1",
+            ami_id="ami-12345678",
+            ami_owner="444444444444",
+            ami_name="al2023",
+            ami_owner_alias="amazon",
+        )
+
+        _, result_dict = check.categorize_result(result)
+
+        assert result_dict["ami_owner"] == "444444444444"
+        assert result_dict["ami_owner_alias"] == "amazon"
 
     def test_build_summary_fields_with_unknown_owner(self, temp_results_dir: str) -> None:
         """Unknown owners are counted separately and kept out of unique_ami_owners."""
@@ -280,6 +362,7 @@ class TestCheckDenyEc2AmiOwner:
             {
                 "instance_id": "i-11111111111111111",
                 "ami_owner": None,
+                "ami_owner_alias": None,
                 "region": "us-west-2",
                 "ami_id": "ami-11111111111111111",
                 "ami_name": None,
@@ -289,7 +372,8 @@ class TestCheckDenyEc2AmiOwner:
         compliant: list[JsonDict] = [
             {
                 "instance_id": "i-1",
-                "ami_owner": "amazon",
+                "ami_owner": "444444444444",
+                "ami_owner_alias": "amazon",
                 "region": "us-east-1",
                 "ami_id": "ami-1",
                 "ami_name": "AL2",
@@ -329,21 +413,24 @@ class TestCheckDenyEc2AmiOwner:
         compliant: list[JsonDict] = [
             {
                 "instance_id": "i-1",
-                "ami_owner": "amazon",
+                "ami_owner": "444444444444",
+                "ami_owner_alias": "amazon",
                 "region": "us-east-1",
                 "ami_id": "ami-1",
                 "ami_name": "AL2"
             },
             {
                 "instance_id": "i-2",
-                "ami_owner": "aws-marketplace",
+                "ami_owner": "555555555555",
+                "ami_owner_alias": "aws-marketplace",
                 "region": "us-west-2",
                 "ami_id": "ami-2",
                 "ami_name": "Marketplace"
             },
             {
                 "instance_id": "i-3",
-                "ami_owner": "amazon",
+                "ami_owner": "444444444444",
+                "ami_owner_alias": "amazon",
                 "region": "eu-west-1",
                 "ami_id": "ami-3",
                 "ami_name": "AL2023"
