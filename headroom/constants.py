@@ -23,13 +23,19 @@ AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws[a-z0-9-]*:[^:]+:[^:]*:(\d{12}):'
 
 # EC2 IMDSv2 Exemption Tag
 # The tag the deny_ec2_imds_v1 SCP exempts on, via
-# aws:PrincipalTag/ExemptFromIMDSv2 on the calling role.
+# aws:RequestTag/ExemptFromIMDSv2 on the RunInstances request.
+#
+# The scan reads it off the INSTANCE, which is a proxy: the same
+# TagSpecifications entry that exempts the launch is what puts the tag on the
+# instance it creates. See get_ec2_imds_v1_analysis for what the proxy costs.
 #
 # The two halves are matched differently, and a scanner has to follow both.
 # IAM matches condition key names - including the tag key after the slash -
 # without regard to case, so `exemptfromimdsv2` exempts too. The value is
-# compared with StringNotEquals, which is case-sensitive, so a role tagged
-# "True" is not exempt to enforcement and must not be reported exempt.
+# compared with StringNotEquals, which is case-sensitive, so an instance
+# tagged "True" is not exempt to enforcement and must not be reported exempt.
+# Measured with RunInstances --dry-run: "true" allows the launch, "True"
+# does not.
 IMDS_EXEMPTION_TAG_KEY = "ExemptFromIMDSv2"
 IMDS_EXEMPTION_TAG_VALUE = "true"
 

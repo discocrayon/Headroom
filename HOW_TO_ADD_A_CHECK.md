@@ -822,6 +822,18 @@ role_exemption_tag_present = (
 )
 ```
 
+*Both halves of this example are historical, and the verdict was
+statement-specific.* The role tag was right for `DenyRoleDeliveryLessThan2`,
+which exempts on `aws:PrincipalTag`. That statement was later removed (AP-011),
+leaving only the launch-time one, which exempts on `aws:RequestTag` - and for
+*that* statement the instance's own tag is the correct thing to read, because
+`TagSpecifications` populates the request key and tags the instance in one
+act. The check reads instance tags again today.
+
+So do not read this entry as "instance tags are always wrong". Read it as: the
+dimension is a property of the statement, and it changes when the statement
+does. Re-derive it every time the policy moves.
+
 A check decides whether a policy is safe to attach. That answer is only as
 good as the match between what the scanner measures and what the policy
 evaluates. Three ways they drift apart, all observed in this repo:
@@ -854,6 +866,20 @@ evaluates. Three ways they drift apart, all observed in this repo:
    overstated the gap. Where a scan genuinely cannot observe the enforced
    dimension, say so in the check's docstring instead of implying the clean
    scan covers it.
+
+   **A docstring was not enough.** That remedy was applied here and the defect
+   survived it: the docstring said the clean scan did not cover the launch-time
+   statement, while the tool went on printing `100.0% - safe to deploy at root
+   level` for a fleet made entirely of IMDSv1 instances. Prose in a file the
+   operator is not reading does not correct a number the operator is reading.
+   A gap the scan cannot close has to change the verdict, or stop being part
+   of what the verdict licenses. See AP-011.
+
+   **And check whether the gap is real before designing around it.** "The scan
+   cannot observe a request in flight" was true and led straight to a wrong
+   conclusion, because an observable thing stood in for it: the request's tags
+   land on the resource it creates. A key you cannot read directly may still
+   have a proxy. Name the proxy, argue for it, measure it - AP-011 habit 3.
 
    None of this is settleable from documentation. AWS's own guide says
    `HttpTokens` requires `HttpEndpoint=enabled`; `RunInstances` accepts the
@@ -914,6 +940,72 @@ Two habits keep this from recurring:
    and asserts every `local.` a policy reads is one the org info declares.
    Where two modules must agree on a name, put the rule in one function they
    both call - here `ou_id_local_name()` - and test the pair together.
+
+---
+
+### AP-011: One Verdict Gating Two Statements
+
+```hcl
+# BAD - one variable, two statements, two different kinds of evidence
+{ include = var.deny_ec2_imds_v1, statement = { ... ec2:RoleDelivery ... } },
+{ include = var.deny_ec2_imds_v1, statement = { ... ec2:MetadataHttpTokens ... } },
+
+# GOOD - one variable, one statement, and a check that measures exactly it
+{ include = var.deny_ec2_imds_v1, statement = { ... ec2:MetadataHttpTokens ... } },
+```
+
+A check produces one number and the generator turns it into one boolean. If
+that boolean gates two statements, the check is licensing something it never
+measured.
+
+`deny_ec2_imds_v1` did this. Its two statements were evaluated at different
+times and exempted on different condition keys:
+`DenyRoleDeliveryLessThan2` at runtime, exempting by
+`aws:PrincipalTag/ExemptFromIMDSv2` on the calling role, and
+`DenyRunInstancesMetadataHttpTokensOptional` at launch, exempting by
+`aws:RequestTag/ExemptFromIMDSv2` on the request. The scanner read role tags,
+which was right for the first statement and meaningless for the second. So a
+role-tagged IMDSv1 instance was recorded as an *exemption*, the account came
+out at zero violations, and placement offered the combined policy at the
+organization root - for a fleet on which every single instance answered
+IMDSv1.
+
+Note the direction of the error. It is not that the evidence for the second
+statement was missing; it pointed the *other way*. The exempted instances did
+match that statement's condition, and the account most likely to be broken was
+the one that had configured the exemption on purpose, because it had a legacy
+IMDSv1 workload. The scan named the launches that would break as its evidence
+the policy was safe.
+
+Three habits keep this from recurring:
+
+1. **Count the statements a variable gates.** One is the number. When it is
+   two, either split the variable so each half carries its own verdict, or
+   remove a statement. `deny_ec2_imds_v1` was resolved by removing one: the
+   running fleet is now explicitly out of scope, documented as a scope
+   decision rather than a caveat, on the grounds that an IMDSv1 instance is
+   either migrated or tagged for exemption.
+2. **Remove the old variable name; do not quietly narrow it.** Keeping
+   `deny_ec2_imds_v1` while adding a second variable would leave every
+   committed `deny_ec2_imds_v1 = true` valid, applying cleanly, silently
+   enforcing less than the operator believed. Terraform rejects an argument a
+   module no longer declares - `Error: Unsupported argument`, raised at
+   `init` - and that error is the point. A name whose meaning changes without
+   a signal is the same defect wearing a fix.
+3. **A key you cannot read may still have a proxy - name it and measure it.**
+   `aws:RequestTag/ExemptFromIMDSv2` lives on a request in flight, which no
+   scan sees. It does not follow that the check must report no exemptions:
+   `TagSpecifications` populates that key *and* tags the instance it creates,
+   so the instance's tag is the trace of the request tag and evidence its
+   relaunch carries one. That proxy is now what the check reads.
+
+   The discipline is what separates a proxy from AP-009's mistake. A proxy is
+   named, argued from the mechanism that links it to the real key, measured
+   against enforcement, and has its failure modes written down and accepted -
+   here, a tag applied by `CreateTags` after launch, or a recreator that never
+   declares it. Reaching for a same-named tag on an unrelated condition key,
+   with no such argument, is not a proxy; that is how `aws:PrincipalTag` got
+   read for a statement that never mentioned it.
 
 ---
 

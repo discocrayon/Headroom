@@ -23,7 +23,16 @@ class PlacementLevel(str, Enum):
 
 
 class CheckCategory(str, Enum):
-    """Categorization of check results."""
+    """
+    Categorization of check results.
+
+    EXEMPTION means the resource matches the deny's condition but the policy
+    will spare it, so it must not count against deployability. Only claim it
+    where the scan can see the dimension the exemption turns on, or something
+    that reliably stands in for it - `deny_ec2_imds_v1` is the sole producer,
+    and it reads an instance tag as a proxy for the launch request's tag. See
+    AP-011 in HOW_TO_ADD_A_CHECK.md for the shape of that argument.
+    """
     VIOLATION = "violation"
     EXEMPTION = "exemption"
     COMPLIANT = "compliant"
@@ -38,17 +47,3 @@ class AmiOwnerUnknownReason(str, Enum):
     # The AMI ID no longer resolves at all, which is what deregistration leaves
     # behind on a long-lived instance.
     DEREGISTERED = "deregistered"
-
-
-class InstanceRoleUnresolvedReason(str, Enum):
-    """Reasons the IAM role behind an EC2 instance cannot be reached."""
-    # The instance runs with no instance profile at all, so it holds no role
-    # credentials and no role tag can exempt it.
-    NO_INSTANCE_PROFILE = "no_instance_profile"
-    # GetInstanceProfile returned NoSuchEntity: the profile was detached or
-    # deleted between describing the instance and resolving its role.
-    PROFILE_NOT_FOUND = "profile_not_found"
-    # The instance profile exists but carries no role.
-    PROFILE_HAS_NO_ROLE = "profile_has_no_role"
-    # GetRole returned NoSuchEntity: the role went away between the two calls.
-    ROLE_NOT_FOUND = "role_not_found"
