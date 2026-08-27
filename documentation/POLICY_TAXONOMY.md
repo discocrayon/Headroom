@@ -436,14 +436,31 @@ This check identifies RDS databases (instances and Aurora clusters) without encr
 ### Pattern 4: `deny_ec2_imds_v1`
 
 **Check:** `headroom/checks/scps/deny_ec2_imds_v1.py`
-**Terraform:** `test_environment/modules/scps/locals.tf` lines 3-37
+**Terraform:** `test_environment/modules/scps/locals.tf`, the
+`DenyRunInstancesMetadataHttpTokensOptional` statement
 **Tag:** `ExemptFromIMDSv2`
 
-This check identifies EC2 instances with IMDSv1 enabled. The SCP denies IMDSv1 configuration unless the instance or principal is tagged with `ExemptFromIMDSv2=true`.
+This check identifies EC2 instances with IMDSv1 enabled. The variable gates
+one statement, which denies a `RunInstances` call whose
+`ec2:MetadataHttpTokens` is not `required` unless the request carries
+`ExemptFromIMDSv2=true` under `aws:RequestTag`.
 
-**Two-statement approach:**
-1. Deny modification of IAM role delivery to less than version 2.0 (unless principal has exemption tag)
-2. Deny launching instances with `MetadataHttpTokens != "required"` (unless request has exemption tag)
+**One variable, one statement.** An earlier revision put a second statement
+behind this variable: `DenyRoleDeliveryLessThan2`, denying any API call made
+with credentials fetched over IMDSv1, exempted by `aws:PrincipalTag` on the
+calling role. Two statements evaluated at different times and exempting on
+different keys meant one scan verdict licensing both kinds of evidence, so a
+role-tagged IMDSv1 instance was reported as a clean exemption while the
+surviving statement - which reads no role tag - would have denied that
+account's next launch. It was removed rather than split into its own
+variable. A tag on the instance's IAM role now exempts nothing.
+
+**Scope:** enforcement reaches launches only. Every instance the scan sees has
+already launched and cannot be denied by the statement; an IMDSv1 instance
+counts as evidence that the account's next launch would be. Credential use
+from an instance already running is out of scope by decision - covering it
+again means a new variable carrying its own verdict, not a second statement
+on this one.
 
 ### Pattern 1 Example: `deny_iam_saml_provider_not_aws_sso`
 

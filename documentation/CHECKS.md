@@ -835,7 +835,8 @@ China ARNs all resolve.
 
 ### Some Checks Include
 
-- **Exemption Support**: Tag-based exemptions (EC2 IMDSv1 by role tag, S3)
+- **Exemption Support**: Tag-based exemptions (EC2 IMDSv1 by the instance's
+  own tag, standing in for the launch request's; S3)
 - **Allowlist Generation**: Auto-generated allowlists (IAM users, third-party accounts)
 - **Safety Mechanisms**: Prevents breaking existing access patterns (S3 Federated principals)
 - **Wildcard Detection**: Identifies principals requiring CloudTrail analysis
