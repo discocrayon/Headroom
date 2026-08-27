@@ -2,6 +2,12 @@
 #
 # These instances are used to test the deny_ec2_imds_v1 SCP check.
 # They should be destroyed when not actively being used for testing.
+#
+# An instance answering IMDSv1 is a violation unless it carries
+# ExemptFromIMDSv2 = "true". That tag is read off the INSTANCE as a proxy for
+# aws:RequestTag on its relaunch - the TagSpecifications entry that exempts
+# the launch is the same one that puts the tag here. No role tag is read.
+# See documentation/CHECKS.md for what the proxy costs and why it is accepted.
 
 # Instance 1: IMDSv1 enabled (should be flagged by the check)
 resource "aws_instance" "test_imdsv1_enabled" {
@@ -35,15 +41,21 @@ resource "aws_instance" "test_imdsv2_only" {
   }
 }
 
-# Instance 3: IMDSv1 enabled, exempt through its ROLE's tag (should pass)
+# Instance 3: IMDSv1 enabled, exempt by its own tag (should pass)
 #
-# The exemption tag is on aws_iam_role.imdsv1_exempt, not on this instance.
-# That is the dimension the SCP reads. The Name tag here is only a label.
+# Measured with RunInstances --dry-run under the shipped statement: a launch
+# carrying ExemptFromIMDSv2=true in its TagSpecifications is allowed even with
+# http_tokens = "optional". That same TagSpecifications entry is what puts the
+# tag on the instance, so the tag visible here is the trace of the request tag
+# that exempted the launch - and of the one its relaunch will carry.
+#
+# An earlier revision put this tag on the instance's IAM ROLE instead, for a
+# DenyRoleDeliveryLessThan2 statement that is no longer generated. The role
+# and its instance profile are gone.
 resource "aws_instance" "test_imdsv1_exempt" {
-  provider             = aws.fort_knox
-  ami                  = data.aws_ami.amazon_linux_2023.id
-  instance_type        = "t2.nano"
-  iam_instance_profile = aws_iam_instance_profile.imdsv1_exempt.name
+  provider      = aws.fort_knox
+  ami           = data.aws_ami.amazon_linux_2023.id
+  instance_type = "t2.nano"
 
   metadata_options {
     http_tokens   = "optional"
@@ -51,16 +63,21 @@ resource "aws_instance" "test_imdsv1_exempt" {
   }
 
   tags = {
-    Name = "test-imdsv1-exempt"
+    Name             = "test-imdsv1-exempt"
+    ExemptFromIMDSv2 = "true"
   }
 }
 
-# Instance 4: IMDSv1 enabled, instance tagged exempt, role NOT tagged
+# Instance 4: IMDSv1 enabled, tag value in the wrong case (a violation)
 #
-# This is the case that used to read as exempt and is now a violation. It is
-# the shape that made a clean scan meaningless: the check reported zero
-# violations while the SCP would have denied every API call this instance made.
-resource "aws_instance" "test_imdsv1_instance_tagged_only" {
+# StringNotEquals is case-sensitive, so "True" does not exempt. Measured: the
+# same launch tagged "true" is allowed and tagged "True" is denied. A scanner
+# that lowercased the value would report this instance exempt and clear an
+# account whose relaunch enforcement denies.
+#
+# The tag KEY is the opposite - IAM matches condition key names without regard
+# to case, so exemptfromimdsv2 would exempt. Only the value is exact.
+resource "aws_instance" "test_imdsv1_tag_value_wrong_case" {
   provider      = aws.shared_foo_bar
   ami           = data.aws_ami.amazon_linux_2023.id
   instance_type = "t2.nano"
@@ -71,8 +88,8 @@ resource "aws_instance" "test_imdsv1_instance_tagged_only" {
   }
 
   tags = {
-    Name             = "test-imdsv1-instance-tagged-only"
-    ExemptFromIMDSv2 = "true"
+    Name             = "test-imdsv1-tag-value-wrong-case"
+    ExemptFromIMDSv2 = "True"
   }
 }
 

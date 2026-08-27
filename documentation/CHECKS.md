@@ -11,34 +11,94 @@
 **How it Works**:
 - Scans all AWS regions for EC2 instances
 - Reads `MetadataOptions.HttpTokens`; `optional` means IMDSv1 is permitted
-- Identifies instances without IMDSv2 enforcement
-- Resolves each instance's instance profile to its IAM role and reads that
-  role's tags
+- Reads the instance's `ExemptFromIMDSv2` tag
+- Counts every instance permitting IMDSv1 as a violation, unless it is tagged
 
-**Policy Coverage**: Two statements. `DenyRoleDeliveryLessThan2` denies any API
-call made with credentials fetched over IMDSv1.
+**Policy Coverage**: One statement.
 `DenyRunInstancesMetadataHttpTokensOptional` denies launching an instance that
 would answer IMDSv1.
 
-**Exemption Support**: Instances whose **IAM role** is tagged
-`ExemptFromIMDSv2 = "true"` are excluded from violation reporting.
+## Scope: the fleet already running is deliberately excluded
 
-The tag is read off the role, not the instance. The SCP exempts through
-`aws:PrincipalTag/ExemptFromIMDSv2`, which reads role tags; no statement in it
-reads instance tags.
+**This check governs launches. It does not govern the instances you already
+have, and it is not meant to.**
 
-The key and the value are matched differently. IAM matches condition key names
-without regard to case, so a role tagged `exemptfromimdsv2` is exempt. The
-value is matched exactly, because `StringNotEquals` is case-sensitive - a role
-tagged `True` is denied. A role carrying the key twice in cases that differ
-aborts the check, because AWS treats that as an unexpected condition failure
-rather than a match, leaving the role's exemption status undetermined.
+Every instance the scan sees has already launched, so not one of them can be
+denied by the statement. An instance answering IMDSv1 is counted as *evidence
+about the next launch*: an account still running them is an account whose next
+`RunInstances` is likely to be denied, so the SCP is not yet safe to attach
+there. The instance itself is not the finding.
 
-**What a Clean Scan Proves**: That no instance running today can have its API
-calls denied by `DenyRoleDeliveryLessThan2`. It does not prove that future
-launches will pass `DenyRunInstancesMetadataHttpTokensOptional`, which is
-evaluated against the launch request rather than against any instance the scan
-can see - a launch template the scan never reads can still be denied.
+The expectation is that such instances get **migrated to IMDSv2**, not carried
+indefinitely behind an exemption. The SCP's job is to stop new ones appearing
+while that migration happens. Once an account's fleet is clean, the check
+reports 100% and the SCP can be attached.
+
+What this scope costs, stated plainly:
+
+| Not covered | Why |
+|---|---|
+| Instances running with IMDSv1 today | Already launched; the statement only reads `RunInstances` requests. They stay reachable over IMDSv1 until migrated |
+| An instance flipped back to `optional` after launch | `ModifyInstanceMetadataOptions` is out of scope for this policy set |
+| Credentials already stolen over IMDSv1 | Nothing here denies their *use* |
+
+An earlier revision also generated `DenyRoleDeliveryLessThan2`, which denied
+any API call made with credentials fetched over IMDSv1 and so did cover the
+running fleet. It was removed rather than split: one variable gating two
+statements meant one scan verdict licensing two different kinds of evidence,
+and a role-tagged IMDSv1 instance was reported as a clean exemption while this
+statement - which reads no role tag - would have denied that account's next
+launch.
+
+**Exemption Support**: Tag the **instance** `ExemptFromIMDSv2 = "true"`.
+
+The statement exempts a launch through `aws:RequestTag/ExemptFromIMDSv2`,
+which is populated from the `TagSpecifications` of the `RunInstances` call -
+and that same entry is what puts the tag on the instance the call creates. So
+the tag you can see on a running instance is the trace of the request tag that
+exempted its launch, and good evidence its relaunch will carry the same one.
+
+Measured against a live account with `RunInstances --dry-run`, under the
+shipped statement:
+
+| Request | Result |
+|---|---|
+| `HttpTokens=optional`, no tag | **DENY** |
+| `HttpTokens=optional`, `ExemptFromIMDSv2=true` | allow |
+| `HttpTokens=optional`, `ExemptFromIMDSv2=True` | **DENY** |
+| `HttpTokens=required`, no tag | allow |
+
+The key and the value are matched differently, and the scan follows both. IAM
+matches condition key names without regard to case, and the tag key after the
+slash is part of the name, so `exemptfromimdsv2` exempts too. The value is
+compared with `StringNotEquals`, which is case-sensitive, so `True` does not.
+An instance carrying the key twice in cases that differ aborts the check: AWS
+calls that an unexpected condition failure rather than a match on one of them.
+
+A tag on the instance's **IAM role** exempts nothing. That was
+`aws:PrincipalTag`, read by `DenyRoleDeliveryLessThan2`, which this module no
+longer generates.
+
+### The proxy is imperfect, and we accept it
+
+The tag on a running instance is not the request tag. It stands in for one:
+
+| When it misleads | What happens |
+|---|---|
+| Tag applied after launch with `CreateTags` | Instance wears the tag; its relaunch carries none, and the SCP denies it |
+| Instance recreated by something that does not declare the tag | Same - Terraform or a launch template that never knew about the tag will not re-supply it |
+
+In both cases this check reports an exemption for a launch enforcement would
+deny. **That is a known cost and it is accepted.** An operator who tags an
+instance `ExemptFromIMDSv2` is declaring that this workload is meant to keep
+IMDSv1; Headroom takes the declaration at face value and does not try to
+predict how it will be reapplied. Keeping the tag effective across a
+recreation is the operator's job, not the scanner's.
+
+**What a Clean Scan Proves**: That every instance in the account either
+requires IMDSv2 or carries the exemption tag, which is the best available
+evidence that future launches will pass. It is evidence, not proof - a launch
+template the scan never reads can still be denied.
 
 `ec2:MetadataHttpTokens` resolves from the **effective** metadata
 configuration, not only from literal request parameters. Dry runs against a
@@ -60,17 +120,14 @@ Remedying it costs nothing: AWS accepts `HttpTokens=required` alongside a
 disabled endpoint - confirmed by dry run, contradicting the EC2 guide - and the
 extra parameter changes no behaviour, because nothing is listening.
 
-**Required Permissions**: `ec2:DescribeInstances`, plus `iam:GetInstanceProfile`
-and `iam:GetRole` to read role tags. A profile or role deleted mid-scan is
-recorded as unresolved; any other IAM failure aborts the check rather than
-reading as an untagged role.
+**Required Permissions**: `ec2:DescribeInstances`. Tags come back with the
+instances, so there is nothing else to grant and no IAM call to make.
 
 **Output**:
 - List of non-compliant instances (violations)
 - List of exempt instances
 - List of compliant instances
-- The IAM role each instance runs as, or why none was resolved
-- Compliance percentage
+- Compliance percentage, counting exemptions as compliant
 
 **Example Violation**:
 ```json
@@ -78,9 +135,7 @@ reading as an untagged role.
   "region": "us-east-1",
   "instance_id": "i-1234567890abcdef0",
   "imdsv1_allowed": true,
-  "role_exemption_tag_present": false,
-  "role_arn": "arn:aws:iam::111111111111:role/app-server",
-  "role_unresolved_reason": null
+  "exemption_tag_present": false
 }
 ```
 

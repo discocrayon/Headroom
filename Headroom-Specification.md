@@ -272,9 +272,7 @@ class DenyImdsV1Ec2:
     region: str
     instance_id: str
     imdsv1_allowed: bool                # True if IMDSv1 enabled (violation)
-    role_exemption_tag_present: bool    # True if the instance's ROLE is tagged
-    role_arn: Optional[str] = None      # Role whose tags were read
-    role_unresolved_reason: Optional[str] = None   # Set when no role resolved
+    exemption_tag_present: bool         # True if the INSTANCE is tagged
 
 # aws/iam/users.py
 @dataclass
@@ -499,8 +497,27 @@ _discover_and_register_checks()
 
 ### Deny IMDSv1 (EC2)
 
-**Purpose:** Identify EC2 instances with IMDSv1 enabled (violation) or exempted
-by their IAM role's tag.
+**Purpose:** Decide whether an account can take the `deny_ec2_imds_v1` SCP, by
+counting the EC2 instances that permit IMDSv1 without carrying the exemption
+tag.
+
+**Scope - launches, not the running fleet.** The SCP carries one statement,
+`DenyRunInstancesMetadataHttpTokensOptional`, evaluated against a
+`RunInstances` request. Every instance the scan sees has already launched, so
+none of them can be denied by it. An IMDSv1 instance is counted as evidence
+that the *next* launch in that account would be denied, which is what makes
+the account not yet ready for the policy. The instances themselves are
+expected to be migrated to IMDSv2; the SCP exists to stop new ones appearing
+while that happens.
+
+A `DenyRoleDeliveryLessThan2` statement, denying any API call made with
+credentials fetched over IMDSv1, previously shared this variable. It was
+removed rather than split into its own: one variable gating two statements
+meant one scan verdict licensing two kinds of evidence, and a role-tagged
+IMDSv1 instance was reported as a clean exemption while the surviving
+statement - which reads no role tag - would have denied that account's next
+launch. Covering the running fleet again means a new variable with its own
+verdict, not a second statement on this one.
 
 **Data Model:**
 ```python
@@ -509,41 +526,43 @@ class DenyImdsV1Ec2:
     region: str
     instance_id: str
     imdsv1_allowed: bool                # True = violation
-    role_exemption_tag_present: bool    # True = exempted
-    role_arn: Optional[str] = None      # Role whose tags were read
-    role_unresolved_reason: Optional[str] = None   # Set when no role resolved
+    exemption_tag_present: bool         # True = exempted
 ```
 
-**Exemption Dimension:** The exemption is a property of the IAM role, not of
-the instance. The SCP's `DenyRoleDeliveryLessThan2` statement exempts callers
-through `aws:PrincipalTag/ExemptFromIMDSv2`, which reads tags on the role an
-instance runs as; its `DenyRunInstancesMetadataHttpTokensOptional` statement
-exempts a launch through `aws:RequestTag/ExemptFromIMDSv2`, a property of a
-future request that no scan of running instances can observe. Instance tags
-match neither. A scan that read them reported accounts as violation-free while
-enforcement would have denied every API call those instances made - the
-instances that would break were counted as the evidence the SCP was safe.
+**Exemption Dimension:** The statement exempts a launch through
+`aws:RequestTag/ExemptFromIMDSv2`. That key is populated from the
+`TagSpecifications` of the `RunInstances` call, and the same entry puts the
+tag on the instance the call creates - so the scan reads the **instance's**
+tag as the observable trace of the request tag, and as evidence that a
+relaunch will carry it again.
+
+Measured with `RunInstances --dry-run` under the shipped statement:
+
+```
+tokens=optional, no tag                  DENY
+tokens=optional, ExemptFromIMDSv2=true   allow
+tokens=optional, ExemptFromIMDSv2=True   DENY
+tokens=required, no tag                  allow
+```
+
+A tag on the instance's IAM **role** exempts nothing. `aws:PrincipalTag`
+belonged to `DenyRoleDeliveryLessThan2`, which is no longer generated.
 
 **Tag matching:** the key and the value are matched differently, and the scan
 follows both. IAM matches condition key names without regard to case, and the
-tag key after the slash is part of the name, so a role tagged
-`exemptfromimdsv2` is exempt. The value is compared with `StringNotEquals`,
-which is case-sensitive, so a role tagged `True` is not exempt and must not be
-reported exempt by the scan. A role carrying the key twice in cases that differ
-raises: AWS documents that as an unexpected condition failure rather than a
-match on one of them, so guessing which one IAM lands on would invent the
-exemption status of a live workload.
+tag key after the slash is part of the name, so `exemptfromimdsv2` is exempt.
+The value is compared with `StringNotEquals`, which is case-sensitive, so
+`True` is not exempt and must not be reported exempt. An instance carrying the
+key twice in cases that differ raises: AWS documents that as an unexpected
+condition failure rather than a match on one of them, so guessing which one
+IAM lands on would invent the exemption status of a live workload.
 
-**Resolving the role:** `describe_instances` reports only an instance profile
-ARN, so the role behind it is resolved with `iam:GetInstanceProfile` followed
-by `iam:GetRole`. Tags are taken from `GetRole` rather than from the role
-embedded in the `GetInstanceProfile` response, which declares `Tags` as
-optional and is not promised to carry them. Profiles are global, so each
-distinct profile is resolved once for the whole account across every region.
-A profile or role deleted mid-scan is recorded in `role_unresolved_reason`
-rather than raised; any other IAM failure aborts, because reading AccessDenied
-as an untagged role would turn one permission gap into a fleet of violations
-that look real.
+**The proxy is imperfect, and that is accepted.** A tag applied after launch
+with `CreateTags`, or an instance whose Terraform never declares the tag,
+wears the tag while its relaunch carries none - and the scan then reports an
+exemption for a launch enforcement denies. Headroom takes the tag as a
+declaration of intent rather than a prediction; keeping it effective across a
+recreation is the operator's responsibility.
 
 **Analysis Function:**
 ```python
@@ -559,10 +578,10 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
     4. Filter out terminated instances
     5. IMDSv1 is allowed when HttpTokens is "optional", whatever HttpEndpoint
        says, because the SCP tests HttpTokens either way
-    6. Record the instance profile ARN, if any
-    7. Resolve each distinct instance profile to its role and read that role's
-       tags; exempt only on ExemptFromIMDSv2 with the exact value "true"
-    8. Return DenyImdsV1Ec2 for each instance
+    6. Read the instance's ExemptFromIMDSv2 tag, key matched without regard
+       to case and value exactly; raise if the key appears twice in cases
+       that differ
+    7. Return DenyImdsV1Ec2 for each instance
     """
 ```
 
@@ -571,18 +590,18 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
 def categorize_result(self, result: DenyImdsV1Ec2) -> tuple[str, Dict[str, Any]]:
     result_dict = asdict(result)
 
-    if result.imdsv1_allowed and result.role_exemption_tag_present:
+    if result.imdsv1_allowed and result.exemption_tag_present:
         return ("exemption", result_dict)
-    elif result.imdsv1_allowed:
+    if result.imdsv1_allowed:
         return ("violation", result_dict)
-    else:
-        return ("compliant", result_dict)
+    return ("compliant", result_dict)
 ```
 
 **Summary Fields:**
 ```python
 def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
     total = len(violations) + len(exemptions) + len(compliant)
+    # An exemption counts as compliant: the SCP spares that launch.
     compliant_count = len(exemptions) + len(compliant)
     compliance_pct = (compliant_count / total * 100) if total > 0 else 100.0
 
@@ -609,7 +628,7 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
     "compliance_percentage": 100.0
   },
   "violations": [
-    {"region": "us-east-1", "instance_id": "i-xxx", "imdsv1_allowed": true, "role_exemption_tag_present": false, "role_arn": "arn:aws:iam::111111111111:role/app", "role_unresolved_reason": null}
+    {"region": "us-east-1", "instance_id": "i-xxx", "imdsv1_allowed": true, "exemption_tag_present": false}
   ],
   "exemptions": [],
   "compliant_instances": []
@@ -3650,11 +3669,9 @@ headroom_results/
   "compliant_instances": [
     {
       "region": "us-east-1",
-      "instance_id": "i-0028862fcc86a6d7c",
+      "instance_id": "i-fake0acmeco000001",
       "imdsv1_allowed": false,
-      "role_exemption_tag_present": false,
-      "role_arn": "arn:aws:iam::111111111111:role/app",
-      "role_unresolved_reason": null
+      "exemption_tag_present": false
     }
   ]
 }
@@ -4092,7 +4109,7 @@ The test environment serves as executable documentation:
 - **Trusted By:** Security analysis account
 - **Permissions:**
   - **EC2:** `ec2:DescribeRegions`, `ec2:DescribeInstances`
-  - **IAM:** `iam:ListUsers`, `iam:ListRoles`, `iam:GetRole`, `iam:GetInstanceProfile` (all covered by AWS managed `SecurityAudit`, which grants `iam:Get*` and `iam:List*`)
+  - **IAM:** `iam:ListUsers`, `iam:ListRoles` (both covered by AWS managed `SecurityAudit`, which grants `iam:Get*` and `iam:List*`)
 - **Purpose:** Execute compliance checks in each account
 - **Reference Implementation:** See `test_environment/modules/headroom_role/` and `test_environment/headroom_roles.tf`
 
