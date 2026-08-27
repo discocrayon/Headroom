@@ -1564,6 +1564,10 @@ def determine_scp_placement(
           - An unsafe OU hands the question to its child OUs
        e. Account level:
           - For remaining compliant accounts, recommend account-level
+          - compliance_percentage is 100.0, as at every other level: the
+            affected accounts are the zero-violation subset. The share of the
+            organization those accounts represent goes in `reasoning`, where
+            it describes reach rather than gating deployment
        f. For deny_iam_user_creation check:
           - Union all IAM user ARNs from affected accounts, which for an
             OU-level recommendation is the OU's whole subtree
@@ -1789,13 +1793,13 @@ def generate_scp_terraform(
     Generate SCP Terraform files based on placement recommendations.
 
     Algorithm:
-    1. Filter to 100% compliant recommendations only
-    2. Group by recommended_level (root/ou/account)
-    3. For each group, generate Terraform file:
+    1. Group by recommended_level (root/ou/account); a "none" recommendation
+       is not a placement and is dropped here
+    2. For each group, generate Terraform file:
        - Root: root_scps.tf
        - OU: {ou_path}_ou_scps.tf
        - Account: {account_name}_scps.tf
-    4. For each file:
+    3. For each file:
        - Generate module call with target_id reference
        - Add boolean flags for each check (organized by category)
        - For deny_iam_user_creation:
@@ -1803,8 +1807,9 @@ def generate_scp_terraform(
          - Add allowed_iam_users list
        - For deny_ec2_ami_owner:
          - Add ec2_allowed_ami_owners list
-         - Abort if that list is empty (see Allowlist Guard below)
-    5. Write to {scps_dir}/
+         - Leave the policy off if that list is empty (see Allowlist Guard
+           below)
+    4. Write to {scps_dir}/
 
     ARN Transformation Algorithm:
     1. Parse ARN: arn:aws:iam::ACCOUNT_ID:user/PATH/NAME
@@ -1821,10 +1826,24 @@ once that allowlist is populated. `deny_ec2_ami_owner` denies
 `ec2:RunInstances` unless `ec2:Owner` matches `ec2_allowed_ami_owners`, so an
 empty list denies every launch rather than none of them - the exact inversion
 of what a check reporting 100% compliance is asserting. Rendering
-`ec2_allowed_ami_owners = []` is therefore never correct, and generation aborts
-by module name instead. Two things reach that state: result files that predate
-AMI owner collection, and affected accounts where no instance had a resolvable
-AMI owner. Both need a decision from the operator, not a default.
+`ec2_allowed_ami_owners = []` is therefore never correct.
+
+Two things reach that state, and they are not the same condition:
+
+1. **No instance in the affected accounts had a resolvable AMI owner.** An
+   account running no instances is safe for the placement and observes
+   nothing. The module renders `deny_ec2_ami_owner = false` with a comment
+   naming the reason, and the rest of the organization still generates.
+   Aborting here would let one empty account stop every unrelated check.
+2. **A result file predates AMI owner collection.** Its summary carries no
+   `unique_ami_owners` key. Parsing raises, naming the file: after parsing
+   this is indistinguishable from case 1, and treating it as case 1 would
+   build the allowlist from whatever the other accounts happened to observe.
+
+The value collected for that allowlist is the one `ec2:Owner` will hold - the
+AMI's `ImageOwnerAlias` where it has one, its numeric `OwnerId` otherwise.
+Collecting `OwnerId` alone yields an allowlist that denies the very AMI the
+scan observed; see `documentation/CHECKS.md` for the dry-run measurements.
 
 This exists because the collected owners had no path into the recommendation:
 `SCPCheckResult` carried no field for them, so every run enabled the SCP at the
@@ -2773,7 +2792,10 @@ class OutputHandler:
 **Placement Hierarchy:**
 1. **Root Level:** Recommended when ALL accounts in org are 100% compliant
 2. **OU Level:** Recommended when ALL accounts in specific OU are 100% compliant
-3. **Account Level:** Recommended for individual compliant accounts
+3. **Account Level:** Recommended for individual compliant accounts, and
+   enabled in those accounts' files. A recommendation reaching a module is
+   itself the signal to enable the policy, because `affected_accounts` is the
+   zero-violation subset at every level
 
 ### RCP Deployment Safety
 

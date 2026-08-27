@@ -1,6 +1,6 @@
 """Check for EC2 instances using AMIs from untrusted owners."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 from boto3.session import Session
 
@@ -52,6 +52,7 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
             "region": result.region,
             "ami_id": result.ami_id,
             "ami_owner": result.ami_owner,
+            "ami_owner_alias": result.ami_owner_alias,
             "ami_name": result.ami_name,
             "owner_unknown_reason": result.owner_unknown_reason,
         }
@@ -72,13 +73,15 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
             check_result: Categorized check result
 
         Returns:
-            Dictionary with check-specific summary fields
+            Dictionary with check-specific summary fields, where
+            `unique_ami_owners` holds the values ec2:Owner will be compared
+            against rather than the raw owner account IDs
         """
         total = len(check_result.violations) + len(check_result.compliant)
         compliant_count = len(check_result.compliant)
         compliance_pct = (compliant_count / total * 100) if total else 100
 
-        ami_owners = set()
+        ami_owners: Set[str] = set()
         unknown_ami_owners: Dict[str, int] = {}
         for item in check_result.violations + check_result.compliant:
             owner = item["ami_owner"]
@@ -88,7 +91,12 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
                 reason = str(item["owner_unknown_reason"])
                 unknown_ami_owners[reason] = unknown_ami_owners.get(reason, 0) + 1
                 continue
-            ami_owners.add(owner)
+            # The allowlist is pasted into an ec2:Owner StringNotEquals, and
+            # that key holds the alias whenever the AMI has one - the numeric
+            # owner of an Amazon or Marketplace image never matches it. See
+            # EC2_OWNER_ALIASES for the measurements.
+            alias = item["ami_owner_alias"]
+            ami_owners.add(str(alias) if alias is not None else str(owner))
 
         return {
             "total_instances": total,

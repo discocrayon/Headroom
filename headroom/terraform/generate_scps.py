@@ -17,6 +17,7 @@ from .utils import (
     ou_path_names,
     write_terraform_file,
 )
+from ..enums import PlacementLevel
 from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlacementRecommendations
 
 # Set up logging
@@ -50,19 +51,46 @@ def _replace_account_id_in_arn(
 
 
 def _get_safe_to_enable_policies(
+    module_name: str,
     recommendations: List[SCPPlacementRecommendations]
 ) -> set[str]:
     """
-    Get set of policies that are safe to enable from recommendations.
+    Get the policies to enable for one module, from its recommendations.
 
-    Only includes policies with 100% compliance.
-    Converts policy names from kebab-case to snake_case.
+    A recommendation reaching a module is itself the signal to enable the
+    policy: `affected_accounts` holds the zero-violation subset at every
+    level, so the placement has already established that no covered account
+    violates the check. There is nothing left to re-check here.
+
+    This used to gate on `compliance_percentage == 100.0`. Root and OU
+    recommendations hardcode that value, so the gate did nothing for them,
+    while account recommendations store an org-wide coverage fraction that is
+    below 100% by construction - account placement only happens when some
+    other account violates the check. Every per-account file therefore
+    emitted every policy as false.
+
+    Args:
+        module_name: Terraform module being built, used in the error
+        recommendations: Placement recommendations targeting this module
+
+    Returns:
+        Terraform variable names, converted from kebab-case to snake_case
+
+    Raises:
+        RuntimeError: If a "none" recommendation reaches a module
     """
     enabled_policies = set()
     for rec in recommendations:
-        if rec.compliance_percentage == 100.0:
-            check_name_terraform = rec.check_name.replace("-", "_")
-            enabled_policies.add(check_name_terraform)
+        if rec.recommended_level == PlacementLevel.NONE.value:
+            raise RuntimeError(
+                f"Module {module_name} was given a recommendation for "
+                f"{rec.check_name} at level 'none'. That is placement saying no "
+                f"account is safe for this check, not a placement to deploy, and "
+                f"grouping drops it before any module is built. Enabling it here "
+                f"would deny actions the covered accounts rely on."
+            )
+        check_name_terraform = rec.check_name.replace("-", "_")
+        enabled_policies.add(check_name_terraform)
     return enabled_policies
 
 
@@ -96,26 +124,37 @@ def _build_ec2_terraform_parameters(
 
     Returns:
         List of TerraformElement objects for EC2 policies
-
-    Raises:
-        RuntimeError: If deny_ec2_ami_owner is enabled with no AMI owners
     """
     parameters: List[TerraformElement] = []
 
     parameters.append(TerraformComment("EC2"))
     deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_policies
+    ec2_allowed_ami_owners = (
+        _get_ec2_allowed_ami_owners(recommendations) if deny_ec2_ami_owner else []
+    )
+
+    # An empty allowlist denies every ec2:RunInstances call rather than none
+    # of them, so it is never rendered. Reaching here means the covered
+    # accounts observed no AMI owner at all, which an account running no
+    # instances does - a fact about those accounts rather than a broken run,
+    # so the policy stays off and the rest of the organization still
+    # generates. The other cause, a result file predating AMI owner
+    # collection, is rejected during parsing.
+    if deny_ec2_ami_owner and not ec2_allowed_ami_owners:
+        logger.warning(
+            f"Module {module_name}: leaving deny_ec2_ami_owner off because no "
+            f"instance in the accounts it covers had a resolvable AMI owner, so "
+            f"the allowlist would be empty."
+        )
+        parameters.append(TerraformComment(
+            "deny_ec2_ami_owner stays off here: no instance in the accounts this "
+            "module covers had a resolvable AMI owner, so the allowlist would be "
+            "empty - and an empty allowlist denies every launch, not none."
+        ))
+        deny_ec2_ami_owner = False
+
     parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
     if deny_ec2_ami_owner:
-        ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
-        if not ec2_allowed_ami_owners:
-            raise RuntimeError(
-                f"Module {module_name} enables deny_ec2_ami_owner with an empty "
-                "ec2_allowed_ami_owners list. An empty allowlist denies every "
-                "ec2:RunInstances call rather than none of them, so it is never "
-                "rendered. Either the result files predate AMI owner collection "
-                "and need re-running, or no instance in the affected accounts "
-                "had a resolvable AMI owner."
-            )
         parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
 
     deny_ec2_imds_hop_limit = "deny_ec2_imds_hop_limit" in enabled_policies
@@ -229,10 +268,11 @@ def _build_scp_terraform_module(
         Complete Terraform module block as a string
 
     Raises:
-        RuntimeError: If a policy is enabled with an allowlist that would
-            deny every request instead of the untrusted ones
+        RuntimeError: If a recommendation that is not a placement reaches a
+            module, or a referenced account or OU is missing from the
+            organization hierarchy
     """
-    enabled_policies = _get_safe_to_enable_policies(recommendations)
+    enabled_policies = _get_safe_to_enable_policies(module_name, recommendations)
 
     parameters: List[TerraformElement] = []
     parameters.extend(_build_ec2_terraform_parameters(module_name, enabled_policies, recommendations))

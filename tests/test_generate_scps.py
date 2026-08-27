@@ -293,15 +293,42 @@ def test_build_scp_terraform_module_with_iam_user_arns_unknown_account() -> None
     assert '"arn:aws:iam::999999999999:user/unknown-account",' in result
 
 
-def test_build_scp_terraform_module_partial_compliance_skips_check() -> None:
-    """Should set SCP flag to false when compliance is less than 100%."""
+def test_build_scp_terraform_module_rejects_a_none_level_recommendation() -> None:
+    """
+    A "none" recommendation is not a placement and must never reach a module.
+
+    Placement emits it when no account is safe, and the grouping step drops
+    it before any module is built. Arriving here means that step was
+    bypassed, which would enable a policy for accounts that violate it.
+    """
+    org = make_org_empty()
+    none_rec = SCPPlacementRecommendations(
+        check_name="deny-ec2-imds-v1",
+        recommended_level="none",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=0.0,
+        reasoning="test",
+    )
+    with pytest.raises(RuntimeError, match=r"scps_root.*deny-ec2-imds-v1.*'none'"):
+        _build_scp_terraform_module(
+            module_name="scps_root",
+            target_id_reference="local.root_ou_id",
+            recommendations=[none_rec],
+            comment="Organization Root",
+            organization_hierarchy=org
+        )
+
+
+def test_build_scp_terraform_module_leaves_unrecommended_checks_false() -> None:
+    """A check with no recommendation for this module stays off."""
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-ec2-imds-v1",
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=[],
-        compliance_percentage=80.0,
+        compliance_percentage=100.0,
         reasoning="test",
     )
     result = _build_scp_terraform_module(
@@ -311,15 +338,23 @@ def test_build_scp_terraform_module_partial_compliance_skips_check() -> None:
         comment="Organization Root",
         organization_hierarchy=org
     )
-    assert "deny_ec2_imds_v1 = false" in result
+    assert "deny_ec2_imds_v1 = true" in result
     assert "deny_iam_user_creation = false" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
     assert "iam_allowed_users" not in result
     assert 'module "scps_root"' in result
 
 
-def test_build_scp_terraform_module_mixed_compliance_includes_only_100_percent() -> None:
-    """Should only set to true checks that are 100% compliant."""
+def test_build_scp_terraform_module_enables_every_recommendation_it_is_given() -> None:
+    """
+    A recommendation reaching a module IS the signal to enable its policy.
+
+    `affected_accounts` is the zero-violation subset at every level, so there
+    is nothing left to re-check here. Generation used to gate on
+    `compliance_percentage == 100.0`, a value root and OU recommendations
+    hardcode and account recommendations can never reach - see
+    test_account_level_recommendation_enables_its_policy.
+    """
     org = make_org_empty()
     recs = [
         SCPPlacementRecommendations(
@@ -335,7 +370,7 @@ def test_build_scp_terraform_module_mixed_compliance_includes_only_100_percent()
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
-            compliance_percentage=75.0,
+            compliance_percentage=100.0,
             reasoning="test",
         ),
     ]
@@ -347,9 +382,8 @@ def test_build_scp_terraform_module_mixed_compliance_includes_only_100_percent()
         organization_hierarchy=org
     )
     assert "deny_ec2_imds_v1 = true" in result
-    assert "deny_iam_user_creation = false" in result
+    assert "deny_iam_user_creation = true" in result
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
-    assert "iam_allowed_users" not in result
 
 
 def test_build_scp_terraform_module_check_name_with_hyphens_converts_to_underscores() -> None:
@@ -663,14 +697,17 @@ def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners
     assert "ec2_allowed_ami_owners = [" in result
 
 
-def test_build_scp_terraform_module_ec2_ami_owner_empty_allowlist_aborts() -> None:
+def test_build_scp_terraform_module_ec2_ami_owner_empty_allowlist_stays_off() -> None:
     """
-    An empty AMI owner allowlist aborts rather than rendering.
+    An empty AMI owner allowlist turns the policy off rather than rendering.
 
     `ec2_allowed_ami_owners = []` denies every ec2:RunInstances call instead
-    of denying none of them, so it is never a safe thing to emit. The run
-    used to produce exactly that on every organization, because nothing
-    carried the check's observed owners into the recommendation.
+    of denying none of them, so it is never a safe thing to emit. It arises
+    whenever no instance in the covered accounts had a resolvable AMI owner,
+    which an account with no EC2 instances at all reaches placement as. That
+    is a fact about those accounts rather than a broken run: the module says
+    so and generation continues. A result file predating AMI owner collection
+    is the other cause, and parsing rejects that before reaching here.
     """
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
@@ -681,11 +718,52 @@ def test_build_scp_terraform_module_ec2_ami_owner_empty_allowlist_aborts() -> No
         compliance_percentage=100.0,
         reasoning="test",
     )
-    with pytest.raises(RuntimeError, match=r"scps_root enables deny_ec2_ami_owner with an empty"):
-        _build_scp_terraform_module(
-            module_name="scps_root",
-            target_id_reference="local.root_ou_id",
-            recommendations=[rec],
-            comment="Organization Root",
-            organization_hierarchy=org
-        )
+    result = _build_scp_terraform_module(
+        module_name="scps_root",
+        target_id_reference="local.root_ou_id",
+        recommendations=[rec],
+        comment="Organization Root",
+        organization_hierarchy=org
+    )
+
+    assert "deny_ec2_ami_owner = false" in result
+    assert "ec2_allowed_ami_owners" not in result
+    assert "no instance in the accounts this module covers" in result
+
+
+def test_account_level_recommendation_enables_its_policy() -> None:
+    """
+    An account-level recommendation enables the policy in that account's file.
+
+    Account placement only happens when at least one OTHER account violates
+    the check, so an account recommendation's org-wide coverage is below 100%
+    by construction. Generation used to read that fraction as the safety
+    signal, which made every per-account file emit every policy as false -
+    the whole tier produced nothing but disabled policies.
+    """
+    org = OrganizationHierarchy(
+        root_id="r-root",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                "111111111111", "safe-account", "r-root", ["Root"]
+            ),
+        },
+    )
+    rec = SCPPlacementRecommendations(
+        check_name="deny-ec2-imds-v1",
+        recommended_level="account",
+        target_ou_id=None,
+        affected_accounts=["111111111111"],
+        compliance_percentage=100.0,
+        reasoning="Only 1 out of 3 accounts have zero violations - deploy at individual account level",
+    )
+    result = _build_scp_terraform_module(
+        module_name="scps_safe_account",
+        target_id_reference="local.safe_account_account_id",
+        recommendations=[rec],
+        comment="Account: safe-account",
+        organization_hierarchy=org
+    )
+
+    assert "deny_ec2_imds_v1 = true" in result

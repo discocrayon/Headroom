@@ -691,7 +691,10 @@ class TestSCPPlacementDetermination:
         assert len(result) == 1
         assert result[0].recommended_level == "account"
         assert result[0].target_ou_id is None
-        assert result[0].compliance_percentage == pytest.approx(33.3, rel=1e-1)
+        # Every account this recommendation targets has zero violations, the
+        # same thing root and OU recommendations report. The 1-of-3 coverage
+        # is org-wide reach, and lives in the reasoning.
+        assert result[0].compliance_percentage == 100.0
         assert "Only 1 out of 3 accounts have zero violations" in result[0].reasoning
         assert "222222222222" in result[0].affected_accounts
 
@@ -1130,10 +1133,17 @@ class TestGenerateSCPTerraform:
                 assert "deny_ec2_imds_v1 = true" in content
                 assert "local.fort_knox_account_id" in content
 
-    def test_generate_scp_terraform_non_compliant_accounts_skipped(self) -> None:
-        """Test that non-compliant accounts are skipped in Terraform generation."""
+    def test_generate_scp_terraform_account_level_enables_the_policy(self) -> None:
+        """
+        Each safe account's file enables the policy the recommendation names.
+
+        An account-level recommendation exists only for accounts with zero
+        violations, and only when some other account has some - so the tier's
+        org-wide coverage never reaches 100%. Generation used to gate on that
+        fraction, so every per-account file it wrote had every policy false
+        and protected nothing.
+        """
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Create mock organization hierarchy
             hierarchy = OrganizationHierarchy(
                 root_id="r-1234",
                 organizational_units={},
@@ -1143,32 +1153,30 @@ class TestGenerateSCPTerraform:
                 }
             )
 
-            # Create mock recommendations with mixed compliance
             recommendations = [
                 SCPPlacementRecommendations(
                     check_name="deny_ec2_imds_v1",
                     recommended_level="account",
                     target_ou_id=None,
                     affected_accounts=["222222222222", "111111111111"],
-                    compliance_percentage=50.0,  # Not 100% compliant
-                    reasoning="Mixed compliance"
+                    compliance_percentage=100.0,
+                    reasoning="Only 2 out of 5 accounts have zero violations - deploy at individual account level"
                 )
             ]
 
-            # Generate Terraform files
             generate_scp_terraform(recommendations, hierarchy, temp_dir)
 
-            # Check that files were created but without the SCP flag
             output_path = Path(temp_dir)
             fort_knox_file = output_path / "fort_knox_scps.tf"
 
             assert fort_knox_file.exists()
 
-            # Check content - should not have the SCP flag set to true
             with open(fort_knox_file, 'r') as f:
                 content = f.read()
                 assert "fort-knox" in content
-                assert "deny_ec2_imds_v1 = true" not in content
+                assert "deny_ec2_imds_v1 = true" in content
+                # A check with no recommendation for this account stays off.
+                assert "deny_rds_unencrypted = false" in content
 
     def test_generate_scp_terraform_ou_level(self) -> None:
         """Test generating Terraform files for OU-level SCP recommendations."""
@@ -1377,7 +1385,7 @@ class TestPrintPolicyRecommendations:
         assert any("SCP RECOMMENDATIONS" in str(call) for call in printed_calls)
         assert any("deny_ec2_imds_v1" in str(call) for call in printed_calls)
         assert any("75.5%" in str(call) for call in printed_calls)
-        assert any("Compliance:" in str(call) for call in printed_calls)
+        assert any("Compliance (affected accounts):" in str(call) for call in printed_calls)
 
     def test_print_policy_recommendations_with_rcp_recommendations(self) -> None:
         """Test printing RCP recommendations shows third-party accounts."""
@@ -1752,6 +1760,79 @@ class TestAmiOwnerAllowlistWiring:
 
             assert len(result) == 1
             assert result[0].ami_owners == self.OWNERS_ACCOUNT_1
+
+    def test_parse_rejects_a_result_file_predating_ami_owner_collection(self) -> None:
+        """
+        A deny_ec2_ami_owner result with no unique_ami_owners key aborts.
+
+        Once parsed, a file written before the check collected owners is
+        indistinguishable from an account that ran no instances - both yield
+        an empty allowlist. They need opposite handling, so the distinction is
+        drawn while the file is still in hand: a missing key is a stale
+        artifact to re-run, an empty list is a fact about the account.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_ami_owner"
+            check_dir.mkdir(parents=True)
+
+            stale = {
+                "summary": {
+                    "account_name": "test-account-1",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_ami_owner",
+                    "total_instances": 2,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 2,
+                    "compliance_percentage": 100.0,
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+
+            with open(check_dir / "test-account-1_111111111111.json", 'w') as f:
+                json.dump(stale, f)
+
+            with pytest.raises(RuntimeError, match="predates AMI owner collection"):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+    def test_parse_accepts_an_account_that_observed_no_ami_owners(self) -> None:
+        """
+        An account with no instances reports an empty list, and that parses.
+
+        This is the case the missing-key rejection has to be told apart from:
+        the check ran, found nothing to look at, and said so.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_ami_owner"
+            check_dir.mkdir(parents=True)
+
+            empty = {
+                "summary": {
+                    "account_name": "test-account-1",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_ami_owner",
+                    "total_instances": 0,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 0,
+                    "compliance_percentage": 100.0,
+                    "unique_ami_owners": [],
+                    "unknown_ami_owners": {}
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+
+            with open(check_dir / "test-account-1_111111111111.json", 'w') as f:
+                json.dump(empty, f)
+
+            result = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+            assert len(result) == 1
+            assert result[0].ami_owners == []
 
     def test_root_recommendation_unions_ami_owners(self) -> None:
         """Root placement allowlists every owner seen in any affected account."""
