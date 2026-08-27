@@ -638,9 +638,21 @@ def analyze_scp_compliance(
     logger.info(f"Parsing result files from {config.results_dir}")
     results_data = parse_scp_result_files(config.results_dir, organization_hierarchy)
 
+    # An empty list here means nothing was read, not that nothing needs a
+    # policy. The caller reconciles the SCP directory against this function's
+    # output, so returning [] would delete every generated policy file and
+    # detach every SCP in the organization on the next apply - turning a
+    # credential or path problem into a silent removal of the controls.
+    # Placement legitimately finding no safe target is a different answer, and
+    # it arrives as recommendations that name no placement.
     if not results_data:
-        logger.warning("No result files found to analyze")
-        return []
+        raise RuntimeError(
+            f"No SCP result files were parsed from {config.results_dir}. Every "
+            "generated policy file is deleted when a run places nothing, so a "
+            "run that read nothing cannot be told apart from an organization "
+            "that needs no policies. Check that the analysis wrote results to "
+            "this directory before generating Terraform."
+        )
 
     logger.info(f"Parsed {len(results_data)} result entries")
 

@@ -1141,14 +1141,19 @@ if_check_has_allowlist:
   - path: headroom/terraform/generate_scps.py
     function: "_build_{service}_terraform_parameters"
     add_lines: |
-      Emit the list parameter, and raise RuntimeError naming the module
-      if it is empty. Never render an empty allowlist.
+      Emit the list parameter only when it has entries. An empty allowlist
+      leaves the policy off, with a TerraformComment saying why - an empty
+      list on a Deny denies everything rather than nothing, and accounts
+      that own none of the resource legitimately report none. A result file
+      that predates the collection is the other cause, and parsing rejects
+      that outright: an absent summary key and an empty one mean opposite
+      things, and only the file itself can tell them apart.
 
   - path: tests/test_parse_results.py
     must_test: [summary_field_carried, union_across_accounts, other_checks_unaffected]
 
   - path: tests/test_generate_scps.py
-    must_test: [renders_populated_allowlist, aborts_on_empty_allowlist]
+    must_test: [renders_populated_allowlist, empty_allowlist_leaves_policy_off]
 
 if_check_has_exemptions:
   - path: test_environment/modules/scps/locals.tf
