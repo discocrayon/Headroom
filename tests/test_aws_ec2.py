@@ -646,7 +646,9 @@ class TestGetEc2AmiOwnerAnalysis:
             [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
         )
         mock_regional_ec2.describe_images.return_value = {
-            "Images": [{"OwnerId": "amazon", "Name": "old-al2"}]
+            "Images": [
+                {"OwnerId": "444444444444", "ImageOwnerAlias": "amazon", "Name": "old-al2"}
+            ]
         }
 
         get_ec2_ami_owner_analysis(mock_session)
@@ -712,7 +714,8 @@ class TestGetEc2AmiOwnerAnalysis:
         """A deprecated AMI resolves to its owner and is not worth a warning."""
         results, log = self.resolve_single_ami(
             {
-                "OwnerId": "amazon",
+                "OwnerId": "444444444444",
+                "ImageOwnerAlias": "amazon",
                 "Name": "old-al2",
                 "State": "available",
                 "DeprecationTime": "2024-01-01T00:00:00.000Z",
@@ -720,9 +723,68 @@ class TestGetEc2AmiOwnerAnalysis:
             caplog,
         )
 
-        assert results[0].ami_owner == "amazon"
+        assert results[0].ami_owner == "444444444444"
         assert results[0].owner_unknown_reason is None
         assert log == ""
+
+    def test_get_ec2_ami_owner_analysis_records_amazon_owner_alias(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An Amazon-published AMI carries a numeric owner and the amazon alias."""
+        results, _ = self.resolve_single_ami(
+            {
+                "OwnerId": "111111111111",
+                "ImageOwnerAlias": "amazon",
+                "Name": "al2023-ami-kernel-default-x86_64",
+            },
+            caplog,
+        )
+
+        assert results[0].ami_owner == "111111111111"
+        assert results[0].ami_owner_alias == "amazon"
+
+    def test_get_ec2_ami_owner_analysis_records_marketplace_owner_alias(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A Marketplace AMI aliases to aws-marketplace, whichever account published it."""
+        results, _ = self.resolve_single_ami(
+            {
+                "OwnerId": "222222222222",
+                "ImageOwnerAlias": "aws-marketplace",
+                "Name": "ubuntu-24.04-x86_64",
+            },
+            caplog,
+        )
+
+        assert results[0].ami_owner == "222222222222"
+        assert results[0].ami_owner_alias == "aws-marketplace"
+
+    def test_get_ec2_ami_owner_analysis_leaves_alias_unset_when_absent(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A self-built or directly published AMI has no alias, and none is invented."""
+        results, _ = self.resolve_single_ami(
+            {"OwnerId": "333333333333", "Name": "golden-base"},
+            caplog,
+        )
+
+        assert results[0].ami_owner == "333333333333"
+        assert results[0].ami_owner_alias is None
+
+    def test_get_ec2_ami_owner_analysis_rejects_unrecognised_owner_alias(self) -> None:
+        """An alias outside the two AWS documents cannot be mapped onto ec2:Owner."""
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.return_value = {
+            "Images": [{"OwnerId": "333333333333", "ImageOwnerAlias": "self"}]
+        }
+
+        with pytest.raises(RuntimeError, match="unrecognised owner alias"):
+            get_ec2_ami_owner_analysis(mock_session)
 
     def test_get_ec2_ami_owner_analysis_records_ami_hidden_from_this_account(self) -> None:
         """An AMI the include flags do not surface is recorded, not raised."""
@@ -832,8 +894,16 @@ class TestGetEc2AmiOwnerAnalysis:
         mock_regional_ec2_2.get_paginator.return_value = mock_paginator_2
 
         mock_regional_ec2_1.describe_images.side_effect = [
-            {"Images": [{"OwnerId": "amazon", "Name": "Amazon Linux 2"}]},
-            {"Images": [{"OwnerId": "aws-marketplace", "Name": "Marketplace AMI"}]}
+            {"Images": [{
+                "OwnerId": "444444444444",
+                "ImageOwnerAlias": "amazon",
+                "Name": "Amazon Linux 2",
+            }]},
+            {"Images": [{
+                "OwnerId": "555555555555",
+                "ImageOwnerAlias": "aws-marketplace",
+                "Name": "Marketplace AMI",
+            }]}
         ]
 
         mock_regional_ec2_2.describe_images.return_value = {
@@ -855,18 +925,21 @@ class TestGetEc2AmiOwnerAnalysis:
 
         assert results[0].instance_id == "i-amazon"
         assert results[0].ami_id == "ami-12345678"
-        assert results[0].ami_owner == "amazon"
+        assert results[0].ami_owner == "444444444444"
+        assert results[0].ami_owner_alias == "amazon"
         assert results[0].ami_name == "Amazon Linux 2"
         assert results[0].region == "us-east-1"
 
         assert results[1].instance_id == "i-marketplace"
         assert results[1].ami_id == "ami-87654321"
-        assert results[1].ami_owner == "aws-marketplace"
+        assert results[1].ami_owner == "555555555555"
+        assert results[1].ami_owner_alias == "aws-marketplace"
         assert results[1].region == "us-east-1"
 
         assert results[2].instance_id == "i-custom"
         assert results[2].ami_id == "ami-custom123"
         assert results[2].ami_owner == "222222222222"
+        assert results[2].ami_owner_alias is None
         assert results[2].region == "us-west-2"
 
     def test_get_ec2_ami_owner_analysis_ami_access_denied(self) -> None:
@@ -937,7 +1010,9 @@ class TestGetEc2AmiOwnerAnalysis:
         mock_regional_ec2.get_paginator.return_value = mock_paginator
 
         mock_regional_ec2.describe_images.return_value = {
-            "Images": [{"OwnerId": "amazon", "Name": "Amazon Linux"}]
+            "Images": [
+                {"OwnerId": "444444444444", "ImageOwnerAlias": "amazon", "Name": "Amazon Linux"}
+            ]
         }
 
         def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
@@ -980,7 +1055,9 @@ class TestGetEc2AmiOwnerAnalysis:
         mock_regional_ec2.get_paginator.return_value = mock_paginator
 
         mock_regional_ec2.describe_images.return_value = {
-            "Images": [{"OwnerId": "amazon", "Name": "AL2"}]
+            "Images": [
+                {"OwnerId": "444444444444", "ImageOwnerAlias": "amazon", "Name": "AL2"}
+            ]
         }
 
         def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:

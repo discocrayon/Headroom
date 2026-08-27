@@ -304,8 +304,9 @@ Unless `rds:StorageEncrypted` condition key is true.
 **How it Works**:
 - Scans all AWS regions for EC2 instances
 - Retrieves AMI information for each instance
-- Determines AMI owner for each instance
-- Identifies unique AMI owners across all instances
+- Records, for each instance, the value `ec2:Owner` will hold on a relaunch -
+  see **What `ec2:Owner` Holds** below
+- Identifies the unique such values across all instances
 
 **Policy Coverage**: Denies the EC2 launch paths - `ec2:RunInstances`,
 `ec2:CreateFleet`, `ec2:RequestSpotFleet` and `ec2:RequestSpotInstances` - on
@@ -315,10 +316,52 @@ The statement is scoped to the image because `ec2:Owner` exists on no other
 resource these actions touch. `ec2:ModifyFleet` also supports the key and is
 excluded as a deliberate scope decision.
 
-**Allowlist Support**: The unique AMI owners observed across the accounts a
+**What `ec2:Owner` Holds**: the AMI's owner *alias* when `DescribeImages`
+returns one, and the numeric `OwnerId` only when it does not. `OwnerId` and
+`ImageOwnerAlias` are separate fields, and `ImageOwnerAlias` is present only
+for Amazon-published and Marketplace images. Measured with
+`RunInstances --dry-run` against the statement this repo generates:
+
+| AMI | allowlist | result |
+| --- | --- | --- |
+| Amazon Linux 2023 (`ImageOwnerAlias: amazon`) | `[numeric OwnerId]` | DENY |
+| Amazon Linux 2023 | `["amazon"]` | ALLOW |
+| Amazon Linux 2023 | `[numeric OwnerId, "amazon"]` | ALLOW |
+| Rocky Linux (no `ImageOwnerAlias`) | `[numeric OwnerId]` | ALLOW |
+| Rocky Linux | `["amazon"]` | DENY |
+
+`aws-marketplace` is inferred from the `amazon` rows rather than measured:
+every reachable Marketplace AMI required a subscription, and EC2 returns
+`OptInRequired` before it evaluates the statement, so a dry run there cannot
+tell an allow from a deny.
+
+Recording only the numeric owner - which this check used to do - builds an
+allowlist that denies the very AMI a clean scan observed, because
+`StringNotEquals` matches whenever the key holds anything other than a listed
+value. Both branches are common: Debian and Canonical publish through
+Marketplace and carry an alias, while Rocky, AlmaLinux and Fedora/CentOS
+publish directly and do not.
+
+Allowlisting an alias is broader than the AMI observed. `ec2:Owner` has no
+narrower form for an Amazon or Marketplace image, so `amazon` permits every
+Amazon-published AMI and `aws-marketplace` every Marketplace one. The
+alternative is not a narrower policy but a broken one.
+
+**Allowlist Support**: The unique values observed across the accounts a
 placement covers are unioned into the `ec2_allowed_ami_owners` Terraform
-variable. Generation aborts rather than emitting an empty allowlist, which
-would deny every launch instead of none of them.
+variable. An empty allowlist is never emitted - it would deny every launch
+instead of none of them. Two things produce one, and they are handled
+differently:
+
+- **No instance in the covered accounts had a resolvable AMI owner.** An
+  account running no instances reaches placement as safe and contributes
+  nothing. This is a fact about those accounts, so the module leaves
+  `deny_ec2_ami_owner = false` with a comment saying why, and generation
+  continues for the rest of the organization.
+- **A result file predates AMI owner collection.** Its summary has no
+  `unique_ami_owners` key at all. Parsing rejects it by path, because once
+  parsed it is indistinguishable from the case above and would silently
+  borrow whatever the other accounts observed. Re-run the check.
 
 **Unresolvable AMIs**: An instance outlives the visibility of the AMI it was
 launched from, so `DescribeImages` does not always return one. The lookup sets
@@ -792,7 +835,8 @@ China ARNs all resolve.
 
 ### Some Checks Include
 
-- **Exemption Support**: Tag-based exemptions (EC2 IMDSv1 by role tag, S3)
+- **Exemption Support**: Tag-based exemptions (EC2 IMDSv1 by the instance's
+  own tag, standing in for the launch request's; S3)
 - **Allowlist Generation**: Auto-generated allowlists (IAM users, third-party accounts)
 - **Safety Mechanisms**: Prevents breaking existing access patterns (S3 Federated principals)
 - **Wildcard Detection**: Identifies principals requiring CloudTrail analysis
