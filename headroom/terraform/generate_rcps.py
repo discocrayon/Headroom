@@ -11,13 +11,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from .models import TerraformModule, TerraformParameter, TerraformComment, TerraformElement
+from .models import (
+    TerraformComment,
+    TerraformElement,
+    TerraformModule,
+    TerraformParameter,
+    TerraformPlan,
+)
 from .utils import (
     make_ou_base_names,
     make_safe_variable_name,
     ou_id_local_name,
     ou_path_names,
-    write_terraform_file,
+    write_terraform_plan,
 )
 from ..checks.registry import get_check_names
 from ..types import (
@@ -28,6 +34,7 @@ from ..types import (
     RCPPlacementRecommendations,
 )
 from ..constants import (
+    ORG_INFO_FILENAME,
     DENY_STS_THIRD_PARTY_ASSUMEROLE,
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
@@ -606,31 +613,33 @@ def _build_rcp_terraform_module(
     return module.render()
 
 
-def _generate_account_rcp_terraform(
+def _render_account_rcp_terraform(
     account_id: str,
     recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate and write Terraform file for account-level RCP.
+    Render the Terraform file for one account's RCPs.
 
     Args:
         account_id: AWS account ID
         recs: List of RCP recommendations for this account
         organization_hierarchy: Organization structure information
-        output_path: Directory to write Terraform files to
+        output_path: Directory the file belongs in
+
+    Returns:
+        Tuple of (destination path, rendered content)
+
+    Raises:
+        RuntimeError: If the account is missing from the organization hierarchy
     """
     account_info = organization_hierarchy.accounts.get(account_id)
     if not account_info:
         raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
 
     account_name = make_safe_variable_name(account_info.account_name)
-    filename = f"{account_name}_rcps.tf"
-    filepath = output_path / filename
-
-    if not recs:
-        return
+    filepath = output_path / f"{account_name}_rcps.tf"
 
     terraform_content = _build_rcp_terraform_module(
         module_name=f"rcps_{account_name}",
@@ -638,23 +647,30 @@ def _generate_account_rcp_terraform(
         recommendations=recs,
         comment=account_info.account_name
     )
-    write_terraform_file(filepath, terraform_content, "RCP")
+
+    return filepath, terraform_content
 
 
-def _generate_ou_rcp_terraform(
+def _render_ou_rcp_terraform(
     ou_id: str,
     recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate and write Terraform file for OU-level RCP.
+    Render the Terraform file for one OU's RCPs.
 
     Args:
         ou_id: Organizational Unit ID
         recs: List of RCP recommendations for this OU
         organization_hierarchy: Organization structure information
-        output_path: Directory to write Terraform files to
+        output_path: Directory the file belongs in
+
+    Returns:
+        Tuple of (destination path, rendered content)
+
+    Raises:
+        RuntimeError: If the OU is missing from the organization hierarchy
     """
     ou_info = organization_hierarchy.organizational_units.get(ou_id)
     if not ou_info:
@@ -669,11 +685,7 @@ def _generate_ou_rcp_terraform(
     path_label = " / ".join(
         ou_path_names(ou_id, organization_hierarchy.organizational_units)
     )
-    filename = f"{base_name}_ou_rcps.tf"
-    filepath = output_path / filename
-
-    if not recs:
-        return
+    filepath = output_path / f"{base_name}_ou_rcps.tf"
 
     terraform_content = _build_rcp_terraform_module(
         module_name=f"rcps_{base_name}_ou",
@@ -681,25 +693,25 @@ def _generate_ou_rcp_terraform(
         recommendations=recs,
         comment=f"OU {path_label}"
     )
-    write_terraform_file(filepath, terraform_content, "RCP")
+
+    return filepath, terraform_content
 
 
-def _generate_root_rcp_terraform(
+def _render_root_rcp_terraform(
     recs: List[RCPPlacementRecommendations],
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate and write Terraform file for root-level RCP.
+    Render the Terraform file for root-level RCPs.
 
     Args:
         recs: List of RCP recommendations for root level
-        output_path: Directory to write Terraform files to
-    """
-    filename = "root_rcps.tf"
-    filepath = output_path / filename
+        output_path: Directory the file belongs in
 
-    if not recs:
-        return
+    Returns:
+        Tuple of (destination path, rendered content)
+    """
+    filepath = output_path / "root_rcps.tf"
 
     terraform_content = _build_rcp_terraform_module(
         module_name="rcps_root",
@@ -707,7 +719,8 @@ def _generate_root_rcp_terraform(
         recommendations=recs,
         comment="Organization Root"
     )
-    write_terraform_file(filepath, terraform_content, "RCP")
+
+    return filepath, terraform_content
 
 
 def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
@@ -722,10 +735,10 @@ def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
         rcps_output_path: RCP output directory where symlink should be created
         scps_dir: SCP directory path (used to compute relative path to grab_org_info.tf)
     """
-    symlink_path = rcps_output_path / "grab_org_info.tf"
+    symlink_path = rcps_output_path / ORG_INFO_FILENAME
 
     # Compute relative path from RCP directory to SCP grab_org_info.tf
-    scps_grab_org_info = Path(scps_dir) / "grab_org_info.tf"
+    scps_grab_org_info = Path(scps_dir) / ORG_INFO_FILENAME
     target_path = os.path.relpath(scps_grab_org_info, rcps_output_path)
 
     # Remove existing file or symlink if present
@@ -738,27 +751,26 @@ def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
     logger.info(f"Created symlink: {symlink_path} -> {target_path}")
 
 
-def generate_rcp_terraform(
+def _render_rcp_terraform_plan(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_dir: str = "test_environment/rcps"
-) -> None:
+    output_path: Path
+) -> TerraformPlan:
     """
-    Generate Terraform files for RCP deployment based on recommendations.
+    Render every RCP file this run's recommendations call for.
+
+    Nothing is written here. A target absent from the returned plan is a target
+    this run does not want a file for, which is what lets reconciliation delete
+    the file a previous run left behind.
 
     Args:
         recommendations: List of RCP placement recommendations
         organization_hierarchy: Organization structure information
-        output_dir: Directory to write Terraform files to
+        output_path: Directory the files belong in
+
+    Returns:
+        Rendered file contents, keyed by destination path
     """
-    if not recommendations:
-        logger.info("No RCP recommendations to generate Terraform for")
-        return
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Group recommendations by level and target
     account_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     ou_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     root_recommendations: List[RCPPlacementRecommendations] = []
@@ -776,27 +788,59 @@ def generate_rcp_terraform(
         if rec.recommended_level == "root":
             root_recommendations.append(rec)
 
-    # Generate Terraform file for root level
+    plan: TerraformPlan = {}
+
     if root_recommendations:
-        _generate_root_rcp_terraform(
-            root_recommendations,
-            output_path
-        )
+        filepath, content = _render_root_rcp_terraform(root_recommendations, output_path)
+        plan[filepath] = content
 
-    # Generate Terraform files for each account
     for account_id, recs in account_recommendations.items():
-        _generate_account_rcp_terraform(
-            account_id,
-            recs,
-            organization_hierarchy,
-            output_path
+        filepath, content = _render_account_rcp_terraform(
+            account_id, recs, organization_hierarchy, output_path
         )
+        plan[filepath] = content
 
-    # Generate Terraform files for each OU
     for ou_id, recs in ou_recommendations.items():
-        _generate_ou_rcp_terraform(
-            ou_id,
-            recs,
-            organization_hierarchy,
-            output_path
+        filepath, content = _render_ou_rcp_terraform(
+            ou_id, recs, organization_hierarchy, output_path
         )
+        plan[filepath] = content
+
+    return plan
+
+
+def generate_rcp_terraform(
+    recommendations: List[RCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy,
+    output_dir: str = "test_environment/rcps"
+) -> TerraformPlan:
+    """
+    Generate Terraform files for RCP deployment based on recommendations.
+
+    An empty recommendation list is a plan for an empty directory, not a
+    no-op. The caller reconciles against the returned plan, so a policy that no
+    longer has a placement loses the file that deploys it.
+
+    Args:
+        recommendations: List of RCP placement recommendations
+        organization_hierarchy: Organization structure information
+        output_dir: Directory to write Terraform files to
+
+    Returns:
+        The files this run wants the directory to hold, keyed by path
+
+    Raises:
+        RuntimeError: If a recommendation names a target the organization
+            hierarchy does not have
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Rendered in full first: a raise here has written nothing, leaving the
+    # previous run's output complete rather than half replaced.
+    plan = _render_rcp_terraform_plan(
+        recommendations, organization_hierarchy, output_path
+    )
+    write_terraform_plan(plan, "RCP")
+
+    return plan

@@ -876,9 +876,23 @@ class TestParseResultsIntegration:
             }
         )
 
-        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            # Should not raise any exceptions
-            analyze_scp_compliance(config, mock_hierarchy)
+        parsed = [
+            SCPCheckResult(
+                account_id="111111111111",
+                account_name="test-account",
+                check_name="deny_ec2_imds_v1",
+                violations=0,
+                exemptions=0,
+                compliant=3,
+                total_instances=3,
+                compliance_percentage=100.0,
+            )
+        ]
+
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=parsed):
+            recommendations = analyze_scp_compliance(config, mock_hierarchy)
+
+        assert [rec.check_name for rec in recommendations] == ["deny_ec2_imds_v1"]
 
     def test_parse_scp_results_missing_management_account_id(self) -> None:
         """Test that analyze_scp_compliance works with minimal organization hierarchy."""
@@ -900,11 +914,24 @@ class TestParseResultsIntegration:
             accounts={}
         )
 
-        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            analyze_scp_compliance(config, mock_hierarchy)
+        parsed = [
+            SCPCheckResult(
+                account_id="111111111111",
+                account_name="test-account",
+                check_name="deny_ec2_imds_v1",
+                violations=0,
+                exemptions=0,
+                compliant=1,
+                total_instances=1,
+                compliance_percentage=100.0,
+            )
+        ]
+
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=parsed):
+            assert analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_no_result_files(self) -> None:
-        """Test handling when no result files are found."""
+        """Test that no result files stops the run rather than emptying the directory."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -935,11 +962,11 @@ class TestParseResultsIntegration:
         )
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            # Should return early without error
-            analyze_scp_compliance(config, mock_hierarchy)
+            with pytest.raises(RuntimeError, match="No SCP result files"):
+                analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_assume_role_failure(self) -> None:
-        """Test that analyze_scp_compliance handles empty results gracefully."""
+        """Test that analyze_scp_compliance refuses to proceed on no evidence."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -958,10 +985,12 @@ class TestParseResultsIntegration:
             accounts={}
         )
 
+        # Zero parsed results is the absence of evidence, not the evidence of
+        # absence. Returning [] would reconcile the SCP directory to empty and
+        # detach every policy in the organization on the next apply.
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            # Should handle gracefully
-            result = analyze_scp_compliance(config, mock_hierarchy)
-            assert result == []
+            with pytest.raises(RuntimeError, match="No SCP result files"):
+                analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_organization_analysis_failure(self) -> None:
         """Test that analyze_scp_compliance works with minimal hierarchy data."""
@@ -984,8 +1013,8 @@ class TestParseResultsIntegration:
         )
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            result = analyze_scp_compliance(config, mock_hierarchy)
-            assert result == []
+            with pytest.raises(RuntimeError, match="No SCP result files"):
+                analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_with_recommendations_output(self) -> None:
         """Test analyze_scp_compliance returns recommendations without printing."""
