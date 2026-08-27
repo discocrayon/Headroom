@@ -276,6 +276,11 @@ is AP-009, not a proxy.
 
 **Examples:**
 - Only allow EC2 instances from specific AMI owners (amazon, aws-marketplace, trusted account IDs)
+  - The scanner must record the value the condition key will actually hold,
+    not the value that names the same thing elsewhere in the API. `ec2:Owner`
+    is the AMI's `ImageOwnerAlias` when it has one and its numeric `OwnerId`
+    otherwise, so an allowlist built from `OwnerId` alone denies every
+    Amazon and Marketplace AMI - measurements in `documentation/CHECKS.md`
 - Only allow S3 buckets with specific encryption types
 - Restrict actions based on approved source IPs or VPCs
 

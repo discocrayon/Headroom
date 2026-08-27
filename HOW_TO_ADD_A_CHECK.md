@@ -1108,6 +1108,14 @@ must_modify:
 # the SCP is still enabled, and the allowlist renders empty - which for a
 # Deny statement denies everything rather than nothing. deny_ec2_ami_owner
 # shipped with the first and last steps only.
+#
+# Collect the value the CONDITION KEY will hold, not the field of the same
+# name in the describe call. They can differ: ec2:Owner is an AMI's
+# ImageOwnerAlias when it has one and its numeric OwnerId otherwise, so
+# deny_ec2_ami_owner's allowlist of OwnerIds denied every Amazon and
+# Marketplace AMI the scan had just cleared. Measure it with a --dry-run
+# probe before believing either field, and shape the fixtures like real API
+# responses - an unrealistic one (OwnerId: "amazon") hid this for a release.
 if_check_has_allowlist:
   - path: headroom/checks/{type}/{check_name}.py
     function: "build_summary_fields"

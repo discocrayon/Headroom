@@ -57,8 +57,10 @@ class DenyEc2AmiOwner:
         instance_id: EC2 instance identifier
         region: AWS region where instance exists
         ami_id: AMI identifier used to launch instance
-        ami_owner: AMI owner account ID or alias, or None when the AMI's owner
-            cannot be determined
+        ami_owner: AMI owner account ID, or None when the AMI's owner cannot
+            be determined
+        ami_owner_alias: The AMI's owner alias when AWS publishes one, else
+            None. This is what `ec2:Owner` resolves to - see EC2_OWNER_ALIASES
         ami_name: AMI name (may be None if the AMI no longer exists)
         owner_unknown_reason: Why the owner could not be determined, or None
             when `ami_owner` is populated
@@ -69,6 +71,7 @@ class DenyEc2AmiOwner:
     ami_owner: Optional[str]
     ami_name: Optional[str]
     owner_unknown_reason: Optional[str] = None
+    ami_owner_alias: Optional[str] = None
 
 
 @dataclass
@@ -268,6 +271,27 @@ def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
 # deregistered but not yet fully torn down. Neither leaves an owner to read.
 # AMI state set by DisableImage. A disabled image keeps its owner but cannot
 # launch, and DescribeImages omits it unless IncludeDisabled is set.
+# ec2:Owner resolves to the AMI's owner ALIAS when DescribeImages returns one,
+# and to the numeric OwnerId only when it does not. Measured with
+# RunInstances --dry-run against the Deny statement this repo generates:
+#
+#   AMI                            allowlist              result
+#   Amazon Linux 2023              [numeric OwnerId]      DENY
+#   (ImageOwnerAlias "amazon")     ["amazon"]             ALLOW
+#                                  [numeric, "amazon"]    ALLOW
+#   Rocky Linux                    [numeric OwnerId]      ALLOW
+#   (no ImageOwnerAlias)           ["amazon"]             DENY
+#
+# "aws-marketplace" is inferred from the "amazon" rows rather than measured:
+# every Marketplace AMI reachable for the test needed a subscription, and EC2
+# returns OptInRequired before it evaluates the statement, so the dry run
+# cannot tell an allow from a deny there.
+#
+# Recording only the numeric owner therefore builds an allowlist that denies
+# the very AMI a clean scan observed, because StringNotEquals matches whenever
+# the key holds anything other than a listed value.
+EC2_OWNER_ALIASES = frozenset({"amazon", "aws-marketplace"})
+
 DISABLED_AMI_STATE = "disabled"
 
 DEREGISTERED_AMI_ERROR_CODES = frozenset({
@@ -282,10 +306,12 @@ class _ResolvedAmi:
     Outcome of resolving one AMI's owner.
 
     Either `owner` is populated and `unknown_reason` is None, or the reverse.
+    `owner_alias` is set only when AWS publishes one for the image.
     """
     owner: Optional[str]
     name: Optional[str]
     unknown_reason: Optional[str]
+    owner_alias: Optional[str] = None
 
 
 def _describe_ami(regional_ec2: EC2Client, ami_id: str) -> Optional[ImageTypeDef]:
@@ -332,7 +358,8 @@ def _resolve_ami_owner(
 
     An AMI that DescribeImages returns without an OwnerId still raises, because
     that is the API breaking its own contract rather than a fact about this
-    account, and it would be wrong for every AMI rather than for this one.
+    account, and it would be wrong for every AMI rather than for this one. An
+    owner alias outside EC2_OWNER_ALIASES raises for the same reason.
 
     Args:
         regional_ec2: EC2 client for the region the instance runs in
@@ -344,7 +371,8 @@ def _resolve_ami_owner(
         The resolved owner, or the reason it is unknown
 
     Raises:
-        RuntimeError: If AWS returns the AMI without an OwnerId
+        RuntimeError: If AWS returns the AMI without an OwnerId, or with an
+            owner alias outside EC2_OWNER_ALIASES
         ClientError: If DescribeImages fails for any reason other than the AMI
             no longer resolving
     """
@@ -385,13 +413,28 @@ def _resolve_ami_owner(
             f"This is a critical security check failure."
         )
 
+    owner_alias = image.get('ImageOwnerAlias')
+    if owner_alias is not None and owner_alias not in EC2_OWNER_ALIASES:
+        raise RuntimeError(
+            f"AMI {ami_id} in {region}, used by instance {instance_id}, has the "
+            f"unrecognised owner alias '{owner_alias}'. ec2:Owner takes one of "
+            f"{sorted(EC2_OWNER_ALIASES)} or an account ID, so an alias outside "
+            f"that set cannot be turned into an allowlist entry, and guessing "
+            f"one would deny every launch in the accounts this covers."
+        )
+
     if image.get('State') == DISABLED_AMI_STATE:
         logger.warning(
             f"AMI {ami_id} in {region}, used by instance {instance_id}, has been "
             f"disabled. Its owner still resolves, but the image cannot launch."
         )
 
-    return _ResolvedAmi(owner=owner_id, name=image.get('Name'), unknown_reason=None)
+    return _ResolvedAmi(
+        owner=owner_id,
+        name=image.get('Name'),
+        unknown_reason=None,
+        owner_alias=owner_alias,
+    )
 
 
 def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
@@ -420,7 +463,7 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
 
     Raises:
         RuntimeError: If AWS API calls fail, or if AWS returns an AMI with no
-            OwnerId
+            OwnerId or an unrecognised owner alias
     """
     results = []
     regions = get_all_regions(session)
@@ -461,7 +504,8 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
                             ami_id=ami_id,
                             ami_owner=resolved.owner,
                             ami_name=resolved.name,
-                            owner_unknown_reason=resolved.unknown_reason
+                            owner_unknown_reason=resolved.unknown_reason,
+                            ami_owner_alias=resolved.owner_alias
                         ))
 
         except ClientError as e:
