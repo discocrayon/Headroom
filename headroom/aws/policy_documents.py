@@ -9,7 +9,7 @@ rules live here once rather than in each of them.
 from collections.abc import Mapping
 from typing import Any, List
 
-__all__ = ["MalformedPolicyError", "normalize_statements"]
+__all__ = ["MalformedPolicyError", "has_not_principal", "normalize_statements"]
 
 
 class MalformedPolicyError(Exception):
@@ -52,3 +52,31 @@ def normalize_statements(policy: Mapping[str, Any], resource_description: str) -
         )
 
     return statements
+
+
+def has_not_principal(statement: Mapping[str, Any]) -> bool:
+    """
+    Report whether a statement names NotPrincipal in place of Principal.
+
+    An Allow statement with NotPrincipal grants to every principal except
+    the ones it names, so its reach is everyone outside a short list. That
+    is what `has_wildcard_principal` already records for `Principal: "*"`,
+    and reading NotPrincipal the same way is the accurate reading rather
+    than a cautious one: the two forms grant the same access.
+
+    Callers must apply this after their own Effect gate. Deny with
+    NotPrincipal is the form AWS recommends, it restricts rather than
+    grants, and a resource policy's Deny hands access to nobody.
+
+    A statement carrying both elements is not valid IAM and cannot be
+    stored, but were one to arrive, answering True keeps it on the blocking
+    path rather than letting the Principal half stand in for a grant that
+    is broader than it looks.
+
+    Args:
+        statement: One statement from a resource policy or trust policy
+
+    Returns:
+        True if the statement carries a NotPrincipal element
+    """
+    return "NotPrincipal" in statement

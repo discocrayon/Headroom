@@ -891,8 +891,8 @@ class TestPrincipalArnCoverage:
         assert _extract_account_ids_from_principal("ec2.amazonaws.com") == set()
 
 
-class TestTrustPolicyStatementShapes:
-    """A trust policy's Statement may be a lone object, not only a list."""
+class TestTrustPolicyGrammar:
+    """Trust policy elements the analyzer must read the way IAM does."""
 
     @staticmethod
     def _analyze(trust_policy: Any) -> Any:
@@ -932,3 +932,61 @@ class TestTrustPolicyStatementShapes:
         """A Statement of any other type aborts rather than reporting nothing."""
         with pytest.raises(MalformedPolicyError, match="Statement of type str"):
             self._analyze({"Version": "2012-10-17", "Statement": "Allow"})
+
+    def test_not_principal_is_read_as_a_wildcard(self) -> None:
+        """
+        An Allow with NotPrincipal lets everyone it does not name assume the role.
+
+        Skipping the statement for want of a Principal reported the role
+        clean, so the account kept its RCP and every third party outside the
+        exclusion list lost the ability to assume it on apply.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "sts:AssumeRole"
+            }
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+
+    def test_deny_with_not_principal_is_not_a_wildcard(self) -> None:
+        """
+        Deny with NotPrincipal restricts rather than grants.
+
+        It is the form AWS recommends, and a trust policy's Deny cannot let
+        anyone assume the role, so it must not block the RCP.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "sts:AssumeRole"
+            }
+        })
+
+        assert results == []
+
+    def test_not_principal_without_assume_role_is_not_a_wildcard(self) -> None:
+        """
+        The action gate runs first, as it does for an ordinary Principal.
+
+        A trust policy statement granting something other than AssumeRole
+        says nothing about who can assume the role, whichever principal
+        element it carries.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "sts:TagSession"
+            }
+        })
+
+        assert results == []

@@ -16,7 +16,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_sqs.client import SQSClient
 
 from .helpers import get_all_regions
-from .policy_documents import normalize_statements
+from .policy_documents import has_not_principal, normalize_statements
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,9 @@ class SQSQueuePolicyAnalysis:
         queue_arn: ARN of the SQS queue
         region: AWS region where queue exists
         third_party_account_ids: Set of account IDs not in the organization
-        has_wildcard_principal: True if policy contains wildcard principals
+        has_wildcard_principal: True if the policy grants to principals the
+            analyzer cannot enumerate - `Principal: "*"`, or an Allow with
+            NotPrincipal, which reaches everyone it does not name
         has_non_account_principals: True if policy has Federated principals
         actions_by_account: Dict mapping account IDs to sets of allowed actions
     """
@@ -211,6 +213,12 @@ def _analyze_queue_policy(
 
     for statement in statements:
         if statement.get("Effect") != "Allow":
+            continue
+
+        # An Allow with NotPrincipal reaches everyone it does not name,
+        # which is what the wildcard flag records
+        if has_not_principal(statement):
+            has_wildcard_principal = True
             continue
 
         principal = statement.get("Principal")
