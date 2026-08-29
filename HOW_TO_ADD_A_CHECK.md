@@ -136,6 +136,7 @@ import boto3
 
 from ...aws.{service} import {DataModel}, get_{check_name}_analysis
 from ...constants import {CHECK_CONSTANT}
+from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
@@ -152,7 +153,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
     def categorize_result(
         self,
         result: {DataModel}
-    ) -> tuple[str, JsonDict]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """Categorize single result."""
         result_dict = {
             # Map all dataclass fields:
@@ -160,8 +161,8 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         }
 
         if {VIOLATION_CONDITION}:
-            return ("violation", result_dict)
-        return ("compliant", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,
@@ -201,7 +202,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
 # TEMPLATE: SCP_PATTERN_4
 # DIFFERENCE: Adds exemption handling
 
-def categorize_result(self, result: {DataModel}) -> tuple[str, JsonDict]:
+def categorize_result(self, result: {DataModel}) -> tuple[CheckCategory, JsonDict]:
     """Categorize with exemption support."""
     result_dict = {
         "field": result.field,
@@ -210,13 +211,13 @@ def categorize_result(self, result: {DataModel}) -> tuple[str, JsonDict]:
 
     # Check exemption FIRST
     if result.has_exemption_tag:
-        return ("exemption", result_dict)
+        return (CheckCategory.EXEMPTION, result_dict)
 
     # Then check violation
     if {VIOLATION_CONDITION}:
-        return ("violation", result_dict)
+        return (CheckCategory.VIOLATION, result_dict)
 
-    return ("compliant", result_dict)
+    return (CheckCategory.COMPLIANT, result_dict)
 
 def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
     """Build summary including exemptions in compliant count."""
@@ -368,6 +369,7 @@ import boto3
 
 from ...aws.{service} import {DataModel}, analyze_{service}_{resource}_policies
 from ...constants import {CHECK_CONSTANT}
+from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
@@ -400,7 +402,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
     def categorize_result(
         self,
         result: {DataModel}
-    ) -> tuple[str, JsonDict]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """Categorize based on third-party access."""
         result_dict = {
             "resource_arn": result.resource_arn,
@@ -408,8 +410,8 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         }
 
         if result.third_party_account_ids:
-            return ("violation", result_dict)
-        return ("compliant", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,
@@ -668,12 +670,12 @@ python -c "from headroom.checks.registry import get_check_names; assert '{check_
 
 ```python
 # ❌ BAD
-def categorize_result(self, result: T) -> tuple[str, Dict[str, Any]]:
+def categorize_result(self, result: T) -> tuple[CheckCategory, Dict[str, Any]]:
     pass
 
 # ✅ GOOD
 from ...types import JsonDict
-def categorize_result(self, result: T) -> tuple[str, JsonDict]:
+def categorize_result(self, result: T) -> tuple[CheckCategory, JsonDict]:
     pass
 ```
 
@@ -1248,7 +1250,7 @@ for page in paginator.paginate():
 # USE: For Pattern 4 checks with exemption tags
 # COPY: This exact pattern
 
-def categorize_result(self, result: Model) -> tuple[str, JsonDict]:
+def categorize_result(self, result: Model) -> tuple[CheckCategory, JsonDict]:
     result_dict = {
         "id": result.id,
         "exemption_tag": result.exemption_tag,
@@ -1256,14 +1258,14 @@ def categorize_result(self, result: Model) -> tuple[str, JsonDict]:
 
     # Check exemption FIRST (before violation)
     if result.has_exemption:
-        return ("exemption", result_dict)
+        return (CheckCategory.EXEMPTION, result_dict)
 
     # Then check violation
     if result.violates_policy:
-        return ("violation", result_dict)
+        return (CheckCategory.VIOLATION, result_dict)
 
     # Everything else compliant
-    return ("compliant", result_dict)
+    return (CheckCategory.COMPLIANT, result_dict)
 
 def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
     total = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
@@ -1604,7 +1606,7 @@ base_class:
   class: BaseCheck[T]
   methods:
     - analyze(session) -> List[T]
-    - categorize_result(result: T) -> tuple[str, JsonDict]
+    - categorize_result(result: T) -> tuple[CheckCategory, JsonDict]
     - build_summary_fields(result) -> JsonDict
   template_method: execute()  # Calls your methods
 
