@@ -1,15 +1,16 @@
 """
-Check for ECR repositories that allow third-party account access.
+Check for ECR policies that allow third-party account access.
 
-This check identifies ECR repositories with resource policies that allow
-principals from accounts outside the organization to access them.
+This check identifies ECR resource policies - repository policies and the
+per-region registry policy - that allow principals from accounts outside
+the organization.
 """
 
 from typing import Any, Dict, List, Set
 
 from boto3.session import Session
 
-from ...aws.ecr import ECRRepositoryPolicyAnalysis, analyze_ecr_repository_policies
+from ...aws.ecr import ECRPolicyAnalysis, analyze_ecr_policies
 from ...constants import DENY_ECR_THIRD_PARTY_ACCESS
 from ...enums import CheckCategory
 from ..base import BaseCheck, CategorizedCheckResult
@@ -17,15 +18,20 @@ from ..registry import register_check
 
 
 @register_check("rcps", DENY_ECR_THIRD_PARTY_ACCESS)
-class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
+class DenyECRThirdPartyAccessCheck(BaseCheck[ECRPolicyAnalysis]):
     """
-    Check for ECR repositories that allow third-party account access.
+    Check for ECR policies that allow third-party account access.
 
     This check identifies:
-    - ECR repositories with policies allowing accounts outside the organization
-    - ECR repositories with wildcard principals in policies
+    - ECR policies allowing accounts outside the organization
+    - ECR policies with wildcard principals
     - All unique third-party account IDs found
     - ECR actions allowed per third-party account
+
+    Both policy surfaces are covered. A repository policy governs one
+    repository; a registry policy governs every ECR request in its region,
+    so a third party named in one reaches repositories that grant it nothing.
+    Each result carries a `scope` saying which it came from.
     """
 
     def __init__(
@@ -62,20 +68,20 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
         self.all_third_party_accounts: Set[str] = set()
         self.all_actions_by_account: Dict[str, Set[str]] = {}
 
-    def analyze(self, session: Session) -> List[ECRRepositoryPolicyAnalysis]:
+    def analyze(self, session: Session) -> List[ECRPolicyAnalysis]:
         """
-        Analyze ECR repository policies for third-party access.
+        Analyze ECR repository and registry policies for third-party access.
 
-        Filters to only return repositories with wildcards or third-party access.
-        Repositories with neither are not relevant to this check.
+        Filters to only return policies with wildcards or third-party access.
+        Policies with neither are not relevant to this check.
 
         Args:
             session: boto3.Session for the target account
 
         Returns:
-            List of ECRRepositoryPolicyAnalysis results with findings
+            List of ECRPolicyAnalysis results with findings
         """
-        all_results = analyze_ecr_repository_policies(session, self.org_account_ids)
+        all_results = analyze_ecr_policies(session, self.org_account_ids)
         return [
             result for result in all_results
             if result.has_wildcard_principal or result.third_party_account_ids
@@ -83,18 +89,19 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
 
     def categorize_result(
         self,
-        result: ECRRepositoryPolicyAnalysis
+        result: ECRPolicyAnalysis
     ) -> tuple[CheckCategory, Dict[str, Any]]:
         """
-        Categorize a single repository policy analysis result.
+        Categorize a single ECR policy analysis result.
 
         Args:
-            result: Single ECRRepositoryPolicyAnalysis result
+            result: Single ECRPolicyAnalysis result
 
         Returns:
             Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
         result_dict = {
+            "scope": result.scope,
             "repository_name": result.repository_name,
             "repository_arn": result.repository_arn,
             "region": result.region,
@@ -124,20 +131,25 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
         """
         Build ECR third-party access check-specific summary fields.
 
+        Counts cover both policy scopes. `violations` in particular must,
+        since it is what withholds the RCP from the account - a wildcard
+        registry policy blocks deployment exactly as a wildcard repository
+        policy does.
+
         Args:
             check_result: Categorized check result
 
         Returns:
             Dictionary with check-specific summary fields
         """
-        total_repositories = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
+        total_policies = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
 
-        repositories_with_wildcards_and_third_party = sum(
-            1 for repo in check_result.violations
-            if repo.get("third_party_account_ids")
+        policies_with_wildcards_and_third_party = sum(
+            1 for policy in check_result.violations
+            if policy.get("third_party_account_ids")
         )
-        repositories_with_third_party_access = (
-            repositories_with_wildcards_and_third_party + len(check_result.compliant)
+        policies_third_parties_can_access = (
+            policies_with_wildcards_and_third_party + len(check_result.compliant)
         )
 
         actions_by_account_sorted = {
@@ -146,9 +158,9 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
         }
 
         return {
-            "total_repositories_analyzed": total_repositories,
-            "repositories_third_parties_can_access": repositories_with_third_party_access,
-            "repositories_with_wildcards": len(check_result.violations),
+            "total_policies_analyzed": total_policies,
+            "policies_third_parties_can_access": policies_third_parties_can_access,
+            "policies_with_wildcards": len(check_result.violations),
             "violations": len(check_result.violations),
             "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
             "third_party_account_count": len(self.all_third_party_accounts),
@@ -179,12 +191,12 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
         Returns:
             Dictionary with results data
         """
-        repositories_with_third_party_access = (
+        policies_third_parties_can_access = (
             check_result.violations + check_result.compliant
         )
 
         return {
             "summary": check_result.summary,
-            "repositories_third_parties_can_access": repositories_with_third_party_access,
-            "repositories_with_wildcards": check_result.violations,
+            "policies_third_parties_can_access": policies_third_parties_can_access,
+            "policies_with_wildcards": check_result.violations,
         }

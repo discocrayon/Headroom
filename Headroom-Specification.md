@@ -300,14 +300,17 @@ class TrustPolicyAnalysis:
     has_wildcard_principal: bool        # True if Principal: "*" or NotPrincipal
 
 # aws/ecr.py
+PolicyScope = Literal["repository", "registry"]
+
 @dataclass
-class ECRRepositoryPolicyAnalysis:
-    repository_name: str
-    repository_arn: str
+class ECRPolicyAnalysis:
+    scope: PolicyScope                  # Which policy surface this came from
     region: str
     third_party_account_ids: Set[str]   # Non-org account IDs
-    actions_by_account: Dict[str, List[str]]  # Account ID -> allowed actions
-    has_wildcard_principal: bool        # True if Principal: "*" or NotPrincipal
+    repository_name: Optional[str] = None       # None for a registry policy
+    repository_arn: Optional[str] = None        # None for a registry policy
+    actions_by_account: Dict[str, List[str]] = ...  # Account ID -> allowed actions
+    has_wildcard_principal: bool = False        # Principal: "*" or NotPrincipal
 ```
 
 ---
@@ -857,18 +860,27 @@ which widens an allowlist rather than narrowing one.
 
 ### ECR Third-Party Access
 
-**Purpose:** Analyze ECR repository resource policies to identify third-party (non-org) account access and wildcard principals.
+**Purpose:** Analyze both ECR resource policy surfaces - repository policies and the per-region registry policy - to identify third-party (non-org) account access and wildcard principals.
 
 **Data Model:**
 ```python
+PolicyScope = Literal["repository", "registry"]
+
 @dataclass
-class ECRRepositoryPolicyAnalysis:
-    repository_name: str
-    repository_arn: str
+class ECRPolicyAnalysis:
+    scope: PolicyScope                        # "repository" or "registry"
     region: str
     third_party_account_ids: Set[str]         # External to organization
-    actions_by_account: Dict[str, List[str]]  # Account ID -> allowed ECR actions
-    has_wildcard_principal: bool              # True if Principal: "*" or NotPrincipal
+    repository_name: Optional[str] = None     # None for a registry policy
+    repository_arn: Optional[str] = None      # None for a registry policy
+    actions_by_account: Dict[str, List[str]] = field(default_factory=dict)
+    has_wildcard_principal: bool = False      # Principal: "*" or NotPrincipal
+
+class PolicyFindings(NamedTuple):
+    """What one ECR policy's statements amount to for RCP purposes."""
+    third_party_account_ids: Set[str]
+    actions_by_account: Dict[str, List[str]]
+    has_wildcard_principal: bool
 ```
 
 **Analysis Function:**
@@ -877,26 +889,30 @@ class ECRRepositoryPolicyAnalysis:
 
 FAIL_FAST_PRINCIPAL_TYPES = {"Federated"}
 
-def analyze_ecr_repository_policies(
+def analyze_ecr_policies(
     session: boto3.Session,
     org_account_ids: Set[str]
-) -> List[ECRRepositoryPolicyAnalysis]:
+) -> List[ECRPolicyAnalysis]:
     """
-    Analyze all ECR repository policies for third-party access.
+    Analyze all ECR policies, at both scopes, for third-party access.
 
     Algorithm:
     1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Create regional ECR client
-       b. Use paginator for describe_repositories
-       c. For each repository, call get_repository_policy
-       d. Parse JSON policy document
-       e. For each Statement, check if Action contains ecr:*
+       b. Call get_registry_policy for the region's registry policy
+       c. Use paginator for describe_repositories
+       d. For each repository, call get_repository_policy
+       e. Parse JSON policy document
        f. Extract account IDs from Principal field
        g. Track specific ECR actions allowed per account
        h. Detect wildcard principals
        i. Filter to third-party accounts (not in org_account_ids)
-    3. Return ECRRepositoryPolicyAnalysis for repos with third-party or wildcards
+    3. Return ECRPolicyAnalysis for policies with third-party or wildcards
+
+    The registry policy is read before the repositories because it is the
+    wider surface: it governs every repository the region holds, including
+    repositories that carry no policy of their own.
 
     Multi-Region: Scans all enabled AWS regions
     Pagination: Handles accounts with many ECR repositories
@@ -904,6 +920,34 @@ def analyze_ecr_repository_policies(
     Raises:
     - UnsupportedPrincipalTypeError: if Federated principal encountered (fail-fast)
     - ClientError: if non-RepositoryPolicyNotFoundException error occurs
+    """
+
+def _analyze_registry_policy(
+    ecr_client: ECRClient,
+    region: str,
+    org_account_ids: Set[str]
+) -> Optional[ECRPolicyAnalysis]:
+    """
+    Analyze the registry policy for one region.
+
+    AWS allows every ECR action in a registry policy and enforces it on every
+    ECR request, so a third party named here reaches the whole registry
+    without any repository policy granting it.
+
+    Returns None if the registry carries no policy
+    (RegistryPolicyNotFoundException); any other ClientError propagates.
+    """
+
+def _analyze_policy_statements(
+    policy: JsonDict,
+    context: str,
+    org_account_ids: Set[str]
+) -> PolicyFindings:
+    """
+    Read the third-party grants out of one ECR policy document.
+
+    Repository policies and registry policies share a grammar, so they share
+    this reader. What differs is reach, which the caller records as scope.
     """
 
 def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
@@ -943,7 +987,7 @@ class UnsupportedPrincipalTypeError(Exception):
 ```python
 # checks/rcps/deny_ecr_third_party_access.py
 
-class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
+class DenyECRThirdPartyAccessCheck(BaseCheck[ECRPolicyAnalysis]):
     def __init__(self, org_account_ids: Set[str], **kwargs):
         super().__init__(**kwargs)
         self.org_account_ids = org_account_ids
@@ -951,11 +995,11 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
         self.all_actions_by_account: Dict[str, List[str]] = {}
 
     def analyze(self, session):
-        return analyze_ecr_repository_policies(session, self.org_account_ids)
+        return analyze_ecr_policies(session, self.org_account_ids)
 
     def categorize_result(self, result):
-        # Repositories with wildcards are "violations"
-        # Repositories with third-party access are "compliant" (expected patterns)
+        # Policies with wildcards are "violations", at either scope
+        # Policies with third-party access are "compliant" (expected patterns)
         if result.has_wildcard_principal:
             return ("violation", ...)
         else:
@@ -969,15 +1013,15 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
 
     def build_summary_fields(self, check_result):
         # Aggregate unique third-party account IDs and actions
-        # Count repositories with wildcards as violations
+        # Count policies with wildcards as violations, across both scopes
         actions_by_account_sorted = {
             account_id: sorted(list(set(actions)))
             for account_id, actions in self.all_actions_by_account.items()
         }
         return {
-            "total_repositories_analyzed": total,
-            "repositories_third_parties_can_access": len(compliant),
-            "repositories_with_wildcards": len(violations),
+            "total_policies_analyzed": total,
+            "policies_third_parties_can_access": len(compliant),
+            "policies_with_wildcards": len(violations),
             "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
             "third_party_account_count": len(self.all_third_party_accounts),
             "actions_by_account": actions_by_account_sorted,
@@ -992,37 +1036,77 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRRepositoryPolicyAnalysis]):
     "account_name": "string",
     "account_id": "string",
     "check": "deny_ecr_third_party_access",
-    "total_repositories_analyzed": 0,
-    "repositories_third_parties_can_access": 0,
-    "repositories_with_wildcards": 0,
+    "total_policies_analyzed": 0,
+    "policies_third_parties_can_access": 0,
+    "policies_with_wildcards": 0,
     "unique_third_party_accounts": [],
     "third_party_account_count": 0,
     "actions_by_account": {
-      "464622532012": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      "999999999999": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
     },
     "violations": 0
   },
   "violations": [
     {
+      "scope": "repository",
       "repository_name": "WildcardRepo",
       "repository_arn": "arn:...",
       "region": "us-east-1"
     }
   ],
   "exemptions": [],
-  "repositories_third_parties_can_access": [
+  "policies_third_parties_can_access": [
     {
-      "repository_name": "DatadogRepo",
+      "scope": "repository",
+      "repository_name": "VendorRepo",
       "repository_arn": "arn:...",
       "region": "us-east-1",
-      "third_party_account_ids": ["464622532012"],
+      "third_party_account_ids": ["999999999999"],
       "actions_by_account": {
-        "464622532012": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+        "999999999999": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      }
+    },
+    {
+      "scope": "registry",
+      "repository_name": null,
+      "repository_arn": null,
+      "region": "us-east-1",
+      "third_party_account_ids": ["888888888888"],
+      "actions_by_account": {
+        "888888888888": ["ecr:CreateRepository", "ecr:ReplicateImage"]
       }
     }
   ]
 }
 ```
+
+**Registry Policies:**
+
+ECR authorizes access through two policies, not one. A repository policy
+governs a single repository. A registry policy governs the registry: AWS
+allows every ECR action in one and enforces it on every ECR request in the
+region. A third party named in a registry policy therefore reaches
+repositories whose own policies grant it nothing.
+
+That makes the registry policy a blind spot with the shape this project keeps
+finding: the same invisibility suppresses both the allowlist entry and the
+blocker, so the RCP ships looking clean and breaks the access on deployment.
+
+| Registry policy grants | Caller | RCP outcome |
+|---|---|---|
+| `ecr:ReplicateImage` + `ecr:CreateRepository` (cross-account replication) | ECR replication service-linked role | Exempt - RCPs do not restrict service-linked roles |
+| Pull, push, or `ecr:*` to an external account | Ordinary IAM principal | Denied registry-wide |
+
+The analyzer does not distinguish these cases. Deciding a grant is
+replication-only means inferring that the caller will be the service-linked
+role, which the analyzer never observes; every third-party account found in a
+registry policy is allowlisted uniformly. One redundant allowlist entry is
+cheaper than one broken integration.
+
+Registry results carry `scope: "registry"` and no repository name or ARN.
+Both scopes count toward `violations`, since that is the field that withholds
+the RCP from an account - a wildcard registry policy blocks deployment exactly
+as a wildcard repository policy does.
 
 ### STS Third-Party AssumeRole
 
