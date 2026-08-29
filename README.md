@@ -1,6 +1,6 @@
 # Headroom
 
-[![Python Version](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/downloads/)
+[![Python Version](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Code Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](tests/)
 
@@ -49,7 +49,7 @@ pip install -r requirements.txt
 ```
 
 **Requirements**:
-- Python 3.13+
+- Python 3.12 or 3.13
 - AWS CLI configured
 - IAM roles deployed ([see detailed setup](documentation/SETUP.md))
 
@@ -284,7 +284,7 @@ Apply this Terraform from your management account to create a working demo envir
 
 We welcome contributions! Here's how to get started:
 
-1. Read [CONTRIBUTING.md](CONTRIBUTING.md) for general guidelines
+1. Read [CLAUDE.md](CLAUDE.md) for repository conventions and the verification steps
 2. Check out [HOW_TO_ADD_A_CHECK.md](HOW_TO_ADD_A_CHECK.md) to add new policy checks
 3. Review our [plugin system](documentation/CHECKS.md) for extensibility
 4. Ensure 100% test coverage and run `tox` before submitting
