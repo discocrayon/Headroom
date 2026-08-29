@@ -41,17 +41,19 @@ headroom/
 │   ├── helpers.py # Shared AWS helpers (region enumeration, pagination)
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
-│   │   ├── saml.py    # IAM SAML provider analysis
+│   │   ├── saml_providers.py  # IAM SAML provider analysis
 │   │   └── users.py   # SCP-focused IAM user enumeration
 │   ├── kms.py     # KMS key policy analysis
 │   ├── lambda_functions.py  # Lambda function analysis
 │   ├── organization.py  # Organizations API integration
+│   ├── policy_documents.py  # Shared resource-policy statement reading
 │   ├── rds.py     # RDS analysis functions
 │   ├── s3.py      # S3 bucket policy analysis
 │   ├── secretsmanager.py  # Secrets Manager policy analysis
 │   ├── sessions.py      # Session management utilities
 │   └── sqs.py     # SQS queue policy analysis
 ├── checks/        # Compliance checks (extensible framework)
+│   ├── __init__.py      # Imports every check module so @register_check runs
 │   ├── base.py    # BaseCheck abstract class (Template Method pattern)
 │   ├── registry.py      # Check registration and discovery
 │   ├── scps/      # Service Control Policy checks
@@ -75,17 +77,21 @@ headroom/
 │   ├── generate_org_info.py  # Organization data sources
 │   ├── generate_scps.py      # SCP configurations
 │   ├── generate_rcps.py      # RCP configurations
+│   ├── models.py             # Rendered Terraform module/parameter models
+│   ├── reconcile.py          # Deletes generated files this run did not render
 │   └── utils.py              # Shared Terraform utilities
 ├── placement/     # Policy placement logic
 │   └── hierarchy.py          # OU hierarchy analysis
 ├── analysis.py    # Security analysis orchestration
 ├── config.py      # Configuration models (HeadroomConfig, AccountTagLayout)
 ├── constants.py   # Shared constants
+├── enums.py       # CheckType, PlacementLevel and other shared enums
 ├── main.py        # Application entry point
 ├── output.py      # Centralized output handling
 ├── parse_results.py  # Results processing and recommendations
 ├── types.py       # Shared data models (OrganizationalUnit, AccountOrgPlacement, etc.)
 ├── usage.py       # CLI argument parsing and config loading
+├── utils.py       # Account identifier and Terraform name formatting
 └── write_results.py  # JSON results writing
 ```
 
