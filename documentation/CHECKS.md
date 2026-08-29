@@ -677,18 +677,37 @@ party is not visible to this check.
 
 **Check Name**: `deny_ecr_third_party_access`
 
-**Purpose**: Identifies ECR repositories with resource policies allowing external account access.
+**Purpose**: Identifies ECR resource policies allowing external account access, at either scope - a repository policy or the region's registry policy.
 
 **How it Works**:
-- Scans all enabled AWS regions for ECR repositories
-- Retrieves repository policies
+- Scans all enabled AWS regions
+- Retrieves each region's registry policy
+- Retrieves each repository's policy
 - Extracts third-party account IDs
 - Tracks specific ECR actions allowed
 
 **Detection**:
 - Third-party AWS account IDs from repository policies
-- Wildcard principals
+- Third-party AWS account IDs from registry policies
+- Wildcard principals, at either scope
 - Specific ECR actions per account
+
+**Registry Policies**: A repository policy governs one repository. A registry
+policy governs the whole registry - AWS allows every ECR action in one and
+enforces it on every ECR request in the region. A third party named there
+reaches repositories whose own policies grant it nothing, so a scan that read
+only repository policies would allowlist nobody and the deployed RCP would
+break that access.
+
+The commonest registry policy is the cross-account replication grant, which
+names the source account and is exercised by the ECR replication
+service-linked role. RCPs do not restrict service-linked roles, so that grant
+would likely survive the RCP regardless - but the analyzer allowlists the
+account anyway rather than inferring a caller identity it never observed. One
+redundant allowlist entry is the cheaper error.
+
+Registry findings carry `"scope": "registry"` and no repository name or ARN,
+since they belong to no single repository.
 
 **Actions Tracking**: Records ECR actions like:
 - `ecr:BatchGetImage`
@@ -699,7 +718,7 @@ party is not visible to this check.
 **Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected.
 
 **Output**:
-- Repositories with third-party access
+- Policies third parties can reach, at both scopes
 - Third-party account IDs
 - Allowed ECR actions per account
 - Regional distribution
@@ -707,13 +726,35 @@ party is not visible to this check.
 **Example Output**:
 ```json
 {
-  "third_party_accounts": ["888888888888"],
-  "repositories_with_third_party_access": [
+  "summary": {
+    "total_policies_analyzed": 2,
+    "policies_third_parties_can_access": 2,
+    "policies_with_wildcards": 0,
+    "violations": 0,
+    "unique_third_party_accounts": ["888888888888", "999999999999"]
+  },
+  "policies_third_parties_can_access": [
     {
-      "repository_name": "shared-images",
+      "scope": "registry",
+      "repository_name": null,
+      "repository_arn": null,
       "region": "us-east-1",
-      "third_party_accounts": ["888888888888"],
-      "allowed_actions": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      "third_party_account_ids": ["999999999999"],
+      "actions_by_account": {
+        "999999999999": ["ecr:CreateRepository", "ecr:ReplicateImage"]
+      },
+      "has_wildcard_principal": false
+    },
+    {
+      "scope": "repository",
+      "repository_name": "shared-images",
+      "repository_arn": "arn:aws:ecr:us-east-1:111111111111:repository/shared-images",
+      "region": "us-east-1",
+      "third_party_account_ids": ["888888888888"],
+      "actions_by_account": {
+        "888888888888": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      },
+      "has_wildcard_principal": false
     }
   ]
 }
