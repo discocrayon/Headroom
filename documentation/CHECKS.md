@@ -766,16 +766,19 @@ since they belong to no single repository.
 
 **Check Name**: `deny_kms_third_party_access`
 
-**Purpose**: Identifies KMS keys with resource policies allowing external account access.
+**Purpose**: Identifies KMS keys reachable by external accounts, through either of the two surfaces that authorize access to a key - its resource policy and its grants.
 
 **How it Works**:
 - Scans all AWS regions for KMS keys
 - Retrieves key policies for each key
 - Parses policies for third-party principals
+- Lists each key's grants and resolves their principals to accounts
 - Tracks specific KMS actions allowed per account
 
 **Detection**:
 - Third-party AWS account IDs from key policies
+- Third-party AWS account IDs from grants, which no key policy reveals
+- External retiring principals, which can call `kms:RetireGrant`
 - Wildcard principals (requiring CloudTrail analysis)
 - Specific KMS actions per account and per key
 
@@ -786,12 +789,28 @@ since they belong to no single repository.
 - `kms:DescribeKey`
 - `kms:CreateGrant`
 
-**Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected.
+**Grants**: A grant is a second authorization surface, created by `CreateGrant` and separate from the key policy. `GetKeyPolicy` does not report grants, so a key whose policy names nobody outside the organization can still hand `Decrypt` to a vendor. Reading only the policy would leave that vendor out of the allowlist, and the deployed RCP would deny it.
+
+Each grant's `GranteePrincipal` and `RetiringPrincipal` resolve to an account:
+
+| Grant principal | RCP outcome | Recorded as |
+|---|---|---|
+| IAM ARN in an organization account | Not restricted | Nothing |
+| `ec2.us-west-2.amazonaws.com` and other AWS service principals | Exempt - the RCP carries `aws:PrincipalIsAWSService` `false` | Nothing |
+| Service-linked role ARN | Exempt - RCPs do not restrict service-linked roles | Nothing |
+| IAM ARN outside the organization | Denied | Allowlist entry, plus a `grants` entry |
+
+A grant can only ever widen the allowlist. `CreateGrant` requires a concrete principal, so no grant can be a wildcard, and the wildcard flag is what withholds the RCP from an account.
+
+Encryption context constraints are recorded as a boolean rather than parsed, so `has_constraints` marks a grant whose real access may be narrower than its operations suggest.
+
+**Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected in a key policy, or if a grant names a principal that is neither an ARN nor an AWS service principal.
 
 **Output**:
 - Total keys analyzed
 - Keys with third-party access
 - Keys with wildcard principals (violations)
+- Keys with grants reaching outside the organization
 - Third-party account IDs
 - KMS actions allowed per account
 
@@ -805,9 +824,20 @@ since they belong to no single repository.
   "actions_by_account": {
     "999999999999": ["kms:Decrypt", "kms:DescribeKey"]
   },
-  "has_wildcard_principal": false
+  "has_wildcard_principal": false,
+  "grants": [
+    {
+      "grant_id": "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+      "grantee_account_id": "999999999999",
+      "retiring_principal_account_id": null,
+      "operations": ["kms:Decrypt", "kms:GenerateDataKey"],
+      "has_constraints": false
+    }
+  ]
 }
 ```
+
+A key found only through a grant looks the same, with an empty `actions_by_account` contribution from the policy and `third_party_account_ids` populated entirely from the `grants` list.
 
 ---
 

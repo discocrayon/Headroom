@@ -57,17 +57,23 @@
 
 ### 4. RCP Compliance Analysis
 - **STS Third-Party AssumeRole Check:** IAM trust policy analysis across organization
-- **S3 Third-Party Access Check:** S3 bucket policy analysis for third-party access
+- **S3 Third-Party Access Check:** S3 bucket policy and bucket ACL analysis for third-party access
 - Third-party account detection and wildcard principal identification
 - Principal type validation (AWS, Service, Federated, CanonicalUser)
 - Federated and CanonicalUser principal detection to prevent breaking SSO/SAML access
 - Action and resource tracking for third-party S3 access patterns
-- **ECR Third-Party Access Check:** ECR repository resource policy analysis across organization
+- **ECR Third-Party Access Check:** ECR repository and registry policy analysis across organization
 - Third-party account detection and wildcard principal identification
 - Principal type validation (AWS, Service, Federated) for IAM trust policies
 - Organization baseline comparison for external account detection
 - Multi-region ECR repository scanning with pagination support
 - ECR actions tracking per third-party account
+- **KMS Third-Party Access Check:** KMS key policy and key grant analysis across organization
+- Third-party account detection from both surfaces, and wildcard principal identification
+- Principal type validation (AWS, Service, Federated) for key policies
+- Grant principal classification (IAM ARN, AWS service principal) with fail-fast on anything else
+- Multi-region KMS key scanning with pagination support for keys and grants
+- KMS actions tracking per third-party account
 
 ### 5. Policy Placement Intelligence
 - Organization structure analysis for optimal policy deployment levels
@@ -1107,6 +1113,263 @@ Registry results carry `scope: "registry"` and no repository name or ARN.
 Both scopes count toward `violations`, since that is the field that withholds
 the RCP from an account - a wildcard registry policy blocks deployment exactly
 as a wildcard repository policy does.
+
+### KMS Third-Party Access
+
+**Purpose:** Analyze both surfaces that authorize access to a KMS key - the key policy and the key's grants - to identify third-party (non-org) account access and wildcard principals.
+
+**Data Model:**
+```python
+@dataclass
+class KMSGrantFinding:
+    """One grant on a key that reaches outside the organization."""
+    grant_id: str
+    grantee_account_id: Optional[str]              # None if service principal or in-org
+    retiring_principal_account_id: Optional[str]   # None if absent or in-org
+    operations: List[str]                          # Prefixed with "kms:"
+    has_constraints: bool                          # Encryption context, not parsed
+
+@dataclass
+class KMSKeyPolicyAnalysis:
+    key_id: str
+    key_arn: str
+    region: str
+    third_party_account_ids: Set[str]         # From both surfaces
+    actions_by_account: Dict[str, List[str]] = field(default_factory=dict)
+    has_wildcard_principal: bool = False      # Policy only - see Grants below
+    grants: List[KMSGrantFinding] = field(default_factory=list)
+```
+
+**Analysis Function:**
+```python
+# aws/kms.py
+
+ALLOWED_PRINCIPAL_TYPES = {"AWS", "Service"}
+FAIL_FAST_PRINCIPAL_TYPES = {"Federated"}
+AWS_SERVICE_PRINCIPAL_SUFFIX = ".amazonaws.com"
+KMS_RETIRE_GRANT_ACTION = "kms:RetireGrant"
+
+def analyze_kms_key_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str]
+) -> List[KMSKeyPolicyAnalysis]:
+    """
+    Analyze all KMS keys in an account for third-party access.
+
+    Algorithm:
+    1. Get all enabled regions via get_all_regions()
+    2. For each region:
+       a. List all keys via list_keys() (paginated)
+       b. Get key policy via get_key_policy(), tolerating a key with none
+       c. Parse policy JSON
+       d. Extract principals and actions
+       e. List the key's grants via list_grants() (paginated)
+       f. Resolve each grantee and retiring principal to an account
+       g. Identify third-party account IDs (not in org) from both surfaces
+       h. Track which actions each third-party account can perform
+       i. Detect wildcard principals, which only a policy can carry
+    3. Return all results across all regions
+
+    Multi-Region: Scans all enabled AWS regions
+    Pagination: list_keys and list_grants are both paginated
+
+    Raises:
+    - UnsupportedPrincipalTypeError: if Federated principal encountered (fail-fast)
+    - UnknownGranteePrincipalError: if a grant principal cannot be classified
+    - ClientError: if AWS API calls fail
+    """
+
+def _read_key_policy(
+    kms_client: KMSClient,
+    key_id: str,
+    region: str
+) -> Optional[JsonDict]:
+    """
+    Read a key's policy, or None when the key has no policy.
+
+    A key with no policy is not a key with nothing to find: its grants can
+    still reach outside the organization, so the caller keeps going rather
+    than treating a missing policy as the end of the analysis.
+    """
+
+def _analyze_key_grants(
+    kms_client: KMSClient,
+    key_id: str,
+    region: str,
+    org_account_ids: Set[str]
+) -> List[KMSGrantFinding]:
+    """
+    Read a key's grants and return those reaching outside the organization.
+
+    Grants authorize access independently of the key policy and GetKeyPolicy
+    does not report them, which makes an unread grant access that breaks on
+    apply with nothing in the results to explain why.
+    """
+
+def _grant_principal_account_id(principal: str) -> Optional[str]:
+    """
+    Resolve a grant principal to an account ID.
+
+    Serves both GranteePrincipal and RetiringPrincipal, which take the same
+    shapes. Returns None for an AWS service principal, which the RCP exempts.
+    Raises UnknownGranteePrincipalError for anything else.
+    """
+
+def _external_grant_account(
+    principal: Optional[str],
+    org_account_ids: Set[str]
+) -> Optional[str]:
+    """Resolve a grant principal, keeping it only if outside the org."""
+
+def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
+    """
+    Extract AWS account IDs from a key policy principal field.
+
+    Principal Type Handling:
+    - AWS: Extract account IDs from ARNs or plain IDs
+    - Service: Skip (e.g., cloudtrail.amazonaws.com)
+    - Federated: Raise UnsupportedPrincipalTypeError (fail-fast)
+    - Anything else: Raise UnknownPrincipalTypeError
+    """
+
+def _has_wildcard_principal(principal: Any) -> bool:
+    """Check if principal contains "*" (wildcard)."""
+
+def _normalize_actions(action: Any) -> List[str]:
+    """Normalize actions to list format."""
+```
+
+**Custom Exceptions:**
+```python
+class UnknownPrincipalTypeError(Exception):
+    """Raised when an unknown principal type is encountered in a key policy."""
+
+class UnsupportedPrincipalTypeError(Exception):
+    """Raised when Federated or other unsupported principal type encountered."""
+
+class UnknownGranteePrincipalError(Exception):
+    """Raised when a grant names a principal the analyzer cannot classify."""
+```
+
+**Check Implementation:**
+```python
+# checks/rcps/deny_kms_third_party_access.py
+
+class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
+    def analyze(self, session):
+        return analyze_kms_key_policies(session, self.org_account_ids)
+
+    def categorize_result(self, result):
+        # Keys with wildcard principals are "violations"
+        # Keys with third-party access are "compliant" (expected patterns)
+        # Grants never set has_wildcard_principal, so they never violate
+        if result.has_wildcard_principal:
+            return ("violation", ...)
+        return ("compliant", ...)
+
+    def build_summary_fields(self, check_result):
+        all_keys = violations + exemptions + compliant
+        return {
+            "total_keys_analyzed": len(all_keys),
+            "keys_third_parties_can_access": ...,
+            "keys_with_wildcards": len(violations),
+            "keys_with_third_party_grants": sum(1 for k in all_keys if k["grants"]),
+            "violations": len(violations),
+            "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
+            "third_party_account_count": len(self.all_third_party_accounts),
+            "actions_by_account": actions_by_account_sorted,
+        }
+```
+
+**Result JSON Schema:**
+```json
+{
+  "summary": {
+    "account_name": "string",
+    "account_id": "string",
+    "check": "deny_kms_third_party_access",
+    "total_keys_analyzed": 0,
+    "keys_third_parties_can_access": 0,
+    "keys_with_wildcards": 0,
+    "keys_with_third_party_grants": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_account": {
+      "999999999999": ["kms:Decrypt", "kms:GenerateDataKey"]
+    },
+    "violations": 0
+  },
+  "violations": [],
+  "exemptions": [],
+  "keys_third_parties_can_access": [
+    {
+      "key_id": "1234abcd-12ab-34cd-56ef-1234567890ab",
+      "key_arn": "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+      "region": "us-east-1",
+      "third_party_account_ids": ["999999999999"],
+      "actions_by_account": {
+        "999999999999": ["kms:Decrypt", "kms:GenerateDataKey"]
+      },
+      "has_wildcard_principal": false,
+      "grants": [
+        {
+          "grant_id": "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+          "grantee_account_id": "999999999999",
+          "retiring_principal_account_id": null,
+          "operations": ["kms:Decrypt", "kms:GenerateDataKey"],
+          "has_constraints": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Grants:**
+
+KMS authorizes access through two surfaces, not one. A key policy is a
+document `GetKeyPolicy` returns. A grant is a separate object created by
+`CreateGrant`, with its own ID, principals, operations, and optional
+encryption context constraints. No API returns both, and the console puts
+them on different tabs.
+
+That makes grants a blind spot with the shape this project keeps finding: the
+same invisibility suppresses both the allowlist entry and the blocker, so the
+RCP ships looking clean and breaks the access on deployment. A grant is the
+most invisible of the three surfaces found so far, because it is not a policy
+document anyone would think to read.
+
+An RCP is a deny filter on requests to the resource. It does not care which
+mechanism authorized the call, so a grant's Allow does not survive it.
+
+| Grant principal | Caller | RCP outcome |
+|---|---|---|
+| IAM ARN in an organization account | Ordinary IAM principal | Not restricted - already in the org |
+| `ec2.us-west-2.amazonaws.com` and other AWS service principals | AWS service | Exempt - the RCP carries `aws:PrincipalIsAWSService` `false` |
+| Service-linked role ARN | Service-linked role | Exempt - RCPs do not restrict service-linked roles |
+| IAM ARN outside the organization | Ordinary IAM principal | Denied |
+
+Only the last row reaches the allowlist. Grant principals are ordinary IAM
+ARNs, so unlike an S3 ACL grantee they resolve to an account ID and cost the
+account no RCP coverage.
+
+Reading grants can only widen the allowlist, never withhold the RCP.
+`CreateGrant` requires a concrete principal, so no grant can be a wildcard,
+and `has_wildcard_principal` is the field that sets `blocks_rcp`.
+
+A grant's `RetiringPrincipal` is recorded separately from its
+`GranteePrincipal` and contributes only `kms:RetireGrant`, which is the one
+thing that principal can do. Attributing the grant's operations to it would
+overstate its access.
+
+Grant `Operations` arrive unprefixed from `ListGrants` (`Decrypt`), while a
+key policy spells the same permission `kms:Decrypt`. The analyzer prefixes
+them so one `actions_by_account` list does not hold two spellings.
+
+Encryption context constraints are recorded as `has_constraints` rather than
+parsed. Condition-aware analysis is a separate concern; the boolean keeps the
+result honest about what was not read.
+
 
 ### STS Third-Party AssumeRole
 
