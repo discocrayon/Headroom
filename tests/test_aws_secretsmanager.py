@@ -9,6 +9,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from headroom.aws.secretsmanager import (
+    MalformedPolicyError,
     UnsupportedPrincipalTypeError,
     UnknownPrincipalTypeError,
     _analyze_secret_policy,
@@ -17,6 +18,7 @@ from headroom.aws.secretsmanager import (
     _has_wildcard_principal,
     analyze_secrets_manager_policies,
 )
+from headroom.types import JsonDict
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -310,21 +312,59 @@ class TestAnalyzeSecretPolicy:
                 org_account_ids
             )
 
-    def test_statement_not_a_list(self) -> None:
-        """Test that policy with Statement as non-list is handled."""
+    def test_lone_statement_object_is_analyzed(self) -> None:
+        """
+        Test that a policy whose Statement is one object, not a list, is read.
+
+        IAM accepts a lone statement object in place of a one-element list,
+        and Secrets Manager hands the policy back the way it was stored. A
+        secret shared this way must not be reported as having no third-party
+        access.
+        """
+        policy: JsonDict = {
+            "Version": "2012-10-17",
+            "Statement": {
+                "Sid": "ShareWithVendor",
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": "*",
+            },
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "vendor-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:vendor-secret",
+            policy,
+            org_account_ids
+        )
+
+        assert result is not None
+        assert result.third_party_account_ids == {"999999999999"}
+        assert result.actions_by_account == {
+            "999999999999": {"secretsmanager:GetSecretValue"}
+        }
+
+    def test_statement_neither_object_nor_list_raises(self) -> None:
+        """
+        Test that a Statement that is neither an object nor a list aborts.
+
+        Skipping it would report the secret as having no third-party access,
+        which is the one answer that must never be guessed.
+        """
         policy = {
             "Statement": "invalid"
         }
         org_account_ids = {"111111111111"}
 
-        result = _analyze_secret_policy(
-            "invalid-statement-secret",
-            "arn:aws:secretsmanager:us-east-1:111111111111:secret:invalid-statement-secret",
-            policy,  # type: ignore[arg-type]
-            org_account_ids
-        )
-
-        assert result is None
+        with pytest.raises(MalformedPolicyError, match="Statement of type str"):
+            _analyze_secret_policy(
+                "invalid-statement-secret",
+                "arn:aws:secretsmanager:us-east-1:111111111111:secret:invalid-statement-secret",
+                policy,  # type: ignore[arg-type]
+                org_account_ids
+            )
 
 
 class TestAnalyzeSecretsManagerPolicies:
