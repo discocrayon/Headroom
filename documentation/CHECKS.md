@@ -606,8 +606,6 @@ China ARNs all resolve.
 
 **Actions Tracking**: Records which S3 actions are allowed per third-party account and affected buckets.
 
-**Exemption Support**: Buckets tagged with `dp:exclude:identity=true` are exempt from RCP enforcement.
-
 **Output**:
 - Third-party accounts accessing buckets
 - Bucket names and policies
@@ -842,7 +840,7 @@ China ARNs all resolve.
 ### Some Checks Include
 
 - **Exemption Support**: Tag-based exemptions (EC2 IMDSv1 by the instance's
-  own tag, standing in for the launch request's; S3)
+  own tag, standing in for the launch request's)
 - **Allowlist Generation**: Auto-generated allowlists (IAM users, third-party accounts)
 - **Safety Mechanisms**: Prevents breaking existing access patterns (S3 Federated principals)
 - **Wildcard Detection**: Identifies principals requiring CloudTrail analysis
