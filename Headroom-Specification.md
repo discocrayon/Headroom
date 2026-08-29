@@ -2145,11 +2145,13 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.ecr_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+              "aws:ResourceTag/dp:exclude:identity" = "true"
+            },
+            length(var.ecr_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.ecr_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -2173,11 +2175,13 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.sts_third_party_assumerole_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+              "aws:ResourceTag/dp:exclude:identity" = "true"
+            },
+            length(var.sts_third_party_assumerole_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sts_third_party_assumerole_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -2222,7 +2226,8 @@ Each included statement denies its own service's actions - `ecr:*`, `kms:*`,
 `s3:*`, `secretsmanager:*`, `sqs:*`, or `sts:AssumeRole` - EXCEPT when:
 1. The principal belongs to the organization (`aws:PrincipalOrgID`)
 2. The principal belongs to an allowlisted third-party account
-   (`aws:PrincipalAccount`, against that statement's own allowlist variable)
+   (`aws:PrincipalAccount`, against that statement's own allowlist variable).
+   An empty allowlist omits this key, leaving condition 1 to deny all outsiders.
 3. The caller is an AWS service
    (`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`)
 4. The resource carries the tag `dp:exclude:identity = "true"`
@@ -3506,7 +3511,8 @@ Each included statement denies its own service's actions - `ecr:*`, `kms:*`,
 `s3:*`, `secretsmanager:*`, `sqs:*`, or `sts:AssumeRole` - EXCEPT when:
 1. The principal belongs to the organization (`aws:PrincipalOrgID`)
 2. The principal belongs to an allowlisted third-party account
-   (`aws:PrincipalAccount`, against that statement's own allowlist variable)
+   (`aws:PrincipalAccount`, against that statement's own allowlist variable).
+   An empty allowlist omits this key, leaving condition 1 to deny all outsiders.
 3. The caller is an AWS service
    (`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`)
 4. The resource carries the tag `dp:exclude:identity = "true"`

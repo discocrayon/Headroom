@@ -14,6 +14,10 @@ RCPs are AWS Organizations policies that help you enforce security controls on r
 
 ## Policy Details
 
+Condition 2 below applies only when that allowlist is non-empty. An empty
+allowlist omits `aws:PrincipalAccount` rather than emitting `[]`, which could
+match nothing and void the Deny; condition 1 alone then denies all outsiders.
+
 ### ECR Repository Access Restriction
 
 The `deny_ecr_third_party_access` RCP denies all `ecr:*` actions unless one of the following conditions is met:
