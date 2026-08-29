@@ -297,7 +297,7 @@ class TrustPolicyAnalysis:
     role_name: str
     role_arn: str
     third_party_account_ids: Set[str]   # Non-org account IDs
-    has_wildcard_principal: bool        # True if Principal: "*"
+    has_wildcard_principal: bool        # True if Principal: "*" or NotPrincipal
 
 # aws/ecr.py
 @dataclass
@@ -307,7 +307,7 @@ class ECRRepositoryPolicyAnalysis:
     region: str
     third_party_account_ids: Set[str]   # Non-org account IDs
     actions_by_account: Dict[str, List[str]]  # Account ID -> allowed actions
-    has_wildcard_principal: bool        # True if Principal: "*"
+    has_wildcard_principal: bool        # True if Principal: "*" or NotPrincipal
 ```
 
 ---
@@ -813,6 +813,48 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
 
 ## RCP Checks
 
+### Shared Policy Grammar
+
+Every RCP check reads a policy document, and the parts of IAM's grammar that
+vary independently of the service live in `headroom/aws/policy_documents.py`
+rather than in each analyzer.
+
+```python
+# aws/policy_documents.py
+class MalformedPolicyError(Exception): ...
+
+def normalize_statements(
+    policy: Mapping[str, Any],
+    resource_description: str,
+) -> List[Any]: ...
+
+def has_not_principal(statement: Mapping[str, Any]) -> bool: ...
+```
+
+**Statement shape.** IAM accepts a lone statement object where a one-element
+list would do, and each service returns a policy in the shape it was stored.
+Iterating that object directly walks its keys as strings, which fails on the
+first `statement.get`. A `Statement` that is neither an object nor a list
+raises `MalformedPolicyError` naming the resource, because reading it as no
+statements would report the policy as granting nothing.
+
+**NotPrincipal.** An `Allow` naming `NotPrincipal` grants to every principal
+except the ones it lists, so its reach is everyone outside a short list - the
+same reach `Principal: "*"` has. Each analyzer sets `has_wildcard_principal`
+for it and moves to the next statement, routing the resource to the blocker
+and CloudTrail follow-up a literal wildcard already gets. Reading it any other
+way reported the resource clean, left the account eligible for the RCP, and
+denied that grant's real audience on apply.
+
+The check runs after the analyzer's own `Effect` gate, and in the STS check
+after the AssumeRole action gate as well. `Deny` with `NotPrincipal` is the
+form AWS recommends, it restricts rather than grants, and a resource policy's
+`Deny` hands access to nobody.
+
+**Not read.** `Resource` and `NotResource` are never consulted. A statement
+scoped away from the resource being scanned still contributes its principals,
+which widens an allowlist rather than narrowing one.
+
 ### ECR Third-Party Access
 
 **Purpose:** Analyze ECR repository resource policies to identify third-party (non-org) account access and wildcard principals.
@@ -826,7 +868,7 @@ class ECRRepositoryPolicyAnalysis:
     region: str
     third_party_account_ids: Set[str]         # External to organization
     actions_by_account: Dict[str, List[str]]  # Account ID -> allowed ECR actions
-    has_wildcard_principal: bool              # True if Principal: "*"
+    has_wildcard_principal: bool              # True if Principal: "*" or NotPrincipal
 ```
 
 **Analysis Function:**
@@ -993,7 +1035,7 @@ class TrustPolicyAnalysis:
     role_name: str
     role_arn: str
     third_party_account_ids: Set[str]    # External to organization
-    has_wildcard_principal: bool         # True if Principal: "*"
+    has_wildcard_principal: bool         # True if Principal: "*" or NotPrincipal
 ```
 
 **Analysis Function:**
@@ -1167,7 +1209,7 @@ class S3BucketPolicyAnalysis:
     bucket_name: str
     bucket_arn: str
     third_party_account_ids: Set[str]          # External to organization
-    has_wildcard_principal: bool               # True if Principal: "*"
+    has_wildcard_principal: bool               # True if Principal: "*" or NotPrincipal
     has_non_account_principals: bool           # True if Federated or CanonicalUser
     actions_by_account: Dict[str, Set[str]]    # account_id -> allowed S3 actions
 ```
@@ -1330,7 +1372,6 @@ The RCP uses `aws:PrincipalAccount` condition for allowlisting. This only works 
 - Accounts with wildcard principals → excluded from the S3 RCP
 - Buckets with Federated/CanonicalUser principals → marked as violations
 - Only buckets with account-based third-party access → used for allowlist generation
-- RCP policy includes `aws:ResourceTag/dp:exclude:identity = "true"` condition to exempt tagged buckets
 
 ## Results Processing
 
@@ -2145,11 +2186,12 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.ecr_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.ecr_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.ecr_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -2173,11 +2215,12 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.sts_third_party_assumerole_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.sts_third_party_assumerole_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sts_third_party_assumerole_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -2222,17 +2265,22 @@ Each included statement denies its own service's actions - `ecr:*`, `kms:*`,
 `s3:*`, `secretsmanager:*`, `sqs:*`, or `sts:AssumeRole` - EXCEPT when:
 1. The principal belongs to the organization (`aws:PrincipalOrgID`)
 2. The principal belongs to an allowlisted third-party account
-   (`aws:PrincipalAccount`, against that statement's own allowlist variable)
+   (`aws:PrincipalAccount`, against that statement's own allowlist variable).
+   An empty allowlist omits this key, leaving condition 1 to deny all outsiders.
 3. The caller is an AWS service
    (`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`)
-4. The resource carries the tag `dp:exclude:identity = "true"`
-   (`aws:ResourceTag/dp:exclude:identity`)
 
-Conditions 1, 2 and 4 share one `StringNotEqualsIfExists` block and condition 3
-is a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
-denies only a principal for which none of the four exceptions hold at once:
-outside the organization, absent from that statement's allowlist, not an AWS
-service, and acting on an untagged resource.
+Conditions 1 and 2 share one `StringNotEqualsIfExists` block and condition 3 is
+a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
+denies only a principal for which none of the three exceptions hold at once:
+outside the organization, absent from that statement's allowlist, and not an
+AWS service.
+
+**No resource-tag exemption.** An earlier revision carried a fourth exception,
+`aws:ResourceTag/dp:exclude:identity = "true"`. Anyone holding the service's
+tagging permission can set that tag, so the account an RCP exists to constrain
+could exempt its own resources from it. It was inert on S3 regardless: S3 does
+not populate `aws:ResourceTag` for ordinary bucket and object access.
 
 A check whose `deny_*` flag is `false` contributes no statement at all, so
 checks placed at different levels of the hierarchy never weaken one another.
@@ -2889,6 +2937,7 @@ class OutputHandler:
 **Blocker Exclusion:**
 - An account is excluded from a check's RCP generation whenever that check's own violations count is nonzero; each check defines what counts as a violation for its own resource type (see `documentation/CHECKS.md`)
 - Static analysis cannot always determine the actual principals a resource policy would grant access to
+  - Conditions are not evaluated: a `Principal: "*"` scoped by `aws:PrincipalOrgID` is counted as a violation and blocks the account, and a grant scoped by `s3:prefix` or a lapsed `DateLessThan` still contributes its account to the allowlist. A condition can only narrow a grant, so neither can hide a third party from the scan; both cost coverage rather than safety.
 - Placement runs once per check, each against only that check's own blocked accounts, so a blocker for one RCP (e.g. S3) never suppresses placement for another (e.g. STS)
 - Avoids OU-level RCP for a check if ANY account beneath that OU is blocked for that check, including accounts inside its child OUs, because the policy reaches them too
 - Avoids root-level RCP for a check if ANY account in the organization is blocked for that check
@@ -3506,17 +3555,22 @@ Each included statement denies its own service's actions - `ecr:*`, `kms:*`,
 `s3:*`, `secretsmanager:*`, `sqs:*`, or `sts:AssumeRole` - EXCEPT when:
 1. The principal belongs to the organization (`aws:PrincipalOrgID`)
 2. The principal belongs to an allowlisted third-party account
-   (`aws:PrincipalAccount`, against that statement's own allowlist variable)
+   (`aws:PrincipalAccount`, against that statement's own allowlist variable).
+   An empty allowlist omits this key, leaving condition 1 to deny all outsiders.
 3. The caller is an AWS service
    (`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`)
-4. The resource carries the tag `dp:exclude:identity = "true"`
-   (`aws:ResourceTag/dp:exclude:identity`)
 
-Conditions 1, 2 and 4 share one `StringNotEqualsIfExists` block and condition 3
-is a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
-denies only a principal for which none of the four exceptions hold at once:
-outside the organization, absent from that statement's allowlist, not an AWS
-service, and acting on an untagged resource.
+Conditions 1 and 2 share one `StringNotEqualsIfExists` block and condition 3 is
+a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
+denies only a principal for which none of the three exceptions hold at once:
+outside the organization, absent from that statement's allowlist, and not an
+AWS service.
+
+**No resource-tag exemption.** An earlier revision carried a fourth exception,
+`aws:ResourceTag/dp:exclude:identity = "true"`. Anyone holding the service's
+tagging permission can set that tag, so the account an RCP exists to constrain
+could exempt its own resources from it. It was inert on S3 regardless: S3 does
+not populate `aws:ResourceTag` for ordinary bucket and object access.
 
 A check whose `deny_*` flag is `false` contributes no statement at all, so
 checks placed at different levels of the hierarchy never weaken one another.
@@ -4269,6 +4323,7 @@ The test environment serves as executable documentation:
 
 - Additional SCP checks (S3, VPC, CloudFormation, etc.)
 - CloudTrail historical analysis for wildcard principal resolution
+- Condition-aware RCP analysis: treat a wildcard principal confined by `aws:PrincipalOrgID`, `aws:PrincipalOrgPaths`, or `aws:PrincipalAccount` as scoped rather than as a blocker
 - OU-based account filtering (filter by OU, environment, owner)
 - Metrics-based decision making for policy deployment
 - GitHub Actions integration for CI/CD pipelines

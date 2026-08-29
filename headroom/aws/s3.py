@@ -16,6 +16,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_s3.client import S3Client
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
+from .policy_documents import has_not_principal, normalize_statements
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,9 @@ class S3BucketPolicyAnalysis:
         bucket_name: Name of the S3 bucket
         bucket_arn: ARN of the S3 bucket
         third_party_account_ids: Set of account IDs not in the organization
-        has_wildcard_principal: True if policy contains wildcard principals
+        has_wildcard_principal: True if the policy grants to principals the
+            analyzer cannot enumerate - `Principal: "*"`, or an Allow with
+            NotPrincipal, which reaches everyone it does not name
         has_non_account_principals: True if policy has Federated/CanonicalUser principals
         actions_by_account: Dict mapping account IDs to sets of allowed actions
     """
@@ -188,6 +191,9 @@ def analyze_s3_bucket_policies(
 
     Returns:
         List of S3BucketPolicyAnalysis for buckets with third-party accounts or wildcards
+
+    Raises:
+        MalformedPolicyError: If a Statement is neither an object nor a list
     """
     s3_client: S3Client = session.client("s3")
     results: List[S3BucketPolicyAnalysis] = []
@@ -220,8 +226,16 @@ def analyze_s3_bucket_policies(
         has_non_account_principals = False
         actions_by_account: Dict[str, Set[str]] = {}
 
-        for statement in policy.get("Statement", []):
+        statements = normalize_statements(policy, f"Bucket '{bucket_name}'")
+
+        for statement in statements:
             if statement.get("Effect") != "Allow":
+                continue
+
+            # An Allow with NotPrincipal reaches everyone it does not name,
+            # which is what the wildcard flag records
+            if has_not_principal(statement):
+                has_wildcard = True
                 continue
 
             principal = statement.get("Principal")
