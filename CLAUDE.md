@@ -38,7 +38,9 @@ Read the branch that matches your change and skip the rest. `Headroom-Specificat
 ## Completion
 
 - Read the implementation and the existing tests for every boundary you touch before editing.
-- Add or update tests for every changed behavior. Tests are flat under `tests/`, one file per module; there are no `unit/`, `integration/`, or `e2e/` subdirectories.
+- Write the failing test first and watch it fail for the reason you expect, then write only enough code to pass it. One test, one implementation, repeat — do not write every test up front. Start a bug fix with the test that reproduces it.
+- An assertion that computes its expected value the way the code computes it passes by construction and can never disagree with the code. Take expected values from an independent source: a known-good literal, a worked example, the documented shape of the AWS policy.
+- Tests are flat under `tests/`, one file per module.
 - Run the smallest relevant test files while working, then `tox` before calling the work done.
 - If verification cannot run, report the exact unavailable dependency or environment constraint instead of a pass.
-- Update documentation when public behavior, configuration, output formats, invariants, or the routing above changed, including the section of `Headroom-Specification.md` that covers it, and otherwise leave it alone.
+- Update documentation when public behavior, configuration, output formats, invariants, or the routing above changed, including the section of `Headroom-Specification.md` that covers it, and otherwise leave it alone. Do this once, when the code has settled, rather than rewriting prose after every edit.
