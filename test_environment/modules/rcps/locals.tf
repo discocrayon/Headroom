@@ -14,11 +14,13 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.ecr_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+              "aws:ResourceTag/dp:exclude:identity" = "true"
+            },
+            length(var.ecr_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.ecr_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -40,11 +42,13 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.kms_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+              "aws:ResourceTag/dp:exclude:identity" = "true"
+            },
+            length(var.kms_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.kms_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -63,11 +67,13 @@ locals {
         "Action"    = "s3:*"
         "Resource"  = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.s3_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+              "aws:ResourceTag/dp:exclude:identity" = "true"
+            },
+            length(var.s3_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.s3_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -89,11 +95,13 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.secrets_manager_third_party_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+              "aws:ResourceTag/dp:exclude:identity" = "true"
+            },
+            length(var.secrets_manager_third_party_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.secrets_manager_third_party_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -115,11 +123,13 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.sqs_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+              "aws:ResourceTag/dp:exclude:identity" = "true"
+            },
+            length(var.sqs_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sqs_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -140,11 +150,13 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.sts_third_party_assumerole_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
+              "aws:ResourceTag/dp:exclude:identity" = "true"
+            },
+            length(var.sts_third_party_assumerole_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sts_third_party_assumerole_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
