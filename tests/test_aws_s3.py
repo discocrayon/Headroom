@@ -3,6 +3,8 @@ Tests for headroom.aws.s3 module.
 """
 
 import json
+from typing import Any
+
 import pytest
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
@@ -14,6 +16,7 @@ from headroom.aws.s3 import (
     _normalize_actions,
     UnknownPrincipalTypeError,
 )
+from headroom.aws.policy_documents import MalformedPolicyError
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -411,3 +414,39 @@ class TestAnalyzeS3BucketPolicies:
         from headroom.aws.s3 import _has_wildcard_principal
         principal = {"AWS": ["arn:aws:iam::111111111111:root", "*"]}
         assert _has_wildcard_principal(principal) is True
+
+
+class TestStatementShapes:
+    """A bucket policy's Statement may be a lone object, not only a list."""
+
+    @staticmethod
+    def _analyze(policy: Any) -> Any:
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+
+        mock_s3_client.list_buckets.return_value = {"Buckets": [{"Name": "test-bucket"}]}
+        mock_s3_client.get_bucket_policy.return_value = {"Policy": json.dumps(policy)}
+
+        return analyze_s3_bucket_policies(mock_session, {"111111111111"})
+
+    def test_lone_statement_object_is_analyzed(self) -> None:
+        """The third party in a lone statement object is found, not missed."""
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::test-bucket/*"
+            }
+        })
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {"999999999999"}
+        assert results[0].actions_by_account["999999999999"] == {"s3:GetObject"}
+
+    def test_statement_neither_object_nor_list_raises(self) -> None:
+        """A Statement of any other type aborts rather than reporting nothing."""
+        with pytest.raises(MalformedPolicyError, match="Statement of type str"):
+            self._analyze({"Version": "2012-10-17", "Statement": "Allow"})

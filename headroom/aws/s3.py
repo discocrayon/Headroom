@@ -16,6 +16,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_s3.client import S3Client
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
+from .policy_documents import normalize_statements
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,9 @@ def analyze_s3_bucket_policies(
 
     Returns:
         List of S3BucketPolicyAnalysis for buckets with third-party accounts or wildcards
+
+    Raises:
+        MalformedPolicyError: If a Statement is neither an object nor a list
     """
     s3_client: S3Client = session.client("s3")
     results: List[S3BucketPolicyAnalysis] = []
@@ -220,7 +224,9 @@ def analyze_s3_bucket_policies(
         has_non_account_principals = False
         actions_by_account: Dict[str, Set[str]] = {}
 
-        for statement in policy.get("Statement", []):
+        statements = normalize_statements(policy, f"Bucket '{bucket_name}'")
+
+        for statement in statements:
             if statement.get("Effect") != "Allow":
                 continue
 

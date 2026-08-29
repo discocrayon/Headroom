@@ -19,6 +19,7 @@ from mypy_boto3_kms.type_defs import KeyListEntryTypeDef
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from .helpers import get_all_regions, paginate
+from .policy_documents import normalize_statements
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,7 @@ def _analyze_key_in_region(
 
     Raises:
         UnsupportedPrincipalTypeError: If policy contains principals that would break RCP
+        MalformedPolicyError: If Statement is neither an object nor a list
     """
     key_id = key["KeyId"]
     key_arn = key["KeyArn"]
@@ -201,7 +203,9 @@ def _analyze_key_in_region(
             )
         raise
 
-    for statement in policy.get("Statement", []):
+    statements = normalize_statements(policy, f"Key '{key_id}' in {region}")
+
+    for statement in statements:
         if statement.get("Effect") != "Allow":
             continue
 

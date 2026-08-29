@@ -2,6 +2,8 @@
 Tests for headroom.aws.ecr module.
 """
 
+import json
+
 import pytest
 from typing import Any
 from unittest.mock import MagicMock
@@ -15,6 +17,7 @@ from headroom.aws.ecr import (
     UnknownPrincipalTypeError,
     UnsupportedPrincipalTypeError,
 )
+from headroom.aws.policy_documents import MalformedPolicyError
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -184,7 +187,6 @@ class TestAnalyzeECRRepositoryPolicies:
             ]
         }
 
-        import json
         mock_ecr_client.get_repository_policy.return_value = {
             "policyText": json.dumps(policy)
         }
@@ -281,7 +283,6 @@ class TestAnalyzeECRRepositoryPolicies:
             ]
         }
 
-        import json
         mock_ecr_client.get_repository_policy.return_value = {
             "policyText": json.dumps(policy)
         }
@@ -335,7 +336,6 @@ class TestAnalyzeECRRepositoryPolicies:
             ]
         }
 
-        import json
         mock_ecr_client.get_repository_policy.return_value = {
             "policyText": json.dumps(policy)
         }
@@ -391,7 +391,6 @@ class TestAnalyzeECRRepositoryPolicies:
             ]
         }
 
-        import json
         mock_ecr_client.get_repository_policy.return_value = {
             "policyText": json.dumps(policy)
         }
@@ -445,7 +444,6 @@ class TestAnalyzeECRRepositoryPolicies:
                 ]
             }
 
-            import json
             mock_ecr_client.get_repository_policy.return_value = {
                 "policyText": json.dumps(policy)
             }
@@ -512,7 +510,6 @@ class TestAnalyzeECRRepositoryPolicies:
             ]
         }
 
-        import json
         mock_ecr_client.get_repository_policy.return_value = {
             "policyText": json.dumps(policy)
         }
@@ -566,7 +563,6 @@ class TestAnalyzeECRRepositoryPolicies:
             ]
         }
 
-        import json
         mock_ecr_client.get_repository_policy.return_value = {
             "policyText": json.dumps(policy)
         }
@@ -616,7 +612,6 @@ class TestAnalyzeECRRepositoryPolicies:
             ]
         }
 
-        import json
         mock_ecr_client.get_repository_policy.return_value = {
             "policyText": json.dumps(policy)
         }
@@ -736,7 +731,6 @@ class TestAnalyzeECRRepositoryPolicies:
             ]
         }
 
-        import json
         mock_ecr_client.get_repository_policy.return_value = {
             "policyText": json.dumps(policy)
         }
@@ -748,3 +742,60 @@ class TestAnalyzeECRRepositoryPolicies:
 
         assert "Federated" in str(exc_info.value)
         assert "would break if the RCP is deployed" in str(exc_info.value)
+
+
+class TestStatementShapes:
+    """A repository policy's Statement may be a lone object, not only a list."""
+
+    @staticmethod
+    def _analyze(policy: Any) -> Any:
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {
+                "repositories": [
+                    {
+                        "repositoryName": "test-repo",
+                        "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/test-repo"
+                    }
+                ]
+            }
+        ]
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+        mock_ecr_client.get_repository_policy.return_value = {
+            "policyText": json.dumps(policy)
+        }
+
+        return analyze_ecr_repository_policies(mock_session, {"111111111111"})
+
+    def test_lone_statement_object_is_analyzed(self) -> None:
+        """The third party in a lone statement object is found, not missed."""
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "ecr:BatchGetImage"
+            }
+        })
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {"999999999999"}
+        assert results[0].actions_by_account["999999999999"] == ["ecr:BatchGetImage"]
+
+    def test_statement_neither_object_nor_list_raises(self) -> None:
+        """A Statement of any other type aborts rather than reporting nothing."""
+        with pytest.raises(MalformedPolicyError, match="Statement of type str"):
+            self._analyze({"Version": "2012-10-17", "Statement": "Allow"})
