@@ -1330,7 +1330,6 @@ The RCP uses `aws:PrincipalAccount` condition for allowlisting. This only works 
 - Accounts with wildcard principals → excluded from the S3 RCP
 - Buckets with Federated/CanonicalUser principals → marked as violations
 - Only buckets with account-based third-party access → used for allowlist generation
-- RCP policy includes `aws:ResourceTag/dp:exclude:identity = "true"` condition to exempt tagged buckets
 
 ## Results Processing
 
@@ -2147,8 +2146,7 @@ locals {
         "Condition" = {
           "StringNotEqualsIfExists" = merge(
             {
-              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-              "aws:ResourceTag/dp:exclude:identity" = "true"
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
             },
             length(var.ecr_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.ecr_third_party_access_account_ids_allowlist } : {},
           )
@@ -2177,8 +2175,7 @@ locals {
         "Condition" = {
           "StringNotEqualsIfExists" = merge(
             {
-              "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-              "aws:ResourceTag/dp:exclude:identity" = "true"
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
             },
             length(var.sts_third_party_assumerole_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sts_third_party_assumerole_account_ids_allowlist } : {},
           )
@@ -2230,14 +2227,18 @@ Each included statement denies its own service's actions - `ecr:*`, `kms:*`,
    An empty allowlist omits this key, leaving condition 1 to deny all outsiders.
 3. The caller is an AWS service
    (`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`)
-4. The resource carries the tag `dp:exclude:identity = "true"`
-   (`aws:ResourceTag/dp:exclude:identity`)
 
-Conditions 1, 2 and 4 share one `StringNotEqualsIfExists` block and condition 3
-is a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
-denies only a principal for which none of the four exceptions hold at once:
-outside the organization, absent from that statement's allowlist, not an AWS
-service, and acting on an untagged resource.
+Conditions 1 and 2 share one `StringNotEqualsIfExists` block and condition 3 is
+a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
+denies only a principal for which none of the three exceptions hold at once:
+outside the organization, absent from that statement's allowlist, and not an
+AWS service.
+
+**No resource-tag exemption.** An earlier revision carried a fourth exception,
+`aws:ResourceTag/dp:exclude:identity = "true"`. Anyone holding the service's
+tagging permission can set that tag, so the account an RCP exists to constrain
+could exempt its own resources from it. It was inert on S3 regardless: S3 does
+not populate `aws:ResourceTag` for ordinary bucket and object access.
 
 A check whose `deny_*` flag is `false` contributes no statement at all, so
 checks placed at different levels of the hierarchy never weaken one another.
@@ -3515,14 +3516,18 @@ Each included statement denies its own service's actions - `ecr:*`, `kms:*`,
    An empty allowlist omits this key, leaving condition 1 to deny all outsiders.
 3. The caller is an AWS service
    (`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`)
-4. The resource carries the tag `dp:exclude:identity = "true"`
-   (`aws:ResourceTag/dp:exclude:identity`)
 
-Conditions 1, 2 and 4 share one `StringNotEqualsIfExists` block and condition 3
-is a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
-denies only a principal for which none of the four exceptions hold at once:
-outside the organization, absent from that statement's allowlist, not an AWS
-service, and acting on an untagged resource.
+Conditions 1 and 2 share one `StringNotEqualsIfExists` block and condition 3 is
+a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
+denies only a principal for which none of the three exceptions hold at once:
+outside the organization, absent from that statement's allowlist, and not an
+AWS service.
+
+**No resource-tag exemption.** An earlier revision carried a fourth exception,
+`aws:ResourceTag/dp:exclude:identity = "true"`. Anyone holding the service's
+tagging permission can set that tag, so the account an RCP exists to constrain
+could exempt its own resources from it. It was inert on S3 regardless: S3 does
+not populate `aws:ResourceTag` for ordinary bucket and object access.
 
 A check whose `deny_*` flag is `false` contributes no statement at all, so
 checks placed at different levels of the hierarchy never weaken one another.
