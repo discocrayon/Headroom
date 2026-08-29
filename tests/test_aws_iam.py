@@ -25,6 +25,7 @@ from headroom.aws.iam.roles import (
     _extract_account_ids_from_principal,
     _has_wildcard_principal,
 )
+from headroom.aws.policy_documents import MalformedPolicyError
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -888,3 +889,46 @@ class TestPrincipalArnCoverage:
     def test_non_account_principal_yields_nothing(self) -> None:
         """A service principal carries no account ID."""
         assert _extract_account_ids_from_principal("ec2.amazonaws.com") == set()
+
+
+class TestTrustPolicyStatementShapes:
+    """A trust policy's Statement may be a lone object, not only a list."""
+
+    @staticmethod
+    def _analyze(trust_policy: Any) -> Any:
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Roles": [
+                    {
+                        "RoleName": "ThirdPartyRole",
+                        "Arn": "arn:aws:iam::111111111111:role/ThirdPartyRole",
+                        "AssumeRolePolicyDocument": quote(json.dumps(trust_policy))
+                    }
+                ]
+            }
+        ]
+
+        return analyze_iam_roles_trust_policies(mock_session, {"111111111111"})
+
+    def test_lone_statement_object_is_analyzed(self) -> None:
+        """The third party in a lone statement object is found, not missed."""
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "sts:AssumeRole"
+            }
+        })
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {"999999999999"}
+
+    def test_statement_neither_object_nor_list_raises(self) -> None:
+        """A Statement of any other type aborts rather than reporting nothing."""
+        with pytest.raises(MalformedPolicyError, match="Statement of type str"):
+            self._analyze({"Version": "2012-10-17", "Statement": "Allow"})

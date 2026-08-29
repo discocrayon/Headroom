@@ -522,6 +522,12 @@ to unauthenticated access on URLs that already exist.
 
 ## RCP (Resource Control Policy) Checks
 
+**Statement Handling**: Every RCP check reads its policy documents through
+`headroom.aws.policy_documents.normalize_statements`. A `Statement` that is a
+lone object rather than a list is read as a one-element list, as IAM allows.
+Anything else raises `MalformedPolicyError` rather than being skipped, which
+would report the resource as granting nothing.
+
 ### STS Third-Party AssumeRole Check
 
 **Check Name**: `deny_sts_third_party_assumerole` (also `deny_deny_sts_third_party_assumerole` for enforcement)
@@ -747,8 +753,6 @@ China ARNs all resolve.
 - `secretsmanager:PutSecretValue`
 
 **Fail-Fast Validation**: If any secret policy contains a Federated principal or other unsupported principal types, these are flagged as violations.
-
-**Statement Handling**: A `Statement` that is a lone object rather than a list is read as a one-element list, as IAM allows. Anything else raises `MalformedPolicyError` rather than being skipped, which would report the secret as having no third-party access.
 
 **Output**:
 - Total secrets analyzed

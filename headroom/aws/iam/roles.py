@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
 from ...constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
+from ..policy_documents import normalize_statements
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -206,6 +207,9 @@ def analyze_iam_roles_trust_policies(
 
     Returns:
         List of TrustPolicyAnalysis for roles with third-party accounts or wildcards
+
+    Raises:
+        MalformedPolicyError: If a Statement is neither an object nor a list
     """
     iam_client: IAMClient = session.client("iam")
     results: List[TrustPolicyAnalysis] = []
@@ -235,7 +239,9 @@ def analyze_iam_roles_trust_policies(
                 has_wildcard = False
 
                 # Analyze each statement in the trust policy
-                for statement in trust_policy.get("Statement", []):
+                statements = normalize_statements(trust_policy, f"Role '{role_name}'")
+
+                for statement in statements:
                     # Only look at statements that allow AssumeRole
                     if statement.get("Effect") != "Allow":
                         continue

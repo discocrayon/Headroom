@@ -18,16 +18,13 @@ from mypy_boto3_secretsmanager.client import SecretsManagerClient
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
 from .helpers import get_all_regions
+from .policy_documents import normalize_statements
 
 logger = logging.getLogger(__name__)
 
 
 class UnknownPrincipalTypeError(Exception):
     """Raised when an unknown principal type is encountered in a resource policy."""
-
-
-class MalformedPolicyError(Exception):
-    """Raised when a resource policy's Statement is neither an object nor a list."""
 
 
 class UnsupportedPrincipalTypeError(Exception):
@@ -307,18 +304,7 @@ def _analyze_secret_policy(
     has_non_account_principals = False
     actions_by_account: Dict[str, Set[str]] = {}
 
-    statements = policy.get("Statement", [])
-    if isinstance(statements, dict):
-        # IAM accepts a lone statement object in place of a one-element list,
-        # and Secrets Manager returns the policy as it was stored.
-        statements = [statements]
-    if not isinstance(statements, list):
-        raise MalformedPolicyError(
-            f"Secret '{secret_name}' has a Statement of type "
-            f"{type(statements).__name__}, expected an object or a list. "
-            "Skipping it would report the secret as having no third-party "
-            f"access, which is not a safe guess. Secret ARN: {secret_arn}"
-        )
+    statements = normalize_statements(policy, f"Secret '{secret_name}' ({secret_arn})")
 
     for statement in statements:
         if statement.get("Effect") != "Allow":

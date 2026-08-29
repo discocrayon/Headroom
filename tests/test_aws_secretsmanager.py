@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 from botocore.exceptions import ClientError
 
+from headroom.aws.policy_documents import MalformedPolicyError
 from headroom.aws.secretsmanager import (
-    MalformedPolicyError,
     UnsupportedPrincipalTypeError,
     UnknownPrincipalTypeError,
     _analyze_secret_policy,

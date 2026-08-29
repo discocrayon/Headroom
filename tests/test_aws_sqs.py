@@ -16,6 +16,7 @@ from headroom.aws.sqs import (
     UnknownPrincipalTypeError,
     UnsupportedPrincipalTypeError,
 )
+from headroom.aws.policy_documents import MalformedPolicyError
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -627,6 +628,38 @@ class TestAnalyzeSQSQueuePolicies:
 
         assert len(results) == 1
         assert "222222222222" in results[0].third_party_account_ids
+
+    def test_statement_neither_object_nor_list_raises(self) -> None:
+        """A Statement of any other type aborts rather than reporting nothing."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_sqs_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "sqs": mock_sqs_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/test-queue"
+        queue_arn = "arn:aws:sqs:us-east-1:111111111111:test-queue"
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        mock_sqs_client.get_queue_attributes.return_value = {
+            "Attributes": {
+                "Policy": json.dumps({"Version": "2012-10-17", "Statement": "Allow"}),
+                "QueueArn": queue_arn
+            }
+        }
+
+        with pytest.raises(MalformedPolicyError, match="Statement of type str"):
+            analyze_sqs_queue_policies(mock_session, {"111111111111"})
 
     def test_missing_principal(self) -> None:
         """Test that statements without Principal are skipped."""

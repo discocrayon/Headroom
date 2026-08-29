@@ -16,6 +16,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_sqs.client import SQSClient
 
 from .helpers import get_all_regions
+from .policy_documents import normalize_statements
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,7 @@ def _analyze_queue_policy(
     Raises:
         UnknownPrincipalTypeError: If unknown principal type encountered
         UnsupportedPrincipalTypeError: If Federated principals found
+        MalformedPolicyError: If Statement is neither an object nor a list
     """
     policy = json.loads(policy_json)
     all_account_ids: Set[str] = set()
@@ -205,9 +207,7 @@ def _analyze_queue_policy(
     has_wildcard_principal = False
     has_non_account_principals = False
 
-    statements = policy.get("Statement", [])
-    if not isinstance(statements, list):
-        statements = [statements]
+    statements = normalize_statements(policy, f"Queue {queue_arn} in {region}")
 
     for statement in statements:
         if statement.get("Effect") != "Allow":
