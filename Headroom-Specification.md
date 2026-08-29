@@ -2895,6 +2895,7 @@ class OutputHandler:
 **Blocker Exclusion:**
 - An account is excluded from a check's RCP generation whenever that check's own violations count is nonzero; each check defines what counts as a violation for its own resource type (see `documentation/CHECKS.md`)
 - Static analysis cannot always determine the actual principals a resource policy would grant access to
+  - Conditions are not evaluated: a `Principal: "*"` scoped by `aws:PrincipalOrgID` is counted as a violation and blocks the account, and a grant scoped by `s3:prefix` or a lapsed `DateLessThan` still contributes its account to the allowlist. A condition can only narrow a grant, so neither can hide a third party from the scan; both cost coverage rather than safety.
 - Placement runs once per check, each against only that check's own blocked accounts, so a blocker for one RCP (e.g. S3) never suppresses placement for another (e.g. STS)
 - Avoids OU-level RCP for a check if ANY account beneath that OU is blocked for that check, including accounts inside its child OUs, because the policy reaches them too
 - Avoids root-level RCP for a check if ANY account in the organization is blocked for that check
@@ -4280,6 +4281,7 @@ The test environment serves as executable documentation:
 
 - Additional SCP checks (S3, VPC, CloudFormation, etc.)
 - CloudTrail historical analysis for wildcard principal resolution
+- Condition-aware RCP analysis: treat a wildcard principal confined by `aws:PrincipalOrgID`, `aws:PrincipalOrgPaths`, or `aws:PrincipalAccount` as scoped rather than as a blocker
 - OU-based account filtering (filter by OU, environment, owner)
 - Metrics-based decision making for policy deployment
 - GitHub Actions integration for CI/CD pipelines
