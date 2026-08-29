@@ -1,8 +1,9 @@
 """
 Check for KMS keys that allow third-party account access.
 
-This check identifies KMS keys with resource policies that allow
-principals from accounts outside the organization to access them.
+This check identifies KMS keys reachable by principals from accounts
+outside the organization, through either of the two surfaces that
+authorize access to a key - its resource policy and its grants.
 """
 
 from typing import Any, Dict, List, Set
@@ -23,9 +24,15 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
 
     This check identifies:
     - KMS keys with policies allowing accounts outside the organization
+    - KMS keys with grants reaching outside the organization
     - KMS keys with wildcard principals in policies
     - All unique third-party account IDs found
     - KMS actions allowed per third-party account
+
+    Both surfaces are covered. A grant is a separate object that
+    GetKeyPolicy cannot see, so a key whose policy names nobody outside
+    the organization can still hand Decrypt to a vendor. Each result
+    carries a `grants` list saying which grants contributed.
     """
 
     def __init__(
@@ -104,6 +111,18 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
                 for account_id, actions in result.actions_by_account.items()
             },
             "has_wildcard_principal": result.has_wildcard_principal,
+            "grants": [
+                {
+                    "grant_id": grant.grant_id,
+                    "grantee_account_id": grant.grantee_account_id,
+                    "retiring_principal_account_id": (
+                        grant.retiring_principal_account_id
+                    ),
+                    "operations": grant.operations,
+                    "has_constraints": grant.has_constraints,
+                }
+                for grant in result.grants
+            ],
         }
 
         self.all_third_party_accounts.update(result.third_party_account_ids)
@@ -124,13 +143,23 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
         """
         Build KMS third-party access check-specific summary fields.
 
+        Counts cover both surfaces. `keys_with_third_party_grants` is the
+        only signal at summary level that the grant surface found anything:
+        a key with a clean policy and a third-party grant is otherwise
+        indistinguishable here from one found the usual way.
+
         Args:
             check_result: Categorized check result
 
         Returns:
             Dictionary with check-specific summary fields
         """
-        total_keys = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
+        all_keys = check_result.violations + check_result.exemptions + check_result.compliant
+        total_keys = len(all_keys)
+
+        keys_with_third_party_grants = sum(
+            1 for key in all_keys if key.get("grants")
+        )
 
         keys_with_wildcards_and_third_party = sum(
             1 for key in check_result.violations
@@ -149,6 +178,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
             "total_keys_analyzed": total_keys,
             "keys_third_parties_can_access": keys_with_third_party_access,
             "keys_with_wildcards": len(check_result.violations),
+            "keys_with_third_party_grants": keys_with_third_party_grants,
             "violations": len(check_result.violations),
             "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
             "third_party_account_count": len(self.all_third_party_accounts),

@@ -11,7 +11,7 @@ from typing import List, Generator
 from headroom.checks.rcps.deny_kms_third_party_access import DenyKMSThirdPartyAccessCheck
 from headroom.constants import DENY_KMS_THIRD_PARTY_ACCESS
 from headroom.config import DEFAULT_RESULTS_DIR
-from headroom.aws.kms import KMSKeyPolicyAnalysis
+from headroom.aws.kms import KMSGrantFinding, KMSKeyPolicyAnalysis
 
 
 class TestCheckDenyKMSThirdPartyAccess:
@@ -384,3 +384,167 @@ class TestCheckDenyKMSThirdPartyAccess:
             assert set(summary["unique_third_party_accounts"]) == {"888888888888", "999999999999"}
             assert "888888888888" in summary["actions_by_account"]
             assert "999999999999" in summary["actions_by_account"]
+
+
+class TestGrantSourcedResults:
+    """
+    Results whose third party came from a grant, not the key policy.
+
+    A grant is invisible to GetKeyPolicy, so these are the keys that would
+    have shipped an RCP that denied access the account depended on.
+    """
+
+    ORG_ACCOUNT = "111111111111"
+    THIRD_PARTY = "999999999999"
+
+    @pytest.fixture
+    def temp_results_dir(self) -> Generator[str, None, None]:
+        """Create temporary results directory for testing."""
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    @staticmethod
+    def _grant_sourced_key(key_id: str = "key-grant") -> KMSKeyPolicyAnalysis:
+        """Build a key whose policy is clean but whose grant is not."""
+        return KMSKeyPolicyAnalysis(
+            key_id=key_id,
+            key_arn=(
+                f"arn:aws:kms:us-east-1:"
+                f"{TestGrantSourcedResults.ORG_ACCOUNT}:key/{key_id}"
+            ),
+            region="us-east-1",
+            third_party_account_ids={TestGrantSourcedResults.THIRD_PARTY},
+            actions_by_account={
+                TestGrantSourcedResults.THIRD_PARTY: ["kms:Decrypt"]
+            },
+            has_wildcard_principal=False,
+            grants=[
+                KMSGrantFinding(
+                    grant_id="grant-abc",
+                    grantee_account_id=TestGrantSourcedResults.THIRD_PARTY,
+                    retiring_principal_account_id=None,
+                    operations=["kms:Decrypt"],
+                    has_constraints=False,
+                )
+            ],
+        )
+
+    @staticmethod
+    def _run(
+        results: List[KMSKeyPolicyAnalysis],
+        temp_results_dir: str,
+    ) -> dict:
+        """Execute the check over the given analyses and return results_data."""
+        mock_session = MagicMock()
+
+        with (
+            patch(
+                "headroom.checks.rcps.deny_kms_third_party_access."
+                "analyze_kms_key_policies"
+            ) as mock_analysis,
+            patch("headroom.checks.base.write_check_results") as mock_write,
+            patch("builtins.print"),
+        ):
+            mock_analysis.return_value = results
+
+            check = DenyKMSThirdPartyAccessCheck(
+                check_name=DENY_KMS_THIRD_PARTY_ACCESS,
+                account_name="test-account",
+                account_id=TestGrantSourcedResults.ORG_ACCOUNT,
+                results_dir=temp_results_dir,
+                org_account_ids={TestGrantSourcedResults.ORG_ACCOUNT},
+            )
+            check.execute(mock_session)
+
+            results_data: dict = mock_write.call_args[1]["results_data"]
+            return results_data
+
+    def test_grants_are_written_to_the_result(
+        self,
+        temp_results_dir: str,
+    ) -> None:
+        """
+        The result records which grant produced the third party.
+
+        Without it a reader sees an account in the allowlist, opens the key
+        policy, finds nothing, and cannot tell where the entry came from.
+        """
+        results_data = self._run(
+            [self._grant_sourced_key()], temp_results_dir
+        )
+
+        key = results_data["keys_third_parties_can_access"][0]
+        assert key["grants"] == [
+            {
+                "grant_id": "grant-abc",
+                "grantee_account_id": self.THIRD_PARTY,
+                "retiring_principal_account_id": None,
+                "operations": ["kms:Decrypt"],
+                "has_constraints": False,
+            }
+        ]
+
+    def test_grant_third_party_reaches_the_allowlist(
+        self,
+        temp_results_dir: str,
+    ) -> None:
+        """
+        A grantee account flows to the Terraform allowlist like any other.
+
+        Grant principals are ordinary IAM ARNs, so unlike an S3 ACL grantee
+        they cost the account no RCP coverage.
+        """
+        results_data = self._run(
+            [self._grant_sourced_key()], temp_results_dir
+        )
+
+        summary = results_data["summary"]
+        assert summary["unique_third_party_accounts"] == [self.THIRD_PARTY]
+        assert summary["actions_by_account"][self.THIRD_PARTY] == ["kms:Decrypt"]
+
+    def test_a_grant_only_key_is_not_a_violation(
+        self,
+        temp_results_dir: str,
+    ) -> None:
+        """
+        Reading grants can widen the allowlist but never withhold the RCP.
+
+        `violations` is what sets blocks_rcp, so a grant raising it would
+        cost the account an RCP it should still get.
+        """
+        results_data = self._run(
+            [self._grant_sourced_key()], temp_results_dir
+        )
+
+        assert results_data["summary"]["violations"] == 0
+        assert results_data["keys_with_wildcards"] == []
+
+    def test_summary_counts_keys_with_third_party_grants(
+        self,
+        temp_results_dir: str,
+    ) -> None:
+        """
+        The summary says whether the grant surface found anything.
+
+        A key with a clean policy and a third-party grant is otherwise
+        indistinguishable in the summary from one found the usual way.
+        """
+        policy_sourced_key = KMSKeyPolicyAnalysis(
+            key_id="key-policy",
+            key_arn=(
+                f"arn:aws:kms:us-east-1:{self.ORG_ACCOUNT}:key/key-policy"
+            ),
+            region="us-east-1",
+            third_party_account_ids={"888888888888"},
+            actions_by_account={"888888888888": ["kms:DescribeKey"]},
+            has_wildcard_principal=False,
+        )
+
+        results_data = self._run(
+            [self._grant_sourced_key(), policy_sourced_key], temp_results_dir
+        )
+
+        summary = results_data["summary"]
+        assert summary["total_keys_analyzed"] == 2
+        assert summary["keys_with_third_party_grants"] == 1
