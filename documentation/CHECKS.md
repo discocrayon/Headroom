@@ -606,11 +606,12 @@ China ARNs all resolve.
 
 **Check Name**: `deny_s3_third_party_access`
 
-**Purpose**: Identifies S3 buckets with policies allowing third-party account access or non-account-based principals.
+**Purpose**: Identifies S3 buckets whose policy or ACL allows third-party account access or non-account-based principals.
 
 **How it Works**:
 - Lists all S3 buckets
-- Retrieves bucket policies
+- Retrieves each bucket's ACL and classifies its grantees
+- Retrieves bucket policies, where the bucket carries one
 - Parses policies for third-party principals
 - Detects Federated/CanonicalUser principals
 
@@ -619,6 +620,31 @@ China ARNs all resolve.
 - Federated principals (SAML, OIDC)
 - CanonicalUser principals
 - Wildcard principals
+- ACL grants to a canonical user other than the bucket owner, or to an email address
+- ACL grants to the `AllUsers` or `AuthenticatedUsers` groups
+
+**Bucket ACLs**: A bucket ACL authorizes principals independently of the bucket
+policy, and the RCP denies every principal outside the organization however the
+bucket authorized them. Reading only the policy therefore reported an
+ACL-shared bucket clean, and the account kept an RCP that broke the grant on
+apply. ACL grantees carry canonical user IDs rather than account IDs, and no
+API resolves one to the other, so an external grantee cannot be expressed in
+`aws:PrincipalAccount` and keeps the account out of the RCP instead. Two
+grantees are read as reaching nobody the RCP would deny: the bucket's own
+owner, whose grant every bucket carries, and the S3 log delivery group, which
+authorizes the same `logging.s3.amazonaws.com` service principal that the
+bucket-policy form of the grant names. A grantee type or group the analyzer
+cannot classify aborts the run rather than being dropped.
+
+A bucket whose Object Ownership is `BucketOwnerEnforced` has ACLs disabled;
+reads still succeed and return the owner's grant alone, so no separate
+ownership lookup is needed.
+
+**Object ACLs are not read.** Under `ObjectWriter` ownership an object uploaded
+by an external account is owned by that account and can carry its own ACL, as
+can log objects delivered under `TargetGrants`. Enumerating those costs one
+call per object, so they are out of scope, and an object ACL granting a third
+party is not visible to this check.
 
 **Safety**: Prevents RCP deployment for buckets with Federated or CanonicalUser principals (would break access).
 

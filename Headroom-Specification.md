@@ -1200,7 +1200,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
 
 ### S3 Third-Party Access
 
-**Purpose:** Analyze S3 bucket policies to identify third-party (non-org) account access, Federated/CanonicalUser principals, and wildcard principals.
+**Purpose:** Analyze the two surfaces that authorize access to an S3 bucket - its policy and its ACL - to identify third-party (non-org) account access, Federated/CanonicalUser principals, and wildcard principals.
 
 **Data Model:**
 ```python
@@ -1208,10 +1208,10 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
 class S3BucketPolicyAnalysis:
     bucket_name: str
     bucket_arn: str
-    third_party_account_ids: Set[str]          # External to organization
-    has_wildcard_principal: bool               # True if Principal: "*" or NotPrincipal
-    has_non_account_principals: bool           # True if Federated or CanonicalUser
-    actions_by_account: Dict[str, Set[str]]    # account_id -> allowed S3 actions
+    third_party_account_ids: Set[str]          # External to organization; policy only
+    has_wildcard_principal: bool               # True if Principal: "*", NotPrincipal, or a public ACL group
+    has_non_account_principals: bool           # True if Federated, CanonicalUser, or a non-owner ACL grantee
+    actions_by_account: Dict[str, Set[str]]    # account_id -> allowed S3 actions; policy only
 ```
 
 **Analysis Function:**
@@ -1221,29 +1221,60 @@ class S3BucketPolicyAnalysis:
 # S3 supports CanonicalUser in addition to base principal types
 ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES | {"CanonicalUser"}
 
+# ACL grantee groups, which name an audience rather than an account
+ALL_USERS_GROUP_URI = "http://acs.amazonaws.com/groups/global/AllUsers"
+AUTHENTICATED_USERS_GROUP_URI = "http://acs.amazonaws.com/groups/global/AuthenticatedUsers"
+PUBLIC_ACL_GROUP_URIS = frozenset({ALL_USERS_GROUP_URI, AUTHENTICATED_USERS_GROUP_URI})
+LOG_DELIVERY_GROUP_URI = "http://acs.amazonaws.com/groups/s3/LogDelivery"
+
+
+class AclGrantFindings(NamedTuple):
+    has_wildcard_grantee: bool                 # ACL grants to a public group
+    has_non_account_grantee: bool              # ACL grants to a canonical user or email
+
 def analyze_s3_bucket_policies(
     session: boto3.Session,
     org_account_ids: Set[str]
 ) -> List[S3BucketPolicyAnalysis]:
     """
-    Analyze all S3 bucket policies for third-party access.
+    Analyze all S3 bucket policies and ACLs for third-party access.
 
     Algorithm:
     1. List all buckets with paginator (list_buckets)
-    2. For each bucket, get bucket policy (get_bucket_policy)
-    3. Parse JSON policy document
-    4. For each Allow statement:
+    2. For each bucket, get the bucket ACL (get_bucket_acl) and classify its
+       grantees
+    3. Get the bucket policy (get_bucket_policy), if the bucket carries one
+    4. Parse JSON policy document
+    5. For each Allow statement:
        - Check if Principal contains wildcard
        - Check if Principal contains Federated or CanonicalUser types
        - Extract account IDs from Principal field
        - Extract allowed actions
        - Filter to third-party accounts (not in org_account_ids)
        - Track which actions each third-party account can perform
-    5. Return S3BucketPolicyAnalysis for buckets with findings
+    6. Return S3BucketPolicyAnalysis for buckets with findings
 
     Raises:
     - UnknownPrincipalTypeError: if principal type not in ALLOWED_PRINCIPAL_TYPES
     - UnsupportedPrincipalTypeError: if Federated/CanonicalUser prevents RCP deployment
+    - UnknownGranteeTypeError: if an ACL grantee's type or group is unrecognized
+    """
+
+def _analyze_bucket_acl(s3_client: S3Client, bucket_name: str) -> AclGrantFindings:
+    """
+    Read a bucket's ACL and report what its grants reach.
+
+    The ACL is read before the policy: a bucket that shares only by ACL
+    carries no policy at all, so abandoning it for want of one would skip
+    the grant most likely to be the only grant on it.
+    """
+
+def _read_bucket_policy(s3_client: S3Client, bucket_name: str) -> Optional[JsonDict]:
+    """
+    Read a bucket's policy, or return None if it carries none.
+
+    A bucket with no policy is not a bucket with nothing to find: its ACL
+    can still grant access.
     """
 
 def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
@@ -1279,10 +1310,54 @@ def _normalize_actions(action: Any) -> Set[str]:
     """Normalize action field to a set of action strings."""
 ```
 
+**Bucket ACLs.** A bucket ACL authorizes principals independently of the bucket
+policy, and the RCP denies every principal outside the organization however the
+bucket authorized them. A surface left unread is therefore a grant that breaks
+on apply with nothing in the scan to warn of it: the bucket reports clean, the
+account records no violation, and the RCP deploys over access no allowlist
+covers.
+
+ACL grantees carry canonical user IDs rather than account IDs, and no API
+resolves one to the other, so an external grantee cannot be expressed in
+`aws:PrincipalAccount`. It sets `has_non_account_principals` and keeps the
+account out of the RCP, which is the answer the check already gives a
+`CanonicalUser` principal named in a bucket policy. ACL findings reach those
+two booleans and nothing else: a canonical user ID cannot populate
+`third_party_account_ids`, and ACL permissions are not IAM actions, so
+`actions_by_account` stays a record of the policy alone.
+
+| Grantee | Verdict |
+|---------|---------|
+| `CanonicalUser` equal to the bucket owner | Ignored - every bucket carries this grant |
+| `CanonicalUser` other than the owner | `has_non_account_principals` |
+| `AmazonCustomerByEmail` | `has_non_account_principals` |
+| `Group` `AllUsers` or `AuthenticatedUsers` | `has_wildcard_principal` |
+| `Group` `LogDelivery` | Ignored - see below |
+| Any other type or group | `UnknownGranteeTypeError` |
+
+Granting the log delivery group by ACL and granting `logging.s3.amazonaws.com`
+by bucket policy authorize the same principal; AWS documents the ACL form as
+granting permissions "to the logging service principal by using a bucket ACL".
+The RCP spares AWS services through `aws:PrincipalIsAWSService`, so the grant
+reaches nobody the RCP would deny.
+
+A bucket whose Object Ownership is `BucketOwnerEnforced` has ACLs disabled.
+Reads still succeed and return the owner's grant alone, so that case needs no
+separate ownership lookup and costs no extra call.
+
+**Object ACLs are not read.** Under `ObjectWriter` ownership an object uploaded
+by an external account is owned by that account and can carry its own ACL, as
+can log objects delivered under `TargetGrants`. Enumerating those costs one
+call per object and is out of scope, so an object ACL granting a third party is
+not visible to this check.
+
 **Custom Exceptions:**
 ```python
 class UnknownPrincipalTypeError(Exception):
     """Raised when principal type is not in ALLOWED_PRINCIPAL_TYPES."""
+
+class UnknownGranteeTypeError(Exception):
+    """Raised when an unknown grantee type or group is encountered in a bucket ACL."""
 
 class UnsupportedPrincipalTypeError(Exception):
     """
