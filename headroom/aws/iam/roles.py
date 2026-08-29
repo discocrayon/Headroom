@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
 from ...constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
-from ..policy_documents import normalize_statements
+from ..policy_documents import has_not_principal, normalize_statements
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -49,7 +49,9 @@ class TrustPolicyAnalysis:
         role_name: Name of the IAM role
         role_arn: ARN of the IAM role
         third_party_account_ids: Set of account IDs not in the organization
-        has_wildcard_principal: True if trust policy contains wildcard principals
+        has_wildcard_principal: True if the trust policy grants to principals the
+            analyzer cannot enumerate - `Principal: "*"`, or an Allow with
+            NotPrincipal, which reaches everyone it does not name
     """
     role_name: str
     role_arn: str
@@ -247,6 +249,12 @@ def analyze_iam_roles_trust_policies(
                         continue
 
                     if not _grants_assume_role(statement, role_name):
+                        continue
+
+                    # An Allow with NotPrincipal reaches everyone it does not name,
+                    # which is what the wildcard flag records
+                    if has_not_principal(statement):
+                        has_wildcard = True
                         continue
 
                     # Extract principal

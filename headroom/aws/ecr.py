@@ -19,7 +19,7 @@ from mypy_boto3_ecr.type_defs import RepositoryTypeDef
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from .helpers import get_all_regions, paginate
-from .policy_documents import normalize_statements
+from .policy_documents import has_not_principal, normalize_statements
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,9 @@ class ECRRepositoryPolicyAnalysis:
         region: AWS region where repository exists
         third_party_account_ids: Set of account IDs not in the organization
         actions_by_account: Mapping of account ID to list of ECR actions allowed
-        has_wildcard_principal: True if policy contains wildcard principals
+        has_wildcard_principal: True if the policy grants to principals the
+            analyzer cannot enumerate - `Principal: "*"`, or an Allow with
+            NotPrincipal, which reaches everyone it does not name
     """
     repository_name: str
     repository_arn: str
@@ -211,6 +213,12 @@ def _analyze_repository_in_region(
 
     for statement in statements:
         if statement.get("Effect") != "Allow":
+            continue
+
+        # An Allow with NotPrincipal reaches everyone it does not name,
+        # which is what the wildcard flag records
+        if has_not_principal(statement):
+            has_wildcard = True
             continue
 
         principal = statement.get("Principal")

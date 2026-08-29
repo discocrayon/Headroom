@@ -528,6 +528,13 @@ lone object rather than a list is read as a one-element list, as IAM allows.
 Anything else raises `MalformedPolicyError` rather than being skipped, which
 would report the resource as granting nothing.
 
+**Principal Handling**: An `Allow` naming `NotPrincipal` grants to every
+principal except the ones it lists, which is the same reach `Principal: "*"`
+has. It sets `has_wildcard_principal` and counts as a violation, so the
+resource gets the blocker and the CloudTrail follow-up a literal wildcard
+gets. `Deny` with `NotPrincipal` is the form AWS recommends and restricts
+rather than grants, so it counts for nothing.
+
 **Condition Handling**: RCP checks read a statement's `Effect`, `Principal`, and
 `Action`; they do not evaluate `Condition`. A wildcard principal narrowed by
 `aws:PrincipalOrgID` grants nothing outside the organization, but is still
@@ -535,6 +542,9 @@ counted as a violation and still blocks that account from the RCP. A grant
 narrowed by `s3:prefix` or `aws:SourceVpce` still contributes its account to
 the allowlist at full width. Neither can hide a third party from the scan - a
 condition only ever narrows a grant - so both cost coverage rather than safety.
+`Resource` and `NotResource` are not read either, with the same widening-only
+effect: a statement scoped away from the resource still contributes its
+principals.
 
 ### STS Third-Party AssumeRole Check
 

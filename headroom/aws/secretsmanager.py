@@ -18,7 +18,7 @@ from mypy_boto3_secretsmanager.client import SecretsManagerClient
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
 from .helpers import get_all_regions
-from .policy_documents import normalize_statements
+from .policy_documents import has_not_principal, normalize_statements
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,9 @@ class SecretsPolicyAnalysis:
         secret_name: Name of the secret
         secret_arn: ARN of the secret
         third_party_account_ids: Set of account IDs not in the organization
-        has_wildcard_principal: True if policy contains wildcard principals
+        has_wildcard_principal: True if the policy grants to principals the
+            analyzer cannot enumerate - `Principal: "*"`, or an Allow with
+            NotPrincipal, which reaches everyone it does not name
         has_non_account_principals: True if policy has Federated/CanonicalUser principals
         actions_by_account: Dict mapping account IDs to sets of allowed actions
     """
@@ -308,6 +310,12 @@ def _analyze_secret_policy(
 
     for statement in statements:
         if statement.get("Effect") != "Allow":
+            continue
+
+        # An Allow with NotPrincipal reaches everyone it does not name,
+        # which is what the wildcard flag records
+        if has_not_principal(statement):
+            has_wildcard = True
             continue
 
         principal = statement.get("Principal")

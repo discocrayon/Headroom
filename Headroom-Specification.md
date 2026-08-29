@@ -297,7 +297,7 @@ class TrustPolicyAnalysis:
     role_name: str
     role_arn: str
     third_party_account_ids: Set[str]   # Non-org account IDs
-    has_wildcard_principal: bool        # True if Principal: "*"
+    has_wildcard_principal: bool        # True if Principal: "*" or NotPrincipal
 
 # aws/ecr.py
 @dataclass
@@ -307,7 +307,7 @@ class ECRRepositoryPolicyAnalysis:
     region: str
     third_party_account_ids: Set[str]   # Non-org account IDs
     actions_by_account: Dict[str, List[str]]  # Account ID -> allowed actions
-    has_wildcard_principal: bool        # True if Principal: "*"
+    has_wildcard_principal: bool        # True if Principal: "*" or NotPrincipal
 ```
 
 ---
@@ -813,6 +813,48 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str
 
 ## RCP Checks
 
+### Shared Policy Grammar
+
+Every RCP check reads a policy document, and the parts of IAM's grammar that
+vary independently of the service live in `headroom/aws/policy_documents.py`
+rather than in each analyzer.
+
+```python
+# aws/policy_documents.py
+class MalformedPolicyError(Exception): ...
+
+def normalize_statements(
+    policy: Mapping[str, Any],
+    resource_description: str,
+) -> List[Any]: ...
+
+def has_not_principal(statement: Mapping[str, Any]) -> bool: ...
+```
+
+**Statement shape.** IAM accepts a lone statement object where a one-element
+list would do, and each service returns a policy in the shape it was stored.
+Iterating that object directly walks its keys as strings, which fails on the
+first `statement.get`. A `Statement` that is neither an object nor a list
+raises `MalformedPolicyError` naming the resource, because reading it as no
+statements would report the policy as granting nothing.
+
+**NotPrincipal.** An `Allow` naming `NotPrincipal` grants to every principal
+except the ones it lists, so its reach is everyone outside a short list - the
+same reach `Principal: "*"` has. Each analyzer sets `has_wildcard_principal`
+for it and moves to the next statement, routing the resource to the blocker
+and CloudTrail follow-up a literal wildcard already gets. Reading it any other
+way reported the resource clean, left the account eligible for the RCP, and
+denied that grant's real audience on apply.
+
+The check runs after the analyzer's own `Effect` gate, and in the STS check
+after the AssumeRole action gate as well. `Deny` with `NotPrincipal` is the
+form AWS recommends, it restricts rather than grants, and a resource policy's
+`Deny` hands access to nobody.
+
+**Not read.** `Resource` and `NotResource` are never consulted. A statement
+scoped away from the resource being scanned still contributes its principals,
+which widens an allowlist rather than narrowing one.
+
 ### ECR Third-Party Access
 
 **Purpose:** Analyze ECR repository resource policies to identify third-party (non-org) account access and wildcard principals.
@@ -826,7 +868,7 @@ class ECRRepositoryPolicyAnalysis:
     region: str
     third_party_account_ids: Set[str]         # External to organization
     actions_by_account: Dict[str, List[str]]  # Account ID -> allowed ECR actions
-    has_wildcard_principal: bool              # True if Principal: "*"
+    has_wildcard_principal: bool              # True if Principal: "*" or NotPrincipal
 ```
 
 **Analysis Function:**
@@ -993,7 +1035,7 @@ class TrustPolicyAnalysis:
     role_name: str
     role_arn: str
     third_party_account_ids: Set[str]    # External to organization
-    has_wildcard_principal: bool         # True if Principal: "*"
+    has_wildcard_principal: bool         # True if Principal: "*" or NotPrincipal
 ```
 
 **Analysis Function:**
@@ -1167,7 +1209,7 @@ class S3BucketPolicyAnalysis:
     bucket_name: str
     bucket_arn: str
     third_party_account_ids: Set[str]          # External to organization
-    has_wildcard_principal: bool               # True if Principal: "*"
+    has_wildcard_principal: bool               # True if Principal: "*" or NotPrincipal
     has_non_account_principals: bool           # True if Federated or CanonicalUser
     actions_by_account: Dict[str, Set[str]]    # account_id -> allowed S3 actions
 ```

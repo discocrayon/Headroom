@@ -180,6 +180,61 @@ class TestAnalyzeSecretPolicy:
         assert result is not None
         assert result.has_wildcard_principal is True
 
+    def test_not_principal_is_read_as_a_wildcard(self) -> None:
+        """
+        An Allow with NotPrincipal grants to everyone it does not name.
+
+        Skipping the statement for want of a Principal reported the secret
+        clean, so the account kept its RCP and the grant's real audience -
+        every account outside the exclusion list - lost access on apply.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Action": "secretsmanager:GetSecretValue"
+                }
+            ]
+        }
+
+        result = _analyze_secret_policy(
+            "shared-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret",
+            policy,  # type: ignore[arg-type]
+            {"111111111111"}
+        )
+
+        assert result is not None
+        assert result.has_wildcard_principal is True
+        assert result.third_party_account_ids == set()
+
+    def test_deny_with_not_principal_is_not_a_wildcard(self) -> None:
+        """
+        Deny with NotPrincipal restricts rather than grants.
+
+        It is the form AWS recommends, and a resource policy's Deny cannot
+        hand access to anyone, so it must not block the RCP.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Deny",
+                    "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Action": "secretsmanager:GetSecretValue"
+                }
+            ]
+        }
+
+        result = _analyze_secret_policy(
+            "shared-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret",
+            policy,  # type: ignore[arg-type]
+            {"111111111111"}
+        )
+
+        assert result is None
+
     def test_federated_principal_raises(self) -> None:
         """Test that Federated principal raises exception."""
         policy = {

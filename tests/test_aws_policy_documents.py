@@ -6,6 +6,7 @@ import pytest
 
 from headroom.aws.policy_documents import (
     MalformedPolicyError,
+    has_not_principal,
     normalize_statements,
 )
 from headroom.types import JsonDict
@@ -56,3 +57,41 @@ class TestNormalizeStatements:
 
         with pytest.raises(MalformedPolicyError, match="Statement of type NoneType"):
             normalize_statements(policy, "Key 'example-key' in us-east-1")
+
+
+class TestHasNotPrincipal:
+    def test_not_principal_is_reported(self) -> None:
+        """A statement naming NotPrincipal reaches everyone it excludes."""
+        statement = {
+            "Effect": "Allow",
+            "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+            "Action": "s3:GetObject",
+        }
+
+        assert has_not_principal(statement) is True
+
+    def test_ordinary_principal_is_not_reported(self) -> None:
+        """A Principal names who it grants to, so the analyzer can read it."""
+        statement = {
+            "Effect": "Allow",
+            "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+            "Action": "s3:GetObject",
+        }
+
+        assert has_not_principal(statement) is False
+
+    def test_both_elements_is_reported(self) -> None:
+        """
+        Carrying both is invalid IAM, and the answer still errs toward blocking.
+
+        Letting the Principal half stand alone would report a narrow grant
+        for a statement whose reach is everyone outside the exclusion list.
+        """
+        statement = {
+            "Effect": "Allow",
+            "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+            "NotPrincipal": {"AWS": "arn:aws:iam::888888888888:root"},
+            "Action": "s3:GetObject",
+        }
+
+        assert has_not_principal(statement) is True
