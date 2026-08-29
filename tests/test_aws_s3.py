@@ -3,6 +3,8 @@ Tests for headroom.aws.s3 module.
 """
 
 import json
+from typing import Any
+
 import pytest
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
@@ -14,6 +16,7 @@ from headroom.aws.s3 import (
     _normalize_actions,
     UnknownPrincipalTypeError,
 )
+from headroom.aws.policy_documents import MalformedPolicyError
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -411,3 +414,80 @@ class TestAnalyzeS3BucketPolicies:
         from headroom.aws.s3 import _has_wildcard_principal
         principal = {"AWS": ["arn:aws:iam::111111111111:root", "*"]}
         assert _has_wildcard_principal(principal) is True
+
+
+class TestPolicyGrammar:
+    """Policy elements the bucket analyzer must read the way IAM does."""
+
+    @staticmethod
+    def _analyze(policy: Any) -> Any:
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+
+        mock_s3_client.list_buckets.return_value = {"Buckets": [{"Name": "test-bucket"}]}
+        mock_s3_client.get_bucket_policy.return_value = {"Policy": json.dumps(policy)}
+
+        return analyze_s3_bucket_policies(mock_session, {"111111111111"})
+
+    def test_lone_statement_object_is_analyzed(self) -> None:
+        """The third party in a lone statement object is found, not missed."""
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::test-bucket/*"
+            }
+        })
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {"999999999999"}
+        assert results[0].actions_by_account["999999999999"] == {"s3:GetObject"}
+
+    def test_statement_neither_object_nor_list_raises(self) -> None:
+        """A Statement of any other type aborts rather than reporting nothing."""
+        with pytest.raises(MalformedPolicyError, match="Statement of type str"):
+            self._analyze({"Version": "2012-10-17", "Statement": "Allow"})
+
+    def test_not_principal_is_read_as_a_wildcard(self) -> None:
+        """
+        An Allow with NotPrincipal grants to everyone it does not name.
+
+        Skipping the statement for want of a Principal reported the resource
+        clean, so the account kept its RCP and the grant's real audience -
+        every account outside the exclusion list - lost access on apply.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Allow",
+                "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::test-bucket/*"
+            }
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+
+    def test_deny_with_not_principal_is_not_a_wildcard(self) -> None:
+        """
+        Deny with NotPrincipal restricts rather than grants.
+
+        It is the form AWS recommends, and a resource policy's Deny cannot
+        hand access to anyone, so it must not block the RCP.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": {
+                "Effect": "Deny",
+                "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::test-bucket/*"
+            }
+        })
+
+        assert results == []
