@@ -26,6 +26,10 @@ class UnknownPrincipalTypeError(Exception):
     """Raised when an unknown principal type is encountered in a resource policy."""
 
 
+class MalformedPolicyError(Exception):
+    """Raised when a resource policy's Statement is neither an object nor a list."""
+
+
 class UnsupportedPrincipalTypeError(Exception):
     """
     Raised when a resource policy contains principal types that can't be handled by RCP.
@@ -296,6 +300,7 @@ def _analyze_secret_policy(
 
     Raises:
         UnsupportedPrincipalTypeError: If policy contains Federated/CanonicalUser principals
+        MalformedPolicyError: If Statement is neither an object nor a list
     """
     third_party_accounts: Set[str] = set()
     has_wildcard = False
@@ -303,8 +308,18 @@ def _analyze_secret_policy(
     actions_by_account: Dict[str, Set[str]] = {}
 
     statements = policy.get("Statement", [])
+    if isinstance(statements, dict):
+        # IAM accepts a lone statement object in place of a one-element list,
+        # and Secrets Manager returns the policy as it was stored.
+        statements = [statements]
     if not isinstance(statements, list):
-        statements = []
+        raise MalformedPolicyError(
+            f"Secret '{secret_name}' has a Statement of type "
+            f"{type(statements).__name__}, expected an object or a list. "
+            "Skipping it would report the secret as having no third-party "
+            f"access, which is not a safe guess. Secret ARN: {secret_arn}"
+        )
+
     for statement in statements:
         if statement.get("Effect") != "Allow":
             continue
