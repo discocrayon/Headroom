@@ -528,6 +528,14 @@ lone object rather than a list is read as a one-element list, as IAM allows.
 Anything else raises `MalformedPolicyError` rather than being skipped, which
 would report the resource as granting nothing.
 
+**Condition Handling**: RCP checks read a statement's `Effect`, `Principal`, and
+`Action`; they do not evaluate `Condition`. A wildcard principal narrowed by
+`aws:PrincipalOrgID` grants nothing outside the organization, but is still
+counted as a violation and still blocks that account from the RCP. A grant
+narrowed by `s3:prefix` or `aws:SourceVpce` still contributes its account to
+the allowlist at full width. Neither can hide a third party from the scan - a
+condition only ever narrows a grant - so both cost coverage rather than safety.
+
 ### STS Third-Party AssumeRole Check
 
 **Check Name**: `deny_sts_third_party_assumerole` (also `deny_deny_sts_third_party_assumerole` for enforcement)
@@ -848,6 +856,7 @@ China ARNs all resolve.
 ### Future Enhancements
 
 - **CloudTrail Integration**: Check past AWS activity for dynamic principals
+- **Condition-Aware Analysis**: Recognize org-scoping condition keys so a conditioned wildcard is not counted as a blocker
 - **Configurable Exemptions**: Enable/disable exemption support per check
 - **Custom Check Framework**: Easy addition of new checks via plugin system
 
