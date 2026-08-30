@@ -463,6 +463,45 @@ def test_render_account_scp_terraform_names_the_file_for_the_account() -> None:
     assert "deny_iam_saml_provider_not_aws_sso = false" in content
 
 
+def test_render_account_scp_terraform_rejects_a_folded_name_collision() -> None:
+    """
+    Two account names that fold alike abort rather than overwrite.
+
+    The plan is a dict keyed on the path, so without this the second account's
+    file silently replaces the first's while the plan is still being built --
+    render-before-mutate never sees a conflict, and one account ships with no
+    SCPs at all.
+
+    Only one of the two accounts is being rendered here. The guard has to read
+    the whole hierarchy, because the account it collides with may be one this
+    run was never asked to generate for.
+    """
+    org = OrganizationHierarchy(
+        root_id="r-root",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="Prod-US",
+                parent_ou_id="ou-test",
+                ou_path=["r-root", "ou-test"]
+            ),
+            "222222222222": AccountOrgPlacement(
+                account_id="222222222222",
+                account_name="Prod US",
+                parent_ou_id="ou-test",
+                ou_path=["r-root", "ou-test"]
+            ),
+        }
+    )
+    rec = make_rec(level="account", affected_accounts=["111111111111"])
+
+    with pytest.raises(RuntimeError, match="prod_us"):
+        _render_account_scp_terraform(
+            "111111111111", [rec], org, Path("/nonexistent")
+        )
+
+
 def test_render_account_scp_terraform_raises_error_for_missing_account() -> None:
     org = make_org_empty()
     rec = make_rec(level="account", affected_accounts=["999999999999"])

@@ -202,18 +202,22 @@ headroom/
 
    Because accounts interleave in the output, `log_context.py` stamps every record with
    the account its thread is analyzing and the format carries it in brackets:
-   `INFO:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1`.
+   `DEBUG:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1`.
    Records emitted outside a worker are stamped `-`. The filter is installed on the root
    handler, not on a logger, because a logger's filters never see records propagated up
    from child loggers.
 
    Two properties of the account names are checked before the pool starts, since both
-   would otherwise surface only at the end of a run that can take a quarter of an hour. A
-   name that cannot be a filename -- containing a path separator, or beginning with a dot
-   -- would put the account's results outside the directory generation reads, without
-   failing. And under `exclude_account_ids` the name alone is the filename, so two
-   accounts sharing one would interleave their JSON. Both aborts name the offending names
-   and never the account IDs. "Account name validation" below gives the comparison rule.
+   would otherwise surface only at the end of a run that takes roughly sixteen minutes at
+   the default sixteen workers. A name that cannot be a filename -- containing a path
+   separator, holding a null byte, or too long for the filesystem's 255-byte limit on one
+   path component -- would put the account's results outside the directory generation
+   reads without failing, or fail the write partway through. A leading dot is allowed:
+   `pathlib.Path.glob` matches dotfiles, and the readers take account identity from the
+   JSON rather than the filename. And under `exclude_account_ids` the name alone is the
+   filename, so two accounts sharing one would interleave their JSON. Both aborts name the
+   offending names and never the account IDs. "Account name validation" below gives the
+   comparison rule.
 5. **Placement:** Parse all result files → analyze org structure → determine policy levels
 6. **Generation:** Generate `grab_org_info.tf` + SCP Terraform files + RCP Terraform files
 
@@ -221,15 +225,24 @@ headroom/
 
 ### Account name validation
 
-Two checks run over the account names before the worker pool starts. Both failures are
-otherwise invisible until the end of a run, and one of them is silent even then.
+Two checks run over the account names before the worker pool starts, and a third runs at
+generation. All three failures are otherwise invisible until the end of a run, and two of
+them are silent even then.
 
-**A name that cannot be a filename.** A path separator, or a leading dot, puts the
-account's results somewhere other than the check directory that generation reads. The
-write succeeds, the reader's `*.json` glob never sees the file, and the account is
-missing from the policies with nothing in the log to say so. The check is unconditional:
-the account ID is in the filename under the default setting too, and it does not make a
-name with a slash in it safe.
+**A name that cannot be a filename.** A path separator puts the account's results
+somewhere other than the check directory that generation reads: the write succeeds, and
+the account is missing from the policies with nothing in the log to say so. A null byte
+or a name past 237 bytes -- the 255-byte limit on one path component, less the `_`,
+twelve-digit account ID and `.json` the resolver adds -- fails the write outright, in a
+worker thread, partway through the run. Organizations caps an account name at 50
+characters, but `use_account_name_from_tags` reads the name from a tag value, and a tag
+value runs to 256. The check is unconditional: the account ID is in the filename under
+the default setting too, and it does not make a name with a slash in it safe.
+
+A leading dot is not rejected. `pathlib.Path.glob` matches dotfiles -- `glob.glob` is the
+one that skips them, and both readers use `pathlib` -- and neither reader takes account
+identity from the filename, reading it out of the JSON `summary` instead. An empty name
+is rejected, but for the generation reason below rather than a filename one.
 
 **Two accounts that resolve to one filename.** Only under `exclude_account_ids`, where
 the name alone is the filename. Run serially that is a quiet last-writer-wins; run with
@@ -261,6 +274,34 @@ The guard is deliberately over-eager. On a filesystem that folds neither axis it
 abort a run whose names would not in fact have collided. A loud abort an operator fixes
 by renaming an account beats two accounts' JSON interleaved into one file that policy
 generation then reads as one account's evidence.
+
+**Two accounts that claim one Terraform identifier.** At generation, not startup.
+Everything generated for an account -- its policy file, its module name, the ID local it
+targets -- is built from `make_safe_variable_name` of its name, which folds far wider
+than the filesystem does: case, spaces, hyphens, and every other non-alphanumeric all
+become one underscore, runs of underscores collapse, and leading and trailing underscores
+are stripped. `Prod-US`, `Prod US`, `Prod_US`, `prod.us` and `PROD+US` are one identifier.
+
+`make_account_base_names` claims one identifier per account and aborts when two accounts
+claim the same one, exactly as `make_ou_base_names` has always done for OUs. Without it
+the SCP and RCP plans, which are dictionaries keyed on the destination path, silently
+drop the first account's file when the second is rendered -- render-before-mutate never
+sees a conflict, because the conflict happened while the plan was being built. The
+account locals in `grab_org_info.tf` fail more loudly, declaring the same
+`<name>_account_id` twice, but only at `terraform apply`.
+
+The guard reads every account in the organization rather than the analyzed subset,
+because `_generate_account_locals` declares a local for every account the hierarchy
+holds. A collision between an analyzed account and a skipped one is still a duplicate
+local. That is also why this check cannot move to startup: the pre-flight guards see
+`get_subaccount_information`'s output, which has already dropped the management account,
+`skip_account_ids`, and every non-ACTIVE account. Making it early would mean fetching the
+hierarchy before the scan, which the pipeline does not do, and the retry after a late
+abort is cheap -- resume skips every account already scanned.
+
+The message names the account names and never the account IDs, matching the two startup
+guards: `exclude_account_ids` exists so an operator never sees them, and the generated
+Terraform looks accounts up by name in any case.
 
 **Both run before the resume filter, and have to.** They see every account the run
 selected, not the subset still needing a scan: `run_checks` drops accounts whose results

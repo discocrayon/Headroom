@@ -19,8 +19,9 @@ from .models import (
     TerraformPlan,
 )
 from .utils import (
+    account_id_local_name,
+    make_account_base_names,
     make_ou_base_names,
-    make_safe_variable_name,
     ou_id_local_name,
     ou_path_names,
     write_terraform_plan,
@@ -645,12 +646,15 @@ def _render_account_rcp_terraform(
     if not account_info:
         raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
 
-    account_name = make_safe_variable_name(account_info.account_name)
+    # Every reference to an account is built from this one identifier, and two
+    # accounts whose names fold to it abort here rather than overwrite each
+    # other in the plan.
+    account_name = make_account_base_names(organization_hierarchy.accounts)[account_id]
     filepath = output_path / f"{account_name}_rcps.tf"
 
     terraform_content = _build_rcp_terraform_module(
         module_name=f"rcps_{account_name}",
-        target_id_reference=f"local.{account_name}_account_id",
+        target_id_reference=f"local.{account_id_local_name(account_name)}",
         recommendations=recs,
         comment=account_info.account_name
     )

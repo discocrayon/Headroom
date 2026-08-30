@@ -464,6 +464,26 @@ class TestTerraformHelperFunctions:
         assert "validation_check_prod_account_account" in result_str
         assert "prod_account_account_id = [" in result_str
 
+    def test_generate_account_locals_rejects_a_folded_name_collision(self) -> None:
+        """
+        Two account names folding alike would declare one local twice.
+
+        This loop walks every account in the organization, not the analyzed
+        ones, so it is the widest view of the collision -- and a duplicate
+        `prod_us_account_id` is a Terraform error the operator only meets at
+        apply time, long after the scan.
+        """
+        ous = {
+            "ou-1": OrganizationalUnit("ou-1", "Production", None, [], ["acc-1", "acc-2"]),
+        }
+        accounts = {
+            "acc-1": AccountOrgPlacement("acc-1", "Prod-US", "ou-1", ["Production"]),
+            "acc-2": AccountOrgPlacement("acc-2", "Prod US", "ou-1", ["Production"]),
+        }
+
+        with pytest.raises(RuntimeError, match="prod_us"):
+            _generate_account_locals(accounts, ous)
+
     def test_generate_account_locals_should_generate_multiple_account_locals(self) -> None:
         """Should generate local variables for multiple accounts."""
         ous = {

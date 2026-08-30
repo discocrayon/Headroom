@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from headroom.terraform.utils import write_terraform_file, write_terraform_plan
+from headroom.terraform.utils import (
+    account_id_local_name,
+    make_account_base_names,
+    write_terraform_file,
+    write_terraform_plan,
+)
+from headroom.types import AccountOrgPlacement
 
 
 def test_write_terraform_file_creates_the_file(tmp_path: Path) -> None:
@@ -84,3 +90,51 @@ def test_write_terraform_plan_accepts_an_empty_plan(tmp_path: Path) -> None:
     write_terraform_plan({}, "SCP")
 
     assert not any(tmp_path.iterdir())
+
+
+class TestAccountBaseNames:
+    """
+    Tests for make_account_base_names().
+
+    Accounts get the claim table OUs already have. Every generated reference
+    to an account -- its policy filename, its module name, the ID local it
+    targets -- is built from one identifier, so two accounts claiming the same
+    one has to abort rather than let the second overwrite the first.
+    """
+
+    def test_names_differing_only_in_separators_are_reported(self) -> None:
+        """
+        'Prod-US' and 'Prod US' both fold to 'prod_us'.
+
+        make_safe_variable_name turns a hyphen and a space into the same
+        underscore, so these two names are one Terraform identifier. Left
+        unguarded the second account's policy file overwrites the first's.
+        """
+        accounts = {
+            "111111111111": AccountOrgPlacement(
+                "111111111111", "Prod-US", None, []),
+            "222222222222": AccountOrgPlacement(
+                "222222222222", "Prod US", None, []),
+        }
+
+        with pytest.raises(RuntimeError, match="prod_us"):
+            make_account_base_names(accounts)
+
+    def test_account_whose_name_canonicalizes_to_nothing_is_rejected(self) -> None:
+        """A name of only separators cannot become a Terraform identifier."""
+        accounts = {
+            "111111111111": AccountOrgPlacement("111111111111", "--", None, []),
+        }
+
+        with pytest.raises(RuntimeError, match="Terraform identifier"):
+            make_account_base_names(accounts)
+
+
+def test_account_id_local_name_names_the_local_org_info_declares() -> None:
+    """
+    grab_org_info.tf declares this local; SCP and RCP modules target it.
+
+    Both sides of that contract call this function, which is what stops a
+    policy from targeting a local nobody declared.
+    """
+    assert account_id_local_name("prod_us") == "prod_us_account_id"

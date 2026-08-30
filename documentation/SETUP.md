@@ -205,11 +205,15 @@ calls `Management Account`, logging a warning that the two differ.
 
 Resolution fails loudly when the answer is not unique or not present:
 - The name matches two or more accounts (Organizations enforces uniqueness on
-  account email, not on account name). The startup check above already caught
-  this for the accounts being analyzed, so a name reaching here is one shared
-  with an account that check never saw: the management account, a skipped
-  account, or one that is not ACTIVE. Rename one account, or set
-  `exclude_account_ids: false` so result files carry account IDs.
+  account email, not on account name). The startup check above does not rule
+  this out. It runs only under `exclude_account_ids`, which is off by default,
+  and it folds case and Unicode normal form where this lookup also folds
+  separators -- so `Prod-US` and `Prod US` are two names to that check and one
+  name here. A name reaching this branch is therefore either shared with an
+  account the check never saw (the management account, a skipped account, or
+  one that is not ACTIVE) or shared with one it saw and read as distinct.
+  Rename one account, or set `exclude_account_ids: false` so result files
+  carry account IDs.
 - The name matches nothing — most often a `name` tag that is missing (the name
   then falls back to the account ID, which matches no account name), a tag that
   is not merely a re-spelling of the account name, or a stale result file left
@@ -255,7 +259,7 @@ result file as it completes, and a re-run skips the results already on disk.
 Every line carries the account its thread is working on, in brackets after the logger name:
 
 ```
-INFO:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1
+DEBUG:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1
 ```
 
 Accounts are analyzed concurrently, so lines from different accounts interleave and most of
@@ -341,8 +345,14 @@ aws account get-region-opt-status --region-name <region> --account-id <member-ac
 ### "cannot be used as result filenames"
 
 An account name becomes part of its result filename, so a name containing `/` builds a path
-into a subdirectory rather than a filename, and a name starting with `.` produces a file the
-reader's `*.json` glob does not match. Either way the account's results end up somewhere
-policy generation does not look. Headroom checks this before the scan starts and names the
-accounts. Rename them, or set `use_account_name_from_tags: true` and give them a `name` tag
-that is a plain filename.
+into a subdirectory rather than a filename and the account's results end up somewhere policy
+generation does not look. A name holding a null byte, or one long enough to overrun the
+filesystem's 255-byte limit on a single path component, fails the write outright -- account
+names come from a tag under `use_account_name_from_tags`, and a tag value runs to 256
+characters where Organizations caps a name at 50. An empty name is refused as well, because
+it cannot become a Terraform identifier later. Headroom checks all of this before the scan
+starts and names the accounts, with the reason beside each one. Rename them, or set
+`use_account_name_from_tags: true` and give them a `name` tag that is a plain filename.
+
+A leading dot is fine: `pathlib.Path.glob` matches dotfiles, and the readers take account
+identity from the JSON rather than the filename.
