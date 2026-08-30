@@ -654,34 +654,40 @@ class TestRedactAccountIdsFromArns:
         data = {
             "iam_arn": "arn:aws:iam::111111111111:role/MyRole",
             "s3_arn": "arn:aws:s3::111111111111:bucket/MyBucket",
-            "ec2_arn": "arn:aws:ec2::111111111111:instance/i-1234567890abcdef0"
+            "ec2_arn": "arn:aws:ec2::111111111111:instance/i-11111111111111111"
         }
         result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
         assert result["iam_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
         assert result["s3_arn"] == "arn:aws:s3::REDACTED:bucket/MyBucket"
-        assert result["ec2_arn"] == "arn:aws:ec2::REDACTED:instance/i-1234567890abcdef0"
+        assert result["ec2_arn"] == "arn:aws:ec2::REDACTED:instance/i-11111111111111111"
 
     def test_redact_arns_with_region(self) -> None:
         """Test redacting account IDs from ARNs with region field (e.g., RDS)."""
         data = {
             "rds_instance": "arn:aws:rds:us-east-1:111111111111:db:my-database",
             "rds_cluster": "arn:aws:rds:us-west-2:222222222222:cluster:my-cluster",
-            "ec2_instance": "arn:aws:ec2:eu-west-1:333333333333:instance/i-1234567890"
+            "ec2_instance": "arn:aws:ec2:eu-west-1:333333333333:instance/i-11111111111111111"
         }
         result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
         assert result["rds_instance"] == "arn:aws:rds:us-east-1:REDACTED:db:my-database"
         assert result["rds_cluster"] == "arn:aws:rds:us-west-2:REDACTED:cluster:my-cluster"
-        assert result["ec2_instance"] == "arn:aws:ec2:eu-west-1:REDACTED:instance/i-1234567890"
+        assert result["ec2_instance"] == "arn:aws:ec2:eu-west-1:REDACTED:instance/i-11111111111111111"
 
     def test_redact_does_not_affect_non_arn_numbers(self) -> None:
-        """Test that non-ARN 12-digit numbers are not affected."""
+        """
+        Test that 12 digits outside an ARN's account field are not affected.
+
+        The instance ID is the sharper of the two: `i-11111111111111111` has
+        a 17-digit body, so it contains a 12-digit run at six offsets. Only
+        the `arn:aws:<service>:<region>:` prefix keeps the pattern off it.
+        """
         data = {
-            "instance_id": "i-111111111111",
+            "instance_id": "i-11111111111111111",
             "some_number": "111111111111",
             "role_arn": "arn:aws:iam::111111111111:role/MyRole"
         }
         result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
-        assert result["instance_id"] == "i-111111111111"
+        assert result["instance_id"] == "i-11111111111111111"
         assert result["some_number"] == "111111111111"
         assert result["role_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
 

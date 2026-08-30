@@ -133,7 +133,7 @@ instances, so there is nothing else to grant and no IAM call to make.
 ```json
 {
   "region": "us-east-1",
-  "instance_id": "i-1234567890abcdef0",
+  "instance_id": "i-11111111111111111",
   "imdsv1_allowed": true,
   "exemption_tag_present": false
 }
@@ -176,7 +176,7 @@ Containers compound it: they add a network hop, so workloads on ECS, EKS, or pla
 **Example Violation**:
 ```json
 {
-  "instance_id": "i-0123456789abcdef0",
+  "instance_id": "i-22222222222222222",
   "region": "us-east-1",
   "hop_limit": 2,
   "imds_enabled": true
@@ -391,9 +391,9 @@ fact about the account.
 **Example Output**:
 ```json
 {
-  "instance_id": "i-1234567890abcdef0",
+  "instance_id": "i-11111111111111111",
   "region": "us-east-1",
-  "ami_id": "ami-0123456789abcdef0",
+  "ami_id": "ami-22222222222222222",
   "ami_owner": "amazon",
   "ami_name": "amzn2-ami-hvm-2.0.20231218.0-x86_64-gp2",
   "owner_unknown_reason": null
@@ -436,11 +436,11 @@ fact about the account.
 **Example Violation**:
 ```json
 {
-  "instance_id": "i-0987654321fedcba0",
+  "instance_id": "i-22222222222222222",
   "region": "us-west-2",
   "public_ip_address": "54.123.45.67",
   "has_public_ip": true,
-  "instance_arn": "arn:aws:ec2:us-west-2:111111111111:instance/i-0987654321fedcba0"
+  "instance_arn": "arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
 }
 ```
 

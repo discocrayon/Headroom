@@ -28,25 +28,25 @@ class TestCheckDenyEc2PublicIp:
         """Create sample EC2 results with mixed compliance status."""
         return [
             DenyEc2PublicIp(
-                instance_id="i-1111111111111111",
+                instance_id="i-11111111111111111",
                 region="us-east-1",
                 public_ip_address="54.123.45.67",
                 has_public_ip=True,
-                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1111111111111111"
+                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
             ),
             DenyEc2PublicIp(
-                instance_id="i-2222222222222222",
+                instance_id="i-22222222222222222",
                 region="us-west-2",
                 public_ip_address=None,
                 has_public_ip=False,
-                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-2222222222222222"
+                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
             ),
             DenyEc2PublicIp(
-                instance_id="i-3333333333333333",
+                instance_id="i-33333333333333333",
                 region="eu-west-1",
                 public_ip_address="52.98.76.54",
                 has_public_ip=True,
-                instance_arn="arn:aws:ec2:eu-west-1:111111111111:instance/i-3333333333333333"
+                instance_arn="arn:aws:ec2:eu-west-1:111111111111:instance/i-33333333333333333"
             ),
         ]
 
@@ -97,18 +97,18 @@ class TestCheckDenyEc2PublicIp:
 
         all_compliant = [
             DenyEc2PublicIp(
-                instance_id="i-1111111111111111",
+                instance_id="i-11111111111111111",
                 region="us-east-1",
                 public_ip_address=None,
                 has_public_ip=False,
-                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1111111111111111"
+                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
             ),
             DenyEc2PublicIp(
-                instance_id="i-2222222222222222",
+                instance_id="i-22222222222222222",
                 region="us-west-2",
                 public_ip_address=None,
                 has_public_ip=False,
-                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-2222222222222222"
+                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
             ),
         ]
 
@@ -143,18 +143,18 @@ class TestCheckDenyEc2PublicIp:
 
         all_violations = [
             DenyEc2PublicIp(
-                instance_id="i-1111111111111111",
+                instance_id="i-11111111111111111",
                 region="us-east-1",
                 public_ip_address="54.123.45.67",
                 has_public_ip=True,
-                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1111111111111111"
+                instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
             ),
             DenyEc2PublicIp(
-                instance_id="i-2222222222222222",
+                instance_id="i-22222222222222222",
                 region="us-west-2",
                 public_ip_address="52.98.76.54",
                 has_public_ip=True,
-                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-2222222222222222"
+                instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
             ),
         ]
 
@@ -223,11 +223,11 @@ class TestCheckDenyEc2PublicIp:
         )
 
         result = DenyEc2PublicIp(
-            instance_id="i-1111111111111111",
+            instance_id="i-11111111111111111",
             region="us-east-1",
             public_ip_address="54.123.45.67",
             has_public_ip=True,
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1111111111111111"
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
 
         category, result_dict = check.categorize_result(result)
@@ -249,11 +249,11 @@ class TestCheckDenyEc2PublicIp:
         )
 
         result = DenyEc2PublicIp(
-            instance_id="i-2222222222222222",
+            instance_id="i-22222222222222222",
             region="us-west-2",
             public_ip_address=None,
             has_public_ip=False,
-            instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-2222222222222222"
+            instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
         )
 
         category, result_dict = check.categorize_result(result)
