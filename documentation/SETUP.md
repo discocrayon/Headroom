@@ -110,7 +110,7 @@ security_analysis_account_id: '111111111111'  # Required for this option
 
 ### Optional
 - `security_analysis_account_id`: Only required if running from management account (Option 2)
-- `exclude_account_ids`: When `true`, excludes account IDs from result files and filenames (default: `false`). This redacts identifiers; it does not skip any account.
+- `exclude_account_ids`: When `true`, excludes account IDs from result files and filenames (default: `false`). This redacts identifiers; it does not skip any account. See [Resolving Result Files Back to Accounts](#resolving-result-files-back-to-accounts).
 - `skip_account_ids`: Account IDs to leave out of analysis entirely (default: `[]`). See [Skipping Accounts](#skipping-accounts).
 - `use_account_name_from_tags`: When `true`, uses tag-based account names instead of AWS Organizations names (default: `false`)
 - `account_tag_layout`: Tag keys for extracting account metadata (all optional)
@@ -171,6 +171,41 @@ account_tag_layout:
 - `name`: Only used when `use_account_name_from_tags: true`, falls back to account ID if missing
 - `owner`: Extracted if present, falls back to "unknown" if missing
 
+### Resolving Result Files Back to Accounts
+
+With `exclude_account_ids: true`, result files carry no account ID, so the
+account name alone identifies an account -- both when a file is written and
+when it is read back. Two requirements follow, and Headroom enforces each of
+them at the point it can.
+
+**Names must be unique.** Before any account is scanned, Headroom aborts if two
+accounts it is about to analyze share a name, naming the colliding spellings
+but never the account IDs -- printing those would defeat the setting that
+created the collision. Two such accounts would write to one file, and because
+accounts are analyzed concurrently that file would hold interleaved output from
+both. Names are compared the way a case-insensitive filesystem compares them,
+so `Prod` and `prod` collide, as do the composed and decomposed spellings of
+`café`. The comparison does not vary by platform, so a pair that would not
+actually have collided on Linux still aborts; renaming one account is the fix.
+
+**Names must resolve back.** The name in the file comes from the `name` tag;
+the name in the organization hierarchy always comes from AWS Organizations.
+Headroom matches exactly first, then retries ignoring case and separators, so a
+`Name` tag of `management-account` still resolves to an account Organizations
+calls `Management Account`, logging a warning that the two differ.
+
+Resolution fails loudly when the answer is not unique or not present:
+- The name matches two or more accounts (Organizations enforces uniqueness on
+  account email, not on account name). The startup check above already caught
+  this for the accounts being analyzed, so a name reaching here is one shared
+  with an account that check never saw: the management account, a skipped
+  account, or one that is not ACTIVE. Rename one account, or set
+  `exclude_account_ids: false` so result files carry account IDs.
+- The name matches nothing — most often a `name` tag that is missing (the name
+  then falls back to the account ID, which matches no account name), a tag that
+  is not merely a re-spelling of the account name, or a stale result file left
+  behind after an account was renamed.
+
 ### Tuning `max_account_workers`
 
 Each worker holds its own boto3 session carrying its own parsed AWS service models, which
@@ -184,8 +219,9 @@ overwhelmingly network-bound, so the interpreter is idle most of the run.
 | 16 (default) | ~0.8 GB | ~14 minutes |
 | 32 (maximum) | ~1.5 GB | ~7 minutes |
 
-Row 1 is the serial time with the per-session region and EC2 caches in place; before those,
-a serial run took roughly 4.9 hours.
+Row 1 is the serial time with the per-session caches in place -- the region list, the EC2
+instance list, and the resource policies two checks each read; before those, a serial run
+took roughly 4.9 hours.
 
 Set it to `1` to analyze accounts one at a time. That runs the same code path as any other
 value rather than a separate serial branch, so it is a safe way to get readable logs and a
@@ -194,24 +230,6 @@ simple stack trace while debugging.
 A failure in any account aborts the whole run. Queued accounts never start, and accounts
 already in flight stop after their current check. Nothing is lost: each check writes its own
 result file as it completes, and a re-run skips the results already on disk.
-
-**Resolving tag names back to accounts:**
-
-With `exclude_account_ids: true`, result files carry no account ID, so Headroom
-resolves each file back to an account by name. The name in the file comes from
-the `name` tag; the name in the organization hierarchy always comes from AWS
-Organizations. Headroom matches exactly first, then retries ignoring case and
-separators, so a `Name` tag of `management-account` still resolves to an account
-Organizations calls `Management Account`, logging a warning that the two differ.
-
-Resolution fails loudly when the answer is not unique or not present:
-- The name matches two or more accounts (Organizations enforces uniqueness on
-  account email, not on account name). Rename one account, or set
-  `exclude_account_ids: false` so result files carry account IDs.
-- The name matches nothing — most often a `name` tag that is missing (the name
-  then falls back to the account ID, which matches no account name), a tag that
-  is not merely a re-spelling of the account name, or a stale result file left
-  behind after an account was renamed.
 
 ## Test Environment
 
