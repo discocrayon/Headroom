@@ -131,10 +131,13 @@ class TestServicePrincipalSources:
 
     def test_unguarded_service_principal_is_recorded_not_allowlisted(self) -> None:
         """
-        A Service principal with no source key asks nothing of the allowlist.
+        A Service principal with no source key names no account to permit.
 
-        The statement's Null gate means the RCP never fires on a request
-        carrying no source account, so there is nothing to permit.
+        The policy pins nothing, so there is nothing for the allowlist to
+        carry. The trust is still within the statement's reach - the
+        calling service populates aws:SourceAccount itself - which is why
+        the rollout guidance sends the operator to CloudTrail for the
+        drivers this read cannot see.
         """
         statement = self._statement({"Service": "sns.amazonaws.com"})
 

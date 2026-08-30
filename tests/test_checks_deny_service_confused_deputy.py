@@ -176,12 +176,13 @@ class TestServiceConfusedDeputyCheck:
         self, temp_results_dir: str
     ) -> None:
         """
-        An unguarded service principal asks nothing of the allowlist.
+        An unguarded service principal produces no finding.
 
-        The statement's Null condition keeps the deny off requests
-        carrying no source account, so an unguarded trust neither needs
-        permitting nor blocks the statement. Listing it would put every
-        service role trust policy in the account into the results.
+        The policy names no account, so there is none to allowlist and
+        none to report. Listing these would put every service role trust
+        policy in the account into the results. The trust is still within
+        the statement's reach once deployed, which the rollout guidance
+        covers with CloudTrail rather than with this output.
         """
         data = _run(temp_results_dir, [_source(has_condition=False)])
 

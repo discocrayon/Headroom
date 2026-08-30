@@ -592,6 +592,8 @@ China ARNs all resolve.
 - Wildcard principals
 - Role ARNs and trust policies
 
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a role that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A role kept for that reason alone lands in `compliant_instances`, so `total_roles_analyzed` and `roles_third_parties_can_access` now count roles no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a role contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
+
 **Example Output**:
 ```json
 {
@@ -663,6 +665,8 @@ party is not visible to this check.
 - Allowed S3 actions per account
 - Principals requiring special handling
 
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a bucket that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A bucket kept for that reason alone lands in `compliant_instances`, so `total_buckets_analyzed` and `buckets_third_parties_can_access` now count buckets no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a bucket contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
+
 **Example Output**:
 ```json
 {
@@ -729,6 +733,8 @@ since they belong to no single repository.
 - Third-party account IDs
 - Allowed ECR actions per account
 - Regional distribution
+
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a policy that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A policy kept for that reason alone lands in `compliant_instances`, so `total_policies_analyzed` and `policies_third_parties_can_access` now count policies no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a policy contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
 
 **Example Output**:
 ```json
@@ -821,6 +827,8 @@ Encryption context constraints are recorded as a boolean rather than parsed, so 
 - Third-party account IDs
 - KMS actions allowed per account
 
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a key that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A key kept for that reason alone lands in `compliant_instances`, so `total_keys_analyzed` and `keys_third_parties_can_access` now count keys no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a key contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
+
 **Example Output**:
 ```json
 {
@@ -881,6 +889,8 @@ A key found only through a grant looks the same, with an empty `actions_by_accou
 - Third-party account IDs
 - Actions allowed per third-party account
 - Secrets accessible per third-party account
+
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a secret that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A secret kept for that reason alone lands in `compliant_instances`, so `total_secrets_analyzed` and `secrets_third_parties_can_access` now count secrets no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a secret contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
 
 **Example Output**:
 ```json
@@ -992,10 +1002,22 @@ One statement can occupy two rows at once. `aws:SourceAccount` holding `["*", "9
 
 **The `Null` gate**: The statement carries `Null { "aws:SourceAccount": "false" }`, which reads as "this key is not null", that is, it is present. The Deny therefore applies only to service calls that carry a source account. A call populating only `aws:SourceArn`, or no source keys at all, falls outside the statement entirely. This narrows the service exemption rather than closing it, and is what makes the control deployable without first discovering every service integration in the estate. `StringNotEqualsIfExists` on `aws:SourceOrgID` then catches sources in standalone accounts, which belong to no organization and so carry no organization ID: an attacker cannot escape the control by using an unattached account.
 
-**Unguarded trusts are neither listed nor counted**: A service principal trusted with no source guard produces no output at all - not a finding, not a violation, and not a number in the summary. Two reasons, and the first is the one that matters:
+**Unguarded trusts are neither listed nor counted**: A service principal trusted with no source guard produces no output at all - not a finding, not a violation, and not a number in the summary. Two reasons:
 
-1. The `Null` gate means the statement never fires on a request carrying no source account. An unguarded trust asks nothing of the allowlist and blocks nothing, so reporting it would not change what gets deployed. It is still a real confused-deputy hole - anyone can point their topic at the queue - but it is one this statement does not address, and making it a violation would withhold the statement over a problem the statement does not solve.
+1. Volume. Every log bucket and every service role in the estate carries a service trust with no source guard. Listing them would return every ordinary service integration in the account and bury the sources that matter, so making them findings would cost the operator the signal without adding one.
 2. A count would be wrong rather than merely uninteresting. All six analyzers drop an analysis that found nothing worth reporting, so a tally taken here would see only the unguarded sources that happen to sit on a resource kept for some other reason. That undercount would look like a measurement. A plausible wrong number is worse than no number.
+
+**Dropping them is not the same as their being safe** - and this is the check's principal deployment risk. `aws:SourceAccount` is populated by the calling AWS service, from the resource that drove the call. Its presence in the request has nothing to do with whether the resource policy names it in a `Condition`. The `Null` gate tests the request context, not the policy document, so an unguarded trust still receives requests carrying `aws:SourceAccount`, set to whichever account owns the topic, trail or delivery channel behind the call.
+
+Concretely: a bucket in an organization account allows `s3:PutObject` to `Principal: {"Service": "cloudtrail.amazonaws.com"}` with no source condition, and a partner in out-of-organization account `999999999999` delivers a trail to it - an arrangement the bucket owner set up on purpose. With the statement deployed, `aws:PrincipalIsAWSService` is true, `aws:SourceAccount` is present, `aws:SourceOrgID` is the partner's or absent, and `999999999999` is not in the allowlist. Every clause matches and the delivery is denied. Discovery recorded nothing, because the policy names no account for it to record.
+
+Closing exactly that path is what `DenyServiceConfusedDeputy` is for - unguarded service-principal trust is the confused-deputy hole the statement exists to shut. What discovery cannot do is enumerate the legitimate drivers of those trusts in advance. Only CloudTrail can.
+
+**Rollout**: `unique_third_party_accounts` measures the sources a resource policy already pins. It is not a measurement of the estate's out-of-organization service-mediated access, and reading it as one is the mistake that breaks a production integration. Before enabling `deny_service_confused_deputy` for a target:
+
+1. Review CloudTrail for calls into that target's accounts where `aws:PrincipalIsAWSService` is true and `aws:SourceAccount` falls outside the organization. Those are the unguarded drivers discovery cannot see. Add the legitimate ones to the allowlist, or pin them in the resource policy so the next run finds them.
+2. Deploy to a test OU with the discovered allowlist and watch for denials before going organization-wide.
+3. Rolling back is setting `deny_service_confused_deputy` to `false` for the affected target, which removes this statement and leaves the other six in place.
 
 **A guard that cannot be read**: A source guard the parser cannot read is recorded as a violation rather than dropped, so the statement is withheld from that account and an allowlist nobody could compute is never deployed as if it were complete. Three constructs reach this: `aws:SourceOrgID` on a service principal, because deciding whether it names this organization needs the organization ID, which the analyzers do not receive - guessing would put a foreign organization's sources in the allowlist or leave this one's out; a source key under an unrecognized operator, because a negated operator excludes rather than permits; and an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard.
 

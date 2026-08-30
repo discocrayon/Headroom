@@ -430,12 +430,22 @@ def has_actionable_service_principal_source(
 
     A source is actionable when it names an out-of-organization account the
     allowlist must carry, when its guard names sources no allowlist can
-    express, or when the read failed and the guard is therefore unknown. An
-    unguarded source is not actionable: the confused deputy statement's
-    Null condition keeps the deny off any request that carries no source
-    account at all, so an unguarded trust neither needs permitting nor
-    blocks anything. Treating it as actionable would return every ordinary
-    service integration in the account and bury the sources that matter.
+    express, or when the read failed and the guard is therefore unknown.
+
+    An unguarded source is not actionable, and the reason is volume, not
+    safety. Every log bucket and every service role carries a service trust
+    with no source guard, so treating them as actionable would return every
+    ordinary service integration in the account and bury the sources that
+    matter.
+
+    They are not harmless. `aws:SourceAccount` is populated by the calling
+    service, from the resource that drove the call, so an unguarded trust
+    still receives requests carrying that key - the confused deputy
+    statement's Null gate tests the request, not the policy document. An
+    out-of-organization account driving one of these trusts is inside the
+    statement's reach and will be denied. Discovery cannot enumerate those
+    drivers, because the policy does not name them; only CloudTrail can.
+    That is the check's principal deployment risk.
 
     Args:
         sources: The service principal sources one resource's statements
