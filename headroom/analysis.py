@@ -13,7 +13,7 @@ from mypy_boto3_organizations.type_defs import AccountTypeDef
 
 from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
-from .log_context import set_account
+from .log_context import NO_ACCOUNT, set_account
 from .write_results import results_exist
 from .aws.sessions import assume_role, new_session
 from .utils import format_account_identifier
@@ -579,9 +579,19 @@ def _run_checks_for_account(
     names the account it belongs to, including records from `headroom/aws/`
     that mention only a region or a resource.
 
-    The session created here is touched by this thread alone, which is what
-    lets `aws/helpers.py` and `aws/ec2.py` memoize per-session without
-    locking.
+    The session created here is touched by this thread alone. That is what
+    makes the per-session memos in `aws/helpers.py` and `aws/ec2.py` correct:
+    each keys on the session object, so no worker can be served another
+    account's region list, instances, or resource policies. The memos still
+    take a lock -- the dictionaries holding them are shared between workers,
+    even though no two workers ever contend for one entry.
+
+    The account is cleared on the way out. `set_account` writes to
+    thread-local storage and the pool reuses its threads, so a worker that
+    returned without clearing would leave the next records that thread emits
+    named for the account that just finished, until the next worker reaches
+    the `set_account` above. `-` is the honest answer in that window, and the
+    `finally` is what extends it to the account that raised.
 
     The closing log line comes from what the check loops report, not from
     re-reading `abort`. Another account can fail while this worker is inside
@@ -602,7 +612,47 @@ def _run_checks_for_account(
     """
     account_identifier = _get_account_identifier(account_info)
     set_account(account_identifier)
+    try:
+        _run_every_missing_check(
+            account_info,
+            account_identifier,
+            security_session,
+            config,
+            org_account_ids,
+            org_id,
+            abort,
+        )
+    finally:
+        set_account(NO_ACCOUNT)
 
+
+def _run_every_missing_check(
+    account_info: AccountInfo,
+    account_identifier: str,
+    security_session: Session,
+    config: HeadroomConfig,
+    org_account_ids: Set[str],
+    org_id: str,
+    abort: threading.Event
+) -> None:
+    """
+    Run the SCP and RCP checks this account does not already have on disk.
+
+    Split from `_run_checks_for_account` only so that the account context it
+    registers is set and cleared in one place, around a body with several
+    exits.
+
+    Args:
+        account_info: Information about the target account
+        account_identifier: Formatted identifier, for the log lines
+        security_session: boto3 Session for security analysis account
+        config: Headroom configuration
+        org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
+        abort: Set when another account has failed, ending this account's run
+            at the next check boundary
+    """
     if abort.is_set():
         return
 
@@ -610,9 +660,11 @@ def _run_checks_for_account(
 
     headroom_session = get_headroom_session(config, security_session, account_info.account_id)
 
-    # `run_checks_for_type(...) and completed`, never the reverse: `and`
-    # evaluates its left operand first, so putting the call second would skip
-    # the RCPs entirely whenever the SCPs stopped at a checkpoint.
+    # Either operand order yields the same `completed`. run_checks_for_type
+    # returns False only after reading the abort Event, so a False from the
+    # SCP loop means the Event is set and the RCP loop could not have
+    # returned True with work still to do. Written this way the RCP loop is
+    # entered either way, which keeps the two blocks symmetrical.
     completed = True
 
     scp_exist = all_check_results_exist("scps", account_info, config)

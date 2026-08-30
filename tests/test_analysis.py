@@ -26,7 +26,7 @@ from headroom.analysis import (
     AccountInfo
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
-from headroom.log_context import AccountContextFilter
+from headroom.log_context import NO_ACCOUNT, AccountContextFilter
 from tests.constants import ORG_ID
 
 
@@ -1408,6 +1408,85 @@ class TestRunChecksPool:
         thread.join(timeout=5)
 
         assert stamped == ["account-0_111111111111"]
+
+    @staticmethod
+    def _stamp_on_this_thread() -> str:
+        """Return the account a record emitted on this thread would carry."""
+        record = logging.LogRecord(
+            name="headroom.aws.ec2",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="Collecting EC2 instances in eu-west-1",
+            args=(),
+            exc_info=None,
+        )
+        AccountContextFilter().filter(record)
+        return str(record.account)  # type: ignore[attr-defined]
+
+    def test_a_worker_stops_carrying_its_account_when_it_returns(self) -> None:
+        """
+        A pool thread outlives the account it just finished.
+
+        `set_account` writes to thread-local storage and the pool reuses its
+        threads, so a worker that returns without clearing leaves the next
+        record that thread emits -- anything between the pool picking up the
+        next account and that worker's own `set_account` -- named for the
+        previous account, confidently and wrongly. `-` is the honest answer
+        in that window.
+
+        Runs on a thread of its own because tests that call
+        `_run_checks_for_account` directly leave this thread's context set.
+        """
+        stamped_after: List[str] = []
+
+        def run_the_worker() -> None:
+            with (
+                patch("headroom.analysis.all_check_results_exist", return_value=True),
+                patch("headroom.analysis.get_headroom_session", return_value=MagicMock()),
+            ):
+                _run_checks_for_account(
+                    self._accounts(1)[0], MagicMock(), self._config(1), set(), ORG_ID, threading.Event()
+                )
+            stamped_after.append(self._stamp_on_this_thread())
+
+        thread = threading.Thread(target=run_the_worker)
+        thread.start()
+        thread.join(timeout=5)
+
+        assert stamped_after == [NO_ACCOUNT]
+
+    def test_a_worker_stops_carrying_its_account_when_it_raises(self) -> None:
+        """
+        The failing account is exactly when a stale name misleads most.
+
+        A worker that raises is the one whose thread goes back to the pool
+        mid-analysis, and the operator is already reading the log to find out
+        which account broke. Clearing on the way out has to be in a `finally`
+        rather than at the end of the body for this path to hold.
+        """
+        stamped_after: List[str] = []
+
+        def run_the_worker() -> None:
+            with (
+                patch("headroom.analysis.all_check_results_exist", return_value=True),
+                patch(
+                    "headroom.analysis.get_headroom_session",
+                    side_effect=RuntimeError("assume role failed"),
+                ),
+            ):
+                with pytest.raises(RuntimeError, match="assume role failed"):
+                    _run_checks_for_account(
+                        self._accounts(1)[0], MagicMock(), self._config(1), set(), ORG_ID,
+                        threading.Event()
+                    )
+            stamped_after.append(self._stamp_on_this_thread())
+
+        thread = threading.Thread(target=run_the_worker)
+        thread.start()
+        thread.join(timeout=5)
+
+        assert stamped_after == [NO_ACCOUNT]
 
     def test_the_cancel_loop_cancels_futures_still_in_the_queue(self) -> None:
         """
