@@ -355,6 +355,7 @@ class HeadroomConfig(BaseModel):
     management_account_id: Optional[str]                 # Required for org access
     security_analysis_account_id: Optional[str]          # Optional, for cross-account execution
     exclude_account_ids: bool = False                    # Redact IDs in results
+    skip_account_ids: List[str] = []                     # Excluded from analysis entirely
     use_account_name_from_tags: bool                     # Use tag vs AWS account name
     account_tag_layout: AccountTagLayout
     results_dir: str = DEFAULT_RESULTS_DIR
@@ -517,6 +518,7 @@ class ECRPolicyAnalysis:
 management_account_id: string                # Required for org access
 security_analysis_account_id: string         # Optional (omit if running from security account)
 exclude_account_ids: boolean                 # Redact account IDs in results
+skip_account_ids: list of string             # Never analyzed; each must match a real account
 use_account_name_from_tags: boolean          # Use tag for name vs AWS account name
 results_dir: string                          # Default: test_environment/headroom_results
 scps_dir: string                             # Default: test_environment/scps

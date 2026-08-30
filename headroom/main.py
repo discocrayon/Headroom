@@ -1,5 +1,6 @@
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Callable, Dict, Iterator, List, Union
 import argparse
+from contextlib import contextmanager
 import logging
 from pathlib import Path
 
@@ -194,6 +195,37 @@ def handle_rcp_workflow(
     )
 
 
+@contextmanager
+def _failures_reported(phase: str) -> Iterator[None]:
+    """
+    Report the wrapped phase's failure to the operator, then exit.
+
+    The scan and Terraform generation both talk to AWS and both fail the same
+    three ways, so they share one reporter rather than each growing its own
+    copy of these handlers. The phase names itself in every line, because a
+    ClientError says which API refused and never says which phase called it.
+
+    Only the scan reaches an account; a failure there has already printed one
+    ERROR line per failed account, and what this adds is the summary that
+    ended the run.
+    """
+    try:
+        yield
+    except ValueError as e:
+        OutputHandler.error(f"Configuration Error during {phase}", e)
+        logger.error(f"Invalid configuration during {phase}: {e}", exc_info=True)
+        exit(1)
+    except RuntimeError as e:
+        OutputHandler.error(f"Runtime Error during {phase}", e)
+        logger.error(f"Runtime error during {phase}: {e}", exc_info=True)
+        exit(1)
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        OutputHandler.error(f"AWS API Error ({error_code}) during {phase}", e)
+        logger.error(f"AWS API error during {phase}: {e}", exc_info=True)
+        exit(1)
+
+
 def main() -> None:
     """Main entry point for Headroom security analysis."""
     configure_logging()
@@ -202,11 +234,11 @@ def main() -> None:
 
     final_config = setup_configuration(cli_args, yaml_config)
 
-    perform_analysis(final_config)
+    with _failures_reported("the scan"):
+        perform_analysis(final_config)
+        security_session = get_security_analysis_session(final_config)
 
-    security_session = get_security_analysis_session(final_config)
-
-    try:
+    with _failures_reported("Terraform generation"):
         mgmt_session, org_hierarchy = setup_organization_context(final_config, security_session)
 
         # Generate Terraform organization info file (needed by both SCP and RCP workflows)
@@ -227,17 +259,3 @@ def main() -> None:
             [Path(final_config.scps_dir), Path(final_config.rcps_dir)],
             expected,
         )
-
-    except ValueError as e:
-        OutputHandler.error("Configuration Error", e)
-        logger.error(f"Invalid configuration: {e}", exc_info=True)
-        exit(1)
-    except RuntimeError as e:
-        OutputHandler.error("Runtime Error", e)
-        logger.error(f"Runtime error during Terraform generation: {e}", exc_info=True)
-        exit(1)
-    except ClientError as e:
-        error_code = e.response['Error']['Code']
-        OutputHandler.error(f"AWS API Error ({error_code})", e)
-        logger.error(f"AWS API error: {e}", exc_info=True)
-        exit(1)

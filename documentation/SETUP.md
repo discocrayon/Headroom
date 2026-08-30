@@ -278,6 +278,15 @@ them name only a region or a resource. The bracket is what makes a line attribut
 that does not belong to any one account -- startup, configuration, Terraform generation --
 is stamped `-`.
 
+The bracket names the thread's account rather than the line's subject, so the summary an
+aborted run prints is stamped `-` even though every line of it is about one account. The
+main thread writes those lines after the workers have exited, and they carry the account in
+the message instead:
+
+```
+ERROR:headroom.analysis:[-] Checks failed for account payments_111111111111: ClientError(...)
+```
+
 One line sizes the whole run, printed once the resume filter has run:
 
 ```

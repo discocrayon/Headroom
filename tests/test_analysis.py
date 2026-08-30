@@ -2288,12 +2288,22 @@ class TestRunChecksPool:
 
         What this pins is the premise the three per-session memos rest on:
         every check of one account sees one session on one thread, and no
-        session reaches two accounts. The registry supplies the scope rather
-        than the expected value -- the oracle for "each account ran the same
-        checks, each exactly once" is the other accounts, so a registry that
-        reports the wrong list cannot make it pass. Patching over
-        `get_all_check_classes()` is what keeps a check registered tomorrow
-        covered without editing this test.
+        session reaches two accounts. That part takes its oracle from the
+        other accounts rather than from the registry: "each account ran the
+        same checks, each exactly once" compares the accounts against one
+        another, so a registry reporting the wrong list cannot make it pass.
+
+        The one comparison against `get_check_names()` is narrower than it
+        looks, and deliberately so. Both sides read `_CHECK_REGISTRY`, so it
+        cannot notice a check that never registered. What it does notice is
+        a check the registry holds that neither pass runs: the executed set
+        is `get_all_check_classes` filtered by the two type strings
+        `_run_checks_for_account` passes, and the expected set is the whole
+        registry, so a check registered under some third type -- or either
+        literal misspelt -- leaves the two unequal.
+
+        Patching over `get_all_check_classes()` is what keeps a check
+        registered tomorrow covered without editing this test.
         """
         accounts = self._accounts(4)
         barrier = threading.Barrier(len(accounts), timeout=5)

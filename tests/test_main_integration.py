@@ -772,6 +772,42 @@ class TestMainIntegration:
         printed = [c.args[0] for c in mocks['print'].call_args_list]
         assert any("Runtime Error" in msg for msg in printed)
 
+    def test_main_reports_a_scan_failure_instead_of_a_raw_traceback(
+        self,
+        mock_cli_args: MagicMock,
+        valid_yaml_config: Dict[str, Any],
+        mock_dependencies: Dict[str, MagicMock]
+    ) -> None:
+        """
+        A failure during the scan exits reported, like every other phase.
+
+        perform_analysis sat outside main()'s try, whose handlers are scoped
+        to Terraform generation, so anything the scan raised left the process
+        on an unhandled traceback -- printed after run_checks had already
+        logged one ERROR line per failed account. The scan is the phase most
+        likely to fail, since it is the one talking to every account in the
+        organization.
+        """
+        mocks = mock_dependencies
+        mocks['parse'].return_value = mock_cli_args
+        mocks['load'].return_value = valid_yaml_config
+        mock_final_config = MagicMock()
+        mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
+        mock_final_config.management_account_id = "111111111111"
+        mocks['merge'].return_value = mock_final_config
+        mocks['perform_analysis'].side_effect = RuntimeError(
+            "Checks failed for 3 account(s)"
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        printed = [call.args[0] for call in mocks['print'].call_args_list]
+        assert any("Runtime Error during the scan" in message for message in printed)
+
     def test_main_with_rcp_recommendations_display(
         self,
         mock_cli_args: MagicMock,
