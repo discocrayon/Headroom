@@ -23,6 +23,9 @@ Deploy an `OrgAndAccountInfoReader` role in your [AWS Organizations management a
 - List AWS Organizations accounts
 - Describe organizational units
 - Read account tags
+- Describe the organization, for its ID
+
+The organization ID classifies `aws:SourceOrgID` and `aws:SourceOrgPaths` guards on service principals: a guard naming your organization needs no allowlist entry, and one naming another organization withholds the confused deputy statement from that account. Without `organizations:DescribeOrganization` the run aborts rather than guessing.
 
 **Example Terraform**: See [`test_environment/org_and_account_info_reader.tf`](https://github.com/discocrayon/Headroom/blob/main/test_environment/org_and_account_info_reader.tf)
 

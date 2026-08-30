@@ -24,4 +24,7 @@ module "rcps_security_tooling" {
   # STS
   deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = []
+
+  # Service confused deputy
+  deny_service_confused_deputy = false
 }

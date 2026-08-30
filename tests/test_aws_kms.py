@@ -10,11 +10,13 @@ from botocore.exceptions import ClientError
 from headroom.aws.kms import (
     analyze_kms_key_policies,
     UnsupportedPrincipalTypeError,
+    UnknownGranteePrincipalError,
     UnknownPrincipalTypeError,
     _extract_account_ids_from_principal,
     _has_wildcard_principal,
 )
 from headroom.aws.policy_documents import MalformedPolicyError
+from tests.constants import ORG_ID
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -165,7 +167,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111", "222222222222"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].key_id == "key-123"
@@ -208,7 +210,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].has_wildcard_principal is True
@@ -246,7 +248,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.side_effect = ClientError(error_response, "GetKeyPolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -285,7 +287,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -324,7 +326,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert len(results[0].actions_by_account["999999999999"]) == 3
@@ -367,7 +369,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].third_party_account_ids == {"999999999999", "888888888888"}
@@ -411,7 +413,7 @@ class TestAnalyzeKmsKeyPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            analyze_kms_key_policies(mock_session, org_account_ids)
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
         assert "Federated" in str(exc_info.value)
 
     def test_analyze_kms_policies_unknown_principal_type(self) -> None:
@@ -455,7 +457,7 @@ class TestAnalyzeKmsKeyPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(UnknownPrincipalTypeError) as exc_info:
-            analyze_kms_key_policies(mock_session, org_account_ids)
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
         assert "UnknownType" in str(exc_info.value)
 
     def test_analyze_kms_policies_deny_statement(self) -> None:
@@ -498,7 +500,7 @@ class TestAnalyzeKmsKeyPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         # Keys with only Deny statements don't have third-party access or wildcards, so no result
         assert len(results) == 0
@@ -543,7 +545,7 @@ class TestAnalyzeKmsKeyPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         # Keys without Principal don't have third-party access or wildcards, so no result
         assert len(results) == 0
@@ -578,7 +580,7 @@ class TestAnalyzeKmsKeyPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError):
-            analyze_kms_key_policies(mock_session, org_account_ids)
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_analyze_kms_policies_get_policy_error(self) -> None:
         """Test analyze_kms_key_policies with ClientError when getting key policy."""
@@ -620,7 +622,7 @@ class TestAnalyzeKmsKeyPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError) as exc_info:
-            analyze_kms_key_policies(mock_session, org_account_ids)
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
 
@@ -656,7 +658,7 @@ class TestPolicyGrammar:
         mock_kms_client.get_paginator.return_value = keys_paginator
         mock_kms_client.get_key_policy.return_value = {"Policy": json.dumps(policy)}
 
-        return analyze_kms_key_policies(mock_session, {"111111111111"})
+        return analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -719,3 +721,379 @@ class TestPolicyGrammar:
         })
 
         assert results == []
+
+    def test_guarded_service_principal_is_recorded(self) -> None:
+        """
+        A key policy pinning a third-party source records it on the key.
+
+        The account reaches the allowlist through the confused deputy
+        check, not through this analysis's third_party_account_ids.
+        """
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "sns.amazonaws.com"},
+                "Action": "kms:Decrypt",
+                "Resource": "*",
+                "Condition": {
+                    "StringEquals": {"aws:SourceAccount": "999999999999"}
+                },
+            }],
+        }
+
+        results = self._analyze(policy=policy)
+
+        assert len(results[0].service_principal_sources) == 1
+        source = results[0].service_principal_sources[0]
+        assert source.service_principal == "sns.amazonaws.com"
+        assert source.source_account_ids == ["999999999999"]
+
+        # The source is inert here: it belongs to deny_service_confused_deputy,
+        # and folding it into these fields would widen this check's allowlist
+        # with an account that drives a service call rather than making one.
+        assert results[0].third_party_account_ids == set()
+        assert results[0].has_wildcard_principal is False
+
+    def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
+        """The field stays empty when no statement names a service."""
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "kms:Decrypt",
+                "Resource": "*",
+            }],
+        }
+
+        results = self._analyze(policy=policy)
+
+        assert results[0].service_principal_sources == []
+
+
+class TestKeyGrants:
+    """
+    Test that grants are read alongside the key policy.
+
+    A grant is a second authorization surface. GetKeyPolicy cannot see it,
+    so a key whose policy names nobody outside the organization can still
+    hand Decrypt to a vendor.
+    """
+    ORG_ACCOUNT = "111111111111"
+    THIRD_PARTY = "999999999999"
+
+    ORG_ONLY_POLICY = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": f"arn:aws:iam::{ORG_ACCOUNT}:root"},
+                "Action": "kms:*",
+                "Resource": "*",
+            }
+        ],
+    }
+
+    @staticmethod
+    def _analyze(
+        grants: Any,
+        policy: Any = None,
+        policy_error: Any = None,
+        grants_error: Any = None,
+    ) -> Any:
+        """
+        Run the analyzer over one key with the given grants and policy.
+
+        The key policy defaults to one naming only an organization account,
+        so anything the analyzer reports came from a grant.
+        """
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "kms": mock_kms_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.return_value = [
+            {
+                "Keys": [
+                    {
+                        "KeyId": "key-123",
+                        "KeyArn": (
+                            "arn:aws:kms:us-east-1:"
+                            f"{TestKeyGrants.ORG_ACCOUNT}:key/key-123"
+                        ),
+                    }
+                ]
+            }
+        ]
+
+        grants_paginator = MagicMock()
+        if grants_error is not None:
+            grants_paginator.paginate.side_effect = grants_error
+        else:
+            grants_paginator.paginate.return_value = [{"Grants": grants}]
+
+        mock_kms_client.get_paginator.side_effect = lambda name: {
+            "list_keys": keys_paginator,
+            "list_grants": grants_paginator,
+        }[name]
+
+        if policy_error is not None:
+            mock_kms_client.get_key_policy.side_effect = policy_error
+        else:
+            mock_kms_client.get_key_policy.return_value = {
+                "Policy": json.dumps(
+                    TestKeyGrants.ORG_ONLY_POLICY if policy is None else policy
+                )
+            }
+
+        return analyze_kms_key_policies(
+            mock_session, {TestKeyGrants.ORG_ACCOUNT}, ORG_ID
+        )
+
+    def test_cross_account_grantee_reaches_the_allowlist(self) -> None:
+        """
+        A grant to an external role puts its account in the allowlist.
+
+        The key policy names nobody outside the organization, so without
+        reading grants the RCP would deploy and deny this vendor.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "Operations": ["Decrypt", "GenerateDataKey"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert len(results[0].grants) == 1
+        grant = results[0].grants[0]
+        assert grant.grant_id == "grant-abc"
+        assert grant.grantee_account_id == self.THIRD_PARTY
+        assert grant.retiring_principal_account_id is None
+        assert grant.operations == ["kms:Decrypt", "kms:GenerateDataKey"]
+        assert grant.has_constraints is False
+
+    def test_grant_operations_are_kms_prefixed(self) -> None:
+        """
+        Grant operations are recorded the way policy actions are.
+
+        ListGrants returns bare operation names; a key policy spells the
+        same permissions with a kms: prefix. One list cannot hold both
+        spellings and stay readable.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results[0].actions_by_account[self.THIRD_PARTY] == ["kms:Decrypt"]
+
+    def test_service_principal_grantee_reports_nothing(self) -> None:
+        """
+        A grant held by an AWS service is exempt from the RCP.
+
+        The generated RCP carries BoolIfExists aws:PrincipalIsAWSService
+        false, so a service principal is never denied and never needs an
+        allowlist entry.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "ec2.us-west-2.amazonaws.com",
+                "Operations": ["Decrypt", "CreateGrant"],
+            }
+        ])
+
+        assert results == []
+
+    def test_in_org_grantee_reports_nothing(self) -> None:
+        """A grant to a role inside the organization is not a third party."""
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.ORG_ACCOUNT}:role/aws-service-role/"
+                    "autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+                ),
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results == []
+
+    def test_cross_account_retiring_principal_reports_retire_grant(self) -> None:
+        """
+        An external retiring principal is recorded, with only RetireGrant.
+
+        Retiring is the only thing that principal can do, so attributing the
+        grant's operations to it would overstate its access.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": f"arn:aws:iam::{self.ORG_ACCOUNT}:role/App",
+                "RetiringPrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert results[0].actions_by_account[self.THIRD_PARTY] == [
+            "kms:RetireGrant"
+        ]
+        grant = results[0].grants[0]
+        assert grant.grantee_account_id is None
+        assert grant.retiring_principal_account_id == self.THIRD_PARTY
+
+    def test_encryption_context_constraints_are_recorded(self) -> None:
+        """
+        A constrained grant is flagged, though the constraint is not parsed.
+
+        Condition-aware analysis is a separate concern; recording that a
+        constraint exists keeps the result honest about what was not read.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "Operations": ["Decrypt"],
+                "Constraints": {
+                    "EncryptionContextSubset": {"Department": "Finance"}
+                },
+            }
+        ])
+
+        assert results[0].grants[0].has_constraints is True
+
+    def test_a_grant_is_never_a_violation(self) -> None:
+        """
+        Grants can widen the allowlist but never withhold the RCP.
+
+        CreateGrant requires a concrete principal, so no grant can be a
+        wildcard, and the wildcard flag is what blocks deployment.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results[0].has_wildcard_principal is False
+
+    def test_grants_are_read_when_the_key_has_no_policy(self) -> None:
+        """
+        A key with no policy is not a key with nothing to find.
+
+        Returning early on a missing policy would skip the grant read on
+        exactly the keys whose access lives entirely in grants.
+        """
+        error_response: Any = {"Error": {"Code": "NotFoundException"}}
+        results = self._analyze(
+            [
+                {
+                    "GrantId": "grant-abc",
+                    "GranteePrincipal": (
+                        f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                    ),
+                    "Operations": ["Decrypt"],
+                }
+            ],
+            policy_error=ClientError(error_response, "GetKeyPolicy"),
+        )
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+
+    def test_unrecognized_grantee_principal_raises(self) -> None:
+        """
+        A grantee the analyzer cannot classify aborts rather than vanishing.
+
+        Silently dropping it would leave the account out of the allowlist,
+        which is the failure this whole check exists to prevent.
+        """
+        with pytest.raises(UnknownGranteePrincipalError, match="not-a-principal"):
+            self._analyze([
+                {
+                    "GrantId": "grant-abc",
+                    "GranteePrincipal": "not-a-principal",
+                    "Operations": ["Decrypt"],
+                }
+            ])
+
+    def test_list_grants_error_propagates(self) -> None:
+        """An unreadable grant list must not be reported as no grants."""
+        error_response: Any = {"Error": {"Code": "AccessDeniedException"}}
+        with pytest.raises(ClientError):
+            self._analyze([], grants_error=ClientError(
+                error_response, "ListGrants"
+            ))
+
+    def test_policy_and_grant_third_parties_merge(self) -> None:
+        """
+        Both surfaces contribute to one key's row.
+
+        A grant attaches to the same key in the same region, so it belongs
+        in that key's result rather than a row of its own.
+        """
+        policy_third_party = "888888888888"
+        results = self._analyze(
+            [
+                {
+                    "GrantId": "grant-abc",
+                    "GranteePrincipal": (
+                        f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                    ),
+                    "Operations": ["Decrypt"],
+                }
+            ],
+            policy={
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "AWS": f"arn:aws:iam::{policy_third_party}:root"
+                        },
+                        "Action": "kms:DescribeKey",
+                        "Resource": "*",
+                    }
+                ],
+            },
+        )
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {
+            policy_third_party,
+            self.THIRD_PARTY,
+        }
+        assert [g.grantee_account_id for g in results[0].grants] == [
+            self.THIRD_PARTY
+        ]

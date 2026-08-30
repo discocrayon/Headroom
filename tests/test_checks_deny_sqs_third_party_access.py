@@ -10,7 +10,9 @@ from typing import Generator, List
 
 from headroom.checks.rcps.deny_sqs_third_party_access import DenySQSThirdPartyAccessCheck
 from headroom.constants import DENY_SQS_THIRD_PARTY_ACCESS
+from headroom.aws.policy_documents import unreadable_service_principal_source
 from headroom.aws.sqs import SQSQueuePolicyAnalysis
+from tests.constants import ORG_ID
 
 
 class TestDenySQSThirdPartyAccessCheck:
@@ -76,6 +78,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id=account_id,
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -127,6 +130,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -179,6 +183,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -210,6 +215,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -232,6 +238,7 @@ class TestDenySQSThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = SQSQueuePolicyAnalysis(
@@ -262,6 +269,7 @@ class TestDenySQSThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = SQSQueuePolicyAnalysis(
@@ -292,6 +300,7 @@ class TestDenySQSThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = SQSQueuePolicyAnalysis(
@@ -356,6 +365,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -416,6 +426,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -472,8 +483,54 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             filtered_results = check.analyze(mock_session)
 
             assert len(filtered_results) == 1
             assert filtered_results[0].queue_arn == "arn:aws:sqs:us-east-1:111111111111:third-party-queue"
+
+    def test_a_queue_kept_only_for_a_read_failure_is_not_reported(
+        self,
+        org_account_ids: set[str],
+        temp_results_dir: str,
+    ) -> None:
+        """
+        A queue the analyzer could not read stays invisible to this check.
+
+        The analyzer now records such a queue rather than discarding it, so
+        the confused deputy check can withhold its statement. This check
+        reads none of that, and its warn-and-skip behavior is unchanged:
+        the queue names no third-party account and no wildcard, so the
+        filter drops it exactly as before.
+        """
+        mock_session = MagicMock()
+
+        unreadable = [
+            SQSQueuePolicyAnalysis(
+                queue_url="https://sqs.us-east-1.amazonaws.com/111111111111/unreadable",
+                queue_arn="arn:aws:sqs:us-east-1:111111111111:unreadable",
+                region="us-east-1",
+                third_party_account_ids=set(),
+                has_wildcard_principal=False,
+                has_non_account_principals=False,
+                actions_by_account={},
+                service_principal_sources=[
+                    unreadable_service_principal_source("policy could not be read")
+                ],
+            ),
+        ]
+
+        with patch("headroom.checks.rcps.deny_sqs_third_party_access.analyze_sqs_queue_policies") as mock_analysis:
+            mock_analysis.return_value = unreadable
+
+            check = DenySQSThirdPartyAccessCheck(
+                check_name=DENY_SQS_THIRD_PARTY_ACCESS,
+                account_name="test-account",
+                account_id="111111111111",
+                results_dir=temp_results_dir,
+                org_account_ids=org_account_ids,
+                org_id=ORG_ID,
+            )
+
+            assert check.analyze(mock_session) == []

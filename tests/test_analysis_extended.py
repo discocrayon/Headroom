@@ -18,10 +18,12 @@ from headroom.analysis import (
     run_checks,
     run_checks_for_type,
     get_all_organization_account_ids,
+    get_organization_id,
     AccountInfo
 )
 from headroom.checks.base import BaseCheck
 from headroom.config import HeadroomConfig, AccountTagLayout
+from tests.constants import ORG_ID
 
 
 class TestGetRelevantSubaccounts:
@@ -231,7 +233,7 @@ class TestRunChecks:
             mock_get_session.side_effect = [mock_headroom_session1, mock_headroom_session2]
 
             org_account_ids = {"111111111111", "222222222222", "333333333333"}
-            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids, ORG_ID)
 
             # Directory creation is handled by individual check functions, not run_checks
             # run_checks itself no longer creates directories
@@ -276,7 +278,7 @@ class TestRunChecks:
             mock_get_session.return_value = mock_headroom_session
 
             org_account_ids = {"111111111111", "222222222222"}
-            run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, account_infos, mock_config, org_account_ids, ORG_ID)
 
             # Verify check execute method was called with session
             # (check parameters are passed to constructor, not execute)
@@ -312,7 +314,7 @@ class TestRunChecks:
             mock_get_session.side_effect = RuntimeError("Failed to assume Headroom role")
 
             org_account_ids = {"111111111111", "222222222222"}
-            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids, ORG_ID)
 
     def test_run_checks_does_not_swallow_client_errors_or_continue(
         self,
@@ -346,7 +348,7 @@ class TestRunChecks:
             patch("headroom.analysis.results_exist", return_value=False),
             pytest.raises(ClientError) as exc_info,
         ):
-            run_checks(mock_security_session, sample_account_infos, mock_config, {"111111111111"})
+            run_checks(mock_security_session, sample_account_infos, mock_config, {"111111111111"}, ORG_ID)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
@@ -380,16 +382,17 @@ class TestRunChecks:
             patch("headroom.checks.rcps.deny_s3_third_party_access.DenyS3ThirdPartyAccessCheck.execute"),
             patch("headroom.checks.rcps.deny_secrets_manager_third_party_access.DenySecretsManagerThirdPartyAccessCheck.execute"),
             patch("headroom.checks.rcps.deny_sqs_third_party_access.DenySQSThirdPartyAccessCheck.execute"),
+            patch("headroom.checks.rcps.deny_service_confused_deputy.DenyServiceConfusedDeputyCheck.execute"),
             patch("headroom.analysis.logger") as mock_logger,
             patch("headroom.analysis.results_exist") as mock_check_results
         ):
             # Mock that results exist for first account but not second
-            # Call pattern now (with 9 SCP checks and 6 RCP checks):
-            # Account 1: all_scp_results_exist (9 calls for 9 SCP checks) → all True, all_rcp_results_exist (6 calls) → True, skip
-            # Account 2: all_scp_results_exist (9 calls) → any False, all_rcp_results_exist (6 calls) → False
+            # Call pattern now (with 9 SCP checks and 7 RCP checks):
+            # Account 1: all_scp_results_exist (9 calls for 9 SCP checks) → all True, all_rcp_results_exist (7 calls) → True, skip
+            # Account 2: all_scp_results_exist (9 calls) → any False, all_rcp_results_exist (7 calls) → False
             #   Then run_scp_checks calls results_exist per check (9 calls) → False, runs checks
-            #   Then run_rcp_checks calls results_exist per check (6 calls) → False, runs checks
-            # Total: 15 (Account 1) + 15 (Account 2 initial) + 9 (Account 2 SCP) + 6 (Account 2 RCP) = 45 calls
+            #   Then run_rcp_checks calls results_exist per check (7 calls) → False, runs checks
+            # Total: 16 (Account 1) + 16 (Account 2 initial) + 9 (Account 2 SCP) + 7 (Account 2 RCP) = 48 calls
             mock_check_results.return_value = True  # Default
             mock_check_results.side_effect = [
                 True,   # Account 1 - SCP check 1 exists
@@ -407,6 +410,7 @@ class TestRunChecks:
                 True,   # Account 1 - RCP check 4 exists
                 True,   # Account 1 - RCP check 5 exists (Secrets Manager)
                 True,   # Account 1 - RCP check 6 exists (SQS)
+                True,   # Account 1 - RCP check 7 exists (Service confused deputy)
                 False,  # Account 2 - SCP check 1 exists check
                 False,  # Account 2 - SCP check 2 exists check
                 False,  # Account 2 - SCP check 3 exists check
@@ -422,6 +426,7 @@ class TestRunChecks:
                 False,  # Account 2 - RCP check 4 exists check
                 False,  # Account 2 - RCP check 5 exists check (Secrets Manager)
                 False,  # Account 2 - RCP check 6 exists check (SQS)
+                False,  # Account 2 - RCP check 7 exists check (Service confused deputy)
                 False,  # Account 2 - run_scp_checks internal check for check 1
                 False,  # Account 2 - run_scp_checks internal check for check 2
                 False,  # Account 2 - run_scp_checks internal check for check 3
@@ -436,14 +441,15 @@ class TestRunChecks:
                 False,  # Account 2 - run_rcp_checks internal check for check 3
                 False,  # Account 2 - run_rcp_checks internal check for check 4
                 False,  # Account 2 - run_rcp_checks internal check for check 5 (Secrets Manager)
-                False   # Account 2 - run_rcp_checks internal check for check 6 (SQS)
+                False,  # Account 2 - run_rcp_checks internal check for check 6 (SQS)
+                False   # Account 2 - run_rcp_checks internal check for check 7 (Service confused deputy)
             ]
 
             mock_headroom_session = MagicMock()
             mock_get_session.return_value = mock_headroom_session
 
             org_account_ids = {"111111111111", "222222222222"}
-            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids, ORG_ID)
 
             # Verify get_headroom_session was only called for the second account
             assert mock_get_session.call_count == 1
@@ -494,7 +500,7 @@ class TestRunChecks:
             patch("headroom.checks.rcps.deny_sts_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute") as mock_rcp_check
         ):
             org_account_ids: set[str] = set()
-            run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, account_infos, mock_config, org_account_ids, ORG_ID)
 
             # Verify no sessions or checks attempted
             mock_get_session.assert_not_called()
@@ -530,7 +536,7 @@ class TestRunChecks:
             mock_results_exist.side_effect = [True, False]
 
             org_account_ids = {"111111111111"}
-            run_checks_for_type("scps", mock_session, account_info, mock_config, org_account_ids)
+            run_checks_for_type("scps", mock_session, account_info, mock_config, org_account_ids, ORG_ID)
 
             # Verify first check was skipped (not instantiated or executed)
             mock_check1.assert_not_called()
@@ -539,6 +545,62 @@ class TestRunChecks:
             # Verify second check was instantiated and executed
             mock_check2.assert_called_once()
             mock_check2_instance.execute.assert_called_once_with(mock_session)
+
+
+class TestGetOrganizationId:
+    """Test get_organization_id function."""
+
+    @staticmethod
+    def _mgmt_session(response: object) -> MagicMock:
+        """Build a management session whose describe_organization returns response."""
+        mock_org_client = MagicMock()
+        mock_org_client.describe_organization.return_value = response
+        mock_mgmt_session = MagicMock()
+        mock_mgmt_session.client.return_value = mock_org_client
+        return mock_mgmt_session
+
+    def test_returns_the_organization_id(self) -> None:
+        """The ID decides whether a source guard names this organization."""
+        mock_config = MagicMock()
+        mock_session = MagicMock()
+        mgmt_session = self._mgmt_session({"Organization": {"Id": ORG_ID}})
+
+        with patch(
+            "headroom.analysis.get_management_account_session",
+            return_value=mgmt_session,
+        ) as mock_get_mgmt_session:
+            result = get_organization_id(mock_config, mock_session)
+
+        assert result == ORG_ID
+        mock_get_mgmt_session.assert_called_once_with(mock_config, mock_session)
+
+    def test_missing_organization_aborts_the_run(self) -> None:
+        """
+        An unreadable organization ID must abort rather than be guessed.
+
+        Every source guard scoped to an organization is classified against
+        this value, so continuing without it would put a foreign
+        organization's sources in an allowlist, or leave this one's out.
+        """
+        mgmt_session = self._mgmt_session({})
+
+        with patch(
+            "headroom.analysis.get_management_account_session",
+            return_value=mgmt_session,
+        ):
+            with pytest.raises(RuntimeError, match="organization ID"):
+                get_organization_id(MagicMock(), MagicMock())
+
+    def test_organization_without_an_id_aborts_the_run(self) -> None:
+        """A response carrying an organization but no ID is equally unusable."""
+        mgmt_session = self._mgmt_session({"Organization": {}})
+
+        with patch(
+            "headroom.analysis.get_management_account_session",
+            return_value=mgmt_session,
+        ):
+            with pytest.raises(RuntimeError, match="organization ID"):
+                get_organization_id(MagicMock(), MagicMock())
 
 
 class TestGetAllOrganizationAccountIds:

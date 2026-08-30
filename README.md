@@ -118,6 +118,7 @@ python -m headroom --config config.yaml
 - `rcps/deny_kms_third_party_access/{account}.json` - KMS third-party access
 - `rcps/deny_secrets_manager_third_party_access/{account}.json` - Secrets Manager third-party access
 - `rcps/deny_sqs_third_party_access/{account}.json` - SQS third-party access
+- `rcps/deny_service_confused_deputy/{account}.json` - Service-mediated third-party access
 
 **Terraform configs** in `test_environment/scps/` and `test_environment/rcps/`:
 - `root_scps.tf` - Organization-wide policies

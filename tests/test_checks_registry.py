@@ -37,7 +37,7 @@ class TestGetAllCheckClasses:
     def test_get_all_check_classes_no_filter(self) -> None:
         """Test getting all check classes without filter."""
         all_checks = get_all_check_classes()
-        assert len(all_checks) == 15
+        assert len(all_checks) == 16
         check_names = {cls.CHECK_NAME for cls in all_checks}
         assert "deny_ec2_imds_v1" in check_names
         assert "deny_ec2_imds_hop_limit" in check_names
@@ -74,7 +74,7 @@ class TestGetAllCheckClasses:
     def test_get_all_check_classes_filter_by_rcps(self) -> None:
         """Test getting check classes filtered by rcps."""
         rcp_checks = get_all_check_classes("rcps")
-        assert len(rcp_checks) == 6
+        assert len(rcp_checks) == 7
         check_names = {cls.CHECK_NAME for cls in rcp_checks}
         assert "deny_sts_third_party_assumerole" in check_names
         assert "deny_s3_third_party_access" in check_names
@@ -107,4 +107,5 @@ class TestGetCheckTypeMap:
         assert type_map["deny_s3_third_party_access"] == "rcps"
         assert type_map["deny_secrets_manager_third_party_access"] == "rcps"
         assert type_map["deny_sqs_third_party_access"] == "rcps"
-        assert len(type_map) == 15
+        assert type_map["deny_service_confused_deputy"] == "rcps"
+        assert len(type_map) == 16
