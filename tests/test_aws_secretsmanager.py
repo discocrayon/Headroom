@@ -455,6 +455,42 @@ class TestAnalyzeSecretPolicy:
         assert source.service_principal == "sns.amazonaws.com"
         assert source.source_account_ids == ["999999999999"]
 
+    def test_wildcard_service_principal_source_is_recorded(self) -> None:
+        """
+        A secret policy whose only source guard is a wildcard is still surfaced.
+
+        aws:SourceAccount: "*" pins no single account, so no allowlist can
+        express it. That is the case has_actionable_service_principal_source's
+        wildcard arm exists to catch, distinct from the concrete-account arm
+        the guarded test above already covers.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "secretsmanager:GetSecretValue",
+                    "Condition": {
+                        "StringLike": {"aws:SourceAccount": "*"}
+                    },
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "wildcard-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:wildcard-secret",
+            policy,  # type: ignore[arg-type]
+            org_account_ids
+        )
+
+        assert result is not None
+        assert len(result.service_principal_sources) == 1
+        source = result.service_principal_sources[0]
+        assert source.has_wildcard_source is True
+        assert source.source_account_ids == []
+
     def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
         """The field stays empty when no statement names a service."""
         policy = {
