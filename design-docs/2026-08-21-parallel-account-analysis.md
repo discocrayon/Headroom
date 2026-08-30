@@ -11,7 +11,14 @@
 > after this was written and re-reads what four of the region-sweeping
 > analyzers already read, taking the 187-probe baseline below to 255. A third
 > session memo, `memoize_per_session` in `headroom/aws/helpers.py`, removes
-> those 68 probes again -- so "the two memos" below is now three.
+> those 68 probes again -- so "the two memos" below is now three. The STS
+> client config sized to the worker pool was deleted once it was measured to
+> bind nothing: `assume_role` builds one client per call, so the pool it sized
+> never had more than one connection to hand out. And the retry setting's
+> rationale below is wrong about the baseline -- botocore's default
+> `retry_mode` is `legacy`, whose own maximum is five, so five attempts is
+> parity with the default rather than headroom above it; what `standard`
+> changes is which failures are retried, not how many times.
 
 ## Problem
 

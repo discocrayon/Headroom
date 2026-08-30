@@ -130,13 +130,19 @@ class TestCallCounts:
         region per sweeping analyzer, plus one global client each for S3 and
         IAM.
 
-        The expected value is the first pass's own count, so this pins the
-        delta between the two passes and not the absolute cost: two redundant
-        clients built inside one sweep leave it green, because both passes pay
-        them. It is not circular -- removing a decorator from any of the six
-        fails it -- but it cannot see a sweep that got more expensive, and the
-        list it iterates is hand-maintained, so a seventh doubly-called
-        analyzer has to be added here to be covered.
+        Both the floor and the delta are asserted, and they catch different
+        things. The floor is derived from the shape above rather than
+        captured from the run: three regions times the four regional
+        analyzers, one global client each for S3 and IAM, and one EC2 client
+        for the `describe_regions` that fills the region memo. Fifteen.
+        Without it the second assertion compares the run against itself, so
+        two redundant clients built inside one sweep stay green because both
+        passes pay them.
+
+        The delta is the memo's own contract: removing a decorator from any
+        of the six fails it. Neither half is registry-driven -- the list is
+        hand-maintained, so a seventh doubly-called analyzer has to be added
+        here to be covered.
         """
         session = _session([{}])
 
@@ -144,6 +150,10 @@ class TestCallCounts:
             analyzer(session, ORG_ACCOUNT_IDS, ORG_ID)
 
         after_the_first_caller = session.client.call_count
+
+        # 4 regional analyzers x 3 regions, + S3 and IAM global, + the EC2
+        # client get_all_regions builds for describe_regions.
+        assert after_the_first_caller == 15
 
         for analyzer in SHARED_ANALYZERS:
             analyzer(session, ORG_ACCOUNT_IDS, ORG_ID)

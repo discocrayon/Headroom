@@ -1114,6 +1114,38 @@ class TestRunChecksPool:
 
         worker.assert_not_called()
 
+    def test_the_log_line_counts_what_the_pool_is_actually_given(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        An operator sizes the wait off this line, so both halves are real.
+
+        It reported the configured cap rather than the workers that will
+        exist. ThreadPoolExecutor spawns threads on demand, so a resumed run
+        with all but two accounts already on disk announced the full worker
+        count and then did two accounts' work on two threads.
+
+        The account half was unpinned in the same line: swapping `len(pending)`
+        back to the unfiltered list left the whole suite green, because the
+        only other test reading this line runs with nothing filtered out and
+        the two counts equal.
+        """
+        accounts = self._accounts(5)
+        already_on_disk = {account.account_id for account in accounts[:3]}
+
+        def complete(account_info: AccountInfo, config: HeadroomConfig) -> bool:
+            return account_info.account_id in already_on_disk
+
+        with (
+            caplog.at_level(logging.INFO, logger="headroom.analysis"),
+            patch("headroom.analysis._all_checks_complete", side_effect=complete),
+            patch("headroom.analysis._run_checks_for_account"),
+        ):
+            run_checks(MagicMock(), accounts, self._config(16), set(), ORG_ID)
+
+        assert "Analyzing 2 account(s) with 2 worker(s)" in caplog.text
+
     def test_accounts_are_analyzed_concurrently(self) -> None:
         """
         With four workers, four accounts are in flight at once.
