@@ -5,6 +5,17 @@
 **Goal:** Run account analysis concurrently and delete the redundant AWS calls, taking a
 300-account run from roughly 4.9 hours to roughly 14 minutes.
 
+> **Read this as history.** Every task here is implemented; the checkboxes were
+> never ticked, so read them for why a decision was made and never as work
+> outstanding. Three things have since been overtaken. A third session memo,
+> `memoize_per_session`, joined the two below. The STS client config sized to
+> the worker pool was deleted once it was measured to bind nothing. The retry
+> rationale is wrong about the baseline: botocore's default `retry_mode` is
+> `legacy`, whose own maximum is five, so five attempts is parity with the
+> default rather than headroom above it. The 14-minute figure is straight
+> division and does not hold either -- roughly 2.2 minutes of a serial run is
+> GIL-bound, so the default 16 workers projects to about 16 minutes, not 14.
+
 **Architecture:** One `ThreadPoolExecutor` over accounts with cooperative abort, plus two
 session-keyed memos that remove calls rather than merely running them in parallel. No
 region-level, check-level, or resource-level threading. Output is unchanged: results are

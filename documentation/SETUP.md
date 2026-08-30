@@ -182,7 +182,10 @@ account_tag_layout:
 With `exclude_account_ids: true`, result files carry no account ID, so the
 account name alone identifies an account -- both when a file is written and
 when it is read back. Two requirements follow, and Headroom enforces each of
-them at the point it can.
+them at the point it can. A third rule applies whatever this setting is: an
+account name has to be usable as a filename at all, which Headroom checks for
+every run -- see
+["cannot be used as result filenames"](#cannot-be-used-as-result-filenames).
 
 **Names must be unique.** Before any account is scanned, Headroom aborts if two
 accounts it is about to analyze share a name, naming the colliding spellings

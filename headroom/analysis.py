@@ -855,8 +855,12 @@ def run_checks(
             continue
         pending.append(account_info)
 
+    # Both halves come off what the pool is actually given, not off the
+    # config: ThreadPoolExecutor spawns threads on demand, so the cap is not
+    # the worker count when there is less work than cap.
     logger.info(
-        f"Analyzing {len(pending)} account(s) with {config.max_account_workers} worker(s)"
+        f"Analyzing {len(pending)} account(s) with "
+        f"{min(len(pending), config.max_account_workers)} worker(s)"
     )
 
     abort = threading.Event()
