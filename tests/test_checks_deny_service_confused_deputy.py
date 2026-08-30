@@ -29,6 +29,17 @@ ANALYZERS = [
 
 ORG_ID = "o-example12345"
 
+# One out-of-organization account per analyzer, deliberately not in ascending
+# order, so an assertion on the allowlist pins the sort as well as the union.
+ACCOUNT_BY_ANALYZER = {
+    "analyze_ecr_policies": "777777777777",
+    "analyze_kms_key_policies": "222222222222",
+    "analyze_s3_bucket_policies": "666666666666",
+    "analyze_secrets_manager_policies": "333333333333",
+    "analyze_sqs_queue_policies": "555555555555",
+    "analyze_iam_roles_trust_policies": "444444444444",
+}
+
 
 @pytest.fixture
 def temp_results_dir() -> Iterator[str]:
@@ -108,15 +119,14 @@ def _analysis(**fields: Any) -> MagicMock:
     return analysis
 
 
-def _run_single_analyzer(
-    temp_results_dir: str, analyzer_name: str, analysis: MagicMock
+def _run_many(
+    temp_results_dir: str,
+    analyses_by_analyzer: Dict[str, List[MagicMock]],
 ) -> Dict[str, Any]:
-
     """
-    Execute the check with only the named analyzer returning a finding.
+    Execute the check with several analyzers each returning findings.
 
-    The other five analyzers return nothing, isolating which analyzer fed
-    the resulting finding.
+    Any analyzer the mapping does not name returns nothing.
 
     Returns the results payload the check wrote.
     """
@@ -131,10 +141,7 @@ def _run_single_analyzer(
     )
 
     patches = [
-        patch(
-            f"{module}.{name}",
-            return_value=[analysis] if name == analyzer_name else [],
-        )
+        patch(f"{module}.{name}", return_value=analyses_by_analyzer.get(name, []))
         for name in ANALYZERS
     ]
     for entered in patches:
@@ -148,6 +155,20 @@ def _run_single_analyzer(
 
     results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
     return results_data
+
+
+def _run_single_analyzer(
+    temp_results_dir: str, analyzer_name: str, analysis: MagicMock
+) -> Dict[str, Any]:
+    """
+    Execute the check with only the named analyzer returning a finding.
+
+    The other five analyzers return nothing, isolating which analyzer fed
+    the resulting finding.
+
+    Returns the results payload the check wrote.
+    """
+    return _run_many(temp_results_dir, {analyzer_name: [analysis]})
 
 
 class TestServiceConfusedDeputyCheck:
@@ -283,6 +304,115 @@ class TestServiceConfusedDeputyCheck:
         assert finding["region"] == "us-west-2"
         assert finding["service_principal"] == "sns.amazonaws.com"
         assert finding["source_account_ids"] == [THIRD_PARTY]
+
+
+class TestTheAllowlistAccumulatesAcrossTheEstate:
+    """
+    `unique_third_party_accounts` is the union over every resource found.
+
+    It becomes the deployed statement's `aws:SourceAccount` allowlist, so an
+    account dropped here is a working integration the RCP denies on apply.
+    Every other test in this file feeds a single analyzer a single resource;
+    these pin the accumulation across the six loops in `analyze()` and across
+    resources within one loop.
+    """
+
+    def test_every_analyzer_contributes_to_one_allowlist(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        All six analyzers' accounts land in one sorted allowlist.
+
+        The analysis carries every identifier field, so one stand-in serves
+        whichever analyzer is reading it.
+        """
+        data = _run_many(temp_results_dir, {
+            name: [_analysis(
+                service_principal_sources=[_source(accounts=[account])],
+                repository_name="a-repo",
+                key_id="a-key",
+                bucket_name="a-bucket",
+                secret_name="a-secret",
+                queue_arn="arn:aws:sqs:us-west-2:111111111111:a-queue",
+                role_name="a-role",
+                region="us-west-2",
+            )]
+            for name, account in ACCOUNT_BY_ANALYZER.items()
+        })
+
+        assert data["summary"]["unique_third_party_accounts"] == [
+            "222222222222",
+            "333333333333",
+            "444444444444",
+            "555555555555",
+            "666666666666",
+            "777777777777",
+        ]
+        assert data["summary"]["third_party_account_count"] == 6
+        assert len(data["compliant_instances"]) == 6
+
+    def test_two_resources_from_one_analyzer_both_contribute(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        One analyzer returning two resources contributes both accounts.
+
+        `test_two_findings_union_their_accounts` puts two sources on a
+        single queue; this puts one source on each of two queues, which is
+        the other way a single loop accumulates.
+        """
+        data = _run_many(temp_results_dir, {
+            "analyze_sqs_queue_policies": [
+                _analysis(
+                    service_principal_sources=[_source(accounts=["888888888888"])],
+                    queue_arn="arn:aws:sqs:us-west-2:111111111111:first-queue",
+                    region="us-west-2",
+                ),
+                _analysis(
+                    service_principal_sources=[_source(accounts=["222222222222"])],
+                    queue_arn="arn:aws:sqs:us-west-2:111111111111:second-queue",
+                    region="us-west-2",
+                ),
+            ],
+        })
+
+        assert data["summary"]["unique_third_party_accounts"] == [
+            "222222222222",
+            "888888888888",
+        ]
+        assert [
+            finding["resource_identifier"]
+            for finding in data["compliant_instances"]
+        ] == [
+            "arn:aws:sqs:us-west-2:111111111111:first-queue",
+            "arn:aws:sqs:us-west-2:111111111111:second-queue",
+        ]
+
+    def test_the_same_account_from_two_analyzers_appears_once(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        One third party reached through two services is one allowlist entry.
+
+        The allowlist is keyed on the account, not on the resource that
+        exposed it, so a vendor holding both a repository and a role costs
+        the statement one entry while still being reported twice.
+        """
+        data = _run_many(temp_results_dir, {
+            "analyze_ecr_policies": [_analysis(
+                service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                repository_name="a-repo",
+                region="us-east-1",
+            )],
+            "analyze_iam_roles_trust_policies": [_analysis(
+                service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                role_name="a-role",
+            )],
+        })
+
+        assert data["summary"]["unique_third_party_accounts"] == [THIRD_PARTY]
+        assert data["summary"]["third_party_account_count"] == 1
+        assert len(data["compliant_instances"]) == 2
 
 
 class TestEveryAnalyzerFeedsTheCheck:
