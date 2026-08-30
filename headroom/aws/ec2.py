@@ -252,8 +252,10 @@ def get_instances(session: Session, region: str) -> List[Ec2Instance]:
 
     The memo is keyed on the session object itself, never on an account ID or
     name, which is what keeps one account's instances out of another account's
-    results. Entries live in a WeakKeyDictionary and are released when the
-    worker drops the session. The region is a key of the nested dictionary
+    results. Entries live in a WeakKeyDictionary and go when the worker drops
+    the session -- except on the failure path, for the reason
+    `get_all_regions` in helpers.py gives. The region is a key of the nested
+    dictionary
     rather than half of a `(session, region)` tuple key, because a tuple
     cannot be weakly referenced at all -- `WeakKeyDictionary` raises TypeError
     on the first write. Flattening the key would therefore mean giving up the
