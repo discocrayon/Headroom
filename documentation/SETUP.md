@@ -227,18 +227,29 @@ overwhelmingly network-bound, so the interpreter is idle most of the run.
 
 | Workers | Resident memory | 300 accounts |
 | --- | --- | --- |
-| 1 | baseline | ~3.8 hours (measured) |
-| 8 | ~0.4 GB | ~30 minutes (projected) |
-| 16 (default) | ~0.8 GB | ~16 minutes (projected) |
-| 32 (maximum) | ~1.5 GB | ~9 minutes (projected) |
+| 1 | ~0.2 GB | ~3.8 hours |
+| 8 | ~0.4 GB | ~30 minutes |
+| 16 (default) | ~0.8 GB | ~16 minutes |
+| 32 (maximum) | ~1.5 GB | ~9 minutes |
 
-Only the serial row is measured. It was taken with the region-list and EC2-instance caches
-in place; before those, a serial run took roughly 4.9 hours. A third cache, covering the
-resource policies two checks each read, landed afterwards and removes about 68 region
-probes per account, so the serial row is if anything now pessimistic.
+The memory column is `130 + 43 x workers` megabytes: a ~130 MB base for the interpreter
+and Headroom itself, plus one boto3 session per worker. `MAX_ACCOUNT_WORKERS` in
+`headroom/config.py` carries the same two numbers, and both are needed to reproduce the
+column -- 43 MB a worker alone puts the default row at 0.7 GB rather than 0.8.
 
-The other three rows are projected from it rather than measured, and the projection is not
-a straight division. Roughly 2.2 minutes of a 300-account run is GIL-bound Python that no
+No row of the runtime column is a wall-clock measurement, including the serial one. It is
+derived: a per-account census of the API calls the checks issue -- 203 requests and about
+192 fresh TLS handshakes, counted from the code -- against an assumed 100 ms mean
+round-trip and two extra round-trips per handshake, which is roughly 59 seconds an account
+and 3.8 hours for 300. `design-docs/2026-08-21-parallel-account-analysis.md` carries the
+census. The census is real; the latency is an assumption, and a slower or faster link
+moves every row in the column together. Before the region-list and EC2-instance caches the
+same census gave roughly 4.9 hours. A third cache, covering the resource policies two
+checks each read, landed afterwards and removes about 68 region probes per account, so the
+serial figure is if anything now pessimistic.
+
+The other three rows come off that same serial figure, and the projection is not a
+straight division. Roughly 2.2 minutes of a 300-account run is GIL-bound Python that no
 number of workers removes -- client construction and JSON parsing, measured at about 0.45
 seconds per account -- so the model is `2.2 + 225.8 / workers`. Dividing the whole 228
 minutes instead puts the 32-worker row at 7 minutes, about 30% optimistic, and that is the
