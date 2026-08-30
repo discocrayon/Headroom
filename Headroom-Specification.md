@@ -2103,14 +2103,29 @@ the control by using an unattached account.
 **Rows one and two: neither listed nor counted.** An unguarded service
 principal, and one guarded to an account already inside the organization,
 produce no output at all - no finding, no violation, and no number in the
-summary. The `Null` gate is what makes that sound rather than merely
-convenient: the statement never fires on a request carrying no source account,
-so an unguarded trust needs no allowlist entry and blocks nothing. It remains a
-real confused-deputy hole - anyone can point their topic at the queue - but not
-one this statement addresses, and making it a violation would withhold the
-statement over a problem the statement does not solve. Listing them would put
-every ordinary service integration in the account into the results and bury the
+summary. For row two that is exact: the source is in the organization, so
+`aws:SourceOrgID` already exempts it and no allowlist entry is needed.
+
+For row one it is a volume decision. Every log bucket and every service role
+carries a service trust with no source guard, so listing them would put every
+ordinary service integration in the account into the results and bury the
 sources that matter.
+
+Dropping them is not the same as their being safe. `aws:SourceAccount` is
+populated by the calling AWS service, from the resource that drove the call;
+the `Null` gate tests the request context, not the policy document. An
+unguarded policy does not produce an unguarded request - it produces a request
+that carries `aws:SourceAccount` and simply is not checked against it. So a
+bucket allowing `cloudtrail.amazonaws.com` with no source condition, written
+for a partner in out-of-organization account `999999999999`, matches every
+clause of the statement once it deploys and the delivery is denied. Discovery
+recorded nothing, because the policy names no account for it to record.
+
+Closing that path is precisely what `DenyServiceConfusedDeputy` is for. What
+discovery cannot do is enumerate the legitimate drivers of those trusts in
+advance - only CloudTrail can, which is what makes the rollout steps below the
+safeguard rather than the summary count. This is the check's principal
+deployment risk.
 
 An estate-wide count of them was a goal of an earlier draft and was dropped
 during implementation. All six analyzers drop an analysis that found nothing
@@ -2184,13 +2199,22 @@ from the account instead. `deny_sqs_third_party_access` is unaffected: the
 recorded queue carries no third-party account and no wildcard, so that check's
 filter drops it exactly as the earlier warn-and-skip did.
 
-**Residual risk.** A source guard that lives outside the resource policy is not
-discoverable this way, so discovery covers the guards visible in resource and
-trust policies and a staged rollout covers the rest. Deploy to a test OU with
-the discovered allowlist and watch for denials before going
-organization-wide; rolling back is setting `deny_service_confused_deputy` to
-`false` for the affected target, which removes this statement and leaves the
-other six in place.
+**Residual risk and rollout.** Discovery sees only the sources a resource
+policy already pins. An unguarded service trust, and a guard that lives outside
+the resource policy, are both invisible to it, and `unique_third_party_accounts`
+must not be read as a measurement of the estate's out-of-organization
+service-mediated access. Before enabling the statement for a target:
+
+1. Review CloudTrail for calls into that target's accounts where
+   `aws:PrincipalIsAWSService` is true and `aws:SourceAccount` falls outside the
+   organization. Those are the drivers discovery cannot see. Add the legitimate
+   ones to the allowlist, or pin them in the resource policy so the next run
+   finds them.
+2. Deploy to a test OU with the discovered allowlist and watch for denials
+   before going organization-wide.
+3. Rolling back is setting `deny_service_confused_deputy` to `false` for the
+   affected target, which removes this statement and leaves the other six in
+   place.
 
 **Scope.** AWS's reference statement also covers `cognito-identity`,
 `cognito-idp`, `logs`, `dynamodb` and `aoss`. Headroom has no checks for those

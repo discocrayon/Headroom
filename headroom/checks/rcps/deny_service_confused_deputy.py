@@ -110,10 +110,17 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
       deployed as if it were complete
 
     Service principals trusted with no source guard are dropped rather than
-    reported. The statement's Null condition keeps the deny off requests
-    carrying no source account, so an unguarded trust neither needs
-    permitting nor blocks anything - and listing them would put every
-    service role trust policy in the account into the results.
+    reported, on volume: every service role trust policy and every log
+    bucket in the account carries one, and listing them would bury the
+    sources that matter.
+
+    Dropping them is not the same as their being safe. `aws:SourceAccount`
+    is populated by the calling service, from the resource that drove the
+    call, so an unguarded trust driven by an out-of-organization account is
+    within the statement's reach and will be denied. The policy does not
+    name that account, so discovery cannot find it - only CloudTrail can.
+    This is the check's principal deployment risk; see the rollout guidance
+    in documentation/CHECKS.md.
     """
 
     def __init__(
@@ -153,11 +160,14 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         """
         Collect service principal sources from every resource type.
 
-        Unguarded sources are dropped. The statement's Null condition
-        means it never fires on a request carrying no source account, so an
-        unguarded trust asks nothing of the allowlist and blocks nothing -
-        and returning every service role trust policy in the account would
-        bury the findings that matter.
+        Unguarded sources are dropped, because returning every service
+        role trust policy and every log bucket in the account would bury
+        the findings that matter. They are dropped despite being within the
+        statement's reach, not because they sit outside it: the calling
+        service populates aws:SourceAccount itself, so an account outside
+        the organization driving an unguarded trust is denied once the
+        statement deploys. Nothing in a resource policy names that account,
+        so only CloudTrail can find it.
 
         They are not counted either. The six analyzers drop an analysis
         that found nothing worth reporting, so any count taken here would
