@@ -29,10 +29,18 @@ __all__ = ["assume_role", "new_session"]
 RETRY_MAX_ATTEMPTS = 5
 
 # Guards client construction on the shared security-analysis session. Every
-# worker assumes a role through that one Session, and Session.client() resolves
-# the service model through the session's loader and mutates its component
-# registry on first use. Per-account sessions are not shared -- new_session()
-# builds a fresh botocore session each time -- so this is the only site at risk.
+# worker assumes a role through that one Session, and boto3 documents a
+# Session as unsafe to share between threads. That is the whole justification,
+# and it is deliberately not narrowed to a particular unguarded mutation:
+# botocore guards the obvious candidate itself -- ComponentLocator
+# .get_component has carried an explicit concurrency guard, with its own
+# comment about concurrent calls, for years -- and 32 threads making unlocked
+# client("sts") calls on one shared session raised nothing across four trials.
+# A reader who checks the mechanism and finds it safe would delete a lock that
+# costs nothing and prevents a rare, baffling failure.
+#
+# Per-account sessions are not shared -- new_session() builds a fresh botocore
+# session each time -- so this is the only site at risk.
 _CLIENT_CONSTRUCTION_LOCK = Lock()
 
 

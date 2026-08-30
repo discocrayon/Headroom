@@ -233,13 +233,21 @@ def get_instances(session: Session, region: str) -> List[Ec2Instance]:
     The memo is keyed on the session object itself, never on an account ID or
     name, which is what keeps one account's instances out of another account's
     results. Entries live in a WeakKeyDictionary and are released when the
-    worker drops the session. The key is the session, with the region as a key
-    of the nested dictionary, rather than a `(session, region)` tuple: a tuple
-    holds a strong reference to the session, so every entry would outlive its
-    worker and the run would leak one per account per region.
+    worker drops the session. The region is a key of the nested dictionary
+    rather than half of a `(session, region)` tuple key, because a tuple
+    cannot be weakly referenced at all -- `WeakKeyDictionary` raises TypeError
+    on the first write. Flattening the key would therefore mean giving up the
+    weak dictionary, and with it the release that keeps 300 accounts' instance
+    lists from accumulating.
 
     The lock is released across the API call rather than held; see
-    `get_all_regions` in helpers.py for why.
+    `get_all_regions` in helpers.py for why. What makes the `by_region`
+    reference safe to hold across that window is narrower than one worker per
+    session: the entry for a live session is only ever created, never
+    replaced, so the dictionary written to at the end is still the one the
+    memo holds. Adding eviction would break that while leaving one worker per
+    session true, and the write would land in an orphaned dictionary and be
+    silently dropped.
 
     Callers must not mutate what this returns. It is the cached list itself,
     not a copy, so appending to it or removing from it changes what the next
