@@ -635,6 +635,38 @@ def _run_checks_for_account(
     logger.info(f"Checks completed for account: {account_identifier}")
 
 
+def _log_every_failure(
+    accounts_by_future: Dict[Future[None], AccountInfo]
+) -> None:
+    """
+    Report every account that failed, not only the one that propagated.
+
+    One exception reaches `main`; the rest are held by futures nobody asks
+    again. `concurrent.futures.Future` has no `__del__`, so unlike an asyncio
+    future it is collected without even an "exception was never retrieved"
+    warning -- the other failures leave no trace at all. An operator missing
+    the Headroom role in forty accounts is told about one, fixes it, re-runs,
+    and is told about the next.
+
+    Cancelled futures are skipped because `exception()` raises
+    `CancelledError` for them, and unfinished ones because it would block.
+    Neither can hold a failure worth reporting: a cancelled account never
+    ran, and by the time this runs `__exit__` has joined everything that did.
+
+    Args:
+        accounts_by_future: Every future submitted, mapped to its account
+    """
+    for future, account_info in accounts_by_future.items():
+        if future.cancelled() or not future.done():
+            continue
+
+        error = future.exception()
+        if error is not None:
+            logger.error(
+                f"Checks failed for account {_get_account_identifier(account_info)}: {error!r}"
+            )
+
+
 def run_checks(
     security_session: Session,
     relevant_account_infos: List[AccountInfo],
@@ -685,9 +717,18 @@ def run_checks(
     harmless: the file is complete and valid, and `results_exist` makes the run
     resumable at per-account, per-check granularity.
 
-    "First" means first to complete with an exception, since `as_completed`
-    yields in completion order. Workers that fail after the abort have their
-    exceptions discarded unretrieved.
+    "First" is first as `as_completed` reports it. That is true completion
+    order for every future still running when it is called, but the futures
+    already finished at that moment are collected into a set and yielded in
+    hash order. The window is empty in a real run -- the submit loop takes
+    milliseconds and the quickest failure is an AssumeRole round trip -- and
+    wide open in a test whose work returns instantly.
+
+    Which failure propagates therefore does not decide which failures the
+    operator is told about. `_log_every_failure` reports all of them, because
+    only one exception can reach `main` and the rest would otherwise vanish
+    silently: `Future` has no `__del__`, so nothing warns that they went
+    unretrieved.
 
     An operator's Ctrl-C takes the same path. `shutdown(wait=True)` defaults to
     `cancel_futures=False` and puts its sentinel at the back of the work queue,
@@ -719,46 +760,54 @@ def run_checks(
     )
 
     abort = threading.Event()
-    futures: List[Future[None]] = []
+    accounts_by_future: Dict[Future[None], AccountInfo] = {}
 
-    with ThreadPoolExecutor(max_workers=config.max_account_workers) as executor:
-        try:
-            # Appended one at a time rather than built as a comprehension. A
-            # comprehension binds `futures` only once it finishes, so a
-            # `submit` that raises halfway would discard the partial list and
-            # leave the handler below with nothing to cancel.
-            for account_info in pending:
-                futures.append(
-                    executor.submit(
-                        _run_checks_for_account,
-                        account_info,
-                        security_session,
-                        config,
-                        org_account_ids,
-                        org_id,
-                        abort,
-                    )
-                )
+    # The outer handler runs after `__exit__`, which is the whole point of it:
+    # `_log_every_failure` reads the other workers' exceptions, and those are
+    # not set until `shutdown(wait=True)` has joined them. Inside the block
+    # there is nothing yet to find.
+    try:
+        with ThreadPoolExecutor(max_workers=config.max_account_workers) as executor:
+            try:
+                # Recorded one at a time rather than built as a comprehension.
+                # A comprehension binds the mapping only once it finishes, so a
+                # `submit` that raises halfway would discard the partial result
+                # and leave the handler below with nothing to cancel.
+                for account_info in pending:
+                    accounts_by_future[
+                        executor.submit(
+                            _run_checks_for_account,
+                            account_info,
+                            security_session,
+                            config,
+                            org_account_ids,
+                            org_id,
+                            abort,
+                        )
+                    ] = account_info
 
-            for future in as_completed(futures):
-                error = future.exception()
-                if error is not None:
-                    raise error
-        except BaseException:
-            # Broader than Exception deliberately, and not a swallow: it
-            # re-raises unconditionally. Its job is to run the abort on every
-            # abnormal exit, which is why it has to catch the two that are not
-            # Exceptions -- the KeyboardInterrupt of an operator's Ctrl-C and
-            # SystemExit. Narrowing it back to `except Exception` would let
-            # those reach `__exit__` uncaught, and `shutdown(wait=True)` would
-            # then run every queued account before the process gave up.
-            # `abort.set()` comes before the cancel loop so a second Ctrl-C
-            # landing inside that loop still finds the in-flight workers
-            # already headed for their next checkpoint.
-            abort.set()
-            for outstanding in futures:
-                outstanding.cancel()
-            raise
+                for future in as_completed(accounts_by_future):
+                    error = future.exception()
+                    if error is not None:
+                        raise error
+            except BaseException:
+                # Broader than Exception deliberately, and not a swallow: it
+                # re-raises unconditionally. Its job is to run the abort on every
+                # abnormal exit, which is why it has to catch the two that are not
+                # Exceptions -- the KeyboardInterrupt of an operator's Ctrl-C and
+                # SystemExit. Narrowing it back to `except Exception` would let
+                # those reach `__exit__` uncaught, and `shutdown(wait=True)` would
+                # then run every queued account before the process gave up.
+                # `abort.set()` comes before the cancel loop so a second Ctrl-C
+                # landing inside that loop still finds the in-flight workers
+                # already headed for their next checkpoint.
+                abort.set()
+                for outstanding in accounts_by_future:
+                    outstanding.cancel()
+                raise
+    except BaseException:
+        _log_every_failure(accounts_by_future)
+        raise
 
 
 def _verify_no_duplicate_account_names(

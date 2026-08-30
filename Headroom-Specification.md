@@ -191,9 +191,12 @@ headroom/
    - Writes JSON results to `{results_dir}/{check_type}/{check_name}/`
 
    Within an account the checks stay serial, so each account's boto3 session is touched by
-   exactly one thread. The first worker to fail cancels the queued accounts, sets an abort
-   `Event` that in-flight workers check at each check boundary, and re-raises. An operator's
-   Ctrl-C does the same, so interrupting is prompt rather than a wait for the whole queue.
+   exactly one thread. The first worker to fail sets an abort `Event` that in-flight workers
+   check at each check boundary, then cancels the queued accounts, then re-raises -- setting
+   before cancelling, so an account starting in the window between the two finds the Event
+   already set. Every other failure is logged by name once the workers are joined. An
+   operator's Ctrl-C takes the same path, so interrupting is prompt rather than a wait for
+   the whole queue.
 5. **Placement:** Parse all result files → analyze org structure → determine policy levels
 6. **Generation:** Generate `grab_org_info.tf` + SCP Terraform files + RCP Terraform files
 
@@ -4322,6 +4325,11 @@ def run_checks(
        re-raises
     5. A KeyboardInterrupt out of that loop does the same before re-raising,
        so Ctrl-C is as prompt as a failure
+    6. Once the executor has joined its workers, _log_every_failure() reports
+       every account that failed, not only the one that propagated. Only one
+       exception can reach main(), and concurrent.futures.Future has no
+       __del__, so the others would otherwise be collected without even an
+       "exception was never retrieved" warning
 
     Error handling is deliberately absent: the first failure aborts the entire
     run rather than being logged and skipped. A partial run is more dangerous

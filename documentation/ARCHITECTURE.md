@@ -167,6 +167,13 @@ re-raises. Setting before cancelling is deliberate: an account that starts in th
 between the two finds the Event already set and returns without assuming a role.
 Because Python cannot kill a running thread, the Event is what makes the abort prompt.
 
+Only one exception can reach `main`, and a `Future` holding any of the others is collected
+without a warning -- unlike an asyncio future, it has no `__del__`. Every failure is
+therefore logged by name once the workers are joined, so an operator missing the Headroom
+role in forty accounts learns that in one run rather than in forty. The sweep runs outside
+the `with` block on purpose: inside it, `__exit__` has not joined the workers yet and the
+other futures hold nothing to find.
+
 The checkpoint a worker polls sits below the results-already-on-disk skip, never above it.
 A check already on disk is work the account does not owe, so an abort that lands with only
 such checks left has stopped nothing; reading the Event first labels a complete account

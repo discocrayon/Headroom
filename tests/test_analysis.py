@@ -1128,6 +1128,50 @@ class TestRunChecksPool:
         assert events
         assert events[0].is_set()
 
+    def test_every_failure_is_reported_not_only_the_first(self) -> None:
+        """
+        Failures that lose the race to `as_completed` are still logged.
+
+        Only one exception can propagate, and `concurrent.futures.Future` has
+        no `__del__`, so the others are collected without even the "exception
+        was never retrieved" warning asyncio would print. An operator missing
+        the Headroom role in forty accounts otherwise fixes one, re-runs,
+        and is told about the next -- forty rounds of a scan that takes hours.
+
+        The sweep cannot run in the `except` inside the `with`: the workers
+        are joined by `__exit__`, which has not run yet there, so the other
+        futures hold no exception to find. It has to sit outside the block.
+
+        The barrier holds both accounts in flight until each has failed, so
+        neither can be cancelled while queued and the second failure is a
+        fact about the pool rather than about scheduling.
+        """
+        barrier = threading.Barrier(2, timeout=5)
+
+        def fail(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            org_id: str,
+            abort: threading.Event,
+        ) -> None:
+            barrier.wait()
+            raise RuntimeError(f"role assumption failed in {account_info.name}")
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=fail),
+            patch("headroom.analysis.logger") as mock_logger,
+            pytest.raises(RuntimeError, match="role assumption failed"),
+        ):
+            run_checks(MagicMock(), self._accounts(2), self._config(2), set(), ORG_ID)
+
+        reported = [call.args[0] for call in mock_logger.error.call_args_list]
+        assert len(reported) == 2
+        assert any("account-0_111111111111" in line for line in reported)
+        assert any("account-1_222222222222" in line for line in reported)
+
     def test_abort_stops_run_checks_for_type_between_checks(self) -> None:
         """
         The checkpoint sits in the loop body, so the next check never starts.
