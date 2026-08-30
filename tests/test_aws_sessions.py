@@ -5,6 +5,8 @@ Tests for AWS session management and role assumption utilities.
 """
 
 import ast
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,11 @@ from botocore.exceptions import ClientError
 from unittest.mock import ANY, MagicMock, patch
 
 import headroom
-from headroom.aws.sessions import assume_role, new_session
+from headroom.aws.sessions import (
+    RETRY_MAX_ATTEMPTS,
+    assume_role,
+    new_session,
+)
 
 
 @pytest.fixture
@@ -212,7 +218,9 @@ class TestAssumeRole:
             base_session=mock_base_session
         )
 
-        mock_base_session.client.assert_called_once_with("sts", region_name="us-west-2")
+        mock_base_session.client.assert_called_once_with(
+            "sts", region_name="us-west-2"
+        )
 
 
 class TestNewSession:
@@ -289,7 +297,9 @@ class TestAssumeRoleRegionHandling:
 
         assume_role("arn:aws:iam::111111111111:role/Headroom", "TestSession", base_session)
 
-        base_session.client.assert_called_once_with("sts", region_name="us-west-2")
+        base_session.client.assert_called_once_with(
+            "sts", region_name="us-west-2"
+        )
 
     def test_returned_session_reaches_sts_regionally(self, hermetic_aws_env: None) -> None:
         """
@@ -353,3 +363,106 @@ class TestSessionConstructionIsCentralised:
                     builders.add(path.relative_to(package_root).as_posix())
 
         assert builders == {"aws/sessions.py"}
+
+
+class TestConcurrentClientConstruction:
+    """Test that workers do not build STS clients from one session at once."""
+
+    def test_client_construction_is_serialized(self) -> None:
+        """
+        Only one thread constructs a client from the shared session at a time.
+
+        Every worker assumes a role using the one security-analysis session.
+        Session.client() resolves the service model through the session's
+        loader and mutates its component registry on first use, so concurrent
+        first calls race. The lock covers construction only; the assume_role
+        round trip stays outside it so workers still overlap.
+
+        This probe can only ever false-pass, never false-fail.
+        """
+        live = 0
+        peak = 0
+        guard = threading.Lock()
+
+        def construct(*args: object, **kwargs: object) -> MagicMock:
+            nonlocal live, peak
+            with guard:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.005)
+            with guard:
+                live -= 1
+            client = MagicMock()
+            client.assume_role.return_value = {
+                "Credentials": {
+                    "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+                    "SecretAccessKey": "secret",
+                    "SessionToken": "token",
+                }
+            }
+            return client
+
+        base_session = MagicMock()
+        base_session.region_name = "us-east-1"
+        base_session.client.side_effect = construct
+
+        threads = [
+            threading.Thread(
+                target=assume_role,
+                args=("arn:aws:iam::111111111111:role/Headroom", "s", base_session),
+            )
+            for _ in range(8)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert peak == 1
+
+
+class TestSessionRetryConfiguration:
+    """Test the retry behaviour every client inherits from the session."""
+
+    def test_session_sets_standard_retry_mode(self) -> None:
+        """
+        Retries are configured on the session, so every client inherits them
+        without a per-call-site Config.
+        """
+        with patch("headroom.aws.sessions.botocore.session.get_session") as mock_get:
+            botocore_session = MagicMock()
+            mock_get.return_value = botocore_session
+
+            new_session()
+
+        botocore_session.set_config_variable.assert_any_call("retry_mode", "standard")
+        botocore_session.set_config_variable.assert_any_call(
+            "max_attempts", RETRY_MAX_ATTEMPTS
+        )
+
+    def test_a_client_built_from_the_session_resolves_five_standard_attempts(
+        self,
+        hermetic_aws_env: None,
+    ) -> None:
+        """
+        The resolved values, read off a real client rather than off the calls.
+
+        The test above pins the two knob names, which is worth having -- both
+        survive a rename attempt. It cannot pin either value: setting
+        RETRY_MAX_ATTEMPTS to 1 left the whole suite green, and so did a
+        second set_config_variable overriding the first, which assert_any_call
+        has no way to see because it only asks whether a call ever happened.
+
+        Five is asserted as a literal, and it is not an arbitrary one: legacy,
+        the mode botocore uses by default, already allowed five attempts, and
+        `standard` allows three, so this is the number that keeps the ceiling
+        where it was while changing the retry predicate. `total_max_attempts`
+        is botocore's own name for the count including the first try.
+        """
+        client = new_session(region_name="us-east-1").client("sts")
+
+        # botocore populates Config.retries at runtime from OPTION_DEFAULTS;
+        # the stubs do not declare it.
+        resolved = client.meta.config.retries  # type: ignore[attr-defined]
+
+        assert resolved == {"total_max_attempts": 5, "mode": "standard"}

@@ -212,7 +212,7 @@ is AP-009, not a proxy.
   "Resource": "*",
   "Condition": {
     "StringNotEqualsIfExists": {
-      "aws:PrincipalOrgID": "o-exampleorgid",
+      "aws:PrincipalOrgID": "o-11111111111",
       "aws:PrincipalAccount": [
         "111111111111",
         "333333333333"
@@ -616,7 +616,7 @@ The six RCP statements above all exempt AWS service principals, because a servic
   "Resource": "*",
   "Condition": {
     "StringNotEqualsIfExists": {
-      "aws:SourceOrgID": "o-exampleorgid",
+      "aws:SourceOrgID": "o-11111111111",
       "aws:SourceAccount": [
         "999999999999"
       ]
@@ -640,7 +640,7 @@ The six RCP statements above all exempt AWS service principals, because a servic
 
 **Why Pattern 6 rather than 5a:** the allowlisted account is not the principal. The principal is the AWS service, and the account being allowlisted is the one that configured it. The statement composes a conditional deny (the `Null` and `Bool` gates) with a condition-key value allowlist on `aws:SourceAccount`, which is the composition Pattern 6 describes - three condition keys - `aws:SourceOrgID`, `aws:SourceAccount` and `aws:PrincipalIsAWSService` - in four entries across three operator blocks, none of them `aws:PrincipalAccount`.
 
-**Headroom's Role:** Reads the source guard on every `Allow` statement that names a `Service` principal, across the six resource types the other RCP checks already analyze - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies. Recording that guard costs those six checks nothing, but this check re-runs their six analyzers rather than reusing the results, so every RCP read API is issued twice per account per run. Caching is deliberately not implemented; it is a separate optimization if the duplication proves material. Out-of-organization accounts named by `aws:SourceAccount`, or extracted from `aws:SourceArn`, are unioned into the allowlist. A guard no allowlist can express - `*` in the account, or an ARN yielding no account with no companion `aws:SourceAccount` - is a violation that withholds the statement from that account, the same mechanism a wildcard principal already triggers.
+**Headroom's Role:** Reads the source guard on every `Allow` statement that names a `Service` principal, across the six resource types the other RCP checks already analyze - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies. Recording that guard costs those six checks nothing, and while this check calls the same six analyzers, `memoize_per_session` serves the second call of each pair from memory, so every RCP read API is issued once per account per run. Out-of-organization accounts named by `aws:SourceAccount`, or extracted from `aws:SourceArn`, are unioned into the allowlist. A guard no allowlist can express - `*` in the account, or an ARN yielding no account with no companion `aws:SourceAccount` - is a violation that withholds the statement from that account, the same mechanism a wildcard principal already triggers.
 
 **Key Feature:** Service principals trusted with no source guard are neither listed nor counted. That is a volume decision, not a safety one: every log bucket and service role carries such a trust, so listing them would bury the sources that matter, and because five of the six analyzers drop an analysis with nothing to report while SQS keeps every queue that carries a policy, any estate-wide count taken here would be exhaustive for queues and incidental for the rest. They are still within the statement's reach - `aws:SourceAccount` is populated by the calling service, not by the resource policy, so an out-of-organization account driving an unguarded trust is denied once the statement deploys, and no resource policy names it for discovery to find. Closing that path is what the statement is for; finding the legitimate drivers of it before deploying is a CloudTrail exercise. See `documentation/CHECKS.md` for the full disposition table and the rollout steps.
 

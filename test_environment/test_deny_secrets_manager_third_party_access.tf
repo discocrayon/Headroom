@@ -26,7 +26,7 @@ resource "aws_secretsmanager_secret_policy" "third_party_vendor_a" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::749430749651:root"  # CrowdStrike
+          AWS = "arn:aws:iam::999911114444:root"  # CrowdStrike
         }
         Action = [
           "secretsmanager:GetSecretValue",
@@ -65,8 +65,8 @@ resource "aws_secretsmanager_secret_policy" "third_party_vendor_b" {
         Effect = "Allow"
         Principal = {
           AWS = [
-            "arn:aws:iam::758245563457:root",  # Barracuda
-            "arn:aws:iam::517716713836:root"   # Check Point
+            "arn:aws:iam::999911116666:root",  # Barracuda
+            "arn:aws:iam::999911110000:root"   # Check Point
           ]
         }
         Action = [

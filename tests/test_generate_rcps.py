@@ -109,12 +109,12 @@ class TestParseRcpResultFiles:
     def sample_org_hierarchy(self) -> OrganizationHierarchy:
         """Create sample organization hierarchy for testing."""
         return OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1111": OrganizationalUnit(
                     ou_id="ou-1111",
                     name="Production",
-                    parent_ou_id="r-1234",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["111111111111", "222222222222"]
                 )
@@ -499,19 +499,19 @@ class TestDetermineRcpPlacement:
     def sample_org_hierarchy(self) -> OrganizationHierarchy:
         """Create sample organization hierarchy."""
         return OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1111": OrganizationalUnit(
                     ou_id="ou-1111",
                     name="Production",
-                    parent_ou_id="r-1234",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["111111111111", "222222222222"]
                 ),
                 "ou-2222": OrganizationalUnit(
                     ou_id="ou-2222",
                     name="Development",
-                    parent_ou_id="r-1234",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["333333333333"]
                 )
@@ -892,12 +892,12 @@ class TestCreateRootLevelRcpRecommendation:
     def sample_org_hierarchy(self) -> OrganizationHierarchy:
         """Create sample organization hierarchy."""
         return OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1111": OrganizationalUnit(
                     ou_id="ou-1111",
                     name="Production",
-                    parent_ou_id="r-1234",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["111111111111", "222222222222"]
                 )
@@ -1043,19 +1043,19 @@ class TestCreateOuLevelRcpRecommendations:
     def sample_org_hierarchy(self) -> OrganizationHierarchy:
         """Create sample organization hierarchy."""
         return OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1111": OrganizationalUnit(
                     ou_id="ou-1111",
                     name="Production",
-                    parent_ou_id="r-1234",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["111111111111", "222222222222"]
                 ),
                 "ou-2222": OrganizationalUnit(
                     ou_id="ou-2222",
                     name="Development",
-                    parent_ou_id="r-1234",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["333333333333"]
                 )
@@ -1529,12 +1529,12 @@ class TestGenerateRcpTerraform:
     def sample_org_hierarchy(self) -> OrganizationHierarchy:
         """Create sample organization hierarchy."""
         return OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1111": OrganizationalUnit(
                     ou_id="ou-1111",
                     name="Production",
-                    parent_ou_id="r-1234",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["111111111111"]
                 )
@@ -2136,6 +2136,42 @@ class TestRenderAccountRcpTerraform:
         assert '"999999999999"' in content
         assert '"888888888888"' in content
 
+    def test_rejects_a_folded_name_collision(
+        self,
+        sample_rcp_rec: RCPPlacementRecommendations
+    ) -> None:
+        """
+        Two account names that fold alike abort rather than overwrite.
+
+        RCPs carry the same collision as SCPs: the plan is keyed on the path,
+        so the second account's file replaces the first's during plan
+        construction. Only one of the two is being rendered, because the
+        account it collides with need not be one this run generates for.
+        """
+        org = OrganizationHierarchy(
+            root_id="r-root",
+            organizational_units={},
+            accounts={
+                "000000000000": AccountOrgPlacement(
+                    account_id="000000000000",
+                    account_name="Prod-US",
+                    parent_ou_id="ou-test",
+                    ou_path=["r-root", "ou-test"]
+                ),
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="Prod US",
+                    parent_ou_id="ou-test",
+                    ou_path=["r-root", "ou-test"]
+                ),
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="prod_us"):
+            _render_account_rcp_terraform(
+                "000000000000", [sample_rcp_rec], org, Path("/nonexistent")
+            )
+
     def test_raises_error_for_missing_account(
         self,
         sample_rcp_rec: RCPPlacementRecommendations
@@ -2309,12 +2345,12 @@ class TestEveryRcpCheckReachesTerraform:
     def single_account_hierarchy(self) -> OrganizationHierarchy:
         """Create a one-account, one-OU organization hierarchy."""
         return OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1111": OrganizationalUnit(
                     ou_id="ou-1111",
                     name="Production",
-                    parent_ou_id="r-1234",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["111111111111"]
                 )

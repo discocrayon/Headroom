@@ -29,7 +29,7 @@ class TestTerraformGeneration:
     def test_generate_terraform_content_basic(self) -> None:
         """Test basic Terraform content generation."""
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1": OrganizationalUnit("ou-1", "Production", None, [], ["acc-1"]),
                 "ou-2": OrganizationalUnit("ou-2", "Development", None, [], ["acc-2"]),
@@ -54,7 +54,7 @@ class TestTerraformGeneration:
     def test_generate_terraform_content_empty_org(self) -> None:
         """Test Terraform content generation with empty organization."""
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={}
         )
@@ -73,7 +73,7 @@ class TestTerraformGeneration:
     def test_generate_terraform_content_complex_hierarchy(self) -> None:
         """Test Terraform content generation with complex hierarchy."""
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1": OrganizationalUnit("ou-1", "Production", None, ["ou-3"], ["acc-1"]),
                 "ou-2": OrganizationalUnit("ou-2", "Development", None, [], ["acc-2"]),
@@ -100,7 +100,7 @@ class TestTerraformGeneration:
         """Test successful Terraform file generation."""
         # Mock organization hierarchy
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1": OrganizationalUnit("ou-1", "Production", None, [], ["acc-1"]),
             },
@@ -145,7 +145,7 @@ class TestTerraformGeneration:
     def test_generate_terraform_org_info_file_error(self, mock_mkdir: Mock, mock_open: Mock, mock_analyze: Mock) -> None:
         """Test Terraform generation with file write error."""
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={}
         )
@@ -185,7 +185,7 @@ class TestTerraformNamedLocals:
     def test_generate_terraform_content_with_named_locals(self) -> None:
         """Test Terraform content generation with named local variables."""
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1": OrganizationalUnit("ou-1", "Production", None, [], ["acc-1"]),
                 "ou-2": OrganizationalUnit("ou-2", "Development", None, [], ["acc-2"]),
@@ -220,7 +220,7 @@ class TestTerraformNamedLocals:
     def test_generate_terraform_content_empty_org_with_named_locals(self) -> None:
         """Test Terraform content generation with empty organization."""
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={}
         )
@@ -239,7 +239,7 @@ class TestTerraformNamedLocals:
     def test_generate_terraform_content_complex_hierarchy_with_named_locals(self) -> None:
         """Test Terraform content generation with complex hierarchy."""
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1": OrganizationalUnit("ou-1", "Production", None, ["ou-3"], ["acc-1"]),
                 "ou-2": OrganizationalUnit("ou-2", "Development", None, [], ["acc-2"]),
@@ -463,6 +463,26 @@ class TestTerraformHelperFunctions:
         assert "# Account IDs by name" in result_str
         assert "validation_check_prod_account_account" in result_str
         assert "prod_account_account_id = [" in result_str
+
+    def test_generate_account_locals_rejects_a_folded_name_collision(self) -> None:
+        """
+        Two account names folding alike would declare one local twice.
+
+        This loop walks every account in the organization, not the analyzed
+        ones, so it is the widest view of the collision -- and a duplicate
+        `prod_us_account_id` is a Terraform error the operator only meets at
+        apply time, long after the scan.
+        """
+        ous = {
+            "ou-1": OrganizationalUnit("ou-1", "Production", None, [], ["acc-1", "acc-2"]),
+        }
+        accounts = {
+            "acc-1": AccountOrgPlacement("acc-1", "Prod-US", "ou-1", ["Production"]),
+            "acc-2": AccountOrgPlacement("acc-2", "Prod US", "ou-1", ["Production"]),
+        }
+
+        with pytest.raises(RuntimeError, match="prod_us"):
+            _generate_account_locals(accounts, ous)
 
     def test_generate_account_locals_should_generate_multiple_account_locals(self) -> None:
         """Should generate local variables for multiple accounts."""

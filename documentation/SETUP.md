@@ -110,10 +110,18 @@ security_analysis_account_id: '111111111111'  # Required for this option
 
 ### Optional
 - `security_analysis_account_id`: Only required if running from management account (Option 2)
-- `exclude_account_ids`: When `true`, excludes account IDs from result files and filenames (default: `false`). This redacts identifiers; it does not skip any account.
+- `exclude_account_ids`: When `true`, excludes account IDs from result files and filenames (default: `false`). This redacts identifiers; it does not skip any account. See [Resolving Result Files Back to Accounts](#resolving-result-files-back-to-accounts).
 - `skip_account_ids`: Account IDs to leave out of analysis entirely (default: `[]`). See [Skipping Accounts](#skipping-accounts).
 - `use_account_name_from_tags`: When `true`, uses tag-based account names instead of AWS Organizations names (default: `false`)
 - `account_tag_layout`: Tag keys for extracting account metadata (all optional)
+- `max_account_workers`: how many accounts to analyze at once. Defaults to 16, and must be
+  between 1 and 32. See [Tuning `max_account_workers`](#tuning-max_account_workers).
+
+Every key is one of the above. Headroom refuses to start on a key it does not recognize,
+rather than ignoring it: a dropped key is indistinguishable from a misspelled one, and the
+setting most likely to be misspelled is one whose loss changes how the run behaves without
+changing whether it succeeds. `max_account_worker: 1` used to configure sixteen workers and
+say nothing. The same applies to the keys inside `account_tag_layout`.
 
 ### Skipping Accounts
 
@@ -169,23 +177,150 @@ account_tag_layout:
 - `name`: Only used when `use_account_name_from_tags: true`, falls back to account ID if missing
 - `owner`: Extracted if present, falls back to "unknown" if missing
 
-**Resolving tag names back to accounts:**
+### Resolving Result Files Back to Accounts
 
-With `exclude_account_ids: true`, result files carry no account ID, so Headroom
-resolves each file back to an account by name. The name in the file comes from
-the `name` tag; the name in the organization hierarchy always comes from AWS
-Organizations. Headroom matches exactly first, then retries ignoring case and
-separators, so a `Name` tag of `management-account` still resolves to an account
-Organizations calls `Management Account`, logging a warning that the two differ.
+With `exclude_account_ids: true`, result files carry no account ID, so the
+account name alone identifies an account -- both when a file is written and
+when it is read back. Two requirements follow, and Headroom enforces each of
+them at the point it can. A third rule applies whatever this setting is: an
+account name has to be usable as a filename at all, which Headroom checks for
+every run -- see
+["cannot be used as result filenames"](#cannot-be-used-as-result-filenames).
+
+**Names must be unique.** Before any account is scanned, Headroom aborts if two
+accounts it is about to analyze share a name, naming the colliding spellings
+but never the account IDs -- printing those would defeat the setting that
+created the collision. Two such accounts would write to one file, and because
+accounts are analyzed concurrently that file would hold interleaved output from
+both. Names are compared the way a case-insensitive filesystem compares them,
+so `Prod` and `prod` collide, as do the composed and decomposed spellings of
+`café`. The comparison does not vary by platform, so a pair that would not
+actually have collided on Linux still aborts; renaming one account is the fix.
+
+**Names must resolve back.** The name in the file comes from the `name` tag;
+the name in the organization hierarchy always comes from AWS Organizations.
+Headroom matches exactly first, then retries ignoring case and separators, so a
+`Name` tag of `management-account` still resolves to an account Organizations
+calls `Management Account`, logging a warning that the two differ.
 
 Resolution fails loudly when the answer is not unique or not present:
 - The name matches two or more accounts (Organizations enforces uniqueness on
-  account email, not on account name). Rename one account, or set
-  `exclude_account_ids: false` so result files carry account IDs.
+  account email, not on account name). The startup check above does not rule
+  this out. It runs only under `exclude_account_ids`, which is off by default,
+  and it folds case and Unicode normal form where this lookup also folds
+  separators -- so `Prod-US` and `Prod US` are two names to that check and one
+  name here. A name reaching this branch is therefore either shared with an
+  account the check never saw (the management account, a skipped account, or
+  one that is not ACTIVE) or shared with one it saw and read as distinct.
+  Rename one account, or set `exclude_account_ids: false` so result files
+  carry account IDs.
 - The name matches nothing — most often a `name` tag that is missing (the name
   then falls back to the account ID, which matches no account name), a tag that
   is not merely a re-spelling of the account name, or a stale result file left
   behind after an account was renamed.
+
+### Tuning `max_account_workers`
+
+Each worker holds its own boto3 session carrying its own parsed AWS service models, which
+measures at roughly 43 MB. That is what bounds this setting, not CPU: analysis is
+overwhelmingly network-bound, so the interpreter is idle most of the run.
+
+| Workers | Resident memory | 300 accounts |
+| --- | --- | --- |
+| 1 | ~0.2 GB | ~3.8 hours |
+| 8 | ~0.5 GB | ~30 minutes |
+| 16 (default) | ~0.8 GB | ~16 minutes |
+| 32 (maximum) | ~1.5 GB | ~9 minutes |
+
+The memory column is `130 + 43 x workers` megabytes: a ~130 MB base for the interpreter
+and Headroom itself, plus one boto3 session per worker. `MAX_ACCOUNT_WORKERS` in
+`headroom/config.py` carries the same two numbers, and both are needed to reproduce the
+column -- 43 MB a worker alone puts the default row at 0.7 GB rather than 0.8.
+
+No row of the runtime column is a wall-clock measurement, including the serial one. It is
+derived: a per-account census of the API calls the checks issue -- 203 requests and about
+192 fresh TLS handshakes, counted from the code -- against an assumed 100 ms mean
+round-trip and two extra round-trips per handshake. That comes to 587 round-trips, roughly
+59 seconds an account and 4.9 hours for 300.
+
+The 4.9 hours is the code the census counted, before the caches. The region-list memo
+folds 11 `describe_regions` calls into 1, and the EC2-instance memo removes 51 of the 68
+`describe_instances` calls along with 34 client builds and their handshakes, leaving 142
+requests and 158 handshakes -- 458 round-trips, or 46 seconds an account, which is the
+table's 3.8-hour row. A third cache, covering the resource policies two checks each read,
+landed afterwards and removes about 68 region probes per account, so even 3.8 hours is now
+pessimistic. The census is real; the latency is an assumption, and a slower or faster link
+moves every row in the column together.
+
+The other three rows come off that same serial figure, and the projection is not a
+straight division. Roughly 2.2 minutes of a 300-account run is GIL-bound Python that no
+number of workers removes -- client construction and JSON parsing, measured at about 0.45
+seconds per account -- so the model is `2.2 + 225.8 / workers`. Dividing the whole 228
+minutes instead puts the 32-worker row at 7 minutes, about 30% optimistic, and that is the
+row an operator raising the cap is relying on. Real numbers will be worse again: workers
+contend for the lock around client construction on the shared session, and AWS throttles
+per account rather than per worker.
+
+Set it to `1` to analyze accounts one at a time. That runs the same code path as any other
+value rather than a separate serial branch, so it is a safe way to get readable logs and a
+simple stack trace while debugging.
+
+A failure in any account aborts the whole run. Queued accounts never start, and accounts
+already in flight stop after their current check. Nothing is lost: each check writes its own
+result file as it completes, and a re-run skips the results already on disk.
+
+### Reading the Logs
+
+Every line carries the account its thread is working on, in brackets after the logger name:
+
+```
+DEBUG:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1
+```
+
+Accounts are analyzed concurrently, so lines from different accounts interleave and most of
+them name only a region or a resource. The bracket is what makes a line attributable. Work
+that does not belong to any one account -- startup, configuration, Terraform generation --
+is stamped `-`.
+
+The bracket names the thread's account rather than the line's subject, so the summary an
+aborted run prints is stamped `-` even though every line of it is about one account. The
+main thread writes those lines after the workers have exited, and they carry the account in
+the message instead:
+
+```
+ERROR:headroom.analysis:[-] Checks failed for account payments_111111111111: ClientError(...)
+```
+
+One line sizes the whole run, printed once the resume filter has run:
+
+```
+INFO:headroom.analysis:[-] Analyzing 116 account(s) with 16 worker(s)
+```
+
+Neither count is read off the configuration. Accounts whose results are already on disk are
+filtered out before this line, so on a resumed run the account count is smaller than the
+organization. The worker count is the most threads the run can create rather than the
+number the pool was built with: the executor always gets the full `max_account_workers`,
+but it spawns threads on demand and never has more work queued than there are accounts, so
+a run with less work than the cap reports the smaller number.
+
+The default level is INFO, which reports one line per account as it starts, finishes, or
+stops. Per-region progress is DEBUG, so a run at the default level says nothing between
+starting an account and finishing it. Raise the level when an account looks stuck:
+
+```python
+import logging
+logging.getLogger("headroom").setLevel(logging.DEBUG)
+```
+
+When a run aborts, the last lines account for what did not happen. Every account that
+failed is named, not only the one whose error propagated, and a final line gives the number
+of accounts that were cancelled before they started:
+
+```
+ERROR:headroom.analysis:[-] Checks failed for account payments_111111111111: ClientError(...)
+ERROR:headroom.analysis:[-] Aborting: 184 account(s) were never analyzed. Results on disk cover the rest, and a re-run resumes from them.
+```
 
 ## Test Environment
 
@@ -230,3 +365,59 @@ aws account get-region-opt-status --region-name <region> --account-id <member-ac
 - Ensure `management_account_id` is always set
 - Only set `security_analysis_account_id` if running from management account
 - Validate YAML syntax in your config file
+- `Extra inputs are not permitted` names a key Headroom does not recognize. Check it against
+  [Configuration Parameters](#configuration-parameters); it is usually a typo.
+
+### "cannot be used as result filenames"
+
+An account name becomes part of its result filename, so a name containing `/` builds a path
+into a subdirectory rather than a filename and the account's results end up somewhere policy
+generation does not look. A name holding a null byte, or one long enough to overrun the
+filesystem's 255-byte limit on a single path component, fails the write outright -- account
+names come from a tag under `use_account_name_from_tags`, and a tag value runs to 256
+characters where Organizations caps a name at 50. An empty name is refused as well, because
+it cannot become a Terraform identifier later. Headroom checks all of this before the scan
+starts and names the accounts, with the reason beside each one. Rename them, or set
+`use_account_name_from_tags: true` and give them a `name` tag that is a plain filename.
+
+A leading dot is fine: `pathlib.Path.glob` matches dotfiles, and the readers take account
+identity from the JSON rather than the filename.
+
+### "both claim the Terraform identifier"
+
+Everything generated for an account -- its policy file, its module name, the ID local the
+policy targets -- is named from the account name reduced to a Terraform identifier, and
+that reduction folds much wider than a filename does. Case, spaces, hyphens and every
+other non-alphanumeric all become one underscore, runs of underscores collapse, and
+leading and trailing underscores are stripped, so `Prod-US`, `Prod US`, `Prod_US`,
+`prod.us` and `PROD+US` are one identifier. Two accounts reducing alike would have the
+second's policy file written over the first's, so generation aborts instead, naming both
+accounts and the identifier they share. Rename one.
+
+A second form of the collision names a file rather than two accounts:
+
+```
+Two generated files claim 'root_scps.tf', the second for the organization root.
+```
+
+Accounts, OUs, and the organization root all name their files this way, and the root's
+two filenames are fixed. So an account called `Root` claims `root_scps.tf`, and an account
+called `Sandbox OU` claims whatever the `Sandbox` OU claims. The message names the file
+and whichever of the two claimed it second, which is a matter of render order rather than
+of which one is at fault -- rename the account either way.
+
+Unlike the filename guard above, both of these fire during Terraform generation rather
+than before the scan. Generation walks every account in the organization, while a
+pre-flight check sees only the accounts the scan will analyze -- the management account,
+`skip_account_ids`, and every non-ACTIVE account are already filtered out by then -- so a
+pre-flight version could not be complete and there is none.
+
+The scan is not wasted, but the rename is not free either. Resume is keyed on the account
+name, so the renamed account's results are sitting under its old name and that one account
+is scanned again -- 299 of 300 resume, and the 300th does not. Delete its old result files
+before re-running. Left in place they are the stale files
+["Resolving Result Files Back to Accounts"](#resolving-result-files-back-to-accounts)
+warns about: under the default they parse as a second result for the same account, and
+because placement asks whether every result in a group is clean, a stale violation can
+only withhold a policy rather than place one it should not; under `exclude_account_ids:
+true` the old name resolves to no account and the next run fails on it.

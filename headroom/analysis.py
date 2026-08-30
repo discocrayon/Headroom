@@ -1,4 +1,8 @@
 import logging
+import threading
+import unicodedata
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
@@ -9,12 +13,11 @@ from mypy_boto3_organizations.type_defs import AccountTypeDef
 
 from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
+from .log_context import NO_ACCOUNT, set_account
 from .write_results import results_exist
 from .aws.sessions import assume_role, new_session
 from .utils import format_account_identifier
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -378,7 +381,7 @@ def get_organization_id(config: HeadroomConfig, session: Session) -> str:
         session: boto3 Session with access to security analysis account
 
     Returns:
-        This organization's ID, such as `o-example12345`
+        This organization's ID, such as `o-11111111111`
 
     Raises:
         ValueError: If management_account_id is not set in config
@@ -483,8 +486,9 @@ def run_checks_for_type(
     account_info: AccountInfo,
     config: HeadroomConfig,
     org_account_ids: Set[str],
-    org_id: str
-) -> None:
+    org_id: str,
+    abort: threading.Event
+) -> bool:
     """
     Run all checks of a given type for a single account.
 
@@ -499,10 +503,24 @@ def run_checks_for_type(
         org_account_ids: Set of all account IDs in the organization
         org_id: This organization's ID, deciding whether an
             organization scope on a source guard names this organization
+        abort: Set when another account has failed, ending this account's run
+            at the next check boundary
+
+    Returns:
+        True if every check of this type ran or was already on disk, False if
+        a checkpoint stopped the loop with checks still to run. The caller
+        needs the distinction to label the account, and cannot recover it by
+        re-reading `abort`: the Event can be set by another account's failure
+        after this loop's last iteration, when nothing was skipped here.
     """
     check_classes = get_all_check_classes(check_type)
 
     for check_class in check_classes:
+        # The skip is tested before the checkpoint, never after. A check
+        # already on disk is work this account does not owe, so an abort that
+        # lands with only such checks left has stopped nothing. Reading the
+        # Event first reports the account aborted anyway, and the re-run that
+        # sends the operator answers "All results already exist".
         if results_exist(
             check_name=check_class.CHECK_NAME,
             account_name=account_info.name,
@@ -511,6 +529,9 @@ def run_checks_for_type(
             exclude_account_ids=config.exclude_account_ids,
         ):
             continue
+
+        if abort.is_set():
+            return False
 
         check = check_class(
             check_name=check_class.CHECK_NAME,
@@ -522,6 +543,8 @@ def run_checks_for_type(
             exclude_account_ids=config.exclude_account_ids,
         )
         check.execute(headroom_session)
+
+    return True
 
 
 def _get_account_identifier(account_info: AccountInfo) -> str:
@@ -542,13 +565,40 @@ def _run_checks_for_account(
     security_session: Session,
     config: HeadroomConfig,
     org_account_ids: Set[str],
-    org_id: str
+    org_id: str,
+    abort: threading.Event
 ) -> None:
     """
     Run all checks for a single account.
 
     Assumes the Headroom role in the target account and runs any missing
     SCP and RCP checks.
+
+    Runs on a worker thread, so it registers the account with `set_account`
+    before anything else: every log record this thread emits from here on
+    names the account it belongs to, including records from `headroom/aws/`
+    that mention only a region or a resource.
+
+    The session created here is touched by this thread alone. That is what
+    makes the per-session memos in `aws/helpers.py` and `aws/ec2.py` correct:
+    each keys on the session object, so no worker can be served another
+    account's region list, instances, or resource policies. The memos still
+    take a lock -- the dictionaries holding them are shared between workers,
+    even though no two workers ever contend for one entry.
+
+    The account is cleared on the way out. `set_account` writes to
+    thread-local storage and the pool reuses its threads, so a worker that
+    returned without clearing would leave the next records that thread emits
+    named for the account that just finished, until the next worker reaches
+    the `set_account` above. `-` is the honest answer in that window, and the
+    `finally` is what extends it to the account that raised.
+
+    The closing log line comes from what the check loops report, not from
+    re-reading `abort`. Another account can fail while this worker is inside
+    its last `check.execute()`, and this account has then run and written
+    every check it owns; reading the Event at that point labels a complete
+    account aborted, sending the operator after a re-run that answers "All
+    results already exist".
 
     Args:
         account_info: Information about the target account
@@ -557,21 +607,156 @@ def _run_checks_for_account(
         org_account_ids: Set of all account IDs in the organization
         org_id: This organization's ID, deciding whether an
             organization scope on a source guard names this organization
+        abort: Set when another account has failed, ending this account's run
+            at the next check boundary
     """
     account_identifier = _get_account_identifier(account_info)
+    set_account(account_identifier)
+    try:
+        _run_every_missing_check(
+            account_info,
+            account_identifier,
+            security_session,
+            config,
+            org_account_ids,
+            org_id,
+            abort,
+        )
+    finally:
+        set_account(NO_ACCOUNT)
+
+
+def _run_every_missing_check(
+    account_info: AccountInfo,
+    account_identifier: str,
+    security_session: Session,
+    config: HeadroomConfig,
+    org_account_ids: Set[str],
+    org_id: str,
+    abort: threading.Event
+) -> None:
+    """
+    Run the SCP and RCP checks this account does not already have on disk.
+
+    Split from `_run_checks_for_account` only so that the account context it
+    registers is set and cleared in one place, around a body with several
+    exits.
+
+    Args:
+        account_info: Information about the target account
+        account_identifier: Formatted identifier, for the log lines
+        security_session: boto3 Session for security analysis account
+        config: Headroom configuration
+        org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
+        abort: Set when another account has failed, ending this account's run
+            at the next check boundary
+    """
+    if abort.is_set():
+        logger.info(f"Checks aborted for account: {account_identifier}")
+        return
+
     logger.info(f"Running checks for account: {account_identifier}")
 
     headroom_session = get_headroom_session(config, security_session, account_info.account_id)
 
+    # Either operand order yields the same `completed`. run_checks_for_type
+    # returns False only after reading the abort Event, so a False from the
+    # SCP loop means the Event is set and the RCP loop could not have
+    # returned True with work still to do. Written this way the RCP loop is
+    # entered either way, which keeps the two blocks symmetrical.
+    completed = True
+
     scp_exist = all_check_results_exist("scps", account_info, config)
     if not scp_exist:
-        run_checks_for_type("scps", headroom_session, account_info, config, org_account_ids, org_id)
+        completed = run_checks_for_type(
+            "scps", headroom_session, account_info, config, org_account_ids, org_id, abort
+        ) and completed
 
     rcp_exist = all_check_results_exist("rcps", account_info, config)
     if not rcp_exist:
-        run_checks_for_type("rcps", headroom_session, account_info, config, org_account_ids, org_id)
+        completed = run_checks_for_type(
+            "rcps", headroom_session, account_info, config, org_account_ids, org_id, abort
+        ) and completed
+
+    if not completed:
+        logger.info(f"Checks aborted for account: {account_identifier}")
+        return
 
     logger.info(f"Checks completed for account: {account_identifier}")
+
+
+def _log_every_failure(
+    accounts_by_future: Dict[Future[None], AccountInfo]
+) -> None:
+    """
+    Report every account that failed, not only the one that propagated.
+
+    One exception reaches `main`; the rest are held by futures nobody asks
+    again. `concurrent.futures.Future` has no `__del__`, so unlike an asyncio
+    future it is collected without even an "exception was never retrieved"
+    warning -- the other failures leave no trace at all. An operator missing
+    the Headroom role in forty accounts is told about one, fixes it, re-runs,
+    and is told about the next.
+
+    Cancelled futures are skipped because `exception()` raises
+    `CancelledError` for them, and a cancelled account never ran anyway.
+
+    Unfinished ones are skipped because `exception()` would block, and that
+    branch is not dead. `__exit__` has normally joined every worker before
+    this runs, but a second Ctrl-C lands inside `shutdown(wait=True)` and
+    reaches the outer handler with workers still going. Waiting there to
+    collect their failures is the opposite of what an operator pressing
+    Ctrl-C twice is asking for.
+
+    Args:
+        accounts_by_future: Every future submitted, mapped to its account
+    """
+    for future, account_info in accounts_by_future.items():
+        if future.cancelled() or not future.done():
+            continue
+
+        error = future.exception()
+        if error is not None:
+            logger.error(
+                f"Checks failed for account {_get_account_identifier(account_info)}: {error!r}"
+            )
+
+
+def _log_the_accounts_that_never_ran(
+    accounts_by_future: Dict[Future[None], AccountInfo]
+) -> None:
+    """
+    Report how much of the organization the abort left unanalyzed.
+
+    Every other outcome announces itself: an account that finishes logs
+    `Checks completed`, one stopped at a checkpoint logs `Checks aborted`,
+    and one that failed is named by `_log_every_failure`. A cancelled account
+    is the exception -- it never ran, so it never logged, and
+    `_log_every_failure` skips it because it holds no exception to report.
+
+    Without this the operator saw `Analyzing 300 account(s)`, some
+    completions, the failures, and a traceback, and had to reach the number
+    that matters by subtraction. It is the number that decides whether the
+    results now on disk are worth generating policies from.
+
+    Counted from `Future.cancelled()`, which is true only for futures the
+    handler took off the queue before they started. Accounts already in
+    flight are not counted here: they logged their own abort.
+
+    Args:
+        accounts_by_future: Every future submitted, mapped to its account
+    """
+    cancelled = sum(1 for future in accounts_by_future if future.cancelled())
+
+    if not cancelled:
+        return
+
+    logger.error(
+        f"Aborting: {cancelled} account(s) were never analyzed. Results on disk "
+        "cover the rest, and a re-run resumes from them."
+    )
 
 
 def run_checks(
@@ -584,11 +769,12 @@ def run_checks(
     """
     Run security checks against all relevant accounts.
 
-    For each account:
-    1. Checks if results already exist and skips if they do
-    2. Assumes the Headroom role in that account
-    3. Runs all registered SCP/RCP checks
-    4. Writes results to headroom_results folder
+    Accounts whose results are all present are filtered out serially, then the
+    rest are analyzed by a `ThreadPoolExecutor` of `config.max_account_workers`
+    workers, one account per worker. For each account a worker:
+    1. Assumes the Headroom role in that account
+    2. Runs all registered SCP/RCP checks
+    3. Writes results to headroom_results folder
 
     Args:
         security_session: boto3 Session for security analysis account
@@ -602,22 +788,306 @@ def run_checks(
         ClientError: If assuming the Headroom role in an account fails
         RuntimeError: If a check's underlying AWS API calls fail
 
-    Error handling is deliberately absent: a failure aborts the entire run
-    rather than being logged and skipped. A partial run is more dangerous than no
-    run, because this output drives SCP and RCP deployment and an account skipped
-    for a transient error is indistinguishable in the results from an account
-    with zero violations, so swallowing the error could green-light a policy that
-    breaks it. Accounts that cannot or should not be analyzed are excluded
-    earlier, in `get_subaccount_information`: by lifecycle state, or by being
-    named in `config.skip_account_ids`.
+    Error handling is deliberately absent: the first failure aborts the entire
+    run rather than being logged and skipped. A partial run is more dangerous
+    than no run, because this output drives SCP and RCP deployment and an
+    account skipped for a transient error is indistinguishable in the results
+    from an account with zero violations, so swallowing the error could
+    green-light a policy that breaks it. Accounts that cannot or should not be
+    analyzed are excluded earlier, in `get_subaccount_information`: by lifecycle
+    state, or by being named in `config.skip_account_ids`.
+
+    Aborting takes two mechanisms because Python cannot kill a running thread.
+    `Future.cancel` clears the queue but does nothing to accounts already in
+    flight; the `abort` Event stops those at their next check boundary. Without
+    it, leaving this `with` block would block until every in-flight account had
+    run all its remaining checks.
+
+    Leaving the block joins the in-flight workers before the exception reaches
+    `main`, so no thread is still writing result files when the run gives up. A
+    check already inside `execute()` finishes and writes its file, which is
+    harmless: the file is complete and valid, and `results_exist` makes the run
+    resumable at per-account, per-check granularity.
+
+    "First" is first as `as_completed` reports it. That is true completion
+    order for every future still running when it is called, but the futures
+    already finished at that moment are collected into a set and yielded in
+    hash order. The window is empty in a real run -- the submit loop takes
+    milliseconds and the quickest failure is an AssumeRole round trip -- and
+    wide open in a test whose work returns instantly.
+
+    Which failure propagates therefore does not decide which failures the
+    operator is told about. `_log_every_failure` reports all of them, because
+    only one exception can reach `main` and the rest would otherwise vanish
+    silently: `Future` has no `__del__`, so nothing warns that they went
+    unretrieved.
+
+    An operator's Ctrl-C takes the same path. `shutdown(wait=True)` defaults to
+    `cancel_futures=False` and puts its sentinel at the back of the work queue,
+    so an interrupt that only propagated would still wait out every queued
+    account -- hours of it at one worker. Catching it here makes interrupting
+    as prompt as a failure: bounded by the one check each in-flight worker is
+    already inside.
+
+    Submission sits inside the same `try` because the submit loop can raise
+    too. `executor.submit` reaches `_adjust_thread_count`, whose
+    `Thread.start()` raises `RuntimeError("can't start new thread")` on a host
+    at its thread limit -- likeliest at `max_account_workers=32` -- and a
+    Ctrl-C can land there as readily as in `as_completed`. Submitting outside
+    the `try` would let either escape with `abort` unset and nothing
+    cancelled, and `__exit__` would then run every account already submitted
+    to completion: the drain this handler exists to prevent.
+    `accounts_by_future` is bound before the `with` so the handler always has
+    the partial map to cancel, whatever the submit loop got through.
+
+    The Event is what covers that window, not the cancel loop. CPython's
+    `submit` puts the work item on the queue and only then calls
+    `_adjust_thread_count`, so the item whose thread failed to start is
+    already queued while `submit` never returned its future: it is not in
+    `accounts_by_future` and nothing can cancel it. If a worker already
+    exists it picks the item up, finds the abort set, and returns at its
+    first checkpoint. If the failure came on the first submit there is no
+    worker to pick it up and the item is never run at all -- the same
+    outcome by a different route, since `shutdown` joins no threads and
+    leaves the queue where it lies.
     """
+    pending = []
     for account_info in relevant_account_infos:
         if _all_checks_complete(account_info, config):
             account_identifier = _get_account_identifier(account_info)
             logger.info(f"All results already exist for account {account_identifier}, skipping checks")
             continue
+        pending.append(account_info)
 
-        _run_checks_for_account(account_info, security_session, config, org_account_ids, org_id)
+    # The account count is what the pool is given. The worker count is not:
+    # the executor is built with the full `max_account_workers`, and this is
+    # the most threads it can go on to create, since ThreadPoolExecutor
+    # spawns on demand and never has more work queued than `pending`.
+    logger.info(
+        f"Analyzing {len(pending)} account(s) with "
+        f"{min(len(pending), config.max_account_workers)} worker(s)"
+    )
+
+    abort = threading.Event()
+    accounts_by_future: Dict[Future[None], AccountInfo] = {}
+
+    # The outer handler runs after `__exit__`, which is the whole point of it:
+    # `_log_every_failure` reads the other workers' exceptions, and those are
+    # not set until `shutdown(wait=True)` has joined them. Inside the block
+    # there is nothing yet to find.
+    try:
+        with ThreadPoolExecutor(max_workers=config.max_account_workers) as executor:
+            try:
+                # Recorded one at a time rather than built as a comprehension.
+                # A comprehension binds the mapping only once it finishes, so a
+                # `submit` that raises halfway would discard the partial result
+                # and leave the handler below with nothing to cancel.
+                for account_info in pending:
+                    accounts_by_future[
+                        executor.submit(
+                            _run_checks_for_account,
+                            account_info,
+                            security_session,
+                            config,
+                            org_account_ids,
+                            org_id,
+                            abort,
+                        )
+                    ] = account_info
+
+                for future in as_completed(accounts_by_future):
+                    error = future.exception()
+                    if error is not None:
+                        raise error
+            except BaseException:
+                # Broader than Exception deliberately, and not a swallow: it
+                # re-raises unconditionally. Its job is to run the abort on every
+                # abnormal exit, which is why it has to catch the two that are not
+                # Exceptions -- the KeyboardInterrupt of an operator's Ctrl-C and
+                # SystemExit. Narrowing it back to `except Exception` would let
+                # those reach `__exit__` uncaught, and `shutdown(wait=True)` would
+                # then run every queued account before the process gave up.
+                # `abort.set()` comes before the cancel loop so a second Ctrl-C
+                # landing inside that loop still finds the in-flight workers
+                # already headed for their next checkpoint.
+                abort.set()
+                for outstanding in accounts_by_future:
+                    outstanding.cancel()
+                raise
+    except BaseException:
+        # Broad for the same reason the inner handler is, and pinned by
+        # `test_a_keyboard_interrupt_still_reports_the_failures_already_collected`:
+        # an operator's Ctrl-C is the case where the report matters most, and
+        # `except Exception` would skip it, leaving a traceback that names one
+        # account out of however many failed.
+        _log_every_failure(accounts_by_future)
+        _log_the_accounts_that_never_ran(accounts_by_future)
+        raise
+
+
+# Both Linux and macOS cap a single path component at 255 bytes, and
+# `ResultFilePathResolver._build_filename` spends eighteen of them on the
+# longest suffix it adds: `_`, a twelve-digit account ID, and `.json`.
+MAX_FILENAME_COMPONENT_BYTES = 255
+RESULT_FILENAME_SUFFIX_BYTES = len("_111111111111.json")
+MAX_ACCOUNT_NAME_BYTES = MAX_FILENAME_COMPONENT_BYTES - RESULT_FILENAME_SUFFIX_BYTES
+
+
+def _unusable_as_a_filename_because(name: str) -> Optional[str]:
+    """
+    Report why a name cannot become a result filename, or None if it can.
+
+    The reason travels with the name because the failures are unrelated to
+    each other, and an operator reading one message about several accounts
+    needs to know which account hit which.
+
+    Args:
+        name: Account name that will be interpolated into a result filename
+
+    Returns:
+        A phrase completing "cannot be used because ...", or None if usable
+    """
+    if not name:
+        return "it is empty"
+    if "\x00" in name:
+        return "it holds a null byte"
+    if len(name.encode("utf-8")) > MAX_ACCOUNT_NAME_BYTES:
+        return (
+            f"it is too long: {MAX_ACCOUNT_NAME_BYTES} bytes is the most that "
+            "leaves room for the account ID and the extension"
+        )
+    if Path(name).name != name:
+        return "it reads as a path rather than a filename"
+    return None
+
+
+def _verify_account_names_are_filename_safe(account_infos: List[AccountInfo]) -> None:
+    """
+    Abort if an account's name would not survive becoming a result filename.
+
+    Both naming modes put the account name into the filename -- alone when
+    `exclude_account_ids` is set, and ahead of the account ID otherwise -- so
+    unlike the duplicate-name guard this one is not conditional on that
+    setting.
+
+    `ResultFilePathResolver` interpolates the name and hands the result to
+    `Path`, which reads a separator as structure rather than as text. Four
+    names go wrong, and the quiet one is the reason this runs before the scan
+    rather than being left to fail at write time:
+
+    - `Prod/US` becomes `check_dir/Prod/US.json`. With no such directory a
+      worker thread raises FileNotFoundError partway through the run. With
+      one, the write succeeds somewhere the reader does not look, and the
+      account is silently missing from the results policy generation reads.
+    - `../Prod` becomes `check_dir/../Prod.json`. The write succeeds, one
+      level up, over whatever was already there.
+    - A name holding a null byte reaches `open()`, which raises ValueError.
+    - A name past `MAX_ACCOUNT_NAME_BYTES` overruns the 255-byte component
+      limit, and `open()` raises OSError. Organizations caps a name at 50,
+      but `use_account_name_from_tags` reads it from a tag value, which runs
+      to 256.
+
+    An empty name is rejected too, though not for a filename reason: it
+    becomes `.json`, which `pathlib`'s glob matches perfectly well. It cannot
+    become a Terraform identifier, so `make_account_base_names` would abort
+    generation after the whole scan had run. Rejecting it here is the same
+    check, paid in seconds.
+
+    A leading dot is deliberately allowed. `pathlib.Path.glob` matches
+    dotfiles -- `glob.glob` is the one that skips them -- and neither reader
+    takes account identity from the filename, so `.Prod.json` is read back
+    like any other result.
+
+    Like the duplicate-name guard, the message names the offending names and
+    never the account IDs.
+
+    Args:
+        account_infos: Accounts about to be analyzed
+
+    Raises:
+        RuntimeError: If an account name is not usable as a filename
+    """
+    unsafe = sorted(
+        (account_info.name, reason)
+        for account_info in account_infos
+        if (reason := _unusable_as_a_filename_because(account_info.name))
+    )
+
+    if not unsafe:
+        return
+
+    listed = ", ".join(f"{name!r} ({reason})" for name, reason in unsafe)
+    raise RuntimeError(
+        f"These account names cannot be used as result filenames: {listed}. "
+        "The name is interpolated into the filename, so a path separator "
+        "reads as a directory and the account's results are written "
+        "somewhere policy generation does not look, while a null byte or an "
+        "over-long name fails the write outright. Rename the accounts, or "
+        "set use_account_name_from_tags and give them a tag that is a plain "
+        "filename."
+    )
+
+
+def _verify_no_duplicate_account_names(
+    config: HeadroomConfig,
+    account_infos: List[AccountInfo]
+) -> None:
+    """
+    Abort if two accounts would write to the same result file.
+
+    With `exclude_account_ids` set the filename is the account name alone --
+    `ResultFilePathResolver._build_filename` drops the only guaranteed-unique
+    component -- so two accounts sharing a name resolve to one path. Run with
+    a worker per account, that is two threads interleaving `json.dump` output
+    into one file: either corrupt JSON, or a valid file holding both accounts'
+    results spliced together, which then feeds policy generation.
+
+    Names are compared the way a filesystem compares them, by Unicode
+    canonical caseless matching -- `NFD(casefold(NFD(x)))`, D145. It folds
+    case and normal form together rather than in sequence, which is not the
+    same thing; "Account name validation" in `Headroom-Specification.md`
+    carries the worked example that rules out the cheaper orderings, and the
+    trade-off this makes on a filesystem that folds neither axis.
+
+    The message names the colliding spellings and how many accounts carry
+    them, never the account IDs -- printing those would defeat the setting
+    that created the collision.
+
+    Args:
+        config: Headroom configuration
+        account_infos: Accounts about to be analyzed
+
+    Raises:
+        RuntimeError: If `exclude_account_ids` is set and two accounts share a
+            name under canonical caseless matching
+    """
+    if not config.exclude_account_ids:
+        return
+
+    names_by_key: Dict[str, List[str]] = {}
+    for account_info in account_infos:
+        key = unicodedata.normalize(
+            "NFD", unicodedata.normalize("NFD", account_info.name).casefold()
+        )
+        names_by_key.setdefault(key, []).append(account_info.name)
+
+    collisions = sorted(key for key, names in names_by_key.items() if len(names) > 1)
+
+    if not collisions:
+        return
+
+    breakdown = ", ".join(
+        f"{', '.join(sorted(set(names_by_key[key])))} ({len(names_by_key[key])} accounts)"
+        for key in collisions
+    )
+    raise RuntimeError(
+        "exclude_account_ids is set, so result files are named by account name "
+        f"alone, but these names are not unique: {breakdown}. Every such account "
+        "would write to the same file, and because accounts are analyzed "
+        "concurrently the file would hold interleaved output from all of them. "
+        "Rename the accounts, or unset exclude_account_ids so the account ID "
+        "makes each filename unique."
+    )
 
 
 def perform_analysis(config: HeadroomConfig) -> None:
@@ -647,6 +1117,9 @@ def perform_analysis(config: HeadroomConfig) -> None:
 
     relevant_account_infos = get_relevant_subaccounts(account_infos)
     logger.info(f"Filtered to {len(relevant_account_infos)} relevant accounts for analysis")
+
+    _verify_account_names_are_filename_safe(relevant_account_infos)
+    _verify_no_duplicate_account_names(config, relevant_account_infos)
 
     run_checks(security_session, relevant_account_infos, config, org_account_ids, org_id)
     logger.info("Security analysis completed")

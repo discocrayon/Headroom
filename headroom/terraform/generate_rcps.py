@@ -19,8 +19,10 @@ from .models import (
     TerraformPlan,
 )
 from .utils import (
+    account_id_local_name,
+    claim_plan_path,
+    make_account_base_names,
     make_ou_base_names,
-    make_safe_variable_name,
     ou_id_local_name,
     ou_path_names,
     write_terraform_plan,
@@ -645,12 +647,15 @@ def _render_account_rcp_terraform(
     if not account_info:
         raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
 
-    account_name = make_safe_variable_name(account_info.account_name)
+    # Every reference to an account is built from this one identifier, and two
+    # accounts whose names fold to it abort here rather than overwrite each
+    # other in the plan.
+    account_name = make_account_base_names(organization_hierarchy.accounts)[account_id]
     filepath = output_path / f"{account_name}_rcps.tf"
 
     terraform_content = _build_rcp_terraform_module(
         module_name=f"rcps_{account_name}",
-        target_id_reference=f"local.{account_name}_account_id",
+        target_id_reference=f"local.{account_id_local_name(account_name)}",
         recommendations=recs,
         comment=account_info.account_name
     )
@@ -799,19 +804,19 @@ def _render_rcp_terraform_plan(
 
     if root_recommendations:
         filepath, content = _render_root_rcp_terraform(root_recommendations, output_path)
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, "the organization root")
 
     for account_id, recs in account_recommendations.items():
         filepath, content = _render_account_rcp_terraform(
             account_id, recs, organization_hierarchy, output_path
         )
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, f"account {organization_hierarchy.accounts[account_id].account_name!r}")
 
     for ou_id, recs in ou_recommendations.items():
         filepath, content = _render_ou_rcp_terraform(
             ou_id, recs, organization_hierarchy, output_path
         )
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, f"OU {organization_hierarchy.organizational_units[ou_id].name!r}")
 
     return plan
 

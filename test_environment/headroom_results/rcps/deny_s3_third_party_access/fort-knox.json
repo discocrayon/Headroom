@@ -13,8 +13,8 @@
   },
   "buckets_third_parties_can_access": [
     {
-      "bucket_name": "headroom-test-wildcard-093113290897",
-      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-093113290897",
+      "bucket_name": "headroom-test-wildcard-999900003333",
+      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-999900003333",
       "third_party_account_ids": [],
       "has_wildcard_principal": true,
       "has_non_account_principals": false,
@@ -23,8 +23,8 @@
   ],
   "buckets_with_wildcards": [
     {
-      "bucket_name": "headroom-test-wildcard-093113290897",
-      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-093113290897",
+      "bucket_name": "headroom-test-wildcard-999900003333",
+      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-999900003333",
       "third_party_account_ids": [],
       "has_wildcard_principal": true,
       "has_non_account_principals": false,

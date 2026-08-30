@@ -20,7 +20,7 @@ from mypy_boto3_kms.type_defs import KeyListEntryTypeDef
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..types import JsonDict
-from .helpers import get_all_regions, paginate
+from .helpers import get_all_regions, memoize_per_session, paginate
 from .policy_documents import (
     ServicePrincipalSource,
     has_actionable_service_principal_source,
@@ -494,6 +494,7 @@ def _analyze_key_in_region(
     )
 
 
+@memoize_per_session
 def analyze_kms_key_policies(
     session: Session,
     org_account_ids: Set[str],
@@ -543,7 +544,7 @@ def analyze_kms_key_policies(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing KMS keys in {region}")
+        logger.debug(f"Analyzing KMS keys in {region}")
         kms_client: KMSClient = session.client("kms", region_name=region)
 
         try:

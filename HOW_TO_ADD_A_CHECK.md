@@ -769,6 +769,16 @@ from .helpers import get_all_regions
 regions = get_all_regions(session)
 ```
 
+If your check reads a resource type another check already reads, call that
+check's analyzer rather than writing a second sweep, and decorate the analyzer
+with `memoize_per_session` from `aws/helpers.py` if it does not carry it yet.
+An account's session belongs to one worker, so the second caller is served
+from memory and pays nothing. Without it a shared analyzer that sweeps regions
+costs the account a full extra sweep -- the mistake `deny_service_confused_deputy`
+made for six analyzers, and the one
+`tests/performance/test_call_counts.py::TestCallCounts::test_the_shared_analyzers_read_an_account_once_for_both_callers`
+now pins.
+
 ### AP-007: Hardcoded Patterns
 
 ```python
@@ -1436,8 +1446,11 @@ test_data_standards:
     secondary: "222222222222"
     tertiary: "333333333333"
     beyond_ten: ["111122223333", "444455556666", "000011112222"]
+    third_party: "9999BBBBCCCC"  # Out-of-organization accounts: 999900001111, 999911110000, ...
+    third_party_reason: "The org-vs-third-party distinction is what the RCP checks turn on, so it should be visible in the fixture"
     never_use: "123456789012"  # Old AWS convention
     never_use_style: "Sequential runs such as 234567890123 or 987654321098"
+    never_use_real: "A vendor's published account ID is still a real one. The single exception in this repository is Canonical's Ubuntu image owner in test_environment/test_deny_ec2_ami_owner/data.tf, where the lookup is live and a fake resolves to no AMI."
 
   fake_resource_ids:
     rule: "Real prefix, real length, body is one repeated digit"
@@ -1448,7 +1461,10 @@ test_data_standards:
     organizations_ou: "ou-1111-11111111"                     # ou-<root>-<suffix>
     organizations_org: "o-11111111111"
     iam_access_key: "AKIAIOSFODNN7EXAMPLE"                   # AWS's own example key
+    ipv4_address: "111.111.111.111"                          # every octet one repeated digit
+    ipv4_second: "222.222.222.222"                           # when a test needs a second host
     never_use: "AWS doc-style bodies such as i-1234567890abcdef0 or ami-0abcdef1234567890"
+    never_use_ip: "52.x and 54.x above all, which are live AWS EC2 ranges and read as a real instance's public IP"
     reason: "A plausible-looking body cannot be told from a real one on review"
 
   resource_naming:

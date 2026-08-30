@@ -463,6 +463,45 @@ def test_render_account_scp_terraform_names_the_file_for_the_account() -> None:
     assert "deny_iam_saml_provider_not_aws_sso = false" in content
 
 
+def test_render_account_scp_terraform_rejects_a_folded_name_collision() -> None:
+    """
+    Two account names that fold alike abort rather than overwrite.
+
+    The plan is a dict keyed on the path, so without this the second account's
+    file silently replaces the first's while the plan is still being built --
+    render-before-mutate never sees a conflict, and one account ships with no
+    SCPs at all.
+
+    Only one of the two accounts is being rendered here. The guard has to read
+    the whole hierarchy, because the account it collides with may be one this
+    run was never asked to generate for.
+    """
+    org = OrganizationHierarchy(
+        root_id="r-root",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="Prod-US",
+                parent_ou_id="ou-test",
+                ou_path=["r-root", "ou-test"]
+            ),
+            "222222222222": AccountOrgPlacement(
+                account_id="222222222222",
+                account_name="Prod US",
+                parent_ou_id="ou-test",
+                ou_path=["r-root", "ou-test"]
+            ),
+        }
+    )
+    rec = make_rec(level="account", affected_accounts=["111111111111"])
+
+    with pytest.raises(RuntimeError, match="prod_us"):
+        _render_account_scp_terraform(
+            "111111111111", [rec], org, Path("/nonexistent")
+        )
+
+
 def test_render_account_scp_terraform_raises_error_for_missing_account() -> None:
     org = make_org_empty()
     rec = make_rec(level="account", affected_accounts=["999999999999"])
@@ -572,6 +611,39 @@ def test_plan_omits_root_when_nothing_is_placed_there(tmp_path: Path) -> None:
 
     assert set(plan) == {tmp_path / "test_ou_ou_scps.tf"}
     assert not (tmp_path / "root_scps.tf").exists()
+
+
+def test_an_account_named_root_does_not_take_the_root_policy_file(tmp_path: Path) -> None:
+    """
+    'Root' reduces to `root`, which is already the root policy file's name.
+
+    make_account_base_names keeps accounts apart from each other, and
+    make_ou_base_names keeps OUs apart from each other and from `root`.
+    Neither sees this one: the account namespace and the fixed root filename
+    only meet at the path, which is where claim_plan_path compares them.
+
+    Left unguarded the root policy silently becomes the account's, or the
+    account's becomes the root policy, depending on which is rendered second.
+    """
+    org = OrganizationHierarchy(
+        root_id="r-root",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="Root",
+                parent_ou_id=None,
+                ou_path=["r-root"]
+            )
+        }
+    )
+    recommendations = [
+        make_rec(level="root"),
+        make_rec(level="account", affected_accounts=["111111111111"]),
+    ]
+
+    with pytest.raises(RuntimeError, match="root_scps.tf"):
+        generate_scp_terraform(recommendations, org, str(tmp_path))
 
 
 def test_generate_scp_terraform_returns_what_it_wrote(tmp_path: Path) -> None:

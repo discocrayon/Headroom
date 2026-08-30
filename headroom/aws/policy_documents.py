@@ -298,7 +298,7 @@ def _names_this_organization(scope: str, org_id: str) -> bool:
     both keys reduce to the same comparison.
 
     The comparison is exact, with no wildcard expansion. A trailing
-    wildcard on our own ID, `o-example12345*`, matches this organization
+    wildcard on our own ID, `o-11111111111*`, matches this organization
     and every organization whose ID extends that prefix, so reading it as
     ours would deploy the statement against sources it does not cover.
     Treating it as foreign withholds the statement instead, which

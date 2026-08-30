@@ -58,7 +58,7 @@ class TestCheckDenyEc2ImdsHopLimit:
             [
                 DenyEc2ImdsHopLimit(
                     region="us-east-1",
-                    instance_id="i-1111111111111111",
+                    instance_id="i-11111111111111111",
                     hop_limit=2,
                     imds_enabled=True,
                 )
@@ -67,7 +67,7 @@ class TestCheckDenyEc2ImdsHopLimit:
         )
 
         assert len(results_data["violations"]) == 1
-        assert results_data["violations"][0]["instance_id"] == "i-1111111111111111"
+        assert results_data["violations"][0]["instance_id"] == "i-11111111111111111"
         assert results_data["violations"][0]["hop_limit"] == 2
         assert len(results_data["compliant_instances"]) == 0
 
@@ -77,7 +77,7 @@ class TestCheckDenyEc2ImdsHopLimit:
             [
                 DenyEc2ImdsHopLimit(
                     region="us-east-1",
-                    instance_id="i-2222222222222222",
+                    instance_id="i-22222222222222222",
                     hop_limit=1,
                     imds_enabled=True,
                 )
@@ -111,7 +111,7 @@ class TestCheckDenyEc2ImdsHopLimit:
             [
                 DenyEc2ImdsHopLimit(
                     region="us-west-2",
-                    instance_id="i-3333333333333333",
+                    instance_id="i-33333333333333333",
                     hop_limit=3,
                     imds_enabled=False,
                 )

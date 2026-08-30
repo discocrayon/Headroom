@@ -38,7 +38,7 @@ headroom/
 │   ├── ec2.py     # EC2 analysis functions
 │   ├── ecr.py     # ECR repository policy analysis
 │   ├── eks.py     # EKS analysis functions
-│   ├── helpers.py # Shared AWS helpers (region enumeration, pagination)
+│   ├── helpers.py # Shared AWS helpers (region enumeration, per-session memo, pagination)
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
 │   │   ├── saml_providers.py  # IAM SAML provider analysis
@@ -87,6 +87,7 @@ headroom/
 ├── config.py      # Configuration models (HeadroomConfig, AccountTagLayout)
 ├── constants.py   # Shared constants
 ├── enums.py       # CheckType, PlacementLevel and other shared enums
+├── log_context.py # Stamps every log record with the account its thread is analyzing
 ├── main.py        # Application entry point
 ├── output.py      # Centralized output handling
 ├── parse_results.py  # Results processing and recommendations
@@ -122,7 +123,7 @@ sequenceDiagram
     Mgmt-->>Tool: OU Hierarchy
     Note over Tool: Skip accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)
 
-    Note over Tool: Step 2: Analyze Each Account
+    Note over Tool: Step 2: Analyze accounts<br/>(max_account_workers at a time, default 16)
     Tool->>Prod1: AssumeRole(Headroom)
     Prod1-->>Tool: Session Credentials
     Tool->>Prod1: describe_instances() [all regions]
@@ -142,6 +143,87 @@ sequenceDiagram
     Tool->>Tool: Generate Terraform SCPs
     Tool->>Tool: Generate Org Data Sources
 ```
+
+## Concurrency model
+
+One worker per account, from a single `ThreadPoolExecutor` sized by
+`max_account_workers`. There is no region-level, check-level, or resource-level threading:
+at 50-300 accounts the account pool already saturates the available network capacity, so a
+second axis would multiply in-flight requests and throttling risk without going faster.
+
+Within an account everything stays serial, which means each account's boto3 session is
+touched by exactly one thread. Three caches rely on that: the region list, the projected
+EC2 instance list, and the six resource-policy analyses shared between a third-party-access
+check and `deny_service_confused_deputy`. All are memoized in `WeakKeyDictionary` instances
+keyed on the session object, so entries are released when a worker finishes and nothing
+accumulates across a long run. Keying on the session rather than on an account ID is what
+keeps one account's data out of another's results.
+
+That premise -- one session per account, on one thread -- is asserted rather than assumed.
+`test_the_real_registry_runs_every_check_per_account_across_workers` runs the whole check
+registry with four workers and reads back, for every check of every account, which session
+it was handed and which thread it ran on. Nothing checks it at runtime, and a
+thread-identity check on the memo would not: the pool reuses its worker threads across
+accounts, so two accounts sharing one session can be two accounts on one thread.
+
+The third cache exists because `deny_service_confused_deputy` shares six analyzers with
+the resource-specific checks: ECR, KMS, S3, Secrets Manager, SQS, and IAM role trust
+policies. Which of a pair reads AWS and which is served from memory is registry order, not
+design -- it runs fourteenth of sixteen, so the first four are cached by the time it asks
+and it reads SQS and IAM role trust policies first. Four of those six sweep every enabled
+region, so without the memo each account paid four extra region sweeps -- the same waste as
+the four identical EC2 sweeps, arriving by a different route. `memoize_per_session` in `aws/helpers.py` carries it, and refuses a second
+call for one session that passes different organization arguments rather than serving the
+first call's answer to a different question.
+
+The one genuinely shared object is the security-analysis session, which every worker uses
+to assume its target role. Client construction on that session is serialized by a lock in
+`aws/sessions.py`; the `AssumeRole` round trip is not, so workers still overlap. The lock is
+there because boto3 documents a `Session` as unsafe to share between threads, not because a
+particular unguarded mutation was found -- botocore guards the obvious ones itself.
+
+Because accounts interleave in the output, `log_context.py` stamps every record with the
+account its thread is working on and every line carries it in brackets. Most log calls under
+`headroom/aws/` name only a region or a resource, which is ambiguous the moment two accounts
+are in flight; the filter is installed on the root handler rather than on a logger, because
+a logger's filters do not see records propagated up from child loggers. Work outside a
+worker is stamped `-`.
+
+Two properties of account names are checked before any account is scanned, because both fail
+in ways a full run would only reveal at the end. A name that cannot be a filename -- one
+containing a path separator, holding a null byte, or too long for the 255-byte component
+limit -- would send an account's results outside the directory policy generation reads, or
+fail the write partway through. And with
+`exclude_account_ids` set, the name alone is the filename, so two accounts sharing one would
+interleave their JSON into a single file; names are compared the way a case-insensitive,
+normalization-folding filesystem compares them. Both aborts name the offending names and
+never the account IDs.
+
+Failure aborts the run. The first worker exception sets an abort `Event` that in-flight
+workers check at each check boundary, cancels the queued accounts, joins the workers, and
+re-raises. Setting before cancelling is deliberate: an account that starts in the window
+between the two finds the Event already set and returns without assuming a role.
+Because Python cannot kill a running thread, the Event is what makes the abort prompt.
+
+Only one exception can reach `main`, and a `Future` holding any of the others is collected
+without a warning -- unlike an asyncio future, it has no `__del__`. Every failure is
+therefore logged by name once the workers are joined, so an operator missing the Headroom
+role in forty accounts learns that in one run rather than in forty. The sweep runs outside
+the `with` block on purpose: inside it, `__exit__` has not joined the workers yet and the
+other futures hold nothing to find. A cancelled account is the one outcome that logs nothing
+of its own -- it never ran, and it holds no exception to report -- so a final line counts
+them, which is the number that says how much of the organization the results on disk cover.
+
+The checkpoint a worker polls sits below the results-already-on-disk skip, never above it.
+A check already on disk is work the account does not owe, so an abort that lands with only
+such checks left has stopped nothing; reading the Event first labels a complete account
+aborted and sends the operator to a re-run that answers "All results already exist".
+
+An operator's Ctrl-C takes the same path. `shutdown(wait=True)` defaults to
+`cancel_futures=False` and puts its sentinel at the back of the work queue, so an interrupt
+that only propagated would still wait out every queued account -- hours of it at one worker.
+Catching it makes interrupting as prompt as a failure: bounded by the one check each
+in-flight worker is already inside.
 
 ## Key Architectural Points
 

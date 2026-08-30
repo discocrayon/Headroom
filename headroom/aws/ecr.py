@@ -22,7 +22,7 @@ from mypy_boto3_ecr.type_defs import RepositoryTypeDef
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..types import JsonDict
-from .helpers import get_all_regions, paginate
+from .helpers import get_all_regions, memoize_per_session, paginate
 from .policy_documents import (
     ServicePrincipalSource,
     has_actionable_service_principal_source,
@@ -415,6 +415,7 @@ def _analyze_registry_policy(
     )
 
 
+@memoize_per_session
 def analyze_ecr_policies(
     session: Session,
     org_account_ids: Set[str],
@@ -461,7 +462,7 @@ def analyze_ecr_policies(
     regions = get_all_regions(session)
 
     for region in regions:
-        logger.info(f"Analyzing ECR policies in {region}")
+        logger.debug(f"Analyzing ECR policies in {region}")
         ecr_client: ECRClient = session.client("ecr", region_name=region)
 
         try:

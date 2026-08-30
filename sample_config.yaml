@@ -23,3 +23,7 @@ account_tag_layout:
   environment: 'Environment'  # Falls back to "unknown" if tag is missing
   name: 'Name'                # Used when use_account_name_from_tags is true; falls back to account ID if missing
   owner: 'Owner'              # Falls back to "unknown" if tag is missing
+
+# Accounts to analyze at once. Default 16, maximum 32. Set to 1 for serial.
+# Each worker costs roughly 43 MB. See documentation/SETUP.md.
+# max_account_workers: 16

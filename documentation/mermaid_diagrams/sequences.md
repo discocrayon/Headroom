@@ -65,7 +65,7 @@ sequenceDiagram
   Analysis->>Orgs: list_accounts + list_tags_for_resource
   Orgs-->>Analysis: accounts with tags
   Analysis->>Analysis: get_relevant_subaccounts()
-  loop for each account
+  loop for each account (concurrently, max_account_workers at a time)
     Analysis->>Analysis: all_check_results_exist("scps", account_info)
     Analysis->>Analysis: all_check_results_exist("rcps", account_info)
     opt if any results don't exist

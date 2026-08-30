@@ -2,7 +2,12 @@ import pytest
 from typing import cast
 import argparse
 from pydantic import ValidationError
-from headroom.config import HeadroomConfig, AccountTagLayout
+from headroom.config import (
+    DEFAULT_ACCOUNT_WORKERS,
+    MAX_ACCOUNT_WORKERS,
+    AccountTagLayout,
+    HeadroomConfig,
+)
 from headroom.usage import merge_configs
 
 
@@ -59,6 +64,22 @@ class TestAccountTagLayout:
         assert layout.environment == "Env-123_Test"
         assert layout.name == "Name@#$%"
         assert layout.owner == "Owner & Co."
+
+    def test_an_unrecognized_tag_key_aborts(self) -> None:
+        """
+        A fourth tag key must abort rather than be quietly dropped.
+
+        Headroom reads exactly these three tags. Listing a fourth expresses an
+        intent it cannot honour, and ignoring it means the operator's tag is
+        never read and nothing says why.
+        """
+        with pytest.raises(ValidationError, match="cost_center"):
+            AccountTagLayout(**{
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner",
+                "cost_center": "CostCenter",
+            })
 
 
 class TestHeadroomConfig:
@@ -334,3 +355,78 @@ class TestHeadroomConfig:
 
         merged = merge_configs(yaml_cfg, cli_args)
         assert merged.exclude_account_ids is True
+
+    def test_a_misspelled_yaml_key_aborts_rather_than_reverting_to_default(self) -> None:
+        """
+        An unknown key must abort, not silently fall back to the default.
+
+        pydantic ignores unknown fields unless told otherwise, so a config
+        naming `max_account_worker` -- the trailing s dropped -- ran sixteen
+        workers and said nothing about it. `sample_config.yaml` ships that key
+        commented out, so typing it is the only way to set it at all, and 1,
+        the serial-debugging value, is the setting whose silent loss is
+        hardest to notice: the run still works, just concurrently.
+
+        This goes through merge_configs because that is the path a YAML key
+        takes. CLI arguments cannot reach here misspelled -- merge_configs
+        filters them against model_fields first, and argparse rejects an
+        unknown flag before that.
+        """
+        yaml_cfg = {
+            "use_account_name_from_tags": False,
+            "account_tag_layout": {
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner",
+            },
+            "max_account_worker": 1,
+        }
+
+        cli_args = argparse.Namespace(config="dummy.yaml")
+
+        with pytest.raises(ValidationError, match="max_account_worker"):
+            merge_configs(yaml_cfg, cli_args)
+
+    def test_max_account_workers_defaults_to_sixteen(self) -> None:
+        """The default lives in config.py and nowhere else."""
+        config = HeadroomConfig(
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Env", name="NameTag", owner="OwnerTag"
+            ),
+        )
+
+        assert config.max_account_workers == DEFAULT_ACCOUNT_WORKERS == 16
+
+    def test_max_account_workers_rejects_zero(self) -> None:
+        """Zero workers would analyze nothing while appearing to succeed."""
+        with pytest.raises(ValidationError):
+            HeadroomConfig(
+                use_account_name_from_tags=False,
+                account_tag_layout=AccountTagLayout(
+                    environment="Env", name="NameTag", owner="OwnerTag"
+                ),
+                max_account_workers=0,
+            )
+
+    def test_max_account_workers_rejects_above_the_cap(self) -> None:
+        """
+        Past the cap resident memory exceeds 1.5 GB. Memory is the only
+        constraint here.
+
+        The cap is asserted as a literal, and 33 is a literal too. Written as
+        `MAX_ACCOUNT_WORKERS + 1` this passed for every value of the constant,
+        including 512 -- verified -- while `sample_config.yaml`, `SETUP.md`
+        and `ARCHITECTURE.md` all state 32 in prose that no test reads.
+        Raising the cap has to fail here so those three get revisited.
+        """
+        assert MAX_ACCOUNT_WORKERS == 32
+
+        with pytest.raises(ValidationError):
+            HeadroomConfig(
+                use_account_name_from_tags=False,
+                account_tag_layout=AccountTagLayout(
+                    environment="Env", name="NameTag", owner="OwnerTag"
+                ),
+                max_account_workers=33,
+            )

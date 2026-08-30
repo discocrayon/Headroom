@@ -24,6 +24,7 @@ Do not overengineer, for example, making new types with one attribute, or a new 
 Do not use the type of Any, if you change the existing code to Any, you are making it worse.
 Never commit without asking me first.
 Do not commit without asking me first.
+Never commit a design or plan document. design-docs/, docs/superpowers/ and .superpowers/ are git-ignored scratch; anything durable belongs in Headroom-Specification.md or documentation/, and nothing committed may cite a path they hold.
 Be specific. Do not say, for example, "and other formats" list the formats explictly instead.
 Always import at the top of the file.
 Never use dynamic imports, apart from the check discovery exception above
@@ -34,3 +35,4 @@ FAIL FAST: Do not add "else: return set()" or "else: return []" branches after t
 FAIL FAST: Never add fallback branches like "return set()", "return []", or "return None" after checking expected types. Let Python raise TypeError/AttributeError naturally.
 Never put a real AWS identifier in code, tests, docs, or commit messages. Rewrite every account ID, instance ID, AMI ID, ARN, KMS key ID, and Organizations root/OU/org ID to an obviously fake placeholder: real prefix, real length, body of one repeated digit, like 111111111111, i-11111111111111111, and ami-11111111111111111. See test_data_standards in HOW_TO_ADD_A_CHECK.md.
 An identifier that arrives from a bug report, error message, console screenshot, or API response is a real identifier. Replace it before it enters the repo, including in the commit message.
+Never put a real IP address in code, tests, or docs. Every octet is one repeated digit: 111.111.111.111, or 222.222.222.222 when a test needs a second host. Never 52.x or 54.x, which are live AWS EC2 ranges and read as a real instance's public IP.

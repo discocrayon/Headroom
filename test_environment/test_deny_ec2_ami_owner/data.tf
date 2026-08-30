@@ -69,6 +69,12 @@ data "aws_ami" "amazon_linux_2023" {
 }
 
 # Get Ubuntu AMI from AWS Marketplace (canonical account)
+#
+# The one real AWS account ID in this repository, and deliberately so:
+# 099720109477 is Canonical's published Ubuntu image owner, and this is a
+# live lookup rather than an illustration -- a fake ID here resolves to no
+# AMI and the plan fails. It is Canonical's, published by them, and names
+# nothing about the account running Headroom.
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]

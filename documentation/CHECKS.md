@@ -133,7 +133,7 @@ instances, so there is nothing else to grant and no IAM call to make.
 ```json
 {
   "region": "us-east-1",
-  "instance_id": "i-1234567890abcdef0",
+  "instance_id": "i-11111111111111111",
   "imdsv1_allowed": true,
   "exemption_tag_present": false
 }
@@ -176,7 +176,7 @@ Containers compound it: they add a network hop, so workloads on ECS, EKS, or pla
 **Example Violation**:
 ```json
 {
-  "instance_id": "i-0123456789abcdef0",
+  "instance_id": "i-22222222222222222",
   "region": "us-east-1",
   "hop_limit": 2,
   "imds_enabled": true
@@ -391,9 +391,9 @@ fact about the account.
 **Example Output**:
 ```json
 {
-  "instance_id": "i-1234567890abcdef0",
+  "instance_id": "i-11111111111111111",
   "region": "us-east-1",
-  "ami_id": "ami-0123456789abcdef0",
+  "ami_id": "ami-22222222222222222",
   "ami_owner": "amazon",
   "ami_name": "amzn2-ami-hvm-2.0.20231218.0-x86_64-gp2",
   "owner_unknown_reason": null
@@ -436,11 +436,11 @@ fact about the account.
 **Example Violation**:
 ```json
 {
-  "instance_id": "i-0987654321fedcba0",
+  "instance_id": "i-22222222222222222",
   "region": "us-west-2",
-  "public_ip_address": "54.123.45.67",
+  "public_ip_address": "111.111.111.111",
   "has_public_ip": true,
-  "instance_arn": "arn:aws:ec2:us-west-2:111111111111:instance/i-0987654321fedcba0"
+  "instance_arn": "arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
 }
 ```
 
@@ -832,8 +832,8 @@ Encryption context constraints are recorded as a boolean rather than parsed, so 
 **Example Output**:
 ```json
 {
-  "key_id": "1234abcd-12ab-34cd-56ef-1234567890ab",
-  "key_arn": "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+  "key_id": "11111111-1111-1111-1111-111111111111",
+  "key_arn": "arn:aws:kms:us-east-1:111111111111:key/11111111-1111-1111-1111-111111111111",
   "region": "us-east-1",
   "third_party_account_ids": ["999999999999"],
   "actions_by_account": {
@@ -978,7 +978,7 @@ Nothing narrowed that exemption back down. An account outside the organization t
 
 Trust policies matter here as much as resource policies. A role that trusts a service principal with no source guard is the canonical confused-deputy vulnerability, and `sts:AssumeRole` is in the statement's action list.
 
-**API cost**: recording the new field costs the other six checks nothing, but this check is not free. Nothing caches an analysis between checks, so registering it issues every RCP read API a second time per account per run - repository, key, bucket, secret, queue and role listings and their policies. Registration alone triggers that second pass; the `deny_service_confused_deputy` Terraform flag gates the rendered statement, not the scan. Caching is deliberately not implemented and is a separate optimization if the duplication proves material, so budget quota and runtime for the RCP pass at double.
+**API cost**: recording the new field costs the other six checks nothing, and registering this check costs no extra API traffic either. `memoize_per_session` caches the six shared analyses against the session, so whichever check of a pair runs second - repository, key, bucket, secret, queue and role listings and their policies - is served from memory. Registry order decides which one pays. The `deny_service_confused_deputy` Terraform flag gates the rendered statement, not the scan.
 
 **Detection**:
 - Out-of-organization accounts pinned by `aws:SourceAccount` or `aws:SourceArn` on a service-principal grant, which become the statement's `aws:SourceAccount` allowlist
@@ -1021,7 +1021,7 @@ Closing exactly that path is what `DenyServiceConfusedDeputy` is for - unguarded
 2. Deploy to a test OU with the discovered allowlist and watch for denials before going organization-wide.
 3. Rolling back is setting `deny_service_confused_deputy` to `false` for the affected target, which removes this statement and leaves the other six in place.
 
-**An organization-scoped guard**: `aws:SourceOrgID` names an organization directly and `aws:SourceOrgPaths` carries it as the first element of a path such as `o-example12345/r-ab12/ou-ab12-11111111/`, so both reduce to the same comparison against this organization's own ID. That ID comes from `organizations:DescribeOrganization`, called once per run on the management account session Headroom already holds; the deployed statement resolves the same value through `data.aws_organizations_organization.current.id`, so discovery and deployment now agree. A scope naming this organization is a perfect guard - the statement already exempts it, so the resource needs no allowlist entry and files no violation. A scope naming any other organization is a violation, because the allowlist holds account IDs and another organization's accounts are not knowable from here. The comparison is exact: `o-example12345*` also matches every organization whose ID extends that prefix, so it falls to the violation side rather than being read as ours.
+**An organization-scoped guard**: `aws:SourceOrgID` names an organization directly and `aws:SourceOrgPaths` carries it as the first element of a path such as `o-11111111111/r-1111/ou-1111-11111111/`, so both reduce to the same comparison against this organization's own ID. That ID comes from `organizations:DescribeOrganization`, called once per run on the management account session Headroom already holds; the deployed statement resolves the same value through `data.aws_organizations_organization.current.id`, so discovery and deployment now agree. A scope naming this organization is a perfect guard - the statement already exempts it, so the resource needs no allowlist entry and files no violation. A scope naming any other organization is a violation, because the allowlist holds account IDs and another organization's accounts are not knowable from here. The comparison is exact: `o-11111111111*` also matches every organization whose ID extends that prefix, so it falls to the violation side rather than being read as ours.
 
 **A guard that cannot be read**: A source guard the parser cannot read is recorded as a violation rather than dropped, so the statement is withheld from that account and an allowlist nobody could compute is never deployed as if it were complete. Two constructs reach this: a source key under an unrecognized operator, because a negated operator excludes rather than permits; and an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard.
 

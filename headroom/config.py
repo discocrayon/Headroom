@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # Centralized defaults for directories
@@ -7,14 +7,36 @@ DEFAULT_RESULTS_DIR = "test_environment/headroom_results"
 DEFAULT_SCPS_DIR = "test_environment/scps"
 DEFAULT_RCPS_DIR = "test_environment/rcps"
 
+# Accounts analyzed concurrently. Memory sets this, not the GIL: each worker
+# holds its own botocore session carrying its own parsed service models, which
+# measures at roughly 43 MB. Sixteen workers stay under a gigabyte.
+DEFAULT_ACCOUNT_WORKERS = 16
+
+# Upper bound on max_account_workers. Each worker costs roughly 43 MB of
+# sessions and parsed service models on top of a ~130 MB base, so 32 puts
+# resident memory just over 1.5 GB; wanting more is a signal to revisit the
+# design rather than raise this. SETUP.md tabulates the three settings.
+MAX_ACCOUNT_WORKERS = 32
+
 
 class AccountTagLayout(BaseModel):
+    # These are the only tags Headroom reads. A fourth key here is an intent
+    # it cannot honour, so it aborts rather than dropping it silently.
+    model_config = ConfigDict(extra="forbid")
+
     environment: str
     name: str
     owner: str
 
 
 class HeadroomConfig(BaseModel):
+    # An unknown key aborts rather than being ignored. pydantic's default is
+    # to drop it, which turned a misspelled `max_account_workers` into a
+    # silent fall back to the default -- the run still works, just not the
+    # way the operator asked. Nothing here is optional enough to be worth
+    # guessing at, so a key Headroom does not recognize is an error.
+    model_config = ConfigDict(extra="forbid")
+
     management_account_id: Optional[str] = None
     security_analysis_account_id: Optional[str] = None
     # Exclude account IDs from result files and filenames
@@ -38,3 +60,11 @@ class HeadroomConfig(BaseModel):
     scps_dir: str = DEFAULT_SCPS_DIR
     # Base directory where Terraform RCP files are generated
     rcps_dir: str = DEFAULT_RCPS_DIR
+    # Accounts analyzed concurrently. 1 runs them serially, on the same code
+    # path, which is the escape hatch for debugging. See SETUP.md for the
+    # memory cost per worker.
+    max_account_workers: int = Field(
+        default=DEFAULT_ACCOUNT_WORKERS,
+        ge=1,
+        le=MAX_ACCOUNT_WORKERS,
+    )

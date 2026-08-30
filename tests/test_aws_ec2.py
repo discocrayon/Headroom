@@ -4,7 +4,9 @@ Tests for headroom.aws.ec2 module.
 Tests for DenyEc2ImdsV1 dataclass and get_ec2_imds_v1_analysis function.
 """
 
+import gc
 import logging
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 from unittest.mock import MagicMock
@@ -16,10 +18,13 @@ from headroom.aws.ec2 import (
     DenyEc2AmiOwner,
     DenyEc2ImdsHopLimit,
     DenyEc2PublicIp,
+    Ec2Instance,
+    _INSTANCE_MEMO,
     get_ec2_imds_v1_analysis,
     get_ec2_ami_owner_analysis,
     get_ec2_imds_hop_limit_analysis,
-    get_ec2_public_ip_analysis
+    get_ec2_public_ip_analysis,
+    get_instances,
 )
 
 
@@ -30,26 +35,26 @@ class TestDenyEc2ImdsV1:
         """Test creating DenyEc2ImdsV1 with valid data."""
         result = DenyEc2ImdsV1(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             imdsv1_allowed=True,
             exemption_tag_present=False,
         )
 
         assert result.region == "us-east-1"
-        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.instance_id == "i-11111111111111111"
         assert result.imdsv1_allowed is True
 
     def test_deny_ec2_imds_v1_imdsv2_enforced(self) -> None:
         """Test DenyEc2ImdsV1 with IMDSv2 enforced."""
         result = DenyEc2ImdsV1(
             region="eu-west-1",
-            instance_id="i-abcdef1234567890",
+            instance_id="i-33333333333333333",
             imdsv1_allowed=False,
             exemption_tag_present=False,
         )
 
         assert result.region == "eu-west-1"
-        assert result.instance_id == "i-abcdef1234567890"
+        assert result.instance_id == "i-33333333333333333"
         assert result.imdsv1_allowed is False
 
     def test_deny_ec2_imds_v1_carries_nothing_about_roles(self) -> None:
@@ -72,14 +77,14 @@ class TestDenyEc2ImdsV1:
         """Test DenyEc2ImdsV1 equality comparison."""
         result1 = DenyEc2ImdsV1(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             imdsv1_allowed=True,
             exemption_tag_present=False,
         )
 
         result2 = DenyEc2ImdsV1(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             imdsv1_allowed=True,
             exemption_tag_present=False,
         )
@@ -98,7 +103,7 @@ class TestDenyEc2ImdsV1:
         """Test DenyEc2ImdsV1 string representation."""
         result = DenyEc2ImdsV1(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             imdsv1_allowed=True,
             exemption_tag_present=False,
         )
@@ -106,7 +111,7 @@ class TestDenyEc2ImdsV1:
         repr_str = repr(result)
         assert "DenyEc2ImdsV1" in repr_str
         assert "us-east-1" in repr_str
-        assert "i-1234567890abcdef0" in repr_str
+        assert "i-11111111111111111" in repr_str
 
 
 class TestGetImdsV1Ec2Analysis:
@@ -162,13 +167,14 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_1 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
-                            "i-1234567890abcdef0",
+                            "i-11111111111111111",
                             tags=[{"Key": "Name", "Value": "test-instance-1"}]
                         ),
                         self.create_mock_instance(
-                            "i-0987654321fedcba0",
+                            "i-22222222222222222",
                             http_tokens="required",
                             tags=[{"Key": "ExemptFromIMDSv2", "Value": "true"}]
                         )
@@ -181,9 +187,10 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_2 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
-                            "i-abcdef1234567890",
+                            "i-33333333333333333",
                             http_endpoint="disabled"
                         )
                     ]
@@ -195,6 +202,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_fallback = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
                             "i-fallback123456789",
@@ -235,18 +243,18 @@ class TestGetImdsV1Ec2Analysis:
 
         # Check first instance (IMDSv1 allowed, no exemption)
         assert results[0].region == "us-east-1"
-        assert results[0].instance_id == "i-1234567890abcdef0"
+        assert results[0].instance_id == "i-11111111111111111"
         assert results[0].imdsv1_allowed is True
 
         # Check second instance (IMDSv2 required)
         assert results[1].region == "us-east-1"
-        assert results[1].instance_id == "i-0987654321fedcba0"
+        assert results[1].instance_id == "i-22222222222222222"
         assert results[1].imdsv1_allowed is False
 
         # Check third instance (endpoint disabled, but tokens still optional,
         # which the SCP counts and so does this check)
         assert results[2].region == "us-west-2"
-        assert results[2].instance_id == "i-abcdef1234567890"
+        assert results[2].instance_id == "i-33333333333333333"
         assert results[2].imdsv1_allowed is True
 
         # Check fourth instance (fallback region, IMDSv2 required)
@@ -289,6 +297,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-running", state="running"),
                         self.create_mock_instance("i-terminated", state="terminated"),
@@ -328,7 +337,7 @@ class TestGetImdsV1Ec2Analysis:
             "Regions": [
                 {"RegionName": "us-east-1"},
                 {"RegionName": "us-west-2"},
-                {"RegionName": "ap-south-1"}  # This will trigger fallback
+                {"RegionName": "ap-south-1"}
             ]
         }
 
@@ -337,7 +346,7 @@ class TestGetImdsV1Ec2Analysis:
         mock_paginator_1 = MagicMock()
         instances_page_1 = {
             "Reservations": [
-                {"Instances": [self.create_mock_instance("i-success")]}
+                {"OwnerId": "111111111111", "Instances": [self.create_mock_instance("i-success")]}
             ]
         }
         mock_paginator_1.paginate.return_value = [instances_page_1]
@@ -351,17 +360,6 @@ class TestGetImdsV1Ec2Analysis:
             "DescribeInstances"
         )
         mock_regional_ec2_2.get_paginator.return_value = mock_paginator_2
-
-        # Third regional client (fallback) works
-        mock_regional_ec2_fallback = MagicMock()
-        mock_paginator_fallback = MagicMock()
-        instances_page_fallback = {
-            "Reservations": [
-                {"Instances": [self.create_mock_instance("i-fallback-success")]}
-            ]
-        }
-        mock_paginator_fallback.paginate.return_value = [instances_page_fallback]
-        mock_regional_ec2_fallback.get_paginator.return_value = mock_paginator_fallback
 
         def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
             if region_name is None:
@@ -402,6 +400,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
                             f"i-{value.lower()}",
@@ -486,6 +485,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_1 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-main")
                     ]
@@ -497,6 +497,7 @@ class TestGetImdsV1Ec2Analysis:
         instances_page_fallback = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-fallback")
                     ]
@@ -537,16 +538,16 @@ class TestDenyEc2AmiOwner:
     def test_deny_ec2_ami_owner_creation(self) -> None:
         """Test creating DenyEc2AmiOwner with valid data."""
         result = DenyEc2AmiOwner(
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="amazon",
             ami_name="Amazon Linux 2"
         )
 
-        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.instance_id == "i-11111111111111111"
         assert result.region == "us-east-1"
-        assert result.ami_id == "ami-12345678"
+        assert result.ami_id == "ami-11111111111111111"
         assert result.ami_owner == "amazon"
         assert result.ami_name == "Amazon Linux 2"
 
@@ -568,7 +569,7 @@ class TestDenyEc2AmiOwner:
         result1 = DenyEc2AmiOwner(
             instance_id="i-test",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="amazon",
             ami_name="AL2"
         )
@@ -576,7 +577,7 @@ class TestDenyEc2AmiOwner:
         result2 = DenyEc2AmiOwner(
             instance_id="i-test",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="amazon",
             ami_name="AL2"
         )
@@ -584,7 +585,7 @@ class TestDenyEc2AmiOwner:
         result3 = DenyEc2AmiOwner(
             instance_id="i-different",
             region="us-east-1",
-            ami_id="ami-87654321",
+            ami_id="ami-22222222222222222",
             ami_owner="aws-marketplace",
             ami_name="Marketplace"
         )
@@ -600,14 +601,12 @@ class TestGetEc2AmiOwnerAnalysis:
         self,
         instance_id: str,
         ami_id: str,
-        owner_id: str = "111111111111",
         state: str = "running"
     ) -> dict:
         """Helper to create mock EC2 instance data."""
         return {
             "InstanceId": instance_id,
             "ImageId": ami_id,
-            "OwnerId": owner_id,
             "State": {"Name": state}
         }
 
@@ -628,7 +627,9 @@ class TestGetEc2AmiOwnerAnalysis:
 
         mock_regional_ec2 = MagicMock()
         mock_paginator = MagicMock()
-        mock_paginator.paginate.return_value = [{"Reservations": [{"Instances": instances}]}]
+        mock_paginator.paginate.return_value = [
+            {"Reservations": [{"OwnerId": "111111111111", "Instances": instances}]}
+        ]
         mock_regional_ec2.get_paginator.return_value = mock_paginator
 
         def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
@@ -869,9 +870,10 @@ class TestGetEc2AmiOwnerAnalysis:
         instances_page_1 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
-                        self.create_mock_instance("i-amazon", "ami-12345678"),
-                        self.create_mock_instance("i-marketplace", "ami-87654321")
+                        self.create_mock_instance("i-amazon", "ami-11111111111111111"),
+                        self.create_mock_instance("i-marketplace", "ami-22222222222222222")
                     ]
                 }
             ]
@@ -880,6 +882,7 @@ class TestGetEc2AmiOwnerAnalysis:
         instances_page_2 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-custom", "ami-custom123")
                     ]
@@ -924,14 +927,14 @@ class TestGetEc2AmiOwnerAnalysis:
         assert len(results) == 3
 
         assert results[0].instance_id == "i-amazon"
-        assert results[0].ami_id == "ami-12345678"
+        assert results[0].ami_id == "ami-11111111111111111"
         assert results[0].ami_owner == "444444444444"
         assert results[0].ami_owner_alias == "amazon"
         assert results[0].ami_name == "Amazon Linux 2"
         assert results[0].region == "us-east-1"
 
         assert results[1].instance_id == "i-marketplace"
-        assert results[1].ami_id == "ami-87654321"
+        assert results[1].ami_id == "ami-22222222222222222"
         assert results[1].ami_owner == "555555555555"
         assert results[1].ami_owner_alias == "aws-marketplace"
         assert results[1].region == "us-east-1"
@@ -943,7 +946,17 @@ class TestGetEc2AmiOwnerAnalysis:
         assert results[2].region == "us-west-2"
 
     def test_get_ec2_ami_owner_analysis_ami_access_denied(self) -> None:
-        """Test handling when describe_images raises AccessDenied error."""
+        """
+        A describe_images failure surfaces as RuntimeError naming the region.
+
+        get_ec2_ami_owner_analysis keeps its own try/except ClientError around
+        AMI resolution -- deliberately, unlike the other three EC2 checks --
+        because it is the only one of the four that still makes an AWS call
+        of its own (describe_images, via _resolve_ami_owner) after collecting
+        instances. describe_instances failures are the shared collector's
+        concern (see test_get_ec2_ami_owner_analysis_regional_client_error);
+        this test pins the one this function still owns.
+        """
         mock_session = MagicMock()
 
         mock_ec2 = MagicMock()
@@ -957,6 +970,7 @@ class TestGetEc2AmiOwnerAnalysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-test", "ami-accessdenied")
                     ]
@@ -997,6 +1011,7 @@ class TestGetEc2AmiOwnerAnalysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-1", "ami-same"),
                         self.create_mock_instance("i-2", "ami-same"),
@@ -1042,6 +1057,7 @@ class TestGetEc2AmiOwnerAnalysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-running", "ami-1", state="running"),
                         self.create_mock_instance("i-terminated", "ami-2", state="terminated"),
@@ -1090,10 +1106,10 @@ class TestGetEc2AmiOwnerAnalysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         {
                             "InstanceId": "i-no-ami",
-                            "OwnerId": "111111111111",
                             "State": {"Name": "running"}
                         }
                     ]
@@ -1130,6 +1146,7 @@ class TestGetEc2AmiOwnerAnalysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance("i-test", "ami-no-owner")
                     ]
@@ -1187,8 +1204,55 @@ class TestGetEc2AmiOwnerAnalysis:
         assert len(results) == 0
         assert results == []
 
+    def test_a_region_with_no_instances_builds_no_client_for_the_sweep(self) -> None:
+        """
+        An empty region is skipped before the AMI sweep builds its client.
+
+        `get_instances` builds one regional client to read the region. The
+        early `continue` is what stops the sweep building a second one to walk
+        an empty instance list. The results are identical either way -- an
+        empty region contributes nothing -- so the test above cannot see the
+        difference, and the cost is one wasted client per empty region across
+        every enabled region of every account.
+        """
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{"Reservations": []}]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        get_ec2_ami_owner_analysis(mock_session)
+
+        regional_clients = [
+            call for call in mock_session.client.call_args_list
+            if call.kwargs.get("region_name") == "us-east-1"
+        ]
+        assert len(regional_clients) == 1
+
     def test_get_ec2_ami_owner_analysis_regional_client_error(self) -> None:
-        """Test handling of regional client errors."""
+        """
+        A describe_instances failure still aborts the run with the region named.
+
+        The message text changed from "Failed to analyze EC2 AMI owners" to
+        the shared collector's "Failed to analyze EC2 instances": this check
+        no longer has its own describe_instances error handling, it reads
+        get_instances()'s RuntimeError instead. See _describe_instances in
+        ec2.py, and test_client_error_becomes_a_runtime_error_naming_the_region
+        in TestGetInstances for the collector-level test this now defers to.
+        """
         mock_session = MagicMock()
 
         mock_ec2 = MagicMock()
@@ -1213,7 +1277,7 @@ class TestGetEc2AmiOwnerAnalysis:
 
         mock_session.client.side_effect = client_side_effect
 
-        with pytest.raises(RuntimeError, match="Failed to analyze EC2 AMI owners in region us-east-1"):
+        with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances in region us-east-1"):
             get_ec2_ami_owner_analysis(mock_session)
 
 
@@ -1223,30 +1287,30 @@ class TestDenyEc2PublicIp:
     def test_deny_ec2_public_ip_creation(self) -> None:
         """Test creating DenyEc2PublicIp with valid data."""
         result = DenyEc2PublicIp(
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             region="us-east-1",
-            public_ip_address="54.123.45.67",
+            public_ip_address="111.111.111.111",
             has_public_ip=True,
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
 
-        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.instance_id == "i-11111111111111111"
         assert result.region == "us-east-1"
-        assert result.public_ip_address == "54.123.45.67"
+        assert result.public_ip_address == "111.111.111.111"
         assert result.has_public_ip is True
-        assert result.instance_arn == "arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+        assert result.instance_arn == "arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
 
     def test_deny_ec2_public_ip_without_public_ip(self) -> None:
         """Test DenyEc2PublicIp without public IP address."""
         result = DenyEc2PublicIp(
-            instance_id="i-0987654321fedcba0",
+            instance_id="i-22222222222222222",
             region="us-west-2",
             public_ip_address=None,
             has_public_ip=False,
-            instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-0987654321fedcba0"
+            instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
         )
 
-        assert result.instance_id == "i-0987654321fedcba0"
+        assert result.instance_id == "i-22222222222222222"
         assert result.region == "us-west-2"
         assert result.public_ip_address is None
         assert result.has_public_ip is False
@@ -1254,19 +1318,19 @@ class TestDenyEc2PublicIp:
     def test_deny_ec2_public_ip_equality(self) -> None:
         """Test DenyEc2PublicIp equality comparison."""
         result1 = DenyEc2PublicIp(
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             region="us-east-1",
-            public_ip_address="54.123.45.67",
+            public_ip_address="111.111.111.111",
             has_public_ip=True,
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
 
         result2 = DenyEc2PublicIp(
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             region="us-east-1",
-            public_ip_address="54.123.45.67",
+            public_ip_address="111.111.111.111",
             has_public_ip=True,
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
 
         result3 = DenyEc2PublicIp(
@@ -1287,14 +1351,12 @@ class TestGetEc2PublicIpAnalysis:
     def create_mock_instance_with_ip(
         self,
         instance_id: str,
-        account_id: str = "111111111111",
         state: str = "running",
         public_ip: Optional[str] = None
     ) -> dict:
         """Helper to create mock EC2 instance data."""
         instance_dict = {
             "InstanceId": instance_id,
-            "OwnerId": account_id,
             "State": {"Name": state},
         }
 
@@ -1324,13 +1386,14 @@ class TestGetEc2PublicIpAnalysis:
         instances_page_1 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance_with_ip(
-                            "i-1111111111111111",
-                            public_ip="54.123.45.67"
+                            "i-11111111111111111",
+                            public_ip="111.111.111.111"
                         ),
                         self.create_mock_instance_with_ip(
-                            "i-2222222222222222",
+                            "i-22222222222222222",
                             public_ip=None
                         )
                     ]
@@ -1341,10 +1404,11 @@ class TestGetEc2PublicIpAnalysis:
         instances_page_2 = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance_with_ip(
-                            "i-3333333333333333",
-                            public_ip="52.98.76.54"
+                            "i-33333333333333333",
+                            public_ip="222.222.222.222"
                         )
                     ]
                 }
@@ -1370,19 +1434,19 @@ class TestGetEc2PublicIpAnalysis:
 
         assert len(results) == 3
 
-        assert results[0].instance_id == "i-1111111111111111"
+        assert results[0].instance_id == "i-11111111111111111"
         assert results[0].region == "us-east-1"
-        assert results[0].public_ip_address == "54.123.45.67"
+        assert results[0].public_ip_address == "111.111.111.111"
         assert results[0].has_public_ip is True
 
-        assert results[1].instance_id == "i-2222222222222222"
+        assert results[1].instance_id == "i-22222222222222222"
         assert results[1].region == "us-east-1"
         assert results[1].public_ip_address is None
         assert results[1].has_public_ip is False
 
-        assert results[2].instance_id == "i-3333333333333333"
+        assert results[2].instance_id == "i-33333333333333333"
         assert results[2].region == "us-west-2"
-        assert results[2].public_ip_address == "52.98.76.54"
+        assert results[2].public_ip_address == "222.222.222.222"
         assert results[2].has_public_ip is True
 
     def test_get_ec2_public_ip_analysis_skips_terminated_instances(self) -> None:
@@ -1400,16 +1464,17 @@ class TestGetEc2PublicIpAnalysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance_with_ip(
                             "i-running",
                             state="running",
-                            public_ip="54.123.45.67"
+                            public_ip="111.111.111.111"
                         ),
                         self.create_mock_instance_with_ip(
                             "i-terminated",
                             state="terminated",
-                            public_ip="52.98.76.54"
+                            public_ip="222.222.222.222"
                         ),
                         self.create_mock_instance_with_ip(
                             "i-stopped",
@@ -1484,7 +1549,10 @@ class TestGetEc2PublicIpAnalysis:
         mock_paginator_1 = MagicMock()
         instances_page_1 = {
             "Reservations": [
-                {"Instances": [self.create_mock_instance_with_ip("i-success", public_ip="54.123.45.67")]}
+                {
+                    "OwnerId": "111111111111",
+                    "Instances": [self.create_mock_instance_with_ip("i-success", public_ip="111.111.111.111")],
+                }
             ]
         }
         mock_paginator_1.paginate.return_value = [instances_page_1]
@@ -1525,11 +1593,11 @@ class TestGetEc2PublicIpAnalysis:
         instances_page = {
             "Reservations": [
                 {
+                    "OwnerId": "222222222222",
                     "Instances": [
                         self.create_mock_instance_with_ip(
                             "i-test123456789",
-                            account_id="222222222222",
-                            public_ip="54.123.45.67"
+                            public_ip="111.111.111.111"
                         )
                     ]
                 }
@@ -1559,13 +1627,13 @@ class TestDenyEc2ImdsHopLimit:
         """Test creating DenyEc2ImdsHopLimit with valid data."""
         result = DenyEc2ImdsHopLimit(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             hop_limit=2,
             imds_enabled=True
         )
 
         assert result.region == "us-east-1"
-        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.instance_id == "i-11111111111111111"
         assert result.hop_limit == 2
         assert result.imds_enabled is True
 
@@ -1603,7 +1671,7 @@ class TestGetEc2ImdsHopLimitAnalysis:
         mock_regional_ec2 = MagicMock()
         mock_paginator = MagicMock()
         mock_paginator.paginate.return_value = [
-            {"Reservations": [{"Instances": instances}]}
+            {"Reservations": [{"OwnerId": "111111111111", "Instances": instances}]}
         ]
         mock_regional_ec2.get_paginator.return_value = mock_paginator
 
@@ -1692,6 +1760,360 @@ class TestGetEc2ImdsHopLimitAnalysis:
             get_ec2_imds_hop_limit_analysis(mock_session)
 
 
+class TestGetInstances:
+    """Test the shared per-region instance collector."""
+
+    @staticmethod
+    def _session(pages: List[Dict[str, Any]]) -> MagicMock:
+        """Build a mock session whose regional EC2 client serves `pages`."""
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = pages
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_regional_ec2
+        return mock_session
+
+    def test_projects_every_field_the_checks_read(self) -> None:
+        """
+        The projection carries exactly the values the four EC2 checks read.
+
+        Anything else in a describe_instances entry -- BlockDeviceMappings,
+        NetworkInterfaces, SecurityGroups, Placement -- is dropped, because
+        holding it for an account's whole lifetime is what would make this
+        memo expensive.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "ImageId": "ami-11111111111111111",
+                    "PublicIpAddress": "111.111.111.111",
+                    "State": {"Name": "running"},
+                    "MetadataOptions": {
+                        "HttpTokens": "required",
+                        "HttpEndpoint": "enabled",
+                        "HttpPutResponseHopLimit": 2,
+                    },
+                    "Tags": [{"Key": "ExemptFromIMDSv2", "Value": "true"}],
+                    "BlockDeviceMappings": [{"DeviceName": "/dev/sda1"}],
+                }],
+            }]
+        }])
+
+        instances = get_instances(session, "us-east-1")
+
+        assert instances == [Ec2Instance(
+            instance_id="i-11111111111111111",
+            image_id="ami-11111111111111111",
+            owner_id="111111111111",
+            public_ip_address="111.111.111.111",
+            http_tokens="required",
+            http_endpoint="enabled",
+            hop_limit=2,
+            tags={"ExemptFromIMDSv2": "true"},
+        )]
+
+    def test_applies_the_aws_metadata_defaults(self) -> None:
+        """
+        An instance with no MetadataOptions gets the values AWS applies:
+        IMDSv1 permitted, endpoint enabled, hop limit 1.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "State": {"Name": "running"},
+                }],
+            }]
+        }])
+
+        instance = get_instances(session, "us-east-1")[0]
+
+        assert instance.http_tokens == "optional"
+        assert instance.http_endpoint == "enabled"
+        assert instance.hop_limit == 1
+        assert instance.image_id is None
+        assert instance.public_ip_address is None
+        assert instance.tags == {}
+
+    def test_terminated_instances_are_dropped_once_here(self) -> None:
+        """
+        The terminated filter lives in the collector.
+
+        All four checks previously opened with the identical
+        `if instance['State']['Name'] == 'terminated': continue`. Stating it
+        once is the point of collecting once.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [
+                    {"InstanceId": "i-11111111111111111", "State": {"Name": "terminated"}},
+                    {"InstanceId": "i-22222222222222222", "State": {"Name": "running"}},
+                ],
+            }]
+        }])
+
+        instances = get_instances(session, "us-east-1")
+
+        assert [i.instance_id for i in instances] == ["i-22222222222222222"]
+
+    def test_owner_id_comes_from_the_reservation(self) -> None:
+        """
+        OwnerId lives on the reservation, not the instance.
+
+        InstanceTypeDef has no OwnerId key, so reading it off the instance
+        always produced an empty string against real AWS and yielded a
+        malformed instance ARN with no account.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "State": {"Name": "running"},
+                }],
+            }]
+        }])
+
+        assert get_instances(session, "us-east-1")[0].owner_id == "111111111111"
+
+    def test_a_reservation_without_an_owner_names_the_region(self) -> None:
+        """
+        A missing OwnerId raises the error this function documents.
+
+        `ReservationTypeDef` declares OwnerId `NotRequired`, so subscripting
+        it is a `KeyError` waiting for a response that omits it. That escapes
+        the `except ClientError` around the sweep and reaches the operator as
+        a bare `KeyError: 'OwnerId'` naming neither the region nor the
+        account -- across 17 regions and 300 accounts, nothing to act on, and
+        it contradicts this function's own `Raises: RuntimeError`.
+
+        `_resolve_ami_owner` in this module already answers a missing OwnerId
+        the right way; this is the same answer at the other call site.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "State": {"Name": "running"},
+                }],
+            }]
+        }])
+
+        with pytest.raises(RuntimeError, match="us-east-1"):
+            get_instances(session, "us-east-1")
+
+    def test_a_region_is_described_once_per_session(self) -> None:
+        """
+        Four checks ask for one region's instances; only the first reaches AWS.
+
+        This is 51 of the 68 describe_instances calls a 17-region account
+        makes today.
+        """
+        session = self._session([{"Reservations": []}])
+
+        for _ in range(4):
+            get_instances(session, "us-east-1")
+
+        session.client.return_value.get_paginator.assert_called_once_with("describe_instances")
+
+    def test_a_projected_instance_cannot_be_mutated(self) -> None:
+        """
+        Ec2Instance is frozen, because the memo hands out the object itself.
+
+        `get_instances` returns the cached list, not a copy, so one check
+        writing to a field would change what the next three read for the same
+        account and region -- a cross-check data dependency with no call site
+        connecting the two. Freezing closes rebinding, and it is cheaper than
+        copying on every read; the read-only `tags` mapping, pinned below,
+        closes the one field whose contents freezing cannot reach.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{"InstanceId": "i-11111111111111111", "State": {"Name": "running"}}],
+            }]
+        }])
+
+        instance = get_instances(session, "us-east-1")[0]
+
+        with pytest.raises(FrozenInstanceError):
+            instance.http_tokens = "required"  # type: ignore[misc]
+
+    def test_a_projected_instances_tags_cannot_be_mutated(self) -> None:
+        """
+        Freezing the dataclass does not reach inside the tags dict.
+
+        `frozen=True` stops a field being rebound; it says nothing about what
+        a field points at. `tags` is the one mutable object on the instance,
+        and all four EC2 checks read the same one out of the memo, so a check
+        popping a key from it would change what the other three see for that
+        account and region.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "State": {"Name": "running"},
+                    "Tags": [{"Key": "Name", "Value": "web"}],
+                }],
+            }]
+        }])
+
+        instance = get_instances(session, "us-east-1")[0]
+
+        with pytest.raises(TypeError):
+            instance.tags["Name"] = "database"  # type: ignore[index]
+
+    def test_a_projected_instance_can_be_hashed(self) -> None:
+        """
+        Frozen advertises hashability, so it has to actually hash.
+
+        `frozen=True` generates `__hash__` over the compared fields, and
+        `tags` is a dict, so the generated hash raised `TypeError:
+        unhashable type: 'dict'` for every instance ever built. Nothing
+        hashes one today, which is why no test caught it -- but strict mypy
+        accepts `set[Ec2Instance]` and `dict[Ec2Instance, ...]` without a
+        word, so the first caller to dedupe instances gets a green type check
+        and a runtime crash.
+
+        `tags` is excluded from the hash rather than from `==`: dropping it
+        from equality would make two instances differing only by tag compare
+        equal, which is a wrong answer where an unhashable object is merely
+        an unusable one. Two such instances therefore share a hash and stay
+        distinct in a set, which is what the last assertion pins.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "State": {"Name": "running"},
+                    "Tags": [{"Key": "Name", "Value": "web"}],
+                }],
+            }]
+        }])
+
+        instance = get_instances(session, "us-east-1")[0]
+        retagged = replace(instance, tags={"Name": "batch"})
+
+        assert hash(instance) == hash(retagged)
+        assert instance != retagged
+        assert len({instance, retagged}) == 2
+
+    def test_each_region_is_described_separately(self) -> None:
+        """Two regions are distinct memo entries, not one shared answer."""
+        session = self._session([{"Reservations": []}])
+
+        get_instances(session, "us-east-1")
+        get_instances(session, "eu-west-1")
+
+        assert session.client.call_count == 2
+
+    def test_each_session_gets_its_own_instances(self) -> None:
+        """
+        Two sessions never share a memo entry.
+
+        A memo keyed wrongly would report one account's instances as another
+        account's, and the results would look entirely plausible.
+
+        Both sessions carry the same `region_name` because production does:
+        `assume_role` reads the region off the one shared base session and
+        hands it to every per-account session it mints. An unconfigured
+        MagicMock is the opposite -- each attribute access invents a distinct
+        child -- so without that line every attribute of a session looks like
+        a usable key and a memo keyed on one would pass this test.
+
+        The membership assertions are what pins the key. Comparing the two
+        instance lists cannot tell a session-keyed memo from one keyed on any
+        value that merely differs between two mocks.
+        """
+        session_a = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{"InstanceId": "i-11111111111111111", "State": {"Name": "running"}}],
+            }]
+        }])
+        session_b = self._session([{
+            "Reservations": [{
+                "OwnerId": "222222222222",
+                "Instances": [{"InstanceId": "i-22222222222222222", "State": {"Name": "running"}}],
+            }]
+        }])
+
+        session_a.region_name = session_b.region_name = "us-east-1"
+
+        assert get_instances(session_a, "us-east-1")[0].instance_id == "i-11111111111111111"
+        assert get_instances(session_b, "us-east-1")[0].instance_id == "i-22222222222222222"
+
+        assert session_a in _INSTANCE_MEMO
+        assert session_b in _INSTANCE_MEMO
+
+    def test_memo_entry_is_released_when_the_session_is_dropped(self) -> None:
+        """
+        An account's instances die with its session.
+
+        A leading gc.collect() gives a clean baseline: MagicMock objects from
+        earlier tests hold internal reference cycles (a mock assigned as
+        another mock's return_value gets a strong _mock_new_parent back-link),
+        so they linger as uncollected garbage rather than vanishing the
+        instant their owning test returns. Without the sweep, this test's
+        one-entry assertion counts other tests' debris instead (5 entries
+        observed, not 1).
+
+        The assertions are on the delta rather than on an absolute count,
+        because the memo is module state this test does not own and the sweep
+        cannot always clear it: an earlier *failing* test in this file keeps
+        its mocks alive through pytest's traceback, out of gc.collect()'s
+        reach. An absolute count would then fail too, adding noise to the
+        report of an unrelated bug.
+
+        Unlike the equivalent test in test_aws_helpers.py, there is no second
+        `del` here: `_session` keeps its regional-client mock as a helper
+        local rather than binding it to a name in this test's frame, so
+        `del session` alone drops the only reference this frame holds into
+        the mock family, and gc.collect() reclaims the rest of the cycle.
+        """
+        gc.collect()
+        before = len(_INSTANCE_MEMO)
+
+        session = self._session([{"Reservations": []}])
+
+        get_instances(session, "us-east-1")
+        assert len(_INSTANCE_MEMO) == before + 1
+
+        del session
+        gc.collect()
+
+        assert len(_INSTANCE_MEMO) == before
+
+    def test_client_error_becomes_a_runtime_error_naming_the_region(self) -> None:
+        """
+        A failed describe_instances aborts the run with the region named.
+
+        Headroom does not tolerate a partial scan: an account skipped for a
+        transient error is indistinguishable in the results from an account
+        with zero violations.
+        """
+        session = MagicMock()
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.side_effect = ClientError(
+            {"Error": {"Code": "UnauthorizedOperation", "Message": "denied"}},
+            "DescribeInstances",
+        )
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+        session.client.return_value = mock_regional_ec2
+
+        with pytest.raises(RuntimeError, match="us-east-1"):
+            get_instances(session, "us-east-1")
+
+
 class TestImdsV1EndpointIsNotAnExcuse:
     """
     HttpTokens is counted whether or not the metadata endpoint is enabled.
@@ -1722,7 +2144,7 @@ class TestImdsV1EndpointIsNotAnExcuse:
         regional = MagicMock()
         paginator = MagicMock()
         paginator.paginate.return_value = [{
-            "Reservations": [{"Instances": [{
+            "Reservations": [{"OwnerId": "111111111111", "Instances": [{
                 "InstanceId": "i-aaa",
                 "State": {"Name": "running"},
                 "MetadataOptions": metadata_options,
@@ -1788,7 +2210,7 @@ class TestImdsV1InstanceTagExemption:
         mock_regional_ec2 = MagicMock()
         mock_paginator = MagicMock()
         mock_paginator.paginate.return_value = [{
-            "Reservations": [{"Instances": [{
+            "Reservations": [{"OwnerId": "111111111111", "Instances": [{
                 "InstanceId": "i-fake0",
                 "State": {"Name": "running"},
                 "MetadataOptions": {"HttpTokens": http_tokens, "HttpEndpoint": "enabled"},
@@ -1893,7 +2315,7 @@ class TestImdsV1InstanceTagExemption:
         mock_regional_ec2 = MagicMock()
         mock_paginator = MagicMock()
         mock_paginator.paginate.return_value = [{
-            "Reservations": [{"Instances": [{
+            "Reservations": [{"OwnerId": "111111111111", "Instances": [{
                 "InstanceId": "i-fake0",
                 "State": {"Name": "running"},
                 "MetadataOptions": {"HttpTokens": "optional", "HttpEndpoint": "enabled"},

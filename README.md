@@ -165,6 +165,10 @@ See [full examples](documentation/EXAMPLES.md).
 - **Exemption support** via resource tags
 - **100% test coverage** with type safety
 
+Accounts are analyzed concurrently, 16 at a time by default. Combined with caching the
+region list and the EC2 instance list per account, a 300-account organization goes from
+roughly 4.9 hours to roughly 16 minutes.
+
 ## How It Works
 
 Headroom uses a hub-and-spoke model:
@@ -269,6 +273,9 @@ Options:
   --results-dir RESULTS_DIR    Results output directory
   --scps-dir SCPS_DIR         SCP Terraform output directory
   --rcps-dir RCPS_DIR         RCP Terraform output directory
+  --max-account-workers MAX_ACCOUNT_WORKERS
+                               Accounts to analyze concurrently, 1 runs them
+                               serially (default 16, maximum 32)
 ```
 
 ## Test Environment

@@ -1,4 +1,6 @@
+import io
 import pytest
+from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch, mock_open
 from typing import Any, Dict, List
 from pathlib import Path
@@ -107,6 +109,26 @@ class TestParseCliArgs:
         with patch('sys.argv', ['headroom', '--config', 'test.yaml', '--unknown']):
             with pytest.raises(SystemExit):
                 parse_cli_args()
+
+    def test_the_worker_help_states_the_default_and_the_cap(self) -> None:
+        """
+        An operator reading --help should not have to open config.py.
+
+        The three directory flags each state their default. This one stated
+        neither its default nor its bound, so the only way to discover that 33
+        is refused was to be refused. The numbers are asserted as literals,
+        the same ones sample_config.yaml and SETUP.md print, so interpolating
+        some other constant fails here rather than quietly rewording the help.
+        """
+        parser_output = io.StringIO()
+        with patch('sys.argv', ['headroom', '--help']):
+            with redirect_stdout(parser_output):
+                with pytest.raises(SystemExit):
+                    parse_cli_args()
+
+        help_text = " ".join(parser_output.getvalue().split())
+
+        assert "default 16, maximum 32" in help_text
 
 
 class TestMergeConfigs:
@@ -225,8 +247,44 @@ class TestMergeConfigs:
 
         assert result.use_account_name_from_tags is False
 
-    def test_merge_configs_with_extra_yaml_fields(self) -> None:
-        """Test merging with extra fields in YAML (should be ignored)."""
+    def test_max_account_workers_flows_from_the_command_line(self) -> None:
+        """
+        The only flag with no plumbing test, in both directions.
+
+        Nothing exercised parse_cli_args -> merge_configs -> HeadroomConfig
+        for this option. It works because argparse carries no `default=`, so
+        merge_configs' `v is not None` filter drops it when it is absent;
+        adding a default would silently make the CLI override the YAML on
+        every run, and no test would have noticed.
+        """
+        yaml_config: Dict[str, Any] = {
+            "use_account_name_from_tags": False,
+            "account_tag_layout": {
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner",
+            },
+            "max_account_workers": 8,
+        }
+
+        with patch('sys.argv', ['headroom', '--config', 'test.yaml', '--max-account-workers', '4']):
+            with_flag = parse_cli_args()
+        assert merge_configs(yaml_config, with_flag).max_account_workers == 4
+
+        with patch('sys.argv', ['headroom', '--config', 'test.yaml']):
+            without_flag = parse_cli_args()
+        assert merge_configs(yaml_config, without_flag).max_account_workers == 8
+
+    def test_merge_configs_rejects_extra_yaml_fields(self) -> None:
+        """
+        A key Headroom does not recognize aborts the run.
+
+        This asserted the opposite until `HeadroomConfig` forbade extras.
+        Dropping them was indistinguishable from a misspelling, and the key
+        most likely to be misspelled is one whose loss changes how the run
+        behaves without changing whether it succeeds. `setup_configuration`
+        turns the ValidationError into `Configuration Error` and exit 1.
+        """
         yaml_config = {
             "use_account_name_from_tags": False,
             "account_tag_layout": {
@@ -241,13 +299,11 @@ class TestMergeConfigs:
         cli_args = MagicMock()
         cli_args.config = "test.yaml"
 
-        result = merge_configs(yaml_config, cli_args)
+        with pytest.raises(ValidationError) as raised:
+            merge_configs(yaml_config, cli_args)
 
-        # Extra fields should be ignored, only model fields should be present
-        assert hasattr(result, 'use_account_name_from_tags')
-        assert hasattr(result, 'account_tag_layout')
-        assert not hasattr(result, 'extra_field')
-        assert not hasattr(result, 'another_extra')
+        reported = {error["loc"][0] for error in raised.value.errors()}
+        assert reported == {"extra_field", "another_extra"}
 
     def test_merge_configs_deep_copy(self) -> None:
         """Test that merge_configs doesn't modify the original YAML config."""

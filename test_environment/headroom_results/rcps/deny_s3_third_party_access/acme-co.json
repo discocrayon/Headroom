@@ -7,17 +7,17 @@
     "buckets_with_wildcards": 0,
     "violations": 0,
     "unique_third_party_accounts": [
-      "749430749651"
+      "999911114444"
     ],
     "third_party_account_count": 1,
     "actions_by_third_party_account": {
-      "749430749651": [
+      "999911114444": [
         "s3:GetObject",
         "s3:ListBucket"
       ]
     },
     "buckets_by_third_party_account": {
-      "749430749651": [
+      "999911114444": [
         "arn:aws:s3:::headroom-test-single-third-party-dg"
       ]
     }
@@ -27,12 +27,12 @@
       "bucket_name": "headroom-test-single-third-party-dg",
       "bucket_arn": "arn:aws:s3:::headroom-test-single-third-party-dg",
       "third_party_account_ids": [
-        "749430749651"
+        "999911114444"
       ],
       "has_wildcard_principal": false,
       "has_non_account_principals": false,
       "actions_by_account": {
-        "749430749651": [
+        "999911114444": [
           "s3:GetObject",
           "s3:ListBucket"
         ]

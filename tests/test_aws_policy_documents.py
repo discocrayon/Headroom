@@ -339,7 +339,7 @@ class TestServicePrincipalSources:
         """
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
-            {"StringEquals": {"aws:SourceOrgID": "o-notours98765"}},
+            {"StringEquals": {"aws:SourceOrgID": "o-22222222222"}},
         )
 
         sources = read_service_principal_sources(
@@ -354,7 +354,7 @@ class TestServicePrincipalSources:
         """
         A trailing wildcard on our own ID also matches other organizations.
 
-        `o-example12345*` matches this organization and every organization
+        `o-11111111111*` matches this organization and every organization
         whose ID extends that prefix, so reading it as ours would deploy
         the statement against sources it does not cover.
         """
@@ -374,7 +374,7 @@ class TestServicePrincipalSources:
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringEquals": {
-                "aws:SourceOrgPaths": f"{ORG_ID}/r-ab12/ou-ab12-11111111/"
+                "aws:SourceOrgPaths": f"{ORG_ID}/r-1111/ou-1111-11111111/"
             }},
         )
 
@@ -403,7 +403,7 @@ class TestServicePrincipalSources:
         """A path rooted in a foreign organization is no more enumerable than its ID."""
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
-            {"StringLike": {"aws:SourceOrgPaths": "o-notours98765/*"}},
+            {"StringLike": {"aws:SourceOrgPaths": "o-22222222222/*"}},
         )
 
         sources = read_service_principal_sources(
@@ -430,7 +430,7 @@ class TestServicePrincipalSources:
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringEquals": {
-                "aws:SourceOrgID": [ORG_ID, "o-notours98765"]
+                "aws:SourceOrgID": [ORG_ID, "o-22222222222"]
             }},
         )
 
@@ -458,7 +458,7 @@ class TestServicePrincipalSources:
         """The operator gate covers the organization keys too."""
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
-            {"StringNotEquals": {"aws:SourceOrgID": "o-notours98765"}},
+            {"StringNotEquals": {"aws:SourceOrgID": "o-22222222222"}},
         )
 
         sources = read_service_principal_sources(

@@ -92,7 +92,7 @@
 - Organization-scoped guards resolved against this organization's own ID, so `aws:SourceOrgID` and `aws:SourceOrgPaths` naming this organization cost no allowlist entry and naming another withhold the statement
 - Fail-fast on a source guard that cannot be read (an unrecognized operator, a value that is neither an account ID nor a wildcard)
 - No additional AWS API calls in the existing six checks: they record the sources during the statement walk they already perform
-- The seventh check re-runs those same six analyzers, so the RCP read APIs are issued twice per account per run. Caching is deliberately not implemented; it is a separate optimization if the duplication proves material
+- The seventh check calls those same six analyzers, but `memoize_per_session` serves whichever of a pair runs second from memory, so the RCP read APIs are issued once per account per run
 
 ### 5. Policy Placement Intelligence
 - Organization structure analysis for optimal policy deployment levels
@@ -126,12 +126,13 @@ headroom/
 ├── output.py                # User-facing output
 ├── types.py                 # Shared data models
 ├── enums.py                 # CheckCategory and other shared enums
+├── log_context.py           # Stamps each log record with its thread's account
 ├── utils.py                 # Cross-cutting helpers
 ├── aws/
 │   ├── ec2.py              # EC2 analysis
 │   ├── ecr.py              # ECR repository and registry policy analysis
 │   ├── eks.py              # EKS cluster analysis
-│   ├── helpers.py          # Region enumeration and other shared AWS helpers
+│   ├── helpers.py          # Region enumeration, per-session memoization, pagination
 │   ├── kms.py              # KMS key policy and key grant analysis
 │   ├── lambda_functions.py # Lambda function URL analysis
 │   ├── policy_documents.py # Shared IAM policy grammar - see Shared Policy Grammar
@@ -182,16 +183,155 @@ headroom/
 1. **Configuration:** Load YAML → merge with CLI args → validate with Pydantic
 2. **AWS Setup:** Assume security analysis role (if specified) → assume OrgAndAccountInfoReader in management account
 3. **Account Discovery:** Query Organizations API → extract account metadata with tags → filter management account → filter to ACTIVE accounts only
-4. **Analysis:** For each account:
-   - Check if all results already exist (skip if so)
-   - Assume Headroom role in target account
-   - Run all registered SCP checks
-   - Run all registered RCP checks
-   - Write JSON results to `{results_dir}/{check_type}/{check_name}/`
+4. **Analysis:** Filter out accounts whose results all already exist, then analyze the rest
+   through a `ThreadPoolExecutor` of `max_account_workers` workers (default 16, maximum 32),
+   one worker per account. Each worker:
+   - Assumes the Headroom role in its target account
+   - Runs all registered SCP checks
+   - Runs all registered RCP checks
+   - Writes JSON results to `{results_dir}/{check_type}/{check_name}/`
+
+   Within an account the checks stay serial, so each account's boto3 session is touched by
+   exactly one thread. The first worker to fail sets an abort `Event` that in-flight workers
+   check at each check boundary, then cancels the queued accounts, then re-raises -- setting
+   before cancelling, so an account starting in the window between the two finds the Event
+   already set. Every other failure is logged by name once the workers are joined, and a
+   final line reports how many accounts were cancelled before they started, which is the
+   only outcome that otherwise logs nothing. An operator's Ctrl-C takes the same path, so
+   interrupting is prompt rather than a wait for the whole queue.
+
+   Because accounts interleave in the output, `log_context.py` stamps every record with
+   the account its thread is analyzing and the format carries it in brackets:
+   `DEBUG:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1`.
+   Records emitted outside a worker are stamped `-`, and a record that already carries an
+   account -- one passed as `extra={"account": ...}` -- keeps it, because the caller has
+   named the account the message is about rather than the one whose worker emitted it.
+   The filter is installed on the root handler, not on a logger, because a logger's
+   filters never see records propagated up from child loggers. `configure_logging`
+   installs it only on handlers it installed itself: a root handler that was already
+   there belongs to whoever put it there, and reformatting it would change output
+   Headroom does not own.
+
+   Two properties of the account names are checked before the pool starts, since both
+   would otherwise surface only at the end of a run that takes roughly sixteen minutes at
+   the default sixteen workers. A name that cannot be a filename -- containing a path
+   separator, holding a null byte, or too long for the filesystem's 255-byte limit on one
+   path component -- would put the account's results outside the directory generation
+   reads without failing, or fail the write partway through. A leading dot is allowed:
+   `pathlib.Path.glob` matches dotfiles, and the readers take account identity from the
+   JSON rather than the filename. And under `exclude_account_ids` the name alone is the
+   filename, so two accounts sharing one would interleave their JSON. Both aborts name the
+   offending names and never the account IDs. "Account name validation" below gives the
+   comparison rule.
 5. **Placement:** Parse all result files → analyze org structure → determine policy levels
 6. **Generation:** Generate `grab_org_info.tf` + SCP Terraform files + RCP Terraform files
 
 ---
+
+### Account name validation
+
+Two checks run over the account names before the worker pool starts, and a third runs at
+generation. All three failures are otherwise invisible until the end of a run, and two of
+them are silent even then.
+
+**A name that cannot be a filename.** A path separator puts the account's results
+somewhere other than the check directory that generation reads: the write succeeds, and
+the account is missing from the policies with nothing in the log to say so. A null byte
+or a name past 237 bytes -- the 255-byte limit on one path component, less the `_`,
+twelve-digit account ID and `.json` the resolver adds -- fails the write outright, in a
+worker thread, partway through the run. Organizations caps an account name at 50
+characters, but `use_account_name_from_tags` reads the name from a tag value, and a tag
+value runs to 256. The check is unconditional: the account ID is in the filename under
+the default setting too, and it does not make a name with a slash in it safe.
+
+A leading dot is not rejected. `pathlib.Path.glob` matches dotfiles -- `glob.glob` is the
+one that skips them, and both readers use `pathlib` -- and neither reader takes account
+identity from the filename, reading it out of the JSON `summary` instead. An empty name
+is rejected, but for the generation reason below rather than a filename one.
+
+**Two accounts that resolve to one filename.** Only under `exclude_account_ids`, where
+the name alone is the filename. Run serially that is a quiet last-writer-wins; run with
+a worker per account it is two threads interleaving `json.dump` output into one file,
+yielding either corrupt JSON or a valid file holding both accounts' results spliced
+together, which then feeds policy generation.
+
+The comparison is the interesting part, because `==` is the wrong test. Development
+happens on macOS, where APFS folds two axes by default: case, so `Prod` and `prod` are
+one file, and Unicode normal form, so `café` composed and decomposed are one file even
+though the two strings hold different code points.
+
+Closing the two axes in sequence does not close their composition, because case folding
+can undo the normalization that just ran. `ſ` (U+017F LATIN SMALL LETTER LONG S) followed
+by a combining acute has no precomposed form, so NFC returns it unchanged; the fold then
+maps `ſ` to `s`, yielding the decomposition of `ś` rather than `ś` itself. Under
+`casefold(NFC(x))` the two names key differently while APFS stores them in one inode.
+Decomposing first is what closes that: under NFD both spellings reach the fold already
+decomposed, and both come out as `s` followed by the combining acute.
+
+Unicode's closed form for this comparison is canonical caseless matching, D145:
+`NFD(casefold(NFD(x)))`. That is what Headroom uses. The trailing NFD is there because
+D145 specifies it, not because a name has been found that needs it -- against the Unicode
+data in the interpreter this was measured on, no single code point changes key when it is
+dropped, the example above included. It costs one pass, and it means the guard does not
+have to be re-derived when the case-folding data changes.
+
+The guard is deliberately over-eager. On a filesystem that folds neither axis it can
+abort a run whose names would not in fact have collided. A loud abort an operator fixes
+by renaming an account beats two accounts' JSON interleaved into one file that policy
+generation then reads as one account's evidence.
+
+**Two accounts that claim one Terraform identifier.** At generation, not startup.
+Everything generated for an account -- its policy file, its module name, the ID local it
+targets -- is built from `make_safe_variable_name` of its name, which folds far wider
+than the filesystem does: case, spaces, hyphens, and every other non-alphanumeric all
+become one underscore, runs of underscores collapse, and leading and trailing underscores
+are stripped. `Prod-US`, `Prod US`, `Prod_US`, `prod.us` and `PROD+US` are one identifier.
+
+`make_account_base_names` claims one identifier per account and aborts when two accounts
+claim the same one, exactly as `make_ou_base_names` has always done for OUs. Without it
+the SCP and RCP plans, which are dictionaries keyed on the destination path, silently
+drop the first account's file when the second is rendered -- render-before-mutate never
+sees a conflict, because the conflict happened while the plan was being built. The
+account locals in `grab_org_info.tf` fail more loudly, declaring the same
+`<name>_account_id` twice, but only at `terraform apply`.
+
+The guard reads every account in the organization rather than the analyzed subset,
+because `_generate_account_locals` declares a local for every account the hierarchy
+holds. A collision between an analyzed account and a skipped one is still a duplicate
+local. That is also why this check cannot move to startup: the pre-flight guards see
+`get_subaccount_information`'s output, which has already dropped the management account,
+`skip_account_ids`, and every non-ACTIVE account. Making it early would mean fetching the
+hierarchy before the scan, which the pipeline does not do, and the retry after a late
+abort is cheap -- resume skips every account already scanned.
+
+The message names the account names and never the account IDs, matching the two startup
+guards: `exclude_account_ids` exists so an operator never sees them, and the generated
+Terraform looks accounts up by name in any case.
+
+**Two generated files that claim one path.** The claim tables each keep one namespace
+free of collisions, and neither can see the other, nor the fixed `root_scps.tf` and
+`root_rcps.tf` names. An account named `Root` reduces to `root` and takes the root
+policy's file; an account named `Sandbox OU` reduces to `sandbox_ou` and takes the file
+belonging to an OU named `Sandbox`. `claim_plan_path` is the check that spans all of
+them, because it compares the thing that actually collides -- the destination path -- and
+it is the last point at which the collision is still visible. After it the plan is a
+dictionary that has already lost an entry.
+
+**Both run before the resume filter, and have to.** They see every account the run
+selected, not the subset still needing a scan: `run_checks` drops accounts whose results
+already exist, and that filter runs after these. Deferring the duplicate-name check until
+after it looks like it would spare a re-run whose colliding accounts had both already
+been scanned. It cannot. Under `exclude_account_ids` that pair shares one result file, so
+"already scanned" is not a state the results directory can express for either account
+separately. One `prod.json` exists, and it cannot name its writer: under this setting the
+writer also strips `account_id` from the summary before the file is written, so neither
+the filename nor the contents record which account produced it, or whether both
+interleaved into it. The resume filter reads that single file and reports
+both accounts complete. A check placed after it would therefore skip the collision
+silently and let generation attribute one account's evidence to the other; where only one
+of the pair is complete, it would let the other overwrite it. The information that would
+make the deferred check safe is the account ID that `exclude_account_ids` removed from
+the filename and the summary alike.
 
 ## Data Models
 
@@ -203,6 +343,8 @@ headroom/
 DEFAULT_RESULTS_DIR = "test_environment/headroom_results"
 DEFAULT_SCPS_DIR = "test_environment/scps"
 DEFAULT_RCPS_DIR = "test_environment/rcps"
+DEFAULT_ACCOUNT_WORKERS = 16   # Accounts analyzed concurrently
+MAX_ACCOUNT_WORKERS = 32       # Upper bound; ~1.5 GB resident at 32 workers
 
 class AccountTagLayout(BaseModel):
     environment: str  # Tag key for environment (e.g., "Environment")
@@ -213,11 +355,17 @@ class HeadroomConfig(BaseModel):
     management_account_id: Optional[str]                 # Required for org access
     security_analysis_account_id: Optional[str]          # Optional, for cross-account execution
     exclude_account_ids: bool = False                    # Redact IDs in results
+    skip_account_ids: List[str] = []                     # Excluded from analysis entirely
     use_account_name_from_tags: bool                     # Use tag vs AWS account name
     account_tag_layout: AccountTagLayout
     results_dir: str = DEFAULT_RESULTS_DIR
     scps_dir: str = DEFAULT_SCPS_DIR
     rcps_dir: str = DEFAULT_RCPS_DIR
+    max_account_workers: int = Field(                    # 1 runs accounts serially
+        default=DEFAULT_ACCOUNT_WORKERS,
+        ge=1,
+        le=MAX_ACCOUNT_WORKERS,
+    )
 ```
 
 ### Organization Structure Models
@@ -370,15 +518,22 @@ class ECRPolicyAnalysis:
 management_account_id: string                # Required for org access
 security_analysis_account_id: string         # Optional (omit if running from security account)
 exclude_account_ids: boolean                 # Redact account IDs in results
+skip_account_ids: list of string             # Never analyzed; each must match a real account
 use_account_name_from_tags: boolean          # Use tag for name vs AWS account name
 results_dir: string                          # Default: test_environment/headroom_results
 scps_dir: string                             # Default: test_environment/scps
 rcps_dir: string                             # Default: test_environment/rcps
+max_account_workers: integer                 # Accounts analyzed at once, 1-32, default 16
 account_tag_layout:
   environment: string                        # Optional tag, fallback: "unknown"
   name: string                               # Optional tag, used when use_account_name_from_tags=true
   owner: string                              # Optional tag, fallback: "unknown"
 ```
+
+Both models set `extra="forbid"`, so a key outside this schema aborts rather than being
+dropped. Pydantic's default is to ignore unknown fields, which makes a misspelling
+indistinguishable from a key that was never meant to apply: `max_account_worker: 1`
+configured sixteen workers and said nothing about it.
 
 ### Configuration Loading Logic
 
@@ -398,6 +553,7 @@ account_tag_layout:
 --management-account-id ID                 # Optional: override management_account_id
 --security-analysis-account-id ID          # Optional: override security_analysis_account_id
 --exclude-account-ids                      # Optional: flag to redact IDs
+--max-account-workers N                    # Optional: override max_account_workers
 ```
 
 ---
@@ -623,15 +779,15 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
 
     Algorithm:
     1. Get all enabled regions via get_all_regions()
-    2. For each region, create EC2 client
-    3. Use paginator to describe_instances (handles pagination)
-    4. Filter out terminated instances
-    5. IMDSv1 is allowed when HttpTokens is "optional", whatever HttpEndpoint
+    2. For each region, call get_instances(session, region), which reads
+       describe_instances at most once per session and region and filters
+       out terminated instances
+    3. IMDSv1 is allowed when HttpTokens is "optional", whatever HttpEndpoint
        says, because the SCP tests HttpTokens either way
-    6. Read the instance's ExemptFromIMDSv2 tag, key matched without regard
+    4. Read the instance's ExemptFromIMDSv2 tag, key matched without regard
        to case and value exactly; raise if the key appears twice in cases
        that differ
-    7. Return DenyImdsV1Ec2 for each instance
+    5. Return DenyImdsV1Ec2 for each instance
     """
 ```
 
@@ -935,9 +1091,10 @@ some action other than `sts:AssumeRole` is never recorded, which matches the
 reach of the statement's action list - then stores the result on its analysis
 dataclass as `service_principal_sources`. Populating that field costs those six
 checks nothing; it happens during the statement walk they already perform. The
-seventh check does not reuse their analyses, though: it calls the same six
-analyzer functions again and reads only the new field, which is what makes the
-read APIs run twice per account. See Service Confused Deputy below. One
+seventh check calls the same six analyzer functions again and reads only the
+new field. `memoize_per_session` keys their results on the session, so the
+second call of each pair costs no API traffic. See Service Confused Deputy
+below. One
 `Condition` block guards every principal in its statement, so each service the
 statement names carries the same guard and gets its own entry.
 `has_actionable_service_principal_source` is the predicate each analyzer uses
@@ -1401,8 +1558,8 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
   "exemptions": [],
   "keys_third_parties_can_access": [
     {
-      "key_id": "1234abcd-12ab-34cd-56ef-1234567890ab",
-      "key_arn": "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+      "key_id": "11111111-1111-1111-1111-111111111111",
+      "key_arn": "arn:aws:kms:us-east-1:111111111111:key/11111111-1111-1111-1111-111111111111",
       "region": "us-east-1",
       "third_party_account_ids": ["999999999999"],
       "actions_by_account": {
@@ -2515,18 +2672,27 @@ service principal with no source guard is the canonical confused-deputy
 vulnerability, and `sts:AssumeRole` is in the statement's action list.
 
 **API cost.** Recording `service_principal_sources` costs the existing six
-checks nothing. This check is not free, however. Nothing caches an analysis
-between checks - `run_checks_for_type` instantiates and executes each check
-independently, and the only cache in `headroom/aws/` is the per-region AMI
-cache - so registering this check issues every RCP read API twice per account
-per run: `ListRepositories` / `GetRepositoryPolicy` / `GetRegistryPolicy`,
-`ListKeys` / `GetKeyPolicy` / `ListGrants`, `ListBuckets` / `GetBucketPolicy`,
-`ListSecrets` / `GetResourcePolicy`, `ListQueues` / `GetQueueAttributes`, and
-`ListRoles`. Registration alone triggers the second pass; the
-`deny_service_confused_deputy` Terraform flag gates the rendered statement, not
-the scan. Caching is deliberately not implemented and is a separate
-optimization if the duplication proves material, so quota and runtime for the
-RCP pass should be budgeted at double.
+checks nothing, and registering this check does not double the RCP pass.
+`memoize_per_session` in `headroom/aws/helpers.py` caches exactly the six
+analyses the pair shares, keyed on the session, so whichever of a pair runs
+second is served from memory: `ListRepositories` / `GetRepositoryPolicy` /
+`GetRegistryPolicy`, `ListKeys` / `GetKeyPolicy` / `ListGrants`, `ListBuckets`
+/ `GetBucketPolicy`, `ListSecrets` / `GetResourcePolicy`, `ListQueues` /
+`GetQueueAttributes`, and `ListRoles` each run once per account per run.
+
+Registry order decides which check of a pair pays. This one runs fourteenth of
+sixteen, so ECR, KMS, S3 and Secrets Manager are already cached when it asks,
+while it reads SQS and IAM role trust policies first and
+`deny_sqs_third_party_access` and `deny_sts_third_party_assumerole` are then
+served from memory. Measured across the whole registry, one account issues 35
+API operations with no `(service, region, operation)` triple repeated;
+`TestNoCheckRepeatsAnother` in `tests/performance/test_call_counts.py` pins
+that. The `deny_service_confused_deputy` Terraform flag gates the rendered
+statement, not the scan.
+
+`headroom/aws/` holds three per-session memos, not one: the enabled-region
+list and these six analyses in `helpers.py`, and the EC2 instance list in
+`ec2.py`. The per-region AMI cache is a fourth, local to one sweep.
 
 **Region.** S3 buckets and IAM roles are global names, so there is no region to
 record. A Secrets Manager secret is regional:
@@ -2749,7 +2915,7 @@ withheld from the statement regardless of what it contributed.
 
 **Rows five and six: an organization scope.** `aws:SourceOrgID` names an
 organization directly and `aws:SourceOrgPaths` carries it as the first element
-of a path such as `o-example12345/r-ab12/ou-ab12-11111111/`, so both reduce to
+of a path such as `o-11111111111/r-1111/ou-1111-11111111/`, so both reduce to
 the same comparison against this organization's own ID. That ID comes from
 `get_organization_id`, which calls `organizations:DescribeOrganization` on the
 management account session the run already holds. The deployed statement
@@ -2765,7 +2931,7 @@ organization sets `has_wildcard_source`, because the allowlist holds account
 IDs and another organization's accounts are not knowable from here.
 
 The comparison is exact, with no wildcard expansion. A trailing wildcard on our
-own ID, `o-example12345*`, also matches every organization whose ID extends
+own ID, `o-11111111111*`, also matches every organization whose ID extends
 that prefix, so reading it as ours would deploy the statement against sources
 it does not cover. It falls to the violation side instead, which withholds
 rather than over-blocks.
@@ -4101,6 +4267,26 @@ module builds a `Session` directly. A direct construction silently reinherits th
 `legacy` default, and nothing in a mocked test suite notices; the break surfaces
 only once a scan reaches an opt-in region.
 
+#### Retry Configuration
+
+`new_session()` also sets `retry_mode = standard` and `max_attempts = 5` on the
+botocore session, so every client built from it inherits them without a
+per-call-site `Config`. A client reports the resolved pair as
+`{"total_max_attempts": 5, "mode": "standard"}`.
+
+Five is parity rather than headroom. botocore's default mode is `legacy`, whose
+`__default__` policy already allows five attempts, while `standard` allows three
+-- so setting the mode alone would have lowered the ceiling at the point where
+many accounts started being analyzed at once. What `standard` changes is which
+failures are retried: legacy keyed several rules on HTTP status alone, 429 and
+509 among them, while standard retries 500, 502, 503 and 504 on status and
+otherwise matches the parsed error code, which is how it picks up the throttling
+family.
+
+`adaptive` is deliberately not used. It adds client-side rate limiting that
+throttles unpredictably, and workers are spread across separate accounts, which
+are separate rate-limit buckets.
+
 #### Unreadable Regions
 
 **A region that cannot be read aborts the run.** Every regional analysis raises
@@ -4138,6 +4324,28 @@ Existing Helpers` in `HOW_TO_ADD_A_CHECK.md`, which names duplicated region
 discovery as the anti-pattern. It keeps the enabled-regions guarantee in one
 place instead of restating it at each call site.
 
+**The answer is memoized per session.** Eleven functions call `get_all_regions()`,
+so an account resolved the same list eleven times; the enabled-region set cannot
+change within a run, and the other ten calls were pure latency. The memo is a
+`WeakKeyDictionary` keyed on the session object -- never on an account ID or
+name, which is what keeps one account's region list out of another account's
+results -- so an entry is released as soon as its worker drops the session and a
+300-account run accumulates nothing.
+
+Two further memos follow the same shape and the same reasoning:
+`aws/ec2.get_instances()` for one region's instances, and
+`aws/helpers.memoize_per_session()` for the six resource-policy analyses
+`deny_service_confused_deputy` shares with the resource-specific checks, where
+whichever of a pair runs second is served from memory. Registry order decides
+which one pays, not design: the check runs fourteenth of sixteen, so ECR, KMS,
+S3 and Secrets Manager are cached before it asks, while it reads SQS and IAM
+role trust policies first. That last memo also refuses a second call
+for one session carrying different organization arguments, since the session
+alone is a sufficient key only while those are fixed for the run.
+
+Each holds its lock only around the dictionary, never across the AWS call, so one
+account's sweep cannot serialize every other worker behind it.
+
 ### EC2 Integration
 
 ```python
@@ -4151,21 +4359,37 @@ def get_imds_v1_ec2_analysis(
 
     Algorithm:
     1. Get all enabled regions via get_all_regions()
-    2. For each region:
-       a. Create regional EC2 client
-       b. Use paginator for describe_instances
-       c. For each instance:
-          - Skip if state is "terminated"
-          - IMDSv1 is allowed when MetadataOptions.HttpTokens is "optional",
-            whatever MetadataOptions.HttpEndpoint says
-          - Record the instance profile ARN, if any
-    3. Resolve each distinct instance profile to its role, once per account,
+    2. For each region, call get_instances(session, region)
+    3. For each instance:
+       - IMDSv1 is allowed when MetadataOptions.HttpTokens is "optional",
+         whatever MetadataOptions.HttpEndpoint says
+       - Record the instance profile ARN, if any
+    4. Resolve each distinct instance profile to its role, once per account,
        and exempt on that role's ExemptFromIMDSv2 tag
-    4. Return all results
-
-    Pagination: Handles accounts with many instances
+    5. Return all results
     """
 ```
+
+`get_instances()` is the single reader of `describe_instances`. Four checks --
+IMDSv1, AMI owner, public IP, and IMDS hop limit -- each need every instance in
+every region, and each used to sweep independently: four identical passes per
+region, 51 of the 68 calls a 17-region account made. It paginates, drops
+terminated instances, projects each entry to the fields the checks read, and
+memoizes the result per session and region.
+
+**The instance ARN carries the owning account.** `instance_arn` is built from
+the reservation's `OwnerId`, which lives on the reservation and not on the
+instance entry inside it. Reading it off the instance produced an empty account
+segment on every instance ever scanned. A results directory that spans the
+change therefore holds both shapes, and resuming into one is expected: the
+account segment is not read back by anything, and the fix is not worth
+re-scanning accounts already on disk for.
+
+`ReservationTypeDef` declares `OwnerId` optional, so a reservation arriving
+without one raises a `RuntimeError` naming the region and the instances that
+reservation covered. It is not inferred from the calling identity: the owning
+account is what makes the ARN resolvable, and a wrong one is worse than a
+stopped run.
 
 ### IAM Integration
 
@@ -4251,8 +4475,9 @@ def run_checks_for_type(
     account_info: AccountInfo,
     config: HeadroomConfig,
     org_account_ids: Set[str],
-    org_id: str
-) -> None:
+    org_id: str,
+    abort: threading.Event
+) -> bool:
     """
     Execute all checks of a given type for single account.
 
@@ -4261,9 +4486,15 @@ def run_checks_for_type(
     2. For each check class:
        a. Get check_name from class.CHECK_NAME
        b. Check if results already exist via results_exist()
-       c. If exists: skip
-       d. Instantiate check with common parameters + org_account_ids + org_id
-       e. Call check.execute(headroom_session)
+       c. If exists: skip, before the abort is consulted. A check on disk is
+          work this account does not owe, so an abort that lands with only
+          such checks left has stopped nothing, and reporting otherwise
+          labels a complete account aborted
+       d. Return False if the abort Event is set, so a worker whose run has
+          been aborted stops at a check boundary rather than at the end
+       e. Instantiate check with common parameters + org_account_ids + org_id
+       f. Call check.execute(headroom_session)
+    3. Return True, having reached the end without a checkpoint stopping it
 
     Check instantiation uses **kwargs pattern:
     - SCP checks ignore org_account_ids and org_id
@@ -4272,32 +4503,65 @@ def run_checks_for_type(
     """
 
 def run_checks(
-    subaccounts: List[AccountInfo],
+    security_session: boto3.Session,
+    relevant_account_infos: List[AccountInfo],
     config: HeadroomConfig,
-    session: boto3.Session
+    org_account_ids: Set[str],
+    org_id: str
 ) -> None:
     """
     Run all checks across all accounts.
 
     Algorithm:
-    1. Get all organization account IDs via get_all_organization_account_ids()
-    1b. Get this organization's ID via get_organization_id(), which classifies
-        aws:SourceOrgID and aws:SourceOrgPaths guards on service principals
-    2. For each account:
-       a. Check if all SCP results exist via all_check_results_exist("scps", ...)
-       b. Check if all RCP results exist via all_check_results_exist("rcps", ...)
-       c. If both exist: skip entire account
-       d. Get Headroom session via get_headroom_session()
-       e. Run SCP checks via run_checks_for_type("scps", ...)
-       f. Run RCP checks via run_checks_for_type("rcps", ...)
+    1. Receive org_account_ids and org_id, both gathered by perform_analysis().
+       org_id comes from get_organization_id(), which classifies aws:SourceOrgID
+       and aws:SourceOrgPaths guards on service principals
+    2. Serially, for each account, drop it from the work list when both
+       all_check_results_exist("scps", ...) and all_check_results_exist("rcps", ...)
+       report every result already on disk
+    3. Submit the remaining accounts to a ThreadPoolExecutor sized by
+       config.max_account_workers, one account per worker. Each worker:
+       a. Registers its account with set_account() so its log records name it,
+          and clears it in a finally, because the pool reuses the thread and
+          the next records off it would otherwise carry the finished account
+       b. Logs and returns immediately if the abort Event is already set
+       c. Gets a Headroom session via get_headroom_session()
+       d. Runs SCP checks via run_checks_for_type("scps", ..., org_id, abort)
+       e. Runs RCP checks via run_checks_for_type("rcps", ..., org_id, abort)
+    4. Consume the futures with as_completed(). The first one carrying an
+       exception sets the abort Event, cancels the outstanding futures, and
+       re-raises
+    5. A KeyboardInterrupt out of that loop does the same before re-raising,
+       so Ctrl-C is as prompt as a failure
+    6. Once the executor has joined its workers, _log_every_failure() reports
+       every account that failed, not only the one that propagated. Only one
+       exception can reach main(), and concurrent.futures.Future has no
+       __del__, so the others would otherwise be collected without even an
+       "exception was never retrieved" warning
+    7. _log_the_accounts_that_never_ran() then reports how many accounts were
+       cancelled before starting. Every other outcome announces itself; a
+       cancelled account never ran and holds no exception, so without this the
+       operator had to reach that number by subtraction -- and it is the number
+       that says how much of the organization the results on disk cover
 
-    Error handling is deliberately absent: a failure aborts the entire run
-    rather than being logged and skipped. A partial run is more dangerous than no
-    run, because this output drives SCP and RCP deployment and an account skipped
-    for a transient error is indistinguishable in the results from an account
-    with zero violations, so swallowing the error could green-light a policy that
-    breaks it. Accounts that genuinely cannot be analyzed are excluded earlier,
-    by lifecycle state in `get_subaccount_information`.
+    Error handling is deliberately absent: the first failure aborts the entire
+    run rather than being logged and skipped. A partial run is more dangerous
+    than no run, because this output drives SCP and RCP deployment and an
+    account skipped for a transient error is indistinguishable in the results
+    from an account with zero violations, so swallowing the error could
+    green-light a policy that breaks it. Accounts that genuinely cannot be
+    analyzed are excluded earlier, by lifecycle state in
+    `get_subaccount_information`.
+
+    Aborting takes two mechanisms because Python cannot kill a running thread.
+    Future.cancel clears the queue but does nothing to accounts already in
+    flight; the abort Event stops those at their next check boundary.
+
+    An operator's Ctrl-C takes the same path. shutdown(wait=True) defaults to
+    cancel_futures=False and puts its sentinel at the back of the work queue,
+    so an interrupt that only propagated would still wait out every queued
+    account. Catching it makes interrupting prompt and bounded by the one
+    check each in-flight worker is already inside, the same as a failure.
     """
 ```
 
@@ -4704,7 +4968,7 @@ AWS Organization (Management Account: 222222222222)
 │           - IAM Users: 2 (terraform-user, temp-contractor with /contractors/ path)
 │           - IAM Roles: 1 (ThirdPartyVendorA)
 │           - EC2 Instances: 0-1 (test-imdsv2-only when testing)
-│           - Third-Party Accounts: 1 (CrowdStrike: 749430749651)
+│           - Third-Party Accounts: 1 (CrowdStrike: 999911114444)
 ```
 
 **Account ID Mapping:**
@@ -4856,34 +5120,34 @@ Creates IAM roles with diverse trust policy patterns to test RCP third-party det
 
 | Role Name | Account | Trust Policy | Third-Party IDs | Purpose |
 |-----------|---------|--------------|-----------------|---------|
-| ThirdPartyVendorA | acme-co | CrowdStrike | 749430749651 | Simple third-party |
-| ThirdPartyVendorB | shared-foo-bar | Barracuda + Check Point | 758245563457, 517716713836 | Multiple third-parties |
+| ThirdPartyVendorA | acme-co | CrowdStrike | 999911114444 | Simple third-party |
+| ThirdPartyVendorB | shared-foo-bar | Barracuda + Check Point | 999911116666, 999911110000 | Multiple third-parties |
 | WildcardRole | fort-knox | `Principal: "*"` | N/A (wildcard) | Wildcard detection |
 | LambdaExecutionRole | shared-foo-bar | `Service: lambda.amazonaws.com` | N/A (service) | Service principal skip |
 | MultiServiceRole | shared-foo-bar | Multiple services | N/A (services) | Service array handling |
-| MixedPrincipalsRole | shared-foo-bar | CyberArk + EC2 service | 365761988620 | Mixed AWS + Service |
+| MixedPrincipalsRole | shared-foo-bar | CyberArk + EC2 service | 999900007777 | Mixed AWS + Service |
 | SAMLFederationRole | shared-foo-bar | SAML provider | N/A (federated) | Federated SAML |
 | OIDCFederationRole | shared-foo-bar | GitHub OIDC | N/A (federated) | Federated OIDC |
-| OrgAccountCrossAccess | shared-foo-bar | Duckbill Group | 151784055945 | Org-external account |
-| ComplexMultiStatementRole | shared-foo-bar | Forcepoint + Lambda | 062897671886 | Multi-statement |
-| ThirdPartyUserRole | shared-foo-bar | Sophos w/ ExternalId | 978576646331 | ExternalId condition |
-| PlainAccountIdRole | shared-foo-bar | Vectra (plain ID) | 081802104111 | Plain account ID format |
-| MixedFormatsRole | shared-foo-bar | Ermetic + Zesty | 672188301118, 242987662583 | ARN + plain ID mix |
-| ConditionalThirdPartyRole | shared-foo-bar | Duckbill w/ ExternalId | 151784055945 | Conditional trust |
-| UltraComplexRole | shared-foo-bar | Check Point + CrowdStrike + ECS + SAML | 292230061137, 749430749651 | Complex multi-statement |
+| OrgAccountCrossAccess | shared-foo-bar | Duckbill Group | 999900004444 | Org-external account |
+| ComplexMultiStatementRole | shared-foo-bar | Forcepoint + Lambda | 999900001111 | Multi-statement |
+| ThirdPartyUserRole | shared-foo-bar | Sophos w/ ExternalId | 999911117777 | ExternalId condition |
+| PlainAccountIdRole | shared-foo-bar | Vectra (plain ID) | 999900002222 | Plain account ID format |
+| MixedFormatsRole | shared-foo-bar | Ermetic + Zesty | 999911112222, 999900005555 | ARN + plain ID mix |
+| ConditionalThirdPartyRole | shared-foo-bar | Duckbill w/ ExternalId | 999900004444 | Conditional trust |
+| UltraComplexRole | shared-foo-bar | Check Point + CrowdStrike + ECS + SAML | 999900006666, 999911114444 | Complex multi-statement |
 
 **Third-Party Account IDs (Real Vendors):**
-- 749430749651: CrowdStrike
-- 758245563457: Barracuda
-- 517716713836: Check Point
-- 365761988620: CyberArk
-- 062897671886: Forcepoint
-- 978576646331: Sophos
-- 081802104111: Vectra
-- 672188301118: Ermetic
-- 242987662583: Zesty
-- 151784055945: Duckbill Group
-- 292230061137: Check Point (additional account)
+- 999911114444: CrowdStrike
+- 999911116666: Barracuda
+- 999911110000: Check Point
+- 999900007777: CyberArk
+- 999900001111: Forcepoint
+- 999911117777: Sophos
+- 999900002222: Vectra
+- 999911112222: Ermetic
+- 999900005555: Zesty
+- 999900004444: Duckbill Group
+- 999900006666: Check Point (additional account)
 
 **All Roles Attached Policy:**
 ```json
@@ -5312,7 +5576,7 @@ module "rcps_acme_acquisition_ou" {
   # STS
   deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
-    "749430749651",
+    "999911114444",
   ]
 
   # Service confused deputy
@@ -5320,7 +5584,7 @@ module "rcps_acme_acquisition_ou" {
 }
 ```
 
-**Note:** Only contains CrowdStrike (749430749651) because acme-co is the only account in this OU and it only trusts CrowdStrike.
+**Note:** Only contains CrowdStrike (999911114444) because acme-co is the only account in this OU and it only trusts CrowdStrike.
 
 **`{account_name}_rcps.tf`**
 
@@ -5352,17 +5616,17 @@ module "rcps_shared_foo_bar" {
   # STS
   deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
-    "062897671886",
-    "081802104111",
-    "151784055945",
-    "242987662583",
-    "292230061137",
-    "365761988620",
-    "517716713836",
-    "672188301118",
-    "749430749651",
-    "758245563457",
-    "978576646331",
+    "999900001111",
+    "999900002222",
+    "999900004444",
+    "999900005555",
+    "999900006666",
+    "999900007777",
+    "999911110000",
+    "999911112222",
+    "999911114444",
+    "999911116666",
+    "999911117777",
   ]
 
   # Service confused deputy
@@ -5463,17 +5727,17 @@ headroom_results/
     "roles_with_wildcards": 1,
     "violations": 1,
     "unique_third_party_accounts": [
-      "062897671886",
-      "081802104111",
-      "151784055945",
-      "242987662583",
-      "292230061137",
-      "365761988620",
-      "517716713836",
-      "672188301118",
-      "749430749651",
-      "758245563457",
-      "978576646331"
+      "999900001111",
+      "999900002222",
+      "999900004444",
+      "999900005555",
+      "999900006666",
+      "999900007777",
+      "999911110000",
+      "999911112222",
+      "999911114444",
+      "999911116666",
+      "999911117777"
     ],
     "third_party_account_count": 11
   },
@@ -5481,7 +5745,7 @@ headroom_results/
     {
       "role_name": "ThirdPartyVendorA",
       "role_arn": "arn:aws:iam::REDACTED:role/ThirdPartyVendorA",
-      "third_party_account_ids": ["749430749651"],
+      "third_party_account_ids": ["999911114444"],
       "has_wildcard_principal": false
     }
   ],
@@ -5684,7 +5948,7 @@ terraform destroy -target=aws_iam_role.wildcard_role
 
 **Expected Results:**
 - OU-level RCP recommended (if other accounts in OU also compliant)
-- Third-party allowlist: `["749430749651"]`
+- Third-party allowlist: `["999911114444"]`
 - Compliance: 100%
 
 **Generated File:** `rcps/acme_acquisition_ou_rcps.tf`
