@@ -225,8 +225,16 @@ class TestMergeConfigs:
 
         assert result.use_account_name_from_tags is False
 
-    def test_merge_configs_with_extra_yaml_fields(self) -> None:
-        """Test merging with extra fields in YAML (should be ignored)."""
+    def test_merge_configs_rejects_extra_yaml_fields(self) -> None:
+        """
+        A key Headroom does not recognize aborts the run.
+
+        This asserted the opposite until `HeadroomConfig` forbade extras.
+        Dropping them was indistinguishable from a misspelling, and the key
+        most likely to be misspelled is one whose loss changes how the run
+        behaves without changing whether it succeeds. `setup_configuration`
+        turns the ValidationError into `Configuration Error` and exit 1.
+        """
         yaml_config = {
             "use_account_name_from_tags": False,
             "account_tag_layout": {
@@ -241,13 +249,11 @@ class TestMergeConfigs:
         cli_args = MagicMock()
         cli_args.config = "test.yaml"
 
-        result = merge_configs(yaml_config, cli_args)
+        with pytest.raises(ValidationError) as raised:
+            merge_configs(yaml_config, cli_args)
 
-        # Extra fields should be ignored, only model fields should be present
-        assert hasattr(result, 'use_account_name_from_tags')
-        assert hasattr(result, 'account_tag_layout')
-        assert not hasattr(result, 'extra_field')
-        assert not hasattr(result, 'another_extra')
+        reported = {error["loc"][0] for error in raised.value.errors()}
+        assert reported == {"extra_field", "another_extra"}
 
     def test_merge_configs_deep_copy(self) -> None:
         """Test that merge_configs doesn't modify the original YAML config."""

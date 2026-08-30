@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # Centralized defaults for directories
@@ -20,12 +20,23 @@ MAX_ACCOUNT_WORKERS = 32
 
 
 class AccountTagLayout(BaseModel):
+    # These are the only tags Headroom reads. A fourth key here is an intent
+    # it cannot honour, so it aborts rather than dropping it silently.
+    model_config = ConfigDict(extra="forbid")
+
     environment: str
     name: str
     owner: str
 
 
 class HeadroomConfig(BaseModel):
+    # An unknown key aborts rather than being ignored. pydantic's default is
+    # to drop it, which turned a misspelled `max_account_workers` into a
+    # silent fall back to the default -- the run still works, just not the
+    # way the operator asked. Nothing here is optional enough to be worth
+    # guessing at, so a key Headroom does not recognize is an error.
+    model_config = ConfigDict(extra="forbid")
+
     management_account_id: Optional[str] = None
     security_analysis_account_id: Optional[str] = None
     # Exclude account IDs from result files and filenames
