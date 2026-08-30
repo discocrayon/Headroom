@@ -1,7 +1,14 @@
 import argparse
 import yaml
 from typing import Any, Dict
-from .config import HeadroomConfig
+from .config import (
+    DEFAULT_ACCOUNT_WORKERS,
+    DEFAULT_RCPS_DIR,
+    DEFAULT_RESULTS_DIR,
+    DEFAULT_SCPS_DIR,
+    MAX_ACCOUNT_WORKERS,
+    HeadroomConfig,
+)
 
 
 def load_yaml_config(path: str) -> Dict[str, Any]:
@@ -46,26 +53,29 @@ def parse_cli_args() -> argparse.Namespace:
         '--results-dir',
         dest='results_dir',
         type=str,
-        help='Directory containing headroom results (default test_environment/headroom_results)'
+        help=f'Directory containing headroom results (default {DEFAULT_RESULTS_DIR})'
     )
     parser.add_argument(
         '--scps-dir',
         dest='scps_dir',
         type=str,
-        help='Directory to output SCP Terraform (default test_environment/scps)'
+        help=f'Directory to output SCP Terraform (default {DEFAULT_SCPS_DIR})'
     )
     parser.add_argument(
         '--rcps-dir',
         dest='rcps_dir',
         type=str,
-        help='Directory to output RCP Terraform (default test_environment/rcps)'
+        help=f'Directory to output RCP Terraform (default {DEFAULT_RCPS_DIR})'
     )
 
     parser.add_argument(
         '--max-account-workers',
         dest='max_account_workers',
         type=int,
-        help='Accounts to analyze concurrently (1 runs them serially)'
+        help=(
+            f'Accounts to analyze concurrently, 1 runs them serially '
+            f'(default {DEFAULT_ACCOUNT_WORKERS}, maximum {MAX_ACCOUNT_WORKERS})'
+        )
     )
 
     # Account IDs
