@@ -2,12 +2,16 @@
 Tests for headroom.aws.policy_documents module.
 """
 
+from typing import Any, Dict
+
 import pytest
 
 from headroom.aws.policy_documents import (
     MalformedPolicyError,
+    UnknownSourceConditionError,
     has_not_principal,
     normalize_statements,
+    read_service_principal_sources,
 )
 from headroom.types import JsonDict
 
@@ -95,3 +99,289 @@ class TestHasNotPrincipal:
         }
 
         assert has_not_principal(statement) is True
+
+
+class TestServicePrincipalSources:
+    """Test read_service_principal_sources against every disposition."""
+
+    ORG_ACCOUNTS = {"111111111111"}
+    WHERE = "Bucket 'a-bucket'"
+
+    @staticmethod
+    def _statement(principal: Any, condition: Any = None) -> Dict[str, Any]:
+        """Build one Allow statement, optionally with a Condition block."""
+        statement: Dict[str, Any] = {
+            "Effect": "Allow",
+            "Principal": principal,
+            "Action": "s3:PutObject",
+        }
+        if condition is not None:
+            statement["Condition"] = condition
+        return statement
+
+    def test_no_service_principal_reports_nothing(self) -> None:
+        """A statement naming only AWS principals has no service source."""
+        statement = self._statement({"AWS": "arn:aws:iam::999999999999:root"})
+
+        assert read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        ) == []
+
+    def test_unguarded_service_principal_is_recorded_not_allowlisted(self) -> None:
+        """
+        A Service principal with no source key asks nothing of the allowlist.
+
+        The statement's Null gate means the RCP never fires on a request
+        carrying no source account, so there is nothing to permit.
+        """
+        statement = self._statement({"Service": "sns.amazonaws.com"})
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert len(sources) == 1
+        assert sources[0].service_principal == "sns.amazonaws.com"
+        assert sources[0].source_account_ids == []
+        assert sources[0].has_source_condition is False
+        assert sources[0].has_wildcard_source is False
+
+    def test_in_org_source_account_is_not_allowlisted(self) -> None:
+        """A source already inside the organization needs no allowlist entry."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringEquals": {"aws:SourceAccount": "111111111111"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].source_account_ids == []
+        assert sources[0].has_source_condition is True
+        assert sources[0].has_wildcard_source is False
+
+    def test_out_of_org_source_account_reaches_the_allowlist(self) -> None:
+        """A third-party source is what the allowlist exists to carry."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringEquals": {"aws:SourceAccount": "999999999999"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].source_account_ids == ["999999999999"]
+        assert sources[0].has_wildcard_source is False
+
+    def test_condition_keys_are_matched_case_insensitively(self) -> None:
+        """IAM matches condition key names without regard to case."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringEquals": {"aws:sourceaccount": "999999999999"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].source_account_ids == ["999999999999"]
+
+    def test_source_arn_yields_its_account(self) -> None:
+        """aws:SourceArn is the more common pin, and carries the account."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"ArnLike": {
+                "aws:SourceArn": "arn:aws:sns:us-west-2:999999999999:a-topic"
+            }},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].source_account_ids == ["999999999999"]
+        assert sources[0].has_wildcard_source is False
+
+    def test_wildcard_source_account_cannot_be_expressed(self) -> None:
+        """An unbounded source set is what withholds the statement."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringLike": {"aws:SourceAccount": "*"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].has_wildcard_source is True
+        assert sources[0].source_account_ids == []
+
+    def test_wildcard_account_in_source_arn_cannot_be_expressed(self) -> None:
+        """An ARN whose account field is a wildcard names no account."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"ArnLike": {"aws:SourceArn": "arn:aws:sns:us-west-2:*:a-topic"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].has_wildcard_source is True
+
+    def test_bucket_arn_alone_cannot_be_expressed(self) -> None:
+        """
+        S3 ARNs carry no account field at all.
+
+        `arn:aws:s3:::a-bucket` never identifies whose bucket drove the
+        call, which is why AWS pairs aws:SourceArn with aws:SourceAccount.
+        """
+        statement = self._statement(
+            {"Service": "s3.amazonaws.com"},
+            {"ArnLike": {"aws:SourceArn": "arn:aws:s3:::a-bucket"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].has_wildcard_source is True
+
+    def test_bucket_arn_resolves_through_its_companion_source_account(self) -> None:
+        """The companion key is what makes an accountless ARN readable."""
+        statement = self._statement(
+            {"Service": "s3.amazonaws.com"},
+            {
+                "ArnLike": {"aws:SourceArn": "arn:aws:s3:::a-bucket"},
+                "StringEquals": {"aws:SourceAccount": "999999999999"},
+            },
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].source_account_ids == ["999999999999"]
+        assert sources[0].has_wildcard_source is False
+
+    def test_every_service_principal_in_one_statement_is_reported(self) -> None:
+        """One Condition block guards every service the statement names."""
+        statement = self._statement(
+            {"Service": ["sns.amazonaws.com", "events.amazonaws.com"]},
+            {"StringEquals": {"aws:SourceAccount": "999999999999"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert [source.service_principal for source in sources] == [
+            "sns.amazonaws.com",
+            "events.amazonaws.com",
+        ]
+        assert all(s.source_account_ids == ["999999999999"] for s in sources)
+
+    def test_aws_and_service_principals_together_report_only_the_service(self) -> None:
+        """The AWS principal path is untouched by this reader."""
+        statement = self._statement(
+            {
+                "AWS": "arn:aws:iam::999999999999:root",
+                "Service": "sns.amazonaws.com",
+            }
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert len(sources) == 1
+        assert sources[0].service_principal == "sns.amazonaws.com"
+
+    def test_source_org_id_raises(self) -> None:
+        """
+        Classifying an organization ID needs our own, which we do not have.
+
+        Guessing would put a foreign organization's sources in the
+        allowlist, or leave this organization's out.
+        """
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringEquals": {"aws:SourceOrgID": "o-notours"}},
+        )
+
+        with pytest.raises(UnknownSourceConditionError, match="organization ID"):
+            read_service_principal_sources(
+                statement, self.ORG_ACCOUNTS, self.WHERE
+            )
+
+    def test_negated_operator_on_a_source_key_raises(self) -> None:
+        """A negated operator excludes rather than permits; it is no guard."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringNotEquals": {"aws:SourceAccount": "999999999999"}},
+        )
+
+        with pytest.raises(UnknownSourceConditionError, match="StringNotEquals"):
+            read_service_principal_sources(
+                statement, self.ORG_ACCOUNTS, self.WHERE
+            )
+
+    def test_malformed_source_account_raises(self) -> None:
+        """A source account that is neither an ID nor a wildcard is unreadable."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringEquals": {"aws:SourceAccount": "not-an-account"}},
+        )
+
+        with pytest.raises(UnknownSourceConditionError, match="not-an-account"):
+            read_service_principal_sources(
+                statement, self.ORG_ACCOUNTS, self.WHERE
+            )
+
+    def test_non_string_source_condition_value_raises(self) -> None:
+        """A source key holding neither a string nor a list is unreadable."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringEquals": {"aws:SourceAccount": 123}},
+        )
+
+        with pytest.raises(UnknownSourceConditionError, match="int"):
+            read_service_principal_sources(
+                statement, self.ORG_ACCOUNTS, self.WHERE
+            )
+
+    def test_unrelated_conditions_are_ignored(self) -> None:
+        """Only the three source keys are read; everything else passes by."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringEquals": {"aws:SecureTransport": "true"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].has_source_condition is False
+        assert sources[0].has_wildcard_source is False
+
+    def test_operator_with_non_mapping_entries_is_ignored(self) -> None:
+        """An operator whose value is not itself a mapping guards nothing."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"Bool": "true"},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].has_source_condition is False
+        assert sources[0].has_wildcard_source is False
+
+    def test_wildcard_principal_string_reports_nothing(self) -> None:
+        """`Principal: "*"` is not a dict and names no service."""
+        assert read_service_principal_sources(
+            self._statement("*"), self.ORG_ACCOUNTS, self.WHERE
+        ) == []
