@@ -8,7 +8,7 @@ resource policies, specifically for identifying third-party account access (RCP 
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Union
 
 from boto3.session import Session
@@ -18,7 +18,13 @@ from mypy_boto3_secretsmanager.client import SecretsManagerClient
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
 from .helpers import get_all_regions
-from .policy_documents import has_not_principal, normalize_statements
+from .policy_documents import (
+    ServicePrincipalSource,
+    has_actionable_service_principal_source,
+    has_not_principal,
+    normalize_statements,
+    read_service_principal_sources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +59,10 @@ class SecretsPolicyAnalysis:
             NotPrincipal, which reaches everyone it does not name
         has_non_account_principals: True if policy has Federated/CanonicalUser principals
         actions_by_account: Dict mapping account IDs to sets of allowed actions
+        service_principal_sources: Service principals this policy trusts,
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag.
     """
     secret_name: str
     secret_arn: str
@@ -60,6 +70,7 @@ class SecretsPolicyAnalysis:
     has_wildcard_principal: bool
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
 def _extract_account_ids_from_principal(
@@ -172,7 +183,8 @@ def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
 
 def analyze_secrets_manager_policies(
     session: Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[SecretsPolicyAnalysis]:
     """
     Analyze all Secrets Manager resource policies and identify third-party account principals.
@@ -194,6 +206,8 @@ def analyze_secrets_manager_policies(
     Args:
         session: boto3 Session for the target account
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of SecretsPolicyAnalysis for secrets with third-party accounts or wildcards
@@ -207,7 +221,7 @@ def analyze_secrets_manager_policies(
 
     for region in regions:
         logger.info(f"Analyzing Secrets Manager in {region}")
-        regional_results = _analyze_secrets_in_region(session, region, org_account_ids)
+        regional_results = _analyze_secrets_in_region(session, region, org_account_ids, org_id)
         results.extend(regional_results)
 
     logger.info(
@@ -220,7 +234,8 @@ def analyze_secrets_manager_policies(
 def _analyze_secrets_in_region(
     session: Session,
     region: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[SecretsPolicyAnalysis]:
     """
     Analyze Secrets Manager secrets in a specific region.
@@ -229,6 +244,8 @@ def _analyze_secrets_in_region(
         session: boto3 Session for the target account
         region: AWS region to analyze
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of SecretsPolicyAnalysis results for this region
@@ -266,7 +283,8 @@ def _analyze_secrets_in_region(
                     secret_name,
                     secret_arn,
                     policy,
-                    org_account_ids
+                    org_account_ids,
+                    org_id
                 )
 
                 if analysis_result:
@@ -283,7 +301,8 @@ def _analyze_secret_policy(
     secret_name: str,
     secret_arn: str,
     policy: JsonDict,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> Optional[SecretsPolicyAnalysis]:
     """
     Analyze a single secret's resource policy.
@@ -293,6 +312,8 @@ def _analyze_secret_policy(
         secret_arn: ARN of the secret
         policy: Parsed policy JSON
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         SecretsPolicyAnalysis if secret has third-party access, None otherwise
@@ -305,6 +326,7 @@ def _analyze_secret_policy(
     has_wildcard = False
     has_non_account_principals = False
     actions_by_account: Dict[str, Set[str]] = {}
+    sources: List[ServicePrincipalSource] = []
 
     statements = normalize_statements(policy, f"Secret '{secret_name}' ({secret_arn})")
 
@@ -321,6 +343,10 @@ def _analyze_secret_policy(
         principal = statement.get("Principal")
         if not principal:
             continue
+
+        sources.extend(
+            read_service_principal_sources(statement, org_account_ids, org_id, f"Secret '{secret_name}'")
+        )
 
         if _has_wildcard_principal(principal):
             has_wildcard = True
@@ -342,14 +368,16 @@ def _analyze_secret_policy(
                     actions_by_account[account_id] = set()
                 actions_by_account[account_id].update(actions)
 
-    if third_party_accounts or has_wildcard or has_non_account_principals:
+    has_service_source = has_actionable_service_principal_source(sources)
+    if third_party_accounts or has_wildcard or has_non_account_principals or has_service_source:
         return SecretsPolicyAnalysis(
             secret_name=secret_name,
             secret_arn=secret_arn,
             third_party_account_ids=third_party_accounts,
             has_wildcard_principal=has_wildcard,
             has_non_account_principals=has_non_account_principals,
-            actions_by_account=actions_by_account
+            actions_by_account=actions_by_account,
+            service_principal_sources=sources,
         )
 
     return None

@@ -326,6 +326,7 @@ is AP-009, not a proxy.
 
 **Examples:**
 - Region restrictions: Deny all actions unless `aws:RequestedRegion` is in approved list
+- Confused deputy protection: Deny an AWS service acting on a caller's behalf unless the source account is in the organization or in an approved list, and only when the request carries a source account at all (`deny_service_confused_deputy`)
 
 **Policy Structure:**
 
@@ -591,6 +592,62 @@ This RCP restricts Secrets Manager secret access to organization principals and 
 
 ---
 
+### Pattern 6: `deny_service_confused_deputy`
+
+**Check:** `headroom/checks/rcps/deny_service_confused_deputy.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf`
+**Variable:** `service_confused_deputy_source_account_ids_allowlist`
+
+The six RCP statements above all exempt AWS service principals, because a service call carries no `aws:PrincipalOrgID` and the Deny would otherwise match every service integration in the organization. This statement narrows that exemption back down, denying the same six services' actions when an AWS service acts on behalf of a source account outside the organization.
+
+```json
+{
+  "Sid": "DenyServiceConfusedDeputy",
+  "Effect": "Deny",
+  "Principal": "*",
+  "Action": [
+    "ecr:*",
+    "kms:*",
+    "s3:*",
+    "secretsmanager:*",
+    "sqs:*",
+    "sts:AssumeRole"
+  ],
+  "Resource": "*",
+  "Condition": {
+    "StringNotEqualsIfExists": {
+      "aws:SourceOrgID": "o-exampleorgid",
+      "aws:SourceAccount": [
+        "999999999999"
+      ]
+    },
+    "Null": {
+      "aws:SourceAccount": "false"
+    },
+    "Bool": {
+      "aws:PrincipalIsAWSService": "true"
+    }
+  }
+}
+```
+
+**Policy Structure:**
+- Deny `ecr:*`, `kms:*`, `s3:*`, `secretsmanager:*`, `sqs:*` and `sts:AssumeRole` - the union of the six statements' actions, in one statement rather than six, to stay inside the 5,120-character RCP budget
+- Only when the caller **is** an AWS service (`Bool`, `true`), which is the inverse of the `BoolIfExists` `false` the other six carry
+- Only when the request carries an `aws:SourceAccount` (`Null` = `"false"` reads as "the key is present"). A service call populating only `aws:SourceArn`, or no source keys at all, falls outside this statement entirely - it narrows the service exemption rather than closing it, which is what makes the control deployable without first discovering every service integration in the estate
+- Unless that source account belongs to this organization (`aws:SourceOrgID`) or is in the allowlist (`aws:SourceAccount`). An empty allowlist omits the key rather than emitting `[]`, leaving the organization condition to deny every outside source
+- `aws:SourceOrgID` is compared with `StringNotEqualsIfExists`, so a source in a standalone account - which belongs to no organization and carries no organization ID - is still denied. An attacker cannot escape the control by using an unattached account
+
+**Why Pattern 6 rather than 5a:** the allowlisted account is not the principal. The principal is the AWS service, and the account being allowlisted is the one that configured it. The statement composes a conditional deny (the `Null` and `Bool` gates) with a condition-key value allowlist on `aws:SourceAccount`, which is the composition Pattern 6 describes - three condition keys - `aws:SourceOrgID`, `aws:SourceAccount` and `aws:PrincipalIsAWSService` - in four entries across three operator blocks, none of them `aws:PrincipalAccount`.
+
+**Headroom's Role:** Reads the source guard on every `Allow` statement that names a `Service` principal, across the six resource types the other RCP checks already analyze - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies. Recording that guard costs those six checks nothing, but this check re-runs their six analyzers rather than reusing the results, so every RCP read API is issued twice per account per run. Caching is deliberately not implemented; it is a separate optimization if the duplication proves material. Out-of-organization accounts named by `aws:SourceAccount`, or extracted from `aws:SourceArn`, are unioned into the allowlist. A guard no allowlist can express - `*` in the account, or an ARN yielding no account with no companion `aws:SourceAccount` - is a violation that withholds the statement from that account, the same mechanism a wildcard principal already triggers.
+
+**Key Feature:** Service principals trusted with no source guard are neither listed nor counted. That is a volume decision, not a safety one: every log bucket and service role carries such a trust, so listing them would bury the sources that matter, and because five of the six analyzers drop an analysis with nothing to report while SQS keeps every queue that carries a policy, any estate-wide count taken here would be exhaustive for queues and incidental for the rest. They are still within the statement's reach - `aws:SourceAccount` is populated by the calling service, not by the resource policy, so an out-of-organization account driving an unguarded trust is denied once the statement deploys, and no resource policy names it for discovery to find. Closing that path is what the statement is for; finding the legitimate drivers of it before deploying is a CloudTrail exercise. See `documentation/CHECKS.md` for the full disposition table and the rollout steps.
+
+**A guard that cannot be read:** A source guard that cannot be read is recorded as a violation rather than dropped - a source key under an operator that does not pin it to a value, or an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard. A guard scoped to another organization by `aws:SourceOrgID` or `aws:SourceOrgPaths` reaches the same disposition by a different route: it is read successfully, but the allowlist holds account IDs and another organization's accounts are not knowable from here. A scope naming this organization needs no allowlist entry at all, because the statement already exempts it. The violation withholds the statement from that account, so a deployed RCP never denies access on the strength of an allowlist nobody could compute. It is recorded rather than raised because the parser sits inside six analyzers shared with six pre-existing checks that read no source guard, and raising would abort the estate run for all of them.
+
+---
+
 ### Pattern 5b: `deny_iam_user_creation`
 
 **Check:** `headroom/checks/scps/deny_iam_user_creation.py`
@@ -685,7 +742,7 @@ Headroom implements checks that analyze compliance with these policy patterns:
 
 1. **Scanning:** Headroom scans AWS accounts to find resources that would be affected by these policies
 2. **Categorization:** Results are categorized as violations, exemptions (Pattern 4), or compliant
-3. **Allowlist Generation:** For Patterns 5a/5b/5c, Headroom generates the lists of principals/resources/values that should be allowed
+3. **Allowlist Generation:** For Patterns 5a/5b/5c and the Pattern 6 compositions built on them, Headroom generates the lists of principals/resources/values that should be allowed
 4. **Terraform Generation:** Headroom can generate Terraform configurations that implement these patterns
 
 **Workflow:**

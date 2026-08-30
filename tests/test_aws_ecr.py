@@ -5,12 +5,13 @@ Tests for headroom.aws.ecr module.
 import json
 
 import pytest
-from typing import Any
+from typing import Any, List, Optional
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
 from headroom.aws.ecr import (
-    analyze_ecr_repository_policies,
+    ECRPolicyAnalysis,
+    analyze_ecr_policies,
     _extract_account_ids_from_principal,
     _has_wildcard_principal,
     _normalize_actions,
@@ -18,6 +19,21 @@ from headroom.aws.ecr import (
     UnsupportedPrincipalTypeError,
 )
 from headroom.aws.policy_documents import MalformedPolicyError
+from tests.constants import ORG_ID
+
+
+def _no_registry_policy(mock_ecr_client: MagicMock) -> None:
+    """
+    Configure a mock ECR client to report that its region has no registry policy.
+
+    Every test not about registry policies needs this. An unconfigured
+    MagicMock returns a Mock from get_registry_policy(), which the analyzer
+    would hand to json.loads().
+    """
+    error_response: Any = {"Error": {"Code": "RegistryPolicyNotFoundException"}}
+    mock_ecr_client.get_registry_policy.side_effect = ClientError(
+        error_response, "GetRegistryPolicy"
+    )
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -140,13 +156,14 @@ class TestNormalizeActions:
 
 
 class TestAnalyzeECRRepositoryPolicies:
-    """Test analyze_ecr_repository_policies function."""
+    """Test analyze_ecr_policies function."""
 
     def test_successful_analysis(self) -> None:
         """Test successful ECR repository policy analysis."""
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -193,7 +210,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111", "222222222222"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].repository_name == "test-repo"
@@ -207,6 +224,7 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -239,7 +257,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -248,6 +266,7 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -289,7 +308,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].has_wildcard_principal is True
@@ -299,6 +318,7 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -342,7 +362,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111", "222222222222"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -351,6 +371,7 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -397,7 +418,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         actions = results[0].actions_by_account["999999999999"]
@@ -418,6 +439,7 @@ class TestAnalyzeECRRepositoryPolicies:
         ecr_clients = {}
         for region in ["us-east-1", "us-west-2"]:
             mock_ecr_client = MagicMock()
+            _no_registry_policy(mock_ecr_client)
             repository_paginator = MagicMock()
             repository_paginator.paginate.return_value = [
                 {
@@ -459,7 +481,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 2
         regions_found = {r.region for r in results}
@@ -470,6 +492,7 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -516,7 +539,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111", "222222222222"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].third_party_account_ids == {"999999999999"}
@@ -526,6 +549,7 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -569,7 +593,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -578,6 +602,7 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -618,7 +643,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_repository_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -627,6 +652,7 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -659,13 +685,14 @@ class TestAnalyzeECRRepositoryPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError):
-            analyze_ecr_repository_policies(mock_session, org_account_ids)
+            analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_ecr_client_error(self) -> None:
         """Test that ECR client errors during describe_repositories are raised."""
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -687,13 +714,14 @@ class TestAnalyzeECRRepositoryPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError):
-            analyze_ecr_repository_policies(mock_session, org_account_ids)
+            analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_federated_principal_fails_fast(self) -> None:
         """Test that Federated principal causes immediate failure."""
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -738,7 +766,7 @@ class TestAnalyzeECRRepositoryPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            analyze_ecr_repository_policies(mock_session, org_account_ids)
+            analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert "Federated" in str(exc_info.value)
         assert "would break if the RCP is deployed" in str(exc_info.value)
@@ -752,6 +780,7 @@ class TestPolicyGrammar:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
 
         mock_session.client.side_effect = lambda service, **kwargs: {
             "ec2": mock_ec2_client,
@@ -778,7 +807,7 @@ class TestPolicyGrammar:
             "policyText": json.dumps(policy)
         }
 
-        return analyze_ecr_repository_policies(mock_session, {"111111111111"})
+        return analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -838,3 +867,241 @@ class TestPolicyGrammar:
         })
 
         assert results == []
+
+    def test_guarded_service_principal_is_recorded(self) -> None:
+        """
+        A repository policy pinning a third-party source records it.
+
+        The account reaches the allowlist through the confused deputy
+        check, not through this analysis's third_party_account_ids.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "sns.amazonaws.com"},
+                "Action": "ecr:BatchGetImage",
+                "Condition": {
+                    "StringEquals": {"aws:SourceAccount": "999999999999"}
+                },
+            }],
+        })
+
+        assert len(results[0].service_principal_sources) == 1
+        source = results[0].service_principal_sources[0]
+        assert source.service_principal == "sns.amazonaws.com"
+        assert source.source_account_ids == ["999999999999"]
+
+        # The source is inert here: it belongs to deny_service_confused_deputy,
+        # and folding it into these fields would widen this check's allowlist
+        # with an account that drives a service call rather than making one.
+        assert results[0].third_party_account_ids == set()
+        assert results[0].has_wildcard_principal is False
+
+    def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
+        """The field stays empty when no statement names a service."""
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "ecr:BatchGetImage",
+            }],
+        })
+
+        assert results[0].service_principal_sources == []
+
+
+class TestRegistryPolicy:
+    """
+    The registry policy, which AWS enforces on every ECR request in the region.
+
+    A repository policy governs one repository. A registry policy governs the
+    whole registry, so a third party named in one reaches every repository the
+    region holds - and reaches them without any repository policy saying so.
+    """
+    ORG_ACCOUNT = "111111111111"
+    THIRD_PARTY = "999999999999"
+
+    @staticmethod
+    def _policy(principal: Any, action: Any = "ecr:BatchGetImage") -> Any:
+        """
+        Build a one-statement Allow policy.
+
+        Args:
+            principal: Principal field for the statement
+            action: Action field for the statement
+
+        Returns:
+            A policy document
+        """
+        return {
+            "Version": "2012-10-17",
+            "Statement": [
+                {"Effect": "Allow", "Principal": principal, "Action": action}
+            ],
+        }
+
+    @staticmethod
+    def _analyze(
+        registry_policy: Any = None,
+        repositories: Optional[List[Any]] = None,
+        repository_policy: Any = None,
+        registry_error: Optional[str] = None,
+    ) -> List[ECRPolicyAnalysis]:
+        """
+        Run the analyzer over a single region.
+
+        Args:
+            registry_policy: Registry policy document, or None for a registry
+                that carries no policy
+            repositories: Repositories the region holds - empty by default, so
+                that any result can only have come from the registry policy
+            repository_policy: Policy returned for those repositories, or None
+                for repositories that carry no policy
+            registry_error: AWS error code get_registry_policy should raise
+                instead of returning, which takes precedence over
+                registry_policy
+
+        Returns:
+            The analyzer's results for the region
+        """
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"repositories": repositories or []}]
+        mock_ecr_client.get_paginator.return_value = paginator
+
+        if repository_policy is None:
+            missing_repository_policy: Any = {
+                "Error": {"Code": "RepositoryPolicyNotFoundException"}
+            }
+            mock_ecr_client.get_repository_policy.side_effect = ClientError(
+                missing_repository_policy, "GetRepositoryPolicy"
+            )
+        else:
+            mock_ecr_client.get_repository_policy.return_value = {
+                "policyText": json.dumps(repository_policy)
+            }
+
+        if registry_error is not None:
+            failure: Any = {"Error": {"Code": registry_error}}
+            mock_ecr_client.get_registry_policy.side_effect = ClientError(
+                failure, "GetRegistryPolicy"
+            )
+        elif registry_policy is None:
+            _no_registry_policy(mock_ecr_client)
+        else:
+            mock_ecr_client.get_registry_policy.return_value = {
+                "policyText": json.dumps(registry_policy)
+            }
+
+        return analyze_ecr_policies(
+            mock_session, {TestRegistryPolicy.ORG_ACCOUNT}, ORG_ID
+        )
+
+    def test_third_party_in_registry_policy_is_found(self) -> None:
+        """A third party named only here still reaches the allowlist."""
+        results = self._analyze(
+            registry_policy=self._policy(
+                {"AWS": f"arn:aws:iam::{self.THIRD_PARTY}:root"}
+            )
+        )
+
+        assert len(results) == 1
+        assert results[0].scope == "registry"
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+
+    def test_registry_policy_names_no_repository(self) -> None:
+        """A registry policy is not a repository, so it reports none."""
+        results = self._analyze(
+            registry_policy=self._policy(
+                {"AWS": f"arn:aws:iam::{self.THIRD_PARTY}:root"}
+            )
+        )
+
+        assert results[0].repository_name is None
+        assert results[0].repository_arn is None
+        assert results[0].region == "us-east-1"
+
+    def test_replication_actions_are_recorded_like_any_other(self) -> None:
+        """
+        Replication grants are reported, not special-cased.
+
+        Deciding a grant is replication-only means inferring that the caller
+        will be the ECR service-linked role, which the analyzer never observes.
+        """
+        results = self._analyze(
+            registry_policy=self._policy(
+                {"AWS": f"arn:aws:iam::{self.THIRD_PARTY}:root"},
+                ["ecr:ReplicateImage", "ecr:CreateRepository"],
+            )
+        )
+
+        assert results[0].actions_by_account[self.THIRD_PARTY] == [
+            "ecr:CreateRepository",
+            "ecr:ReplicateImage",
+        ]
+
+    def test_absent_registry_policy_reports_nothing(self) -> None:
+        """A registry that carries no policy contributes no result."""
+        assert self._analyze(registry_policy=None) == []
+
+    def test_registry_policy_naming_only_org_accounts_reports_nothing(self) -> None:
+        """An in-org grant is not third-party access."""
+        results = self._analyze(
+            registry_policy=self._policy(
+                {"AWS": f"arn:aws:iam::{self.ORG_ACCOUNT}:root"}
+            )
+        )
+
+        assert results == []
+
+    def test_wildcard_registry_policy_is_flagged(self) -> None:
+        """A wildcard here reaches everyone, across every repository at once."""
+        results = self._analyze(registry_policy=self._policy({"AWS": "*"}))
+
+        assert len(results) == 1
+        assert results[0].scope == "registry"
+        assert results[0].has_wildcard_principal is True
+
+    def test_registry_policy_error_propagates(self) -> None:
+        """An error other than a missing policy aborts rather than reporting nothing."""
+        with pytest.raises(ClientError):
+            self._analyze(registry_error="AccessDeniedException")
+
+    def test_repository_and_registry_are_reported_separately(self) -> None:
+        """The two surfaces are separate resources, so each gets its own row."""
+        results = self._analyze(
+            registry_policy=self._policy(
+                {"AWS": f"arn:aws:iam::{self.THIRD_PARTY}:root"}
+            ),
+            repositories=[
+                {
+                    "repositoryName": "test-repo",
+                    "repositoryArn": (
+                        f"arn:aws:ecr:us-east-1:{self.ORG_ACCOUNT}"
+                        ":repository/test-repo"
+                    ),
+                }
+            ],
+            repository_policy=self._policy({"AWS": "arn:aws:iam::888888888888:root"}),
+        )
+
+        by_scope = {result.scope: result for result in results}
+
+        assert set(by_scope) == {"registry", "repository"}
+        assert by_scope["registry"].third_party_account_ids == {self.THIRD_PARTY}
+        assert by_scope["repository"].third_party_account_ids == {"888888888888"}
+        assert by_scope["repository"].repository_name == "test-repo"

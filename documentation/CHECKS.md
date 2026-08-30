@@ -535,16 +535,23 @@ resource gets the blocker and the CloudTrail follow-up a literal wildcard
 gets. `Deny` with `NotPrincipal` is the form AWS recommends and restricts
 rather than grants, so it counts for nothing.
 
-**Condition Handling**: RCP checks read a statement's `Effect`, `Principal`, and
-`Action`; they do not evaluate `Condition`. A wildcard principal narrowed by
-`aws:PrincipalOrgID` grants nothing outside the organization, but is still
-counted as a violation and still blocks that account from the RCP. A grant
-narrowed by `s3:prefix` or `aws:SourceVpce` still contributes its account to
-the allowlist at full width. Neither can hide a third party from the scan - a
-condition only ever narrows a grant - so both cost coverage rather than safety.
-`Resource` and `NotResource` are not read either, with the same widening-only
-effect: a statement scoped away from the resource still contributes its
-principals.
+**Condition Handling**: The six third-party access checks read a statement's
+`Effect`, `Principal`, and `Action`; they do not evaluate `Condition`. A
+wildcard principal narrowed by `aws:PrincipalOrgID` grants nothing outside the
+organization, but is still counted as a violation and still blocks that account
+from the RCP. A grant narrowed by `s3:prefix` or `aws:SourceVpce` still
+contributes its account to the allowlist at full width. Neither can hide a third
+party from the scan - a condition only ever narrows a grant - so both cost
+coverage rather than safety. `Resource` and `NotResource` are not read either,
+with the same widening-only effect: a statement scoped away from the resource
+still contributes its principals.
+
+`deny_service_confused_deputy` is the one exception, and a narrow one. It reads
+four condition keys - `aws:SourceAccount`, `aws:SourceArn`, `aws:SourceOrgID`
+and `aws:SourceOrgPaths` - and only on statements naming a `Service` principal,
+because that guard is the whole subject of the check. Everywhere else the
+widening-only argument above still holds, and general condition-aware analysis
+remains a separate concern.
 
 ### STS Third-Party AssumeRole Check
 
@@ -585,6 +592,8 @@ China ARNs all resolve.
 - Wildcard principals
 - Role ARNs and trust policies
 
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a role that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A role kept for that reason alone lands in `compliant_instances`, so `total_roles_analyzed` and `roles_third_parties_can_access` now count roles no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a role contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
+
 **Example Output**:
 ```json
 {
@@ -606,11 +615,12 @@ China ARNs all resolve.
 
 **Check Name**: `deny_s3_third_party_access`
 
-**Purpose**: Identifies S3 buckets with policies allowing third-party account access or non-account-based principals.
+**Purpose**: Identifies S3 buckets whose policy or ACL allows third-party account access or non-account-based principals.
 
 **How it Works**:
 - Lists all S3 buckets
-- Retrieves bucket policies
+- Retrieves each bucket's ACL and classifies its grantees
+- Retrieves bucket policies, where the bucket carries one
 - Parses policies for third-party principals
 - Detects Federated/CanonicalUser principals
 
@@ -619,6 +629,31 @@ China ARNs all resolve.
 - Federated principals (SAML, OIDC)
 - CanonicalUser principals
 - Wildcard principals
+- ACL grants to a canonical user other than the bucket owner, or to an email address
+- ACL grants to the `AllUsers` or `AuthenticatedUsers` groups
+
+**Bucket ACLs**: A bucket ACL authorizes principals independently of the bucket
+policy, and the RCP denies every principal outside the organization however the
+bucket authorized them. Reading only the policy therefore reported an
+ACL-shared bucket clean, and the account kept an RCP that broke the grant on
+apply. ACL grantees carry canonical user IDs rather than account IDs, and no
+API resolves one to the other, so an external grantee cannot be expressed in
+`aws:PrincipalAccount` and keeps the account out of the RCP instead. Two
+grantees are read as reaching nobody the RCP would deny: the bucket's own
+owner, whose grant every bucket carries, and the S3 log delivery group, which
+authorizes the same `logging.s3.amazonaws.com` service principal that the
+bucket-policy form of the grant names. A grantee type or group the analyzer
+cannot classify aborts the run rather than being dropped.
+
+A bucket whose Object Ownership is `BucketOwnerEnforced` has ACLs disabled;
+reads still succeed and return the owner's grant alone, so no separate
+ownership lookup is needed.
+
+**Object ACLs are not read.** Under `ObjectWriter` ownership an object uploaded
+by an external account is owned by that account and can carry its own ACL, as
+can log objects delivered under `TargetGrants`. Enumerating those costs one
+call per object, so they are out of scope, and an object ACL granting a third
+party is not visible to this check.
 
 **Safety**: Prevents RCP deployment for buckets with Federated or CanonicalUser principals (would break access).
 
@@ -629,6 +664,8 @@ China ARNs all resolve.
 - Bucket names and policies
 - Allowed S3 actions per account
 - Principals requiring special handling
+
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a bucket that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A bucket kept for that reason alone lands in `compliant_instances`, so `total_buckets_analyzed` and `buckets_third_parties_can_access` now count buckets no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a bucket contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
 
 **Example Output**:
 ```json
@@ -651,18 +688,37 @@ China ARNs all resolve.
 
 **Check Name**: `deny_ecr_third_party_access`
 
-**Purpose**: Identifies ECR repositories with resource policies allowing external account access.
+**Purpose**: Identifies ECR resource policies allowing external account access, at either scope - a repository policy or the region's registry policy.
 
 **How it Works**:
-- Scans all enabled AWS regions for ECR repositories
-- Retrieves repository policies
+- Scans all enabled AWS regions
+- Retrieves each region's registry policy
+- Retrieves each repository's policy
 - Extracts third-party account IDs
 - Tracks specific ECR actions allowed
 
 **Detection**:
 - Third-party AWS account IDs from repository policies
-- Wildcard principals
+- Third-party AWS account IDs from registry policies
+- Wildcard principals, at either scope
 - Specific ECR actions per account
+
+**Registry Policies**: A repository policy governs one repository. A registry
+policy governs the whole registry - AWS allows every ECR action in one and
+enforces it on every ECR request in the region. A third party named there
+reaches repositories whose own policies grant it nothing, so a scan that read
+only repository policies would allowlist nobody and the deployed RCP would
+break that access.
+
+The commonest registry policy is the cross-account replication grant, which
+names the source account and is exercised by the ECR replication
+service-linked role. RCPs do not restrict service-linked roles, so that grant
+would likely survive the RCP regardless - but the analyzer allowlists the
+account anyway rather than inferring a caller identity it never observed. One
+redundant allowlist entry is the cheaper error.
+
+Registry findings carry `"scope": "registry"` and no repository name or ARN,
+since they belong to no single repository.
 
 **Actions Tracking**: Records ECR actions like:
 - `ecr:BatchGetImage`
@@ -673,21 +729,45 @@ China ARNs all resolve.
 **Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected.
 
 **Output**:
-- Repositories with third-party access
+- Policies third parties can reach, at both scopes
 - Third-party account IDs
 - Allowed ECR actions per account
 - Regional distribution
 
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a policy that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A policy kept for that reason alone lands in `compliant_instances`, so `total_policies_analyzed` and `policies_third_parties_can_access` now count policies no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a policy contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
+
 **Example Output**:
 ```json
 {
-  "third_party_accounts": ["888888888888"],
-  "repositories_with_third_party_access": [
+  "summary": {
+    "total_policies_analyzed": 2,
+    "policies_third_parties_can_access": 2,
+    "policies_with_wildcards": 0,
+    "violations": 0,
+    "unique_third_party_accounts": ["888888888888", "999999999999"]
+  },
+  "policies_third_parties_can_access": [
     {
-      "repository_name": "shared-images",
+      "scope": "registry",
+      "repository_name": null,
+      "repository_arn": null,
       "region": "us-east-1",
-      "third_party_accounts": ["888888888888"],
-      "allowed_actions": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      "third_party_account_ids": ["999999999999"],
+      "actions_by_account": {
+        "999999999999": ["ecr:CreateRepository", "ecr:ReplicateImage"]
+      },
+      "has_wildcard_principal": false
+    },
+    {
+      "scope": "repository",
+      "repository_name": "shared-images",
+      "repository_arn": "arn:aws:ecr:us-east-1:111111111111:repository/shared-images",
+      "region": "us-east-1",
+      "third_party_account_ids": ["888888888888"],
+      "actions_by_account": {
+        "888888888888": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      },
+      "has_wildcard_principal": false
     }
   ]
 }
@@ -699,16 +779,19 @@ China ARNs all resolve.
 
 **Check Name**: `deny_kms_third_party_access`
 
-**Purpose**: Identifies KMS keys with resource policies allowing external account access.
+**Purpose**: Identifies KMS keys reachable by external accounts, through either of the two surfaces that authorize access to a key - its resource policy and its grants.
 
 **How it Works**:
 - Scans all AWS regions for KMS keys
 - Retrieves key policies for each key
 - Parses policies for third-party principals
+- Lists each key's grants and resolves their principals to accounts
 - Tracks specific KMS actions allowed per account
 
 **Detection**:
 - Third-party AWS account IDs from key policies
+- Third-party AWS account IDs from grants, which no key policy reveals
+- External retiring principals, which can call `kms:RetireGrant`
 - Wildcard principals (requiring CloudTrail analysis)
 - Specific KMS actions per account and per key
 
@@ -719,14 +802,32 @@ China ARNs all resolve.
 - `kms:DescribeKey`
 - `kms:CreateGrant`
 
-**Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected.
+**Grants**: A grant is a second authorization surface, created by `CreateGrant` and separate from the key policy. `GetKeyPolicy` does not report grants, so a key whose policy names nobody outside the organization can still hand `Decrypt` to a vendor. Reading only the policy would leave that vendor out of the allowlist, and the deployed RCP would deny it.
+
+Each grant's `GranteePrincipal` and `RetiringPrincipal` resolve to an account:
+
+| Grant principal | RCP outcome | Recorded as |
+|---|---|---|
+| IAM ARN in an organization account | Not restricted | Nothing |
+| `ec2.us-west-2.amazonaws.com` and other AWS service principals | Exempt - the RCP carries `aws:PrincipalIsAWSService` `false` | Nothing |
+| Service-linked role ARN | Exempt - RCPs do not restrict service-linked roles | Nothing |
+| IAM ARN outside the organization | Denied | Allowlist entry, plus a `grants` entry |
+
+A grant can only ever widen the allowlist. `CreateGrant` requires a concrete principal, so no grant can be a wildcard, and the wildcard flag is what withholds the RCP from an account.
+
+Encryption context constraints are recorded as a boolean rather than parsed, so `has_constraints` marks a grant whose real access may be narrower than its operations suggest.
+
+**Fail-Fast Validation**: Immediately fails if unsupported principal types (e.g., Federated) are detected in a key policy, or if a grant names a principal that is neither an ARN nor an AWS service principal.
 
 **Output**:
 - Total keys analyzed
 - Keys with third-party access
 - Keys with wildcard principals (violations)
+- Keys with grants reaching outside the organization
 - Third-party account IDs
 - KMS actions allowed per account
+
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a key that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A key kept for that reason alone lands in `compliant_instances`, so `total_keys_analyzed` and `keys_third_parties_can_access` now count keys no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a key contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
 
 **Example Output**:
 ```json
@@ -738,9 +839,20 @@ China ARNs all resolve.
   "actions_by_account": {
     "999999999999": ["kms:Decrypt", "kms:DescribeKey"]
   },
-  "has_wildcard_principal": false
+  "has_wildcard_principal": false,
+  "grants": [
+    {
+      "grant_id": "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+      "grantee_account_id": "999999999999",
+      "retiring_principal_account_id": null,
+      "operations": ["kms:Decrypt", "kms:GenerateDataKey"],
+      "has_constraints": false
+    }
+  ]
 }
 ```
+
+A key found only through a grant looks the same, with an empty `actions_by_account` contribution from the policy and `third_party_account_ids` populated entirely from the `grants` list.
 
 ---
 
@@ -777,6 +889,8 @@ China ARNs all resolve.
 - Third-party account IDs
 - Actions allowed per third-party account
 - Secrets accessible per third-party account
+
+**What the counts include**: The `deny_service_confused_deputy` check reads a service principal source guard that this analyzer records during the statement walk, and the analyzer now keeps a secret that carries only an actionable one - an out-of-organization account named by `aws:SourceAccount` or `aws:SourceArn`, a guard no allowlist can express, or a guard the parser could not read. A secret kept for that reason alone lands in `compliant_instances`, so `total_secrets_analyzed` and `secrets_third_parties_can_access` now count secrets no third-party principal can reach. Nothing that gates deployment moved: violations still turn only on wildcard and non-account principals, and `unique_third_party_accounts` is built from principal account IDs, which such a secret contributes none of. The count over-reports rather than under-reports; renaming it to match what it now measures is a follow-up candidate.
 
 **Example Output**:
 ```json
@@ -843,6 +957,101 @@ China ARNs all resolve.
   }
 }
 ```
+
+---
+
+### Service Confused Deputy Check
+
+**Check Name**: `deny_service_confused_deputy`
+
+**Purpose**: Identifies the out-of-organization accounts that legitimately drive AWS service calls into organization resources, so the `DenyServiceConfusedDeputy` statement can permit them, and the source guards no allowlist can express, so the statement can be withheld from the accounts holding them.
+
+**Why this check exists**: Each of the six statements above ends with `BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`, so its Deny never matches a call an AWS service makes. That exemption is mandatory rather than a convenience: a service-principal request carries no `aws:PrincipalOrgID` and no `aws:PrincipalAccount`, `StringNotEqualsIfExists` on an absent key evaluates true, and without the Bool clause the Deny would match every CloudTrail delivery, access-log write and SSE-KMS call in the organization.
+
+Nothing narrowed that exemption back down. An account outside the organization that configures an AWS service in its own account - a trail, a Config delivery channel, an SNS topic - can have that service reach a bucket, key, queue, secret, repository or role in an organization account while the RCP stands aside. `DenyServiceConfusedDeputy` is the second half of the pair, and this check supplies the allowlist it needs. Severity is bounded by the resource policy: the RCP failing to deny is not the same as access being granted, so this closes a defense-in-depth gap rather than an open door.
+
+**How it Works**:
+- Runs the same six analyzers the other RCP checks run - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies - reading a field those analyzers now record during the statement walk they already perform
+- Reads every `Allow` statement naming a `Service` principal, inside the `Effect` gate each analyzer already applies, and in the IAM analyzer inside its AssumeRole action gate as well - so a trust statement naming a service under some action other than `sts:AssumeRole` is not recorded, which matches the reach of the RCP statement's action list
+- Resolves the source guard on that statement: `aws:SourceAccount` directly, `aws:SourceArn` by extracting the account the ARN carries
+- Keeps only the sources naming an account outside the organization, or a guard no allowlist can enumerate
+
+Trust policies matter here as much as resource policies. A role that trusts a service principal with no source guard is the canonical confused-deputy vulnerability, and `sts:AssumeRole` is in the statement's action list.
+
+**API cost**: recording the new field costs the other six checks nothing, but this check is not free. Nothing caches an analysis between checks, so registering it issues every RCP read API a second time per account per run - repository, key, bucket, secret, queue and role listings and their policies. Registration alone triggers that second pass; the `deny_service_confused_deputy` Terraform flag gates the rendered statement, not the scan. Caching is deliberately not implemented and is a separate optimization if the duplication proves material, so budget quota and runtime for the RCP pass at double.
+
+**Detection**:
+- Out-of-organization accounts pinned by `aws:SourceAccount` or `aws:SourceArn` on a service-principal grant, which become the statement's `aws:SourceAccount` allowlist
+- Wildcard sources: `aws:SourceAccount` holding `*` or `?`, or an `aws:SourceArn` that yields no account - a wildcard in the account field, or an S3 bucket ARN, which carries no account at all - with no companion `aws:SourceAccount`. These are violations and withhold the statement from the account
+- Condition key names are matched case-insensitively, as IAM matches them, so a policy written `aws:sourceaccount` names the same key
+- Guards are read under `StringEquals`, `StringLike`, `ArnEquals`, `ArnLike` and their `IfExists` variants. Any other operator on a source key aborts rather than being read as a guard - a negated operator excludes rather than permits, and reading one as a guard would put the wrong account in the allowlist
+
+**Dispositions**: what one `Allow` statement naming a service principal produces.
+
+| Statement | `source_account_ids` | `has_source_condition` | `has_wildcard_source` | Effect on output |
+|---|---|---|---|---|
+| `Service` principal, no source key | `[]` | `false` | `false` | Dropped - neither listed nor counted |
+| Source names an in-organization account | `[]` | `true` | `false` | Dropped - neither listed nor counted |
+| Source names an out-of-organization account | `["999999999999"]` | `true` | `false` | Allowlist entry, recorded as compliant |
+| Source is `*`, or an ARN yielding no account, with no companion `aws:SourceAccount` | `[]` | `true` | `true` | Violation - withholds the statement from the account |
+| Source is scoped to this organization by `aws:SourceOrgID` or `aws:SourceOrgPaths` | `[]` | `true` | `false` | Dropped - the deployed statement already exempts it |
+| Source is scoped to another organization, by either key | `[]` | `true` | `true` | Violation - withholds the statement from the account |
+| A source key under an operator that does not pin it | - | - | - | `read_failure` set - violation, withholds the statement from the account |
+
+Row four is `has_wildcard_principal` in a different costume: an unbounded set of sources that no allowlist can enumerate, handled the same way - withhold the statement from that account and follow up in CloudTrail. An S3 bucket ARN reaches that row honestly rather than by accident. S3 ARNs carry no account field, so `aws:SourceArn` alone never identifies whose bucket drove the call, which is exactly why AWS pairs `aws:SourceArn` with `aws:SourceAccount`. When the companion key is present the pair resolves normally; when it is absent the source is genuinely unidentifiable.
+
+One statement can occupy two rows at once. `aws:SourceAccount` holding `["*", "999999999999"]` resolves the out-of-organization account and sets the wildcard flag, and the check unions the resolved accounts into `unique_third_party_accounts` before it branches on the wildcard - so that statement contributes an allowlist entry and files a violation. The violation governs: any violation withholds the statement from the account regardless of what it contributed.
+
+**The `Null` gate**: The statement carries `Null { "aws:SourceAccount": "false" }`, which reads as "this key is not null", that is, it is present. The Deny therefore applies only to service calls that carry a source account. A call populating only `aws:SourceArn`, or no source keys at all, falls outside the statement entirely. This narrows the service exemption rather than closing it, and is what makes the control deployable without first discovering every service integration in the estate. `StringNotEqualsIfExists` on `aws:SourceOrgID` then catches sources in standalone accounts, which belong to no organization and so carry no organization ID: an attacker cannot escape the control by using an unattached account.
+
+**Unguarded trusts are neither listed nor counted**: A service principal trusted with no source guard produces no output at all - not a finding, not a violation, and not a number in the summary. Two reasons:
+
+1. Volume. Every log bucket and every service role in the estate carries a service trust with no source guard. Listing them would return every ordinary service integration in the account and bury the sources that matter, so making them findings would cost the operator the signal without adding one.
+2. A count would be wrong rather than merely uninteresting. Five of the six analyzers drop an analysis that found nothing worth reporting, while SQS runs no retention filter and keeps every queue that carries a policy. A tally taken here would therefore be exhaustive for queues and incidental for the other five, seeing only the unguarded sources that happen to sit on a resource kept for some other reason. A number complete for one service and arbitrary for five would look like a measurement. A plausible wrong number is worse than no number.
+
+**Dropping them is not the same as their being safe** - and this is the check's principal deployment risk. `aws:SourceAccount` is populated by the calling AWS service, from the resource that drove the call. Its presence in the request has nothing to do with whether the resource policy names it in a `Condition`. The `Null` gate tests the request context, not the policy document, so an unguarded trust still receives requests carrying `aws:SourceAccount`, set to whichever account owns the topic, trail or delivery channel behind the call.
+
+Concretely: a bucket in an organization account allows `s3:PutObject` to `Principal: {"Service": "cloudtrail.amazonaws.com"}` with no source condition, and a partner in out-of-organization account `999999999999` delivers a trail to it - an arrangement the bucket owner set up on purpose. With the statement deployed, `aws:PrincipalIsAWSService` is true, `aws:SourceAccount` is present, `aws:SourceOrgID` is the partner's or absent, and `999999999999` is not in the allowlist. Every clause matches and the delivery is denied. Discovery recorded nothing, because the policy names no account for it to record.
+
+Closing exactly that path is what `DenyServiceConfusedDeputy` is for - unguarded service-principal trust is the confused-deputy hole the statement exists to shut. What discovery cannot do is enumerate the legitimate drivers of those trusts in advance. Only CloudTrail can.
+
+**Rollout**: `unique_third_party_accounts` measures the sources a resource policy already pins. It is not a measurement of the estate's out-of-organization service-mediated access, and reading it as one is the mistake that breaks a production integration. Before enabling `deny_service_confused_deputy` for a target:
+
+1. Review CloudTrail for calls into that target's accounts where `aws:PrincipalIsAWSService` is true and `aws:SourceAccount` falls outside the organization. Those are the unguarded drivers discovery cannot see. Add the legitimate ones to the allowlist, or pin them in the resource policy so the next run finds them.
+2. Deploy to a test OU with the discovered allowlist and watch for denials before going organization-wide.
+3. Rolling back is setting `deny_service_confused_deputy` to `false` for the affected target, which removes this statement and leaves the other six in place.
+
+**An organization-scoped guard**: `aws:SourceOrgID` names an organization directly and `aws:SourceOrgPaths` carries it as the first element of a path such as `o-example12345/r-ab12/ou-ab12-11111111/`, so both reduce to the same comparison against this organization's own ID. That ID comes from `organizations:DescribeOrganization`, called once per run on the management account session Headroom already holds; the deployed statement resolves the same value through `data.aws_organizations_organization.current.id`, so discovery and deployment now agree. A scope naming this organization is a perfect guard - the statement already exempts it, so the resource needs no allowlist entry and files no violation. A scope naming any other organization is a violation, because the allowlist holds account IDs and another organization's accounts are not knowable from here. The comparison is exact: `o-example12345*` also matches every organization whose ID extends that prefix, so it falls to the violation side rather than being read as ours.
+
+**A guard that cannot be read**: A source guard the parser cannot read is recorded as a violation rather than dropped, so the statement is withheld from that account and an allowlist nobody could compute is never deployed as if it were complete. Two constructs reach this: a source key under an unrecognized operator, because a negated operator excludes rather than permits; and an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard.
+
+The failure is recorded rather than raised. The parser runs inside six analyzers that six pre-existing checks share, and none of those checks reads a source guard, so raising would abort the estate run and take all six down over a construct they never consume. Reading the organization ID is the one place this check does fail loud instead: a `DescribeOrganization` response carrying no ID aborts the run, because every organization-scoped guard in the estate is classified against that value and continuing would put a foreign organization's sources in an allowlist, or leave this one's out, while looking like a healthy run.
+
+A resource whose policy could not be read at all reaches the same disposition. An SQS queue with an unparseable policy, or one naming a principal type the analyzer does not recognize, is recorded as a read failure instead of being skipped - the statement walk reads service principal sources before it reaches the principal types that raise, so discarding the queue would drop a guard that was read successfully. `deny_sqs_third_party_access` is unaffected: the recorded queue carries no third-party account and no wildcard, so that check's filter drops it exactly as the earlier warn-and-skip did.
+
+**Output**:
+- Per-finding resource identity: which analyzer found it, the resource, and the region
+- The service principal the resource trusts, and the accounts its guard permits
+- `unique_third_party_accounts`, which becomes the statement's `aws:SourceAccount` allowlist
+- `violations`, which withholds the statement from the account exactly as it does for the other six checks
+
+**Example Output**:
+```json
+{
+  "resource_type": "sqs",
+  "resource_identifier": "arn:aws:sqs:us-west-2:111111111111:vendor-events",
+  "region": "us-west-2",
+  "service_principal": "sns.amazonaws.com",
+  "source_account_ids": ["999999999999"],
+  "has_source_condition": true,
+  "has_wildcard_source": false,
+  "read_failure": null
+}
+```
+
+A wildcard finding has the same shape with `source_account_ids` empty and `has_wildcard_source` true, and is written to `violations` rather than `compliant_instances`. A finding whose source read failed carries the reason in `read_failure` and a null `service_principal`, and is also written to `violations`. `resource_identifier` is `registry` for a finding from a per-region ECR registry policy rather than a repository policy.
+
+`region` is null for three resource types, for two different reasons. S3 buckets and IAM roles are global names, so there is no region to record. Secrets Manager secrets are regional - the analyzer iterates every region, and each secret's ARN encodes its own - but `SecretsPolicyAnalysis` carries no `region` field for the check to read, so the null is a gap in that dataclass rather than a property of the resource. Since the finding identifies a secret by name rather than by ARN, two secrets sharing a name in different regions produce identical findings and an operator cannot tell which region to look in.
 
 ---
 

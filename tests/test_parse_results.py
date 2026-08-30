@@ -1461,7 +1461,6 @@ class TestRootParentedAccountPlacement:
     raise "OU r-... not found in organization hierarchy" during Terraform
     generation.
     """
-
     ROOT_ID = "r-aabb"
     WORKLOADS_OU_ID = "ou-aabb-workloads"
     LEGACY_OU_ID = "ou-aabb-legacy"
@@ -1626,7 +1625,6 @@ class TestCoverageIsIndependentOfOtherOUs:
     account sharing an OU with a violating one was recommended only while no
     other OU qualified. Remediating an unrelated OU silently withdrew it.
     """
-
     WORKLOADS_OU_ID = "ou-aabb-workloads"
     LEGACY_OU_ID = "ou-aabb-legacy"
     CLEAN_SIBLING = "333333333333"
@@ -1733,7 +1731,6 @@ class TestAmiOwnerAllowlistWiring:
     an empty allowlist. An empty allowlist denies every `ec2:RunInstances`
     call, so the generated SCP was an EC2 outage wherever it landed.
     """
-
     OWNERS_ACCOUNT_1 = ["amazon", "aws-marketplace"]
     OWNERS_ACCOUNT_2 = ["222222222222", "amazon"]
     UNIONED_OWNERS = ["222222222222", "amazon", "aws-marketplace"]

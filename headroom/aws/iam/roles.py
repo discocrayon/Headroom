@@ -8,7 +8,7 @@ specifically for identifying third-party account access (RCP checks).
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, List, Set
 from urllib.parse import unquote
 
@@ -17,7 +17,13 @@ from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
 from ...constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
-from ..policy_documents import has_not_principal, normalize_statements
+from ..policy_documents import (
+    ServicePrincipalSource,
+    has_actionable_service_principal_source,
+    has_not_principal,
+    normalize_statements,
+    read_service_principal_sources,
+)
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -52,11 +58,16 @@ class TrustPolicyAnalysis:
         has_wildcard_principal: True if the trust policy grants to principals the
             analyzer cannot enumerate - `Principal: "*"`, or an Allow with
             NotPrincipal, which reaches everyone it does not name
+        service_principal_sources: Service principals this policy trusts,
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag.
     """
     role_name: str
     role_arn: str
     third_party_account_ids: Set[str]
     has_wildcard_principal: bool
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
 def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
@@ -195,7 +206,8 @@ def _has_wildcard_principal(principal: Any) -> bool:
 
 def analyze_iam_roles_trust_policies(
     session: Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[TrustPolicyAnalysis]:
     """
     Analyze all IAM roles in an account and identify third-party account principals.
@@ -206,6 +218,8 @@ def analyze_iam_roles_trust_policies(
     Args:
         session: boto3 Session for the target account
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of TrustPolicyAnalysis for roles with third-party accounts or wildcards
@@ -239,6 +253,7 @@ def analyze_iam_roles_trust_policies(
 
                 third_party_accounts: Set[str] = set()
                 has_wildcard = False
+                sources: List[ServicePrincipalSource] = []
 
                 # Analyze each statement in the trust policy
                 statements = normalize_statements(trust_policy, f"Role '{role_name}'")
@@ -261,6 +276,10 @@ def analyze_iam_roles_trust_policies(
                     principal = statement.get("Principal")
                     if not principal:
                         continue
+
+                    sources.extend(
+                        read_service_principal_sources(statement, org_account_ids, org_id, f"Role '{role_name}'")
+                    )
 
                     # Validate that Federated principals don't have sts:AssumeRole
                     # Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity
@@ -295,12 +314,14 @@ def analyze_iam_roles_trust_policies(
                             third_party_accounts.add(account_id)
 
                 # Only include roles with findings
-                if third_party_accounts or has_wildcard:
+                has_service_source = has_actionable_service_principal_source(sources)
+                if third_party_accounts or has_wildcard or has_service_source:
                     results.append(TrustPolicyAnalysis(
                         role_name=role_name,
                         role_arn=role_arn,
                         third_party_account_ids=third_party_accounts,
-                        has_wildcard_principal=has_wildcard
+                        has_wildcard_principal=has_wildcard,
+                        service_principal_sources=sources,
                     ))
     except ClientError as e:
         logger.error(f"Failed to list IAM roles from AWS API: {e}")

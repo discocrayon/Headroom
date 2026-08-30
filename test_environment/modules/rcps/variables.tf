@@ -131,3 +131,23 @@ variable "sts_third_party_assumerole_account_ids_allowlist" {
     error_message = "All sts_third_party_assumerole_account_ids_allowlist must be valid 12-digit AWS account IDs."
   }
 }
+
+# Service confused deputy
+
+variable "deny_service_confused_deputy" {
+  type        = bool
+  description = "Deny AWS services acting on behalf of sources outside the organization unless explicitly allowed."
+}
+
+variable "service_confused_deputy_source_account_ids_allowlist" {
+  type        = list(string)
+  default     = []
+  description = "Allowlist of third-party AWS account IDs permitted to drive AWS service calls into resources in this target ID."
+
+  validation {
+    condition = alltrue([
+      for account_id in var.service_confused_deputy_source_account_ids_allowlist : length(account_id) == 12 && can(regex("^[0-9]{12}$", account_id))
+    ])
+    error_message = "All service_confused_deputy_source_account_ids_allowlist must be valid 12-digit AWS account IDs."
+  }
+}

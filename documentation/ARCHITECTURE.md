@@ -71,6 +71,7 @@ headroom/
 │       ├── deny_kms_third_party_access.py  # KMS third-party access check
 │       ├── deny_s3_third_party_access.py  # S3 third-party access check
 │       ├── deny_secrets_manager_third_party_access.py  # Secrets Manager third-party access check
+│       ├── deny_service_confused_deputy.py  # Service confused deputy check
 │       ├── deny_sqs_third_party_access.py  # SQS third-party access check
 │       └── deny_sts_third_party_assumerole.py  # STS third-party AssumeRole check
 ├── terraform/     # Terraform generation
