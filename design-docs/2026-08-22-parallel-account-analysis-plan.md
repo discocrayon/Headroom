@@ -16,6 +16,11 @@ strict, tox.
 
 **Spec:** `design-docs/2026-08-21-parallel-account-analysis.md`
 
+**Status:** Every task below is implemented. The checkboxes were never ticked,
+so do not read them as work outstanding -- this is a finished plan kept for the
+reasoning behind each step. See the spec's header for the two figures both
+documents have since outlived.
+
 ## Global Constraints
 
 Copied from the repository's rules. Every task's requirements include this section.

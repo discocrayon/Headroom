@@ -1,9 +1,17 @@
 # Parallel Account Analysis
 
 **Date:** 2026-08-21
-**Status:** Approved design, not yet implemented
+**Status:** Implemented -- historical record, not current behavior
 **Scope:** `headroom/analysis.py`, `headroom/aws/sessions.py`, `headroom/aws/helpers.py`,
 `headroom/aws/ec2.py`, the four EC2 checks, `headroom/config.py`, `headroom/usage.py`
+
+> **Read this as history.** Code and tests define current behavior; this
+> records what was decided on 2026-08-21 and why. Two things here have since
+> been overtaken. A seventh RCP check, `deny_service_confused_deputy`, arrived
+> after this was written and re-reads what four of the region-sweeping
+> analyzers already read, taking the 187-probe baseline below to 255. A third
+> session memo, `memoize_per_session` in `headroom/aws/helpers.py`, removes
+> those 68 probes again -- so "the two memos" below is now three.
 
 ## Problem
 
