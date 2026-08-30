@@ -55,7 +55,9 @@ def get_all_regions(session: Session) -> Sequence[str]:
     Headroom's per-session memos. Its worker's exception is stored on its
     future, the traceback pins the worker's frame, and the frame holds the
     session -- so the entry outlives the worker and is released only when
-    `run_checks` returns and drops `accounts_by_future`. What bounds that is
+    `run_checks`'s own frame goes. On the normal path that is when it
+    returns; on the failure path it does not return at all, and the frame is
+    pinned by the propagating traceback until whatever caught it lets go. What bounds that is
     how many accounts are in flight when the abort lands, so
     `max_account_workers` rather than the size of the organization, which is
     why the ceiling `MAX_ACCOUNT_WORKERS` states still holds on the failure

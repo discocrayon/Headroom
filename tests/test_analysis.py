@@ -1298,6 +1298,42 @@ class TestRunChecksPool:
         ):
             run_checks(MagicMock(), self._accounts(4), self._config(4), set(), ORG_ID)
 
+    def test_the_pool_is_built_with_the_configured_worker_count(self) -> None:
+        """
+        `max_account_workers: 1` reaches the executor as 1, and stays serial.
+
+        The test above pins the ceiling with a barrier; this pins the floor,
+        and it has to assert the constructor argument to do it. Observing
+        threads cannot: ThreadPoolExecutor creates one only when no idle
+        thread is free, so four fast tasks stay on a single thread whatever
+        the cap is, and a thread-identity assertion passes just as happily
+        with a floor of two silently imposed underneath it. Measured -- that
+        is exactly what `max(2, config.max_account_workers)` does to it.
+
+        This is the setting that matters most to get right: it exists for
+        accounts under an API quota tight enough that a second thread breaks
+        them, and every other pool test here asks for four workers or more.
+        """
+        threads: List[int] = []
+        lock = threading.Lock()
+
+        def record(account_info: AccountInfo, *args: object) -> None:
+            with lock:
+                threads.append(threading.get_ident())
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=record),
+            patch(
+                "headroom.analysis.ThreadPoolExecutor", wraps=ThreadPoolExecutor
+            ) as pool,
+        ):
+            run_checks(MagicMock(), self._accounts(4), self._config(1), set(), ORG_ID)
+
+        assert pool.call_args.kwargs["max_workers"] == 1
+        assert len(threads) == 4
+        assert len(set(threads)) == 1
+
     def test_a_worker_failure_propagates_unchanged(self) -> None:
         """
         The first failure aborts the run rather than being logged and skipped.
@@ -1449,6 +1485,57 @@ class TestRunChecksPool:
         assert len(reported) == 2
         assert any("account-0_333333333333" in line for line in reported)
         assert any("account-1_333333334444" in line for line in reported)
+
+    def test_a_failure_raised_after_the_abort_is_set_is_still_reported(self) -> None:
+        """
+        The sweep finds a failure that happened after the run began aborting.
+
+        The barrier in the test above holds both accounts until each has
+        failed, so neither failure is ordered with respect to the abort and
+        `pytest.raises(match=...)` cannot say which account propagated. This
+        orders them: the second account blocks until the first failure has set
+        the abort, and only then raises its own error. That is the shape a
+        real run produces -- one account fails, the abort goes up, and another
+        already in flight hits its own error before reaching a checkpoint.
+
+        The barrier is still needed, for a different job than above: without
+        it the first account fails so fast that its worker goes idle and
+        serves the second submit too, so the second account is cancelled
+        while queued and never runs at all. The barrier gets both in flight;
+        the abort wait is what orders them.
+
+        What it pins is that `_log_every_failure` reads every future rather
+        than only those that completed before the abort. The two messages are
+        distinct so the assertions name which account produced which.
+        """
+        both_in_flight = threading.Barrier(2, timeout=5)
+
+        def fail(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            org_id: str,
+            abort: threading.Event,
+        ) -> None:
+            both_in_flight.wait()
+            if account_info.name == "account-0":
+                raise RuntimeError("role assumption failed in account-0")
+            assert abort.wait(timeout=5), "the first failure never set the abort"
+            raise RuntimeError("credentials expired in account-1")
+
+        with (
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=fail),
+            patch("headroom.analysis.logger") as mock_logger,
+            pytest.raises(RuntimeError, match="role assumption failed in account-0"),
+        ):
+            run_checks(MagicMock(), self._accounts(2), self._config(2), set(), ORG_ID)
+
+        reported = [call.args[0] for call in mock_logger.error.call_args_list]
+        assert len(reported) == 2
+        assert any("role assumption failed in account-0" in line for line in reported)
+        assert any("credentials expired in account-1" in line for line in reported)
 
     def test_abort_stops_run_checks_for_type_between_checks(self) -> None:
         """
@@ -1694,6 +1781,18 @@ class TestRunChecksPool:
         worker empties the queue often enough that nothing is left to cancel
         in 5 runs out of 400 under `setswitchinterval(1e-6)`, while at 200 the
         smallest count seen over 400 runs was 42 contended and 69 uncontended.
+
+        The floor is one rather than a number near 200, and two attempts to
+        raise it structurally were measured and abandoned. Parking every
+        non-failing account on the abort never executes: the cancel loop
+        beats the worker to the queue outright, so the park is dead code that
+        only breaks the coverage gate. Holding the worker until the last
+        submit is worse than doing nothing -- it releases the worker exactly
+        as the main thread enters `as_completed`, and the worker then drains
+        all 199, measured at zero cancelled. Closing this properly needs
+        `run_checks` to expose a synchronization point between `abort.set()`
+        and the cancel loop, which is production code complicated for a
+        test's benefit.
         """
         accounts = self._accounts(200)
         failing_account_id = accounts[0].account_id
@@ -1721,13 +1820,77 @@ class TestRunChecksPool:
         with (
             patch.object(ThreadPoolExecutor, "submit", capturing_submit),
             patch("headroom.analysis._all_checks_complete", return_value=False),
-            patch("headroom.analysis._run_checks_for_account", side_effect=fail_the_first_account),
+            patch(
+                "headroom.analysis._run_checks_for_account",
+                side_effect=fail_the_first_account,
+            ),
             pytest.raises(RuntimeError, match="role assumption failed"),
         ):
             run_checks(MagicMock(), accounts, self._config(1), set(), ORG_ID)
 
         assert len(captured) == len(accounts)
         assert sum(1 for future in captured if future.cancelled()) >= 1
+
+    def test_a_submit_that_fails_after_queueing_aborts_rather_than_drains(self) -> None:
+        """
+        The shape the submit handler exists for, actually produced.
+
+        CPython's `submit` puts the work item on the queue and only then calls
+        `_adjust_thread_count`, so a thread that fails to start leaves an item
+        queued whose future was never returned: it is not in
+        `accounts_by_future` and nothing can cancel it. The handler is
+        documented against that shape but nothing built it, so the two things
+        it guarantees went unpinned.
+
+        Both are asserted here. The submit failure propagates rather than
+        being swallowed, and the accounts behind it in the loop are never
+        submitted at all -- which is what makes this an abort rather than
+        `__exit__` draining the rest of the organization.
+
+        What is deliberately not asserted is whether the orphaned item runs.
+        A worker already exists at that point, so it may pick the item up
+        before or after `abort.set()`; the ordering is not determined and the
+        outcome is the same either way, since an account analyzed once more
+        than needed costs time rather than correctness.
+        """
+        submits: List[int] = []
+        analyzed: List[str] = []
+        lock = threading.Lock()
+        real_submit = ThreadPoolExecutor.submit
+
+        def submit_that_fails_after_queueing(
+            executor: ThreadPoolExecutor, fn: object, *args: object, **kwargs: object
+        ) -> Future[None]:
+            future: Future[None] = real_submit(executor, fn, *args, **kwargs)  # type: ignore[arg-type]
+            with lock:
+                submits.append(1)
+                failing = len(submits) == 3
+            if failing:
+                raise RuntimeError("can't start new thread")
+            return future
+
+        def record(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            org_id: str,
+            abort: threading.Event,
+        ) -> None:
+            with lock:
+                analyzed.append(account_info.name)
+
+        with (
+            patch.object(ThreadPoolExecutor, "submit", submit_that_fails_after_queueing),
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=record),
+            pytest.raises(RuntimeError, match="can't start new thread"),
+        ):
+            run_checks(MagicMock(), self._accounts(5), self._config(1), set(), ORG_ID)
+
+        assert len(submits) == 3
+        assert "account-3" not in analyzed
+        assert "account-4" not in analyzed
 
     def test_the_operator_is_told_how_many_accounts_never_ran(
         self,
@@ -1746,7 +1909,8 @@ class TestRunChecksPool:
 
         The count is read off Future.cancelled() rather than parsed out of
         the line, and the assertion needs it to be both non-zero and the
-        number reported.
+        number reported. The floor is one for the reason the cancel-loop test
+        above gives.
         """
         accounts = self._accounts(200)
         failing_account_id = accounts[0].account_id
@@ -1775,7 +1939,10 @@ class TestRunChecksPool:
             caplog.at_level(logging.ERROR, logger="headroom.analysis"),
             patch.object(ThreadPoolExecutor, "submit", capturing_submit),
             patch("headroom.analysis._all_checks_complete", return_value=False),
-            patch("headroom.analysis._run_checks_for_account", side_effect=fail_the_first_account),
+            patch(
+                "headroom.analysis._run_checks_for_account",
+                side_effect=fail_the_first_account,
+            ),
             pytest.raises(RuntimeError, match="role assumption failed"),
         ):
             run_checks(MagicMock(), accounts, self._config(1), set(), ORG_ID)
