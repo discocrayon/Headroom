@@ -274,7 +274,8 @@ Options:
   --scps-dir SCPS_DIR         SCP Terraform output directory
   --rcps-dir RCPS_DIR         RCP Terraform output directory
   --max-account-workers MAX_ACCOUNT_WORKERS
-                               Accounts to analyze concurrently (1 runs them serially)
+                               Accounts to analyze concurrently, 1 runs them
+                               serially (default 16, maximum 32)
 ```
 
 ## Test Environment
