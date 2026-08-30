@@ -1427,8 +1427,9 @@ class TestRunChecksPool:
         their own; nothing else covers the single call site that connects
         them, so dropping it would silently revert every worker's log records
         to the no-account placeholder. The check runs on a thread of its own
-        because an earlier test calling `_run_checks_for_account` directly
-        leaves this thread's context already set.
+        so that the stamp it reads can only have come from this worker: a
+        fresh thread's context is unset by construction, which no amount of
+        whatever ran before can undo.
         """
         stamped: List[str] = []
 
@@ -1487,8 +1488,9 @@ class TestRunChecksPool:
         previous account, confidently and wrongly. `-` is the honest answer
         in that window.
 
-        Runs on a thread of its own because tests that call
-        `_run_checks_for_account` directly leave this thread's context set.
+        Runs on a thread of its own for the same reason as
+        test_a_worker_registers_its_account_for_log_records: on a thread
+        nothing has touched, `-` can only be what the `finally` wrote.
         """
         stamped_after: List[str] = []
 
