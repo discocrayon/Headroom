@@ -777,12 +777,21 @@ def _verify_no_duplicate_account_names(
     Development happens on macOS, where APFS folds two axes by default: case,
     so `Prod` and `prod` are one file, and Unicode normal form, so `café`
     composed and decomposed are one file even though the two strings hold
-    different code points. Both are closed here, by normalizing to NFC and
-    then case-folding. This can abort a run on a filesystem that folds
-    neither, where the names would not actually have collided; that is a
-    deliberate trade-off -- a loud abort resolved by renaming beats two
-    accounts' JSON interleaved into one file that then feeds policy
-    generation.
+    different code points.
+
+    Closing the two axes in sequence does not close their composition,
+    because case folding can undo the normalization that just ran. `ſ`
+    followed by a combining acute has no precomposed form, so NFC returns it
+    unchanged; the fold then maps `ſ` to `s`, yielding the decomposition
+    of `ś` rather than `ś`. The two names key differently while APFS
+    stores them in one inode. Unicode's closed form is canonical caseless
+    matching (D145) -- `NFD(casefold(NFD(x)))`, whose trailing NFD
+    re-normalizes whatever the fold decomposed -- and that is what this uses.
+
+    This can abort a run on a filesystem that folds neither axis, where the
+    names would not actually have collided; that is a deliberate trade-off --
+    a loud abort resolved by renaming beats two accounts' JSON interleaved
+    into one file that then feeds policy generation.
 
     The message names the colliding spellings and how many accounts carry
     them, never the account IDs. Printing those would defeat the setting that
@@ -794,14 +803,16 @@ def _verify_no_duplicate_account_names(
 
     Raises:
         RuntimeError: If `exclude_account_ids` is set and two accounts share a
-            name, comparing names case-folded and NFC-normalized
+            name under canonical caseless matching
     """
     if not config.exclude_account_ids:
         return
 
     names_by_key: Dict[str, List[str]] = {}
     for account_info in account_infos:
-        key = unicodedata.normalize("NFC", account_info.name).casefold()
+        key = unicodedata.normalize(
+            "NFD", unicodedata.normalize("NFD", account_info.name).casefold()
+        )
         names_by_key.setdefault(key, []).append(account_info.name)
 
     collisions = sorted(key for key, names in names_by_key.items() if len(names) > 1)

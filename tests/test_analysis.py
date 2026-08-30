@@ -925,6 +925,35 @@ class TestDuplicateAccountNameGuard:
 
         assert "(2 accounts)" in str(excinfo.value)
 
+    def test_a_case_fold_that_breaks_composition_is_caught(self) -> None:
+        """
+        Folding the two axes in sequence is not folding them together.
+
+        Case folding can undo the composition normalization just performed,
+        so NFC-then-casefold closes each axis and leaves their composition
+        open. Unicode calls the closed form canonical caseless matching
+        (D145): `NFD(casefold(NFD(x)))`, where the trailing NFD re-normalizes
+        whatever the fold decomposed.
+
+        `\u017f` (long s) followed by the combining acute `\u0301` has no
+        precomposed form, so NFC returns it unchanged; casefold then maps
+        `\u017f` to `s`, producing `s` + `\u0301`. That is the decomposition
+        of `\u015b`, not `\u015b` itself, so the two names key differently
+        while APFS stores them in one inode -- verified against APFS, which
+        reports the same `st_ino` for both spellings.
+        """
+        long_s_acute = "\u017f\u0301"
+        s_acute = "\u015b"
+        assert long_s_acute != s_acute
+
+        with pytest.raises(RuntimeError) as excinfo:
+            _verify_no_duplicate_account_names(
+                self._config(exclude_account_ids=True),
+                self._accounts(long_s_acute, s_acute),
+            )
+
+        assert "(2 accounts)" in str(excinfo.value)
+
 
 class TestRunChecksPool:
     """Test the worker pool and its cooperative abort."""
