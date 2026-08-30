@@ -535,16 +535,23 @@ resource gets the blocker and the CloudTrail follow-up a literal wildcard
 gets. `Deny` with `NotPrincipal` is the form AWS recommends and restricts
 rather than grants, so it counts for nothing.
 
-**Condition Handling**: RCP checks read a statement's `Effect`, `Principal`, and
-`Action`; they do not evaluate `Condition`. A wildcard principal narrowed by
-`aws:PrincipalOrgID` grants nothing outside the organization, but is still
-counted as a violation and still blocks that account from the RCP. A grant
-narrowed by `s3:prefix` or `aws:SourceVpce` still contributes its account to
-the allowlist at full width. Neither can hide a third party from the scan - a
-condition only ever narrows a grant - so both cost coverage rather than safety.
-`Resource` and `NotResource` are not read either, with the same widening-only
-effect: a statement scoped away from the resource still contributes its
-principals.
+**Condition Handling**: The six third-party access checks read a statement's
+`Effect`, `Principal`, and `Action`; they do not evaluate `Condition`. A
+wildcard principal narrowed by `aws:PrincipalOrgID` grants nothing outside the
+organization, but is still counted as a violation and still blocks that account
+from the RCP. A grant narrowed by `s3:prefix` or `aws:SourceVpce` still
+contributes its account to the allowlist at full width. Neither can hide a third
+party from the scan - a condition only ever narrows a grant - so both cost
+coverage rather than safety. `Resource` and `NotResource` are not read either,
+with the same widening-only effect: a statement scoped away from the resource
+still contributes its principals.
+
+`deny_service_confused_deputy` is the one exception, and a narrow one. It reads
+three condition keys - `aws:SourceAccount`, `aws:SourceArn` and
+`aws:SourceOrgID` - and only on statements naming a `Service` principal,
+because that guard is the whole subject of the check. Everywhere else the
+widening-only argument above still holds, and general condition-aware analysis
+remains a separate concern.
 
 ### STS Third-Party AssumeRole Check
 
@@ -940,6 +947,74 @@ A key found only through a grant looks the same, with an empty `actions_by_accou
   }
 }
 ```
+
+---
+
+### Service Confused Deputy Check
+
+**Check Name**: `deny_service_confused_deputy`
+
+**Purpose**: Identifies the out-of-organization accounts that legitimately drive AWS service calls into organization resources, so the `DenyServiceConfusedDeputy` statement can permit them, and the source guards no allowlist can express, so the statement can be withheld from the accounts holding them.
+
+**Why this check exists**: Each of the six statements above ends with `BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`, so its Deny never matches a call an AWS service makes. That exemption is mandatory rather than a convenience: a service-principal request carries no `aws:PrincipalOrgID` and no `aws:PrincipalAccount`, `StringNotEqualsIfExists` on an absent key evaluates true, and without the Bool clause the Deny would match every CloudTrail delivery, access-log write and SSE-KMS call in the organization.
+
+Nothing narrowed that exemption back down. An account outside the organization that configures an AWS service in its own account - a trail, a Config delivery channel, an SNS topic - can have that service reach a bucket, key, queue, secret, repository or role in an organization account while the RCP stands aside. `DenyServiceConfusedDeputy` is the second half of the pair, and this check supplies the allowlist it needs. Severity is bounded by the resource policy: the RCP failing to deny is not the same as access being granted, so this closes a defense-in-depth gap rather than an open door.
+
+**How it Works**:
+- Reuses the six analyzers the other RCP checks already run - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies - and makes no AWS calls of its own
+- Reads every `Allow` statement naming a `Service` principal, inside the `Effect` gate each analyzer already applies
+- Resolves the source guard on that statement: `aws:SourceAccount` directly, `aws:SourceArn` by extracting the account the ARN carries
+- Keeps only the sources naming an account outside the organization, or a guard no allowlist can enumerate
+
+Trust policies matter here as much as resource policies. A role that trusts a service principal with no source guard is the canonical confused-deputy vulnerability, and `sts:AssumeRole` is in the statement's action list.
+
+**Detection**:
+- Out-of-organization accounts pinned by `aws:SourceAccount` or `aws:SourceArn` on a service-principal grant, which become the statement's `aws:SourceAccount` allowlist
+- Wildcard sources: `aws:SourceAccount` holding `*` or `?`, or an `aws:SourceArn` that yields no account - a wildcard in the account field, or an S3 bucket ARN, which carries no account at all - with no companion `aws:SourceAccount`. These are violations and withhold the statement from the account
+- Condition key names are matched case-insensitively, as IAM matches them, so a policy written `aws:sourceaccount` names the same key
+- Guards are read under `StringEquals`, `StringLike`, `ArnEquals`, `ArnLike` and their `IfExists` variants. Any other operator on a source key aborts rather than being read as a guard - a negated operator excludes rather than permits, and reading one as a guard would put the wrong account in the allowlist
+
+**Dispositions**: what one `Allow` statement naming a service principal produces.
+
+| Statement | `source_account_ids` | `has_source_condition` | `has_wildcard_source` | Effect on output |
+|---|---|---|---|---|
+| `Service` principal, no source key | `[]` | `false` | `false` | Dropped - neither listed nor counted |
+| Source names an in-organization account | `[]` | `true` | `false` | Dropped - neither listed nor counted |
+| Source names an out-of-organization account | `["999999999999"]` | `true` | `false` | Allowlist entry, recorded as compliant |
+| Source is `*`, or an ARN yielding no account, with no companion `aws:SourceAccount` | `[]` | `true` | `true` | Violation - withholds the statement from the account |
+| `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | Raises `UnknownSourceConditionError` |
+
+Row four is `has_wildcard_principal` in a different costume: an unbounded set of sources that no allowlist can enumerate, handled the same way - withhold the statement from that account and follow up in CloudTrail. An S3 bucket ARN reaches that row honestly rather than by accident. S3 ARNs carry no account field, so `aws:SourceArn` alone never identifies whose bucket drove the call, which is exactly why AWS pairs `aws:SourceArn` with `aws:SourceAccount`. When the companion key is present the pair resolves normally; when it is absent the source is genuinely unidentifiable.
+
+**The `Null` gate**: The statement carries `Null { "aws:SourceAccount": "false" }`, which reads as "this key is not null", that is, it is present. The Deny therefore applies only to service calls that carry a source account. A call populating only `aws:SourceArn`, or no source keys at all, falls outside the statement entirely. This narrows the service exemption rather than closing it, and is what makes the control deployable without first discovering every service integration in the estate. `StringNotEqualsIfExists` on `aws:SourceOrgID` then catches sources in standalone accounts, which belong to no organization and so carry no organization ID: an attacker cannot escape the control by using an unattached account.
+
+**Unguarded trusts are neither listed nor counted**: A service principal trusted with no source guard produces no output at all - not a finding, not a violation, and not a number in the summary. Two reasons, and the first is the one that matters:
+
+1. The `Null` gate means the statement never fires on a request carrying no source account. An unguarded trust asks nothing of the allowlist and blocks nothing, so reporting it would not change what gets deployed. It is still a real confused-deputy hole - anyone can point their topic at the queue - but it is one this statement does not address, and making it a violation would withhold the statement over a problem the statement does not solve.
+2. A count would be wrong rather than merely uninteresting. All six analyzers drop an analysis that found nothing worth reporting, so a tally taken here would see only the unguarded sources that happen to sit on a resource kept for some other reason. That undercount would look like a measurement. A plausible wrong number is worse than no number.
+
+**Fail-Fast Validation**: A source guard that cannot be read aborts the run rather than being dropped. `aws:SourceOrgID` on a service principal raises, because deciding whether it names this organization needs the organization ID, which the analyzers do not receive - guessing would put a foreign organization's sources in the allowlist or leave this one's out. A source key under an unrecognized operator raises for the same reason, as does an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard. Dropping any of them silently would leave an account out of the allowlist, and the deployed RCP would then deny access that account depended on - the exact failure this analysis exists to prevent.
+
+**Output**:
+- Per-finding resource identity: which analyzer found it, the resource, and the region
+- The service principal the resource trusts, and the accounts its guard permits
+- `unique_third_party_accounts`, which becomes the statement's `aws:SourceAccount` allowlist
+- `violations`, which withholds the statement from the account exactly as it does for the other six checks
+
+**Example Output**:
+```json
+{
+  "resource_type": "sqs",
+  "resource_identifier": "arn:aws:sqs:us-west-2:111111111111:vendor-events",
+  "region": "us-west-2",
+  "service_principal": "sns.amazonaws.com",
+  "source_account_ids": ["999999999999"],
+  "has_source_condition": true,
+  "has_wildcard_source": false
+}
+```
+
+A wildcard finding has the same shape with `source_account_ids` empty and `has_wildcard_source` true, and is written to `violations` rather than `compliant_instances`. `region` is null for the resource types that have no region in their identity - S3 buckets, Secrets Manager secrets, and IAM roles - and `resource_identifier` is `registry` for a finding from a per-region ECR registry policy rather than a repository policy.
 
 ---
 
