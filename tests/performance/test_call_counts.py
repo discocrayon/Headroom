@@ -5,22 +5,27 @@ These pin the savings from caching the region list, the EC2 instance list, and
 the six resource-policy analyses shared with `deny_service_confused_deputy`.
 They assert counts rather than wall clock, so they cannot flake.
 
-They are memo unit tests, not registry-driven regression guards, and the
-distinction matters because it is easy to read them as the latter. Each
-assertion hand-enumerates what it drives -- `range(11)` here, a literal
-`SHARED_ANALYZERS` list below -- so a check registered tomorrow is outside
-every one of them. Measured: registering a twelfth check that asks for the
-region list twice and sweeps every region twice leaves this file green, and so
-does adding a seventh doubly-called, region-sweeping, unmemoized analyzer to
-`deny_service_confused_deputy`. Driving them from `get_all_check_classes`
-would close that; nothing does today.
+The first three are memo unit tests, not registry-driven regression guards,
+and the distinction matters because it is easy to read them as the latter.
+Each hand-enumerates what it drives -- `range(11)` in the first, a literal
+`SHARED_ANALYZERS` list in the third -- so a check registered tomorrow is
+outside all three. Measured: registering a twelfth check that asks for the
+region list twice and sweeps every region twice leaves those three green, and
+so does adding a seventh doubly-called, region-sweeping, unmemoized analyzer
+to `deny_service_confused_deputy`. What they do catch is regression in the
+other direction: disabling either memo fails the matching test, and an
+analyzer that loses its decorator fails the third.
 
-What they do catch is regression in the other direction: disabling either memo
-fails the matching test, and an analyzer that loses its decorator fails the
-third.
+`TestNoCheckRepeatsAnother` is the registry-driven one, and it is what covers
+the check registered tomorrow. It drives `get_all_check_classes()` and asserts
+a single invariant -- no `(service, region, operation)` triple is issued twice
+in one account's run -- so it needs no edit when a check is added. Measured
+against the same twelfth check: it fails with
+`eks ap-southeast-2 list_clusters x3` while the three above stay green.
 """
 
-from typing import Any, Callable, Dict, List, Set
+from collections import Counter, defaultdict
+from typing import Any, Callable, DefaultDict, Dict, List, Set, Tuple
 from unittest.mock import MagicMock
 
 from botocore.exceptions import ClientError
@@ -38,9 +43,14 @@ from headroom.aws.kms import analyze_kms_key_policies
 from headroom.aws.s3 import analyze_s3_bucket_policies
 from headroom.aws.secretsmanager import analyze_secrets_manager_policies
 from headroom.aws.sqs import analyze_sqs_queue_policies
+from headroom.checks.registry import get_all_check_classes
 
 ORG_ACCOUNT_IDS = {"111111111111"}
 ORG_ID = "o-11111111"
+
+# One AWS API call, as the repeat guard counts it: which client issued it
+# and what it asked for. Region is "" for a global service.
+Operation = Tuple[str, str, str]
 
 # The analyzers `deny_service_confused_deputy` shares with a third-party-access
 # check, each therefore invoked twice per account.
@@ -159,3 +169,107 @@ class TestCallCounts:
             analyzer(session, ORG_ACCOUNT_IDS, ORG_ID)
 
         assert session.client.call_count == after_the_first_caller
+
+
+class _RecordingClient:
+    """
+    A stand-in boto3 client that logs the operation names asked of it.
+
+    Every listing comes back empty, which is what keeps the log to entry
+    points: a per-resource follow-up like `get_bucket_policy` needs a bucket
+    to exist, and those are not what the memos deduplicate.
+    """
+
+    def __init__(self, service: str, region: str, log: List[Operation]) -> None:
+        self._service = service
+        self._region = region
+        self._log_to = log
+
+    def _log(self, operation: str) -> None:
+        self._log_to.append((self._service, self._region, operation))
+
+    def get_paginator(self, operation_name: str) -> MagicMock:
+        """Log the paginated operation and hand back an empty page."""
+        self._log(operation_name)
+        paginator = MagicMock()
+        paginator.paginate.return_value = [_empty_response()]
+        return paginator
+
+    def describe_regions(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        """Report the three regions every sweep below walks."""
+        self._log("describe_regions")
+        return {"Regions": [{"RegionName": region} for region in REGIONS]}
+
+    def get_registry_policy(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        """Report no registry policy the way ECR reports it: as an error."""
+        self._log("get_registry_policy")
+        registry_error: Any = {"Error": {"Code": "RegistryPolicyNotFoundException"}}
+        raise ClientError(registry_error, "GetRegistryPolicy")
+
+    def __getattr__(self, operation_name: str) -> Callable[..., Any]:
+        """Log any other operation and return an empty response."""
+        def call(*args: Any, **kwargs: Any) -> DefaultDict[str, Any]:
+            self._log(operation_name)
+            return _empty_response()
+        return call
+
+
+def _empty_response() -> DefaultDict[str, Any]:
+    """An empty response every key of which reads as an empty list."""
+    return defaultdict(list)
+
+
+class TestNoCheckRepeatsAnother:
+    """Pin the memo contract across the whole registry rather than a list."""
+
+    def test_no_operation_is_issued_twice_for_one_account(self) -> None:
+        """
+        Run every registered check against one session; nothing repeats.
+
+        The three assertions above are memo unit tests: each hand-enumerates
+        what it drives, so a check registered tomorrow that asks for the
+        region list twice and sweeps every region twice leaves all of them
+        green. This is the guard that does not need editing when a check is
+        added, because the registry supplies the scope.
+
+        The invariant is one line: across one account's whole run, no
+        `(service, region, operation)` triple is issued twice. That is the
+        memo contract restated, and unlike a call-count floor it does not
+        grow when a check for a new service arrives -- a new API is a new
+        triple, not a repeat. It fires exactly when one check re-reads what
+        another already read.
+
+        Measured on the registry as it stands: 35 operations, 35 distinct.
+        Two of those checks issue nothing at all -- once
+        `deny_service_confused_deputy` has swept SQS and IAM role trust
+        policies, `deny_sqs_third_party_access` and
+        `deny_sts_third_party_assumerole` are served entirely from the memo.
+        Which check pays is registry order; that no triple repeats is not.
+        """
+        operations: List[Operation] = []
+
+        def build_client(service_name: str, region_name: str = "") -> _RecordingClient:
+            return _RecordingClient(service_name, region_name, operations)
+
+        session = MagicMock()
+        session.client.side_effect = build_client
+
+        for check_class in get_all_check_classes():
+            check_class(
+                check_name=check_class.CHECK_NAME,
+                account_name="account-0",
+                account_id="111111111111",
+                results_dir="/dev/null",
+                org_account_ids=ORG_ACCOUNT_IDS,
+                org_id=ORG_ID,
+                exclude_account_ids=False,
+            ).analyze(session)
+
+        repeated = sorted(
+            f"{service} {region or 'global'} {operation} x{count}"
+            for (service, region, operation), count in Counter(operations).items()
+            if count > 1
+        )
+
+        assert repeated == []
+        assert operations, "no check issued an operation; the harness is not exercising them"
