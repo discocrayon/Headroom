@@ -243,11 +243,12 @@ derived: a per-account census of the API calls the checks issue -- 203 requests 
 round-trip and two extra round-trips per handshake. That comes to 587 round-trips, roughly
 59 seconds an account and 4.9 hours for 300.
 
-The 4.9 hours is the code the census counted, before the caches. The table's 3.8-hour row
-is what the region-list and EC2-instance caches leave of it, and
-`design-docs/2026-08-21-parallel-account-analysis.md` carries both numbers and the census
-they come from. A third cache, covering the resource policies two checks each read, landed
-afterwards and removes about 68 region probes per account, so even 3.8 hours is now
+The 4.9 hours is the code the census counted, before the caches. The region-list memo
+folds 11 `describe_regions` calls into 1, and the EC2-instance memo removes 51 of the 68
+`describe_instances` calls along with 34 client builds and their handshakes, leaving 142
+requests and 158 handshakes -- 458 round-trips, or 46 seconds an account, which is the
+table's 3.8-hour row. A third cache, covering the resource policies two checks each read,
+landed afterwards and removes about 68 region probes per account, so even 3.8 hours is now
 pessimistic. The census is real; the latency is an assumption, and a slower or faster link
 moves every row in the column together.
 
