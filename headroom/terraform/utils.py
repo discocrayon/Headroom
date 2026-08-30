@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "account_id_local_name",
+    "claim_plan_path",
     "make_account_base_names",
     "make_ou_base_names",
     "make_safe_variable_name",
@@ -216,6 +217,48 @@ def make_account_base_names(
         base_names[account_id] = base_name
 
     return base_names
+
+
+def claim_plan_path(
+    plan: TerraformPlan,
+    filepath: Path,
+    content: str,
+    claimed_by: str
+) -> None:
+    """
+    Add a rendered file to the plan, refusing a path already claimed.
+
+    The plan is keyed on the destination path, so `plan[filepath] = content`
+    replaces a previous entry with nothing raised, and render-before-mutate
+    then writes a plan that is already missing a file.
+
+    `make_account_base_names` and `make_ou_base_names` each keep their own
+    namespace collision-free, but they cannot see each other, and neither
+    sees the fixed `root_scps.tf` / `root_rcps.tf` names. An account named
+    "Root" reduces to `root` and takes the root policy file; an account named
+    "Sandbox OU" reduces to `sandbox_ou` and takes the file belonging to an
+    OU named "Sandbox". This is the one check that spans all of them, because
+    it compares the thing that actually collides: the path.
+
+    Args:
+        plan: Rendered file contents, keyed by destination path
+        filepath: Where this file belongs
+        content: Rendered file content
+        claimed_by: What is claiming the path, for the abort message
+
+    Raises:
+        RuntimeError: If the path is already in the plan
+    """
+    if filepath in plan:
+        raise RuntimeError(
+            f"Two generated files claim {filepath.name!r}, the second for "
+            f"{claimed_by}. An account, an OU, and the organization root all "
+            "name their files from names reduced to a Terraform identifier, "
+            "so two of them reducing alike generate over one another. Rename "
+            "one."
+        )
+
+    plan[filepath] = content
 
 
 def write_terraform_file(filepath: Path, content: str, policy_type: str) -> None:

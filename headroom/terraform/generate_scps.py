@@ -18,6 +18,7 @@ from .models import (
 )
 from .utils import (
     account_id_local_name,
+    claim_plan_path,
     make_account_base_names,
     make_ou_base_names,
     make_safe_variable_name,
@@ -466,19 +467,19 @@ def _render_scp_terraform_plan(
         filepath, content = _render_account_scp_terraform(
             account_id, account_recs, organization_hierarchy, output_path
         )
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, f"account {organization_hierarchy.accounts[account_id].account_name!r}")
 
     for ou_id, ou_recs in ou_recommendations.items():
         filepath, content = _render_ou_scp_terraform(
             ou_id, ou_recs, organization_hierarchy, output_path
         )
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, f"OU {organization_hierarchy.organizational_units[ou_id].name!r}")
 
     if root_recommendations:
         filepath, content = _render_root_scp_terraform(
             root_recommendations, organization_hierarchy, output_path
         )
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, "the organization root")
 
     return plan
 

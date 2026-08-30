@@ -303,6 +303,15 @@ The message names the account names and never the account IDs, matching the two 
 guards: `exclude_account_ids` exists so an operator never sees them, and the generated
 Terraform looks accounts up by name in any case.
 
+**Two generated files that claim one path.** The claim tables each keep one namespace
+free of collisions, and neither can see the other, nor the fixed `root_scps.tf` and
+`root_rcps.tf` names. An account named `Root` reduces to `root` and takes the root
+policy's file; an account named `Sandbox OU` reduces to `sandbox_ou` and takes the file
+belonging to an OU named `Sandbox`. `claim_plan_path` is the check that spans all of
+them, because it compares the thing that actually collides -- the destination path -- and
+it is the last point at which the collision is still visible. After it the plan is a
+dictionary that has already lost an entry.
+
 **Both run before the resume filter, and have to.** They see every account the run
 selected, not the subset still needing a scan: `run_checks` drops accounts whose results
 already exist, and that filter runs after these. Deferring the duplicate-name check until
