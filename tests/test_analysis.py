@@ -1150,23 +1150,36 @@ class TestRunChecksPool:
         ):
             run_checks(MagicMock(), self._accounts(3), self._config(1), set(), ORG_ID)
 
-    def test_a_worker_returns_immediately_when_abort_is_set(self) -> None:
+    def test_a_worker_returns_immediately_when_abort_is_set(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         """
-        An in-flight worker bails at its next checkpoint.
+        An in-flight worker bails at its next checkpoint, and says so.
 
         Python cannot kill a running thread, so cancelling queued futures is
         not enough: without this check, shutdown would block until every
         in-flight account finished all its remaining checks.
+
+        It logs the same line as a worker stopped partway through its checks,
+        because the outcome is the same and the two paths are otherwise the
+        only ones that end an account silently. The run-level count reports
+        cancelled accounts only, so an in-flight account that returned here
+        without a line would appear in no tally at all.
         """
         abort = threading.Event()
         abort.set()
 
-        with patch("headroom.analysis.get_headroom_session") as mock_session:
+        with (
+            caplog.at_level(logging.INFO, logger="headroom.analysis"),
+            patch("headroom.analysis.get_headroom_session") as mock_session,
+        ):
             _run_checks_for_account(
                 self._accounts(1)[0], MagicMock(), self._config(1), set(), ORG_ID, abort
             )
 
         mock_session.assert_not_called()
+        assert "Checks aborted for account: account-0_111111111111" in caplog.text
 
     def test_no_further_checks_run_once_abort_is_set(self) -> None:
         """
@@ -1544,6 +1557,90 @@ class TestRunChecksPool:
 
         assert len(captured) == len(accounts)
         assert sum(1 for future in captured if future.cancelled()) >= 1
+
+    def test_the_operator_is_told_how_many_accounts_never_ran(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        A cancelled account leaves no trace of its own.
+
+        _log_every_failure skips cancelled futures, correctly -- they hold no
+        failure. But nothing else mentions them either, so an aborted run
+        printed `Analyzing 200 account(s)`, a handful of completions, the
+        failures, and a traceback, leaving the operator to work out by
+        subtraction how much of the organization went unanalyzed. That number
+        is what decides whether the results on disk are worth generating
+        policies from.
+
+        The count is read off Future.cancelled() rather than parsed out of
+        the line, and the assertion needs it to be both non-zero and the
+        number reported.
+        """
+        accounts = self._accounts(200)
+        failing_account_id = accounts[0].account_id
+        captured: List[Future[None]] = []
+        real_submit = ThreadPoolExecutor.submit
+
+        def capturing_submit(
+            executor: ThreadPoolExecutor, fn: object, *args: object, **kwargs: object
+        ) -> Future[None]:
+            future: Future[None] = real_submit(executor, fn, *args, **kwargs)  # type: ignore[arg-type]
+            captured.append(future)
+            return future
+
+        def fail_the_first_account(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            org_id: str,
+            abort: threading.Event,
+        ) -> None:
+            if account_info.account_id == failing_account_id:
+                raise RuntimeError("role assumption failed")
+
+        with (
+            caplog.at_level(logging.ERROR, logger="headroom.analysis"),
+            patch.object(ThreadPoolExecutor, "submit", capturing_submit),
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=fail_the_first_account),
+            pytest.raises(RuntimeError, match="role assumption failed"),
+        ):
+            run_checks(MagicMock(), accounts, self._config(1), set(), ORG_ID)
+
+        cancelled = sum(1 for future in captured if future.cancelled())
+        assert cancelled >= 1
+        assert f"{cancelled} account(s) were never analyzed" in caplog.text
+
+    def test_a_run_that_loses_no_account_says_nothing_about_it(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        Nothing cancelled, no line. One worker and one account leaves no
+        queue behind, so the count is zero and reporting it would be noise
+        on top of the failure the operator already has.
+        """
+        def fail(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            org_id: str,
+            abort: threading.Event,
+        ) -> None:
+            raise RuntimeError("role assumption failed")
+
+        with (
+            caplog.at_level(logging.ERROR, logger="headroom.analysis"),
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=fail),
+            pytest.raises(RuntimeError, match="role assumption failed"),
+        ):
+            run_checks(MagicMock(), self._accounts(1), self._config(1), set(), ORG_ID)
+
+        assert "never analyzed" not in caplog.text
 
     def test_a_keyboard_interrupt_aborts_the_run_rather_than_draining_the_queue(self) -> None:
         """

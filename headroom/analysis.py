@@ -654,6 +654,7 @@ def _run_every_missing_check(
             at the next check boundary
     """
     if abort.is_set():
+        logger.info(f"Checks aborted for account: {account_identifier}")
         return
 
     logger.info(f"Running checks for account: {account_identifier}")
@@ -716,6 +717,41 @@ def _log_every_failure(
             logger.error(
                 f"Checks failed for account {_get_account_identifier(account_info)}: {error!r}"
             )
+
+
+def _log_the_accounts_that_never_ran(
+    accounts_by_future: Dict[Future[None], AccountInfo]
+) -> None:
+    """
+    Report how much of the organization the abort left unanalyzed.
+
+    Every other outcome announces itself: an account that finishes logs
+    `Checks completed`, one stopped at a checkpoint logs `Checks aborted`,
+    and one that failed is named by `_log_every_failure`. A cancelled account
+    is the exception -- it never ran, so it never logged, and
+    `_log_every_failure` skips it because it holds no exception to report.
+
+    Without this the operator saw `Analyzing 300 account(s)`, some
+    completions, the failures, and a traceback, and had to reach the number
+    that matters by subtraction. It is the number that decides whether the
+    results now on disk are worth generating policies from.
+
+    Counted from `Future.cancelled()`, which is true only for futures the
+    handler took off the queue before they started. Accounts already in
+    flight are not counted here: they logged their own abort.
+
+    Args:
+        accounts_by_future: Every future submitted, mapped to its account
+    """
+    cancelled = sum(1 for future in accounts_by_future if future.cancelled())
+
+    if not cancelled:
+        return
+
+    logger.error(
+        f"Aborting: {cancelled} account(s) were never analyzed. Results on disk "
+        "cover the rest, and a re-run resumes from them."
+    )
 
 
 def run_checks(
@@ -858,6 +894,7 @@ def run_checks(
                 raise
     except BaseException:
         _log_every_failure(accounts_by_future)
+        _log_the_accounts_that_never_ran(accounts_by_future)
         raise
 
 
