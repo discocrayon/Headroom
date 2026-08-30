@@ -186,7 +186,8 @@ test_environment/
 │       ├── deny_ecr_third_party_access/
 │       ├── deny_kms_third_party_access/
 │       ├── deny_secrets_manager_third_party_access/
-│       └── deny_sqs_third_party_access/
+│       ├── deny_sqs_third_party_access/
+│       └── deny_service_confused_deputy/
 ├── scps/
 │   ├── grab_org_info.tf
 │   ├── root_scps.tf

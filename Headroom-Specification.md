@@ -74,6 +74,12 @@
 - Grant principal classification (IAM ARN, AWS service principal) with fail-fast on anything else
 - Multi-region KMS key scanning with pagination support for keys and grants
 - KMS actions tracking per third-party account
+- **Service Confused Deputy Check:** Source-guard analysis on every `Allow` statement naming a `Service` principal, across all six resource types plus IAM role trust policies
+- Narrows the AWS service exemption the other six statements must carry, which nothing previously narrowed back down
+- Out-of-organization source account detection from `aws:SourceAccount` and `aws:SourceArn`, unioned into the statement's source allowlist
+- Wildcard source detection - a source no allowlist can enumerate withholds the statement from that account
+- Fail-fast on a source guard that cannot be read (`aws:SourceOrgID`, an unrecognized operator, a value that is neither an account ID nor a wildcard)
+- No additional AWS API calls: the six existing analyzers record the sources during the statement walk they already perform
 
 ### 5. Policy Placement Intelligence
 - Organization structure analysis for optimal policy deployment levels
@@ -831,6 +837,14 @@ rather than in each analyzer.
 ```python
 # aws/policy_documents.py
 class MalformedPolicyError(Exception): ...
+class UnknownSourceConditionError(Exception): ...
+
+@dataclass
+class ServicePrincipalSource:
+    service_principal: str            # e.g. "sns.amazonaws.com"
+    source_account_ids: List[str]     # Out-of-org accounts only, sorted
+    has_source_condition: bool        # Any source key guards the statement
+    has_wildcard_source: bool         # A source no allowlist can enumerate
 
 def normalize_statements(
     policy: Mapping[str, Any],
@@ -838,6 +852,16 @@ def normalize_statements(
 ) -> List[Any]: ...
 
 def has_not_principal(statement: Mapping[str, Any]) -> bool: ...
+
+def read_service_principal_sources(
+    statement: Mapping[str, Any],
+    org_account_ids: Set[str],
+    resource_description: str,
+) -> List[ServicePrincipalSource]: ...
+
+def has_actionable_service_principal_source(
+    sources: List[ServicePrincipalSource]
+) -> bool: ...
 ```
 
 **Statement shape.** IAM accepts a lone statement object where a one-element
@@ -860,9 +884,27 @@ after the AssumeRole action gate as well. `Deny` with `NotPrincipal` is the
 form AWS recommends, it restricts rather than grants, and a resource policy's
 `Deny` hands access to nobody.
 
+**Service principal sources.** `read_service_principal_sources` is the one
+place any analyzer reads a `Condition`, and it reads exactly three keys -
+`aws:SourceAccount`, `aws:SourceArn` and `aws:SourceOrgID` - on statements
+naming a `Service` principal. Each of the six analyzers calls it inside the
+`Effect` gate it already applies and records the result on its analysis
+dataclass as `service_principal_sources`, so the seventh check reads six
+existing analyses rather than making AWS calls of its own. One `Condition`
+block guards every principal in its statement, so each service the statement
+names carries the same guard and gets its own entry.
+`has_actionable_service_principal_source` is the predicate each analyzer uses
+to decide whether a source alone is reason to keep an analysis it would
+otherwise drop; an unguarded source is not, for the reasons in Service
+Confused Deputy below. See that section for the full disposition table and the
+cases that raise `UnknownSourceConditionError`.
+
 **Not read.** `Resource` and `NotResource` are never consulted. A statement
 scoped away from the resource being scanned still contributes its principals,
-which widens an allowlist rather than narrowing one.
+which widens an allowlist rather than narrowing one. No other `Condition` key
+is interpreted anywhere: a wildcard principal narrowed by `aws:PrincipalOrgID`
+is still a violation, and a grant narrowed by `s3:prefix` still contributes its
+account at full width, both of which cost coverage rather than safety.
 
 ### ECR Third-Party Access
 
@@ -1795,6 +1837,273 @@ The RCP uses `aws:PrincipalAccount` condition for allowlisting. This only works 
 - Buckets with Federated/CanonicalUser principals → marked as violations
 - Only buckets with account-based third-party access → used for allowlist generation
 
+### Service Confused Deputy
+
+**Purpose:** Narrow the AWS service exemption every other RCP statement must
+carry. Identify the out-of-organization accounts that legitimately drive
+service-mediated calls into organization resources, so the
+`DenyServiceConfusedDeputy` statement can permit them, and the source guards
+that no allowlist can express, so the statement can be withheld from the
+accounts holding them.
+
+The six statements above each end with
+`BoolIfExists { "aws:PrincipalIsAWSService" = "false" }`, so their Deny never
+matches a call an AWS service makes. That exemption is mandatory rather than a
+convenience: on a service-principal request `aws:PrincipalOrgID` and
+`aws:PrincipalAccount` are absent, `StringNotEqualsIfExists` on an absent key
+evaluates true, and without the Bool clause the Deny would match every
+CloudTrail delivery, access-log write and SSE-KMS call in the organization.
+Nothing narrowed the exemption back down, so a principal outside the
+organization who configures an AWS service in their own account - a trail, a
+Config delivery channel, an SNS topic - could have that service reach a bucket,
+key, queue, secret, repository or role in an organization account. Severity is
+bounded by the resource policy: the RCP failing to deny is not the same as
+access being granted, so this closes a defense-in-depth gap rather than an open
+door.
+
+**Data Model:**
+```python
+# aws/policy_documents.py - recorded by all six analyzers
+
+@dataclass
+class ServicePrincipalSource:
+    """One Allow statement's Service principal and the source guard on it."""
+    service_principal: str            # e.g. "sns.amazonaws.com"
+    source_account_ids: List[str]     # Out-of-org accounts only, sorted
+    has_source_condition: bool        # Any source key guards the statement
+    has_wildcard_source: bool         # A source no allowlist can enumerate
+
+# checks/rcps/deny_service_confused_deputy.py - one source, plus its resource
+
+@dataclass
+class ServicePrincipalSourceFinding:
+    resource_type: str                # ecr | kms | s3 | secretsmanager | sqs | iam
+    resource_identifier: str          # Name or ARN, whichever the analyzer records
+    region: Optional[str]             # None for resources with no region in their identity
+    service_principal: str
+    source_account_ids: List[str]
+    has_source_condition: bool
+    has_wildcard_source: bool
+```
+
+Each of the six analysis dataclasses - `ECRPolicyAnalysis`,
+`KMSKeyPolicyAnalysis`, `S3BucketPolicyAnalysis`, `SecretsPolicyAnalysis`,
+`SQSQueuePolicyAnalysis` and `TrustPolicyAnalysis` - gains
+`service_principal_sources: List[ServicePrincipalSource]`, populated inside the
+statement walk it already performs.
+
+**Analysis Function:**
+
+There is no seventh `aws/` module. The check composes the six analyzers, so a
+run costs no additional AWS API calls, and each analyzer supplies the identity
+of the resource its sources were found on:
+
+| Analyzer | `resource_type` | `resource_identifier` | `region` |
+|---|---|---|---|
+| `analyze_ecr_policies` | `ecr` | Repository name, or `registry` for a per-region registry policy | Region |
+| `analyze_kms_key_policies` | `kms` | Key ID | Region |
+| `analyze_s3_bucket_policies` | `s3` | Bucket name | `None` |
+| `analyze_secrets_manager_policies` | `secretsmanager` | Secret name | `None` |
+| `analyze_sqs_queue_policies` | `sqs` | Queue ARN | Region |
+| `analyze_iam_roles_trust_policies` | `iam` | Role name | `None` |
+
+Trust policies matter as much as resource policies here. A role trusting a
+service principal with no source guard is the canonical confused-deputy
+vulnerability, and `sts:AssumeRole` is in the statement's action list.
+
+```python
+# checks/rcps/deny_service_confused_deputy.py
+
+def _findings_for_resource(
+    sources: List[ServicePrincipalSource],
+    resource_type: str,
+    resource_identifier: str,
+    region: Optional[str],
+) -> List[ServicePrincipalSourceFinding]:
+    """
+    Pair each source with the resource it was found on.
+
+    Algorithm:
+    1. For each analyzer, iterate its analyses
+    2. For each analysis, flatten service_principal_sources into findings
+       carrying that resource's type, identifier and region
+    3. Return only the findings with an out-of-organization source account or
+       a wildcard source. An unguarded source is dropped - see Source Guards
+    """
+```
+
+**Custom Exceptions:**
+```python
+class UnknownSourceConditionError(Exception):
+    """Raised when a source guard on a Service principal cannot be read."""
+```
+
+**Check Implementation:**
+```python
+# checks/rcps/deny_service_confused_deputy.py
+
+@register_check("rcps", DENY_SERVICE_CONFUSED_DEPUTY)
+class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
+    def analyze(self, session):
+        # Six analyzers, flattened; unguarded and in-org-only sources dropped
+        return [f for f in findings if f.source_account_ids or f.has_wildcard_source]
+
+    def categorize_result(self, result):
+        # A source no allowlist can express is a "violation" - it withholds
+        # the statement from this account, exactly as a wildcard principal does
+        # A resolved out-of-org source is "compliant" - it is an allowlist entry
+        self.all_third_party_accounts.update(result.source_account_ids)
+        if result.has_wildcard_source:
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
+
+    def build_summary_fields(self, check_result):
+        return {
+            "violations": len(check_result.violations),
+            "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
+            "third_party_account_count": len(self.all_third_party_accounts),
+        }
+```
+
+There is deliberately no unguarded-source count in the summary; see Source
+Guards below.
+
+**Result JSON Schema:**
+```json
+{
+  "summary": {
+    "account_name": "string",
+    "account_id": "string",
+    "check": "deny_service_confused_deputy",
+    "violations": 1,
+    "unique_third_party_accounts": ["999999999999"],
+    "third_party_account_count": 1
+  },
+  "violations": [
+    {
+      "resource_type": "s3",
+      "resource_identifier": "org-log-archive",
+      "region": null,
+      "service_principal": "logging.s3.amazonaws.com",
+      "source_account_ids": [],
+      "has_source_condition": true,
+      "has_wildcard_source": true
+    }
+  ],
+  "exemptions": [],
+  "compliant_instances": [
+    {
+      "resource_type": "sqs",
+      "resource_identifier": "arn:aws:sqs:us-west-2:111111111111:vendor-events",
+      "region": "us-west-2",
+      "service_principal": "sns.amazonaws.com",
+      "source_account_ids": ["999999999999"],
+      "has_source_condition": true,
+      "has_wildcard_source": false
+    }
+  ]
+}
+```
+
+`unique_third_party_accounts` becomes the statement's `aws:SourceAccount`
+allowlist, and `violations` withholds the statement from the account, exactly
+as they do for the other six checks. The placement logic and the Terraform
+renderer treat this check like any other RCP check; nothing in either branches
+on its name.
+
+**Source Guards:**
+
+One `Condition` block guards every principal in its statement, so each service
+a statement names carries the same guard and produces its own entry. What that
+guard resolves to decides everything:
+
+| Statement | `source_account_ids` | `has_source_condition` | `has_wildcard_source` | Effect on output |
+|---|---|---|---|---|
+| `Service` principal, no source key | `[]` | `False` | `False` | Dropped - neither listed nor counted |
+| Source names an in-organization account | `[]` | `True` | `False` | Dropped - neither listed nor counted |
+| Source names an out-of-organization account | `["999999999999"]` | `True` | `False` | Allowlist entry, recorded as compliant |
+| Source is `"*"`, or an ARN yielding no account, with no companion `aws:SourceAccount` | `[]` | `True` | `True` | Violation - withholds the statement |
+| `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | Raises `UnknownSourceConditionError` |
+
+**The `Null` gate.** The statement carries
+`Null { "aws:SourceAccount" = "false" }`, which reads as "this key is not
+null", that is, it is present. The Deny therefore applies only to service
+calls that carry a source account. A call populating only `aws:SourceArn`, or
+no source keys at all, falls outside the statement entirely. This narrows the
+service exemption rather than closing it, and it is the clause that makes the
+control deployable: without it, shipping the statement would require first
+discovering every service integration in the estate. `StringNotEqualsIfExists`
+on `aws:SourceOrgID` then catches sources in standalone accounts, which belong
+to no organization and so carry no organization ID - an attacker cannot escape
+the control by using an unattached account.
+
+**Rows one and two: neither listed nor counted.** An unguarded service
+principal, and one guarded to an account already inside the organization,
+produce no output at all - no finding, no violation, and no number in the
+summary. The `Null` gate is what makes that sound rather than merely
+convenient: the statement never fires on a request carrying no source account,
+so an unguarded trust needs no allowlist entry and blocks nothing. It remains a
+real confused-deputy hole - anyone can point their topic at the queue - but not
+one this statement addresses, and making it a violation would withhold the
+statement over a problem the statement does not solve. Listing them would put
+every ordinary service integration in the account into the results and bury the
+sources that matter.
+
+An estate-wide count of them was a goal of an earlier draft and was dropped
+during implementation. All six analyzers drop an analysis that found nothing
+worth reporting - `test_role_with_service_principal` in `tests/test_aws_iam.py`
+asserts that a role trusting only a service principal is not returned - so any
+tally taken in this check would see only the unguarded sources that happen to
+sit on a resource kept for some other reason. That undercount would look like a
+measurement. Reversing the contract would flow every service role and every log
+bucket in the estate through six shared analyzers to produce one informational
+number, and a plausible-looking wrong number is worse than no number.
+
+**Row four: an unenumerable source.** This is `has_wildcard_principal` in a
+different costume - an unbounded set of sources - and it gets the same
+disposition: withhold the statement from that account and follow up in
+CloudTrail. An S3 bucket ARN reaches this row honestly rather than by accident.
+S3 ARNs carry no account field (`arn:aws:s3:::a-bucket`), so `aws:SourceArn`
+alone never identifies whose bucket drove the call, which is exactly why AWS's
+guidance pairs `aws:SourceArn` with `aws:SourceAccount`. When the companion key
+is present the pair resolves normally; when it is absent the source is
+genuinely unidentifiable and withholding is the conservative answer.
+
+**Row five: fail fast.** `aws:SourceOrgID` on a service principal raises,
+because deciding whether it names this organization needs the organization ID,
+which the analyzers do not receive - guessing would put a foreign
+organization's sources in the allowlist, or leave this one's out. A source key
+under an operator outside `StringEquals`, `StringLike`, `ArnEquals`, `ArnLike`
+and their `IfExists` variants raises for the same reason: a negated operator
+excludes rather than permits, and reading one as a guard would put the wrong
+account in the allowlist. So does an `aws:SourceAccount` value that is neither
+a twelve-digit account ID nor a wildcard. This follows the
+`UnknownGranteePrincipalError` precedent from the KMS grant work - silently
+dropping a guard we cannot read would leave its account out of the allowlist,
+and the deployed RCP would then deny access that account depended on, which is
+the failure this analysis exists to prevent.
+
+**Case-insensitive keys.** IAM matches condition key names without regard to
+case, so the analyzer lowercases before comparing: a policy written
+`aws:sourceaccount` names the same key as one written `aws:SourceAccount`.
+
+**Residual risk.** A source guard that lives outside the resource policy is not
+discoverable this way, so discovery covers the guards visible in resource and
+trust policies and a staged rollout covers the rest. Deploy to a test OU with
+the discovered allowlist and watch for denials before going
+organization-wide; rolling back is setting `deny_service_confused_deputy` to
+`false` for the affected target, which removes this statement and leaves the
+other six in place.
+
+**Scope.** AWS's reference statement also covers `cognito-identity`,
+`cognito-idp`, `logs`, `dynamodb` and `aoss`. Headroom has no checks for those
+services, so widening the action list is separate work with its own discovery.
+The reference's `aws:ResourceTag/dp:exclude:identity` break-glass is likewise
+not implemented: anyone holding the service's tagging permission could set it,
+exempting their own resources from the policy that exists to constrain them.
+Exemptions go through the allowlist variable, where they stay in Terraform and
+stay auditable.
+
 ## Results Processing
 
 ### Common Parsing Patterns
@@ -2512,8 +2821,10 @@ each registered RCP check to the three things a module call needs from it: the
 section comment, the boolean enable variable, and the list variable holding
 its third-party allowlist. `_build_rcp_terraform_module` iterates the table, so
 the table's order fixes the order parameters are rendered in - alphabetical by
-service: ECR, KMS, S3, Secrets Manager, SQS, STS - and adding a check requires
-no edit to the renderer itself.
+service: ECR, KMS, S3, Secrets Manager, SQS, STS, then
+`deny_service_confused_deputy`, which names no service and so sits after the
+alphabetical run rather than inside it - and adding a check requires no edit to
+the renderer itself.
 
 The table is the one place a new RCP check must be declared by hand; parsing
 and placement are already driven by the check registry. A registered check with
@@ -2555,6 +2866,9 @@ module "rcps_root" {
     "888888888888",
     "999999999999",
   ]
+
+  # Service confused deputy
+  deny_service_confused_deputy = false
 }
 ```
 
@@ -2563,7 +2877,9 @@ module "rcps_root" {
 # modules/rcps/variables.tf
 
 # One enable flag + one allowlist variable per registered RCP check,
-# alphabetical by service: ECR, KMS, S3, Secrets Manager, SQS, STS.
+# alphabetical by service: ECR, KMS, S3, Secrets Manager, SQS, STS, then
+# the service confused deputy check, which names no service and so sits
+# after the alphabetical run rather than inside it.
 #
 # STS is shown below. ECR, KMS, S3 and SQS follow exactly this shape.
 # Secrets Manager does not: its allowlist is named
@@ -2592,7 +2908,7 @@ variable "sts_third_party_assumerole_account_ids_allowlist" {
 locals {
   # One entry per registered RCP check, each gated by its own boolean. An
   # entry whose `include` is false is dropped from the document; it never
-  # permits anything. This is what lets six checks placed at different
+  # permits anything. This is what lets seven checks placed at different
   # levels compose without one weakening another.
   possible_rcp_1_statements = [
     # var.deny_ecr_third_party_access
@@ -2649,6 +2965,47 @@ locals {
         }
       }
     },
+
+    # var.deny_service_confused_deputy
+    # -->
+    # Sid: DenyServiceConfusedDeputy
+    #
+    # The six statements above exempt AWS service principals. This one
+    # narrows that exemption back down. Bool true, not BoolIfExists false:
+    # it applies only to service calls. Null on aws:SourceAccount applies it
+    # only to the service calls carrying that one key - a call populating
+    # only aws:SourceArn, or no source keys at all, falls outside it, which
+    # narrows the service exemption rather than closing it.
+    {
+      include = var.deny_service_confused_deputy,
+      statement = {
+        "Sid"       = "DenyServiceConfusedDeputy"
+        "Principal" = "*"
+        "Action" = [
+          "ecr:*",
+          "kms:*",
+          "s3:*",
+          "secretsmanager:*",
+          "sqs:*",
+          "sts:AssumeRole",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:SourceOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.service_confused_deputy_source_account_ids_allowlist) > 0 ? { "aws:SourceAccount" = var.service_confused_deputy_source_account_ids_allowlist } : {},
+          )
+          "Null" = {
+            "aws:SourceAccount" = "false"
+          }
+          "Bool" = {
+            "aws:PrincipalIsAWSService" = "true"
+          }
+        }
+      }
+    },
   ]
 
   # Keep only the statements whose flag is true
@@ -2698,6 +3055,17 @@ denies only a principal for which none of the three exceptions hold at once:
 outside the organization, absent from that statement's allowlist, and not an
 AWS service.
 
+The seventh statement, `DenyServiceConfusedDeputy`, inverts condition 3 rather
+than repeating it, and is the one statement covering all six services at once.
+It denies when the caller **is** an AWS service (`Bool` `true`) acting for a
+source account that is neither in the organization (`aws:SourceOrgID`) nor in
+its own allowlist (`aws:SourceAccount`), and only when the request carries a
+source account at all - `Null { "aws:SourceAccount" = "false" }` reads as "the
+key is present". A service call populating only `aws:SourceArn`, or no source
+keys at all, falls outside it, so it narrows the service exemption the other
+six must carry rather than closing it. See Service Confused Deputy under RCP
+Checks.
+
 **No resource-tag exemption.** An earlier revision carried a fourth exception,
 `aws:ResourceTag/dp:exclude:identity = "true"`. Anyone holding the service's
 tagging permission can set that tag, so the account an RCP exists to constrain
@@ -2717,11 +3085,14 @@ RCP.
 
 Until all six checks were wired through to Terraform, only STS could ever
 render `true` in a real run, so at most one statement was included and the
-budget was never approached. With six statements includable simultaneously the
-scaffolding alone costs roughly 1,900 of the 5,120 characters, and each
+budget was never approached. With seven statements includable simultaneously
+the scaffolding alone costs roughly 2,240 of the 5,120 characters, and each
 additional twelve-digit account ID costs about 14 more, leaving room for a
-couple of hundred allowlist entries across all six lists combined. A large
-enough organization will hit the plan-time error.
+couple of hundred allowlist entries across all seven lists combined.
+`DenyServiceConfusedDeputy` is 339 of that scaffolding on its own, measured
+with an empty allowlist, because it carries six services' actions and three
+condition blocks. A large enough organization will hit the plan-time error, now
+slightly sooner.
 
 Splitting across a second policy is deliberately not implemented: changes to
 `modules/rcps/` are a non-goal for the generator, and a loud failure at plan
@@ -3948,7 +4319,9 @@ variable "target_id" {
 }
 
 # One enable flag + one allowlist variable per registered RCP check,
-# alphabetical by service: ECR, KMS, S3, Secrets Manager, SQS, STS.
+# alphabetical by service: ECR, KMS, S3, Secrets Manager, SQS, STS, then
+# the service confused deputy check, which names no service and so sits
+# after the alphabetical run rather than inside it.
 #
 # STS is shown below. ECR, KMS, S3 and SQS follow exactly this shape.
 # Secrets Manager does not: its allowlist is named
@@ -3987,6 +4360,17 @@ a separate `BoolIfExists`. A `Condition` map ANDs its blocks, so a statement
 denies only a principal for which none of the three exceptions hold at once:
 outside the organization, absent from that statement's allowlist, and not an
 AWS service.
+
+The seventh statement, `DenyServiceConfusedDeputy`, inverts condition 3 rather
+than repeating it, and is the one statement covering all six services at once.
+It denies when the caller **is** an AWS service (`Bool` `true`) acting for a
+source account that is neither in the organization (`aws:SourceOrgID`) nor in
+its own allowlist (`aws:SourceAccount`), and only when the request carries a
+source account at all - `Null { "aws:SourceAccount" = "false" }` reads as "the
+key is present". A service call populating only `aws:SourceArn`, or no source
+keys at all, falls outside it, so it narrows the service exemption the other
+six must carry rather than closing it. See Service Confused Deputy under RCP
+Checks.
 
 **No resource-tag exemption.** An earlier revision carried a fourth exception,
 `aws:ResourceTag/dp:exclude:identity = "true"`. Anyone holding the service's
@@ -4161,6 +4545,9 @@ module "rcps_acme_acquisition_ou" {
   sts_third_party_assumerole_account_ids_allowlist = [
     "749430749651",
   ]
+
+  # Service confused deputy
+  deny_service_confused_deputy = false
 }
 ```
 
@@ -4208,6 +4595,9 @@ module "rcps_shared_foo_bar" {
     "758245563457",
     "978576646331",
   ]
+
+  # Service confused deputy
+  deny_service_confused_deputy = false
 }
 ```
 
