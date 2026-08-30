@@ -66,6 +66,23 @@ class TestAccountTagLayout:
         assert layout.owner == "Owner & Co."
 
 
+    def test_an_unrecognized_tag_key_aborts(self) -> None:
+        """
+        A fourth tag key must abort rather than be quietly dropped.
+
+        Headroom reads exactly these three tags. Listing a fourth expresses an
+        intent it cannot honour, and ignoring it means the operator's tag is
+        never read and nothing says why.
+        """
+        with pytest.raises(ValidationError, match="cost_center"):
+            AccountTagLayout(**{
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner",
+                "cost_center": "CostCenter",
+            })
+
+
 class TestHeadroomConfig:
     """Test HeadroomConfig class with all possible configurations."""
 
@@ -339,6 +356,37 @@ class TestHeadroomConfig:
 
         merged = merge_configs(yaml_cfg, cli_args)
         assert merged.exclude_account_ids is True
+
+    def test_a_misspelled_yaml_key_aborts_rather_than_reverting_to_default(self) -> None:
+        """
+        An unknown key must abort, not silently fall back to the default.
+
+        pydantic ignores unknown fields unless told otherwise, so a config
+        naming `max_account_worker` -- the trailing s dropped -- ran sixteen
+        workers and said nothing about it. `sample_config.yaml` ships that key
+        commented out, so typing it is the only way to set it at all, and 1,
+        the serial-debugging value, is the setting whose silent loss is
+        hardest to notice: the run still works, just concurrently.
+
+        This goes through merge_configs because that is the path a YAML key
+        takes. CLI arguments cannot reach here misspelled -- merge_configs
+        filters them against model_fields first, and argparse rejects an
+        unknown flag before that.
+        """
+        yaml_cfg = {
+            "use_account_name_from_tags": False,
+            "account_tag_layout": {
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner",
+            },
+            "max_account_worker": 1,
+        }
+
+        cli_args = argparse.Namespace(config="dummy.yaml")
+
+        with pytest.raises(ValidationError, match="max_account_worker"):
+            merge_configs(yaml_cfg, cli_args)
 
     def test_max_account_workers_defaults_to_sixteen(self) -> None:
         """The default lives in config.py and nowhere else."""
