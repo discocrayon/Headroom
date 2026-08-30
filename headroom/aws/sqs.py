@@ -8,7 +8,7 @@ specifically for identifying third-party account access (RCP checks).
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Set, Union
 
 from boto3.session import Session
@@ -16,7 +16,12 @@ from botocore.exceptions import ClientError
 from mypy_boto3_sqs.client import SQSClient
 
 from .helpers import get_all_regions
-from .policy_documents import has_not_principal, normalize_statements
+from .policy_documents import (
+    ServicePrincipalSource,
+    has_not_principal,
+    normalize_statements,
+    read_service_principal_sources,
+)
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
 logger = logging.getLogger(__name__)
@@ -68,6 +73,10 @@ class SQSQueuePolicyAnalysis:
             NotPrincipal, which reaches everyone it does not name
         has_non_account_principals: True if policy has Federated principals
         actions_by_account: Dict mapping account IDs to sets of allowed actions
+        service_principal_sources: Service principals this policy trusts,
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag.
     """
     queue_url: str
     queue_arn: str
@@ -76,6 +85,7 @@ class SQSQueuePolicyAnalysis:
     has_wildcard_principal: bool
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
 def _extract_account_ids_from_principal(principal: PrincipalType) -> Set[str]:
@@ -208,6 +218,7 @@ def _analyze_queue_policy(
     actions_by_account: Dict[str, Set[str]] = {}
     has_wildcard_principal = False
     has_non_account_principals = False
+    sources: List[ServicePrincipalSource] = []
 
     statements = normalize_statements(policy, f"Queue {queue_arn} in {region}")
 
@@ -224,6 +235,10 @@ def _analyze_queue_policy(
         principal = statement.get("Principal")
         if not principal:
             continue
+
+        sources.extend(
+            read_service_principal_sources(statement, org_account_ids, f"Queue {queue_arn}")
+        )
 
         if _check_for_wildcard_principal(principal):
             has_wildcard_principal = True
@@ -256,6 +271,7 @@ def _analyze_queue_policy(
         has_wildcard_principal=has_wildcard_principal,
         has_non_account_principals=has_non_account_principals,
         actions_by_account=actions_by_account,
+        service_principal_sources=sources,
     )
 
 

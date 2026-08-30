@@ -21,7 +21,12 @@ from mypy_boto3_kms.type_defs import KeyListEntryTypeDef
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..types import JsonDict
 from .helpers import get_all_regions, paginate
-from .policy_documents import has_not_principal, normalize_statements
+from .policy_documents import (
+    ServicePrincipalSource,
+    has_not_principal,
+    normalize_statements,
+    read_service_principal_sources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +122,10 @@ class KMSKeyPolicyAnalysis:
         grants: The key's grants that reach outside the organization, which
             is where a reader looks when the key policy alone does not
             explain an entry in third_party_account_ids
+        service_principal_sources: Service principals this policy trusts,
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag.
     """
     key_id: str
     key_arn: str
@@ -125,6 +134,7 @@ class KMSKeyPolicyAnalysis:
     actions_by_account: Dict[str, List[str]] = field(default_factory=dict)
     has_wildcard_principal: bool = False
     grants: List[KMSGrantFinding] = field(default_factory=list)
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
 def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
@@ -205,6 +215,31 @@ def _has_wildcard_principal(principal: Any) -> bool:
                 if isinstance(value, list) and any(item == "*" for item in value):
                     return True
     return False
+
+
+def _has_actionable_service_principal_source(
+    sources: List[ServicePrincipalSource]
+) -> bool:
+    """
+    Report whether any recorded service principal source is worth keeping.
+
+    An unguarded service principal asks nothing of the allowlist: with no
+    source condition, every account behind that service can drive the
+    call, so there is no third party to record and nothing to withhold.
+    Keeping the key in results anyway would return every ordinary service
+    integration in the account and bury the ones that matter.
+
+    Args:
+        sources: The service principal sources one key's statements recorded
+
+    Returns:
+        True if a source names an out-of-organization account or a guard
+        no allowlist can express
+    """
+    return any(
+        source.source_account_ids or source.has_wildcard_source
+        for source in sources
+    )
 
 
 def _normalize_actions(action: Any) -> List[str]:
@@ -409,6 +444,7 @@ def _analyze_key_in_region(
     third_party_accounts: Set[str] = set()
     actions_by_account: defaultdict[str, Set[str]] = defaultdict(set)
     has_wildcard = False
+    sources: List[ServicePrincipalSource] = []
 
     policy = _read_key_policy(kms_client, key_id, region)
     statements = (
@@ -430,6 +466,10 @@ def _analyze_key_in_region(
         principal = statement.get("Principal")
         if not principal:
             continue
+
+        sources.extend(
+            read_service_principal_sources(statement, org_account_ids, f"Key '{key_id}' in {region}")
+        )
 
         if _has_wildcard_principal(principal):
             has_wildcard = True
@@ -470,7 +510,8 @@ def _analyze_key_in_region(
         third_party_account_ids=third_party_accounts,
         actions_by_account=actions_by_account_serializable,
         has_wildcard_principal=has_wildcard,
-        grants=grants
+        grants=grants,
+        service_principal_sources=sources,
     )
 
 
@@ -533,7 +574,8 @@ def analyze_kms_key_policies(
                         org_account_ids
                     )
 
-                    if analysis.third_party_account_ids or analysis.has_wildcard_principal:
+                    has_service_source = _has_actionable_service_principal_source(analysis.service_principal_sources)
+                    if analysis.third_party_account_ids or analysis.has_wildcard_principal or has_service_source:
                         results.append(analysis)
 
         except ClientError:

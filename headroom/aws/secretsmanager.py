@@ -8,7 +8,7 @@ resource policies, specifically for identifying third-party account access (RCP 
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Union
 
 from boto3.session import Session
@@ -18,7 +18,12 @@ from mypy_boto3_secretsmanager.client import SecretsManagerClient
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
 from .helpers import get_all_regions
-from .policy_documents import has_not_principal, normalize_statements
+from .policy_documents import (
+    ServicePrincipalSource,
+    has_not_principal,
+    normalize_statements,
+    read_service_principal_sources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,10 @@ class SecretsPolicyAnalysis:
             NotPrincipal, which reaches everyone it does not name
         has_non_account_principals: True if policy has Federated/CanonicalUser principals
         actions_by_account: Dict mapping account IDs to sets of allowed actions
+        service_principal_sources: Service principals this policy trusts,
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag.
     """
     secret_name: str
     secret_arn: str
@@ -60,6 +69,7 @@ class SecretsPolicyAnalysis:
     has_wildcard_principal: bool
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
 def _extract_account_ids_from_principal(
@@ -151,6 +161,32 @@ def _has_non_account_principals(
     if isinstance(principal, dict):
         return "Federated" in principal or "CanonicalUser" in principal
     return False
+
+
+def _has_actionable_service_principal_source(
+    sources: List[ServicePrincipalSource]
+) -> bool:
+    """
+    Report whether any recorded service principal source is worth keeping.
+
+    An unguarded service principal asks nothing of the allowlist: with no
+    source condition, every account behind that service can drive the
+    call, so there is no third party to record and nothing to withhold.
+    Keeping the secret in results anyway would return every ordinary
+    service integration in the account and bury the ones that matter.
+
+    Args:
+        sources: The service principal sources one secret's statements
+            recorded
+
+    Returns:
+        True if a source names an out-of-organization account or a guard
+        no allowlist can express
+    """
+    return any(
+        source.source_account_ids or source.has_wildcard_source
+        for source in sources
+    )
 
 
 def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
@@ -305,6 +341,7 @@ def _analyze_secret_policy(
     has_wildcard = False
     has_non_account_principals = False
     actions_by_account: Dict[str, Set[str]] = {}
+    sources: List[ServicePrincipalSource] = []
 
     statements = normalize_statements(policy, f"Secret '{secret_name}' ({secret_arn})")
 
@@ -321,6 +358,10 @@ def _analyze_secret_policy(
         principal = statement.get("Principal")
         if not principal:
             continue
+
+        sources.extend(
+            read_service_principal_sources(statement, org_account_ids, f"Secret '{secret_name}'")
+        )
 
         if _has_wildcard_principal(principal):
             has_wildcard = True
@@ -342,14 +383,16 @@ def _analyze_secret_policy(
                     actions_by_account[account_id] = set()
                 actions_by_account[account_id].update(actions)
 
-    if third_party_accounts or has_wildcard or has_non_account_principals:
+    has_service_source = _has_actionable_service_principal_source(sources)
+    if third_party_accounts or has_wildcard or has_non_account_principals or has_service_source:
         return SecretsPolicyAnalysis(
             secret_name=secret_name,
             secret_arn=secret_arn,
             third_party_account_ids=third_party_accounts,
             has_wildcard_principal=has_wildcard,
             has_non_account_principals=has_non_account_principals,
-            actions_by_account=actions_by_account
+            actions_by_account=actions_by_account,
+            service_principal_sources=sources,
         )
 
     return None
