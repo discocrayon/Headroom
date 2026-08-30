@@ -403,7 +403,6 @@ class TestGrantSourcedResults:
     A grant is invisible to GetKeyPolicy, so these are the keys that would
     have shipped an RCP that denied access the account depended on.
     """
-
     ORG_ACCOUNT = "111111111111"
     THIRD_PARTY = "999999999999"
 

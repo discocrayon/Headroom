@@ -744,7 +744,6 @@ class TestTrustPolicyActionMatching:
     it working. `NotAction` was dropped the same way, since only `Action` was
     ever read.
     """
-
     PARTNER = "999999999999"
     ORG = {"111111111111"}
 
@@ -871,7 +870,6 @@ class TestPrincipalArnCoverage:
     policy, and a role trust policy is one - and every non-commercial
     partition produced no account ID at all.
     """
-
     PARTNER = "999999999999"
 
     @pytest.mark.parametrize("principal", [

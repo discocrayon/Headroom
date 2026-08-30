@@ -181,7 +181,6 @@ class ServicePrincipalSource:
         read_failure: Why this resource's source read could not be
             completed, None when it was read in full
     """
-
     service_principal: Optional[str]
     source_account_ids: List[str]
     has_source_condition: bool
@@ -284,7 +283,6 @@ class _SourceGuards:
         names_foreign_org: True if any organization scope names an
             organization other than this one
     """
-
     accounts: List[str]
     arns: List[str]
     has_org_scope: bool

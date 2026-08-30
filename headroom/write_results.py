@@ -37,7 +37,6 @@ class ResultFilePathResolver:
         account_id: Account ID (optional, defaults to empty string)
         exclude_account_ids: If True, exclude account ID from filename
     """
-
     check_name: str
     results_base_dir: str
     account_name: str = ""
