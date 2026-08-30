@@ -1843,6 +1843,32 @@ class TestGetInstances:
 
         assert get_instances(session, "us-east-1")[0].owner_id == "111111111111"
 
+    def test_a_reservation_without_an_owner_names_the_region(self) -> None:
+        """
+        A missing OwnerId raises the error this function documents.
+
+        `ReservationTypeDef` declares OwnerId `NotRequired`, so subscripting
+        it is a `KeyError` waiting for a response that omits it. That escapes
+        the `except ClientError` around the sweep and reaches the operator as
+        a bare `KeyError: 'OwnerId'` naming neither the region nor the
+        account -- across 17 regions and 300 accounts, nothing to act on, and
+        it contradicts this function's own `Raises: RuntimeError`.
+
+        `_resolve_ami_owner` in this module already answers a missing OwnerId
+        the right way; this is the same answer at the other call site.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "State": {"Name": "running"},
+                }],
+            }]
+        }])
+
+        with pytest.raises(RuntimeError, match="us-east-1"):
+            get_instances(session, "us-east-1")
+
     def test_a_region_is_described_once_per_session(self) -> None:
         """
         Four checks ask for one region's instances; only the first reaches AWS.
