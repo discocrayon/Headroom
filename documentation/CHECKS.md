@@ -547,8 +547,8 @@ with the same widening-only effect: a statement scoped away from the resource
 still contributes its principals.
 
 `deny_service_confused_deputy` is the one exception, and a narrow one. It reads
-three condition keys - `aws:SourceAccount`, `aws:SourceArn` and
-`aws:SourceOrgID` - and only on statements naming a `Service` principal,
+four condition keys - `aws:SourceAccount`, `aws:SourceArn`, `aws:SourceOrgID`
+and `aws:SourceOrgPaths` - and only on statements naming a `Service` principal,
 because that guard is the whole subject of the check. Everywhere else the
 widening-only argument above still holds, and general condition-aware analysis
 remains a separate concern.
@@ -994,7 +994,9 @@ Trust policies matter here as much as resource policies. A role that trusts a se
 | Source names an in-organization account | `[]` | `true` | `false` | Dropped - neither listed nor counted |
 | Source names an out-of-organization account | `["999999999999"]` | `true` | `false` | Allowlist entry, recorded as compliant |
 | Source is `*`, or an ARN yielding no account, with no companion `aws:SourceAccount` | `[]` | `true` | `true` | Violation - withholds the statement from the account |
-| `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | `read_failure` set - violation, withholds the statement from the account |
+| Source is scoped to this organization by `aws:SourceOrgID` or `aws:SourceOrgPaths` | `[]` | `true` | `false` | Dropped - the deployed statement already exempts it |
+| Source is scoped to another organization, by either key | `[]` | `true` | `true` | Violation - withholds the statement from the account |
+| A source key under an operator that does not pin it | - | - | - | `read_failure` set - violation, withholds the statement from the account |
 
 Row four is `has_wildcard_principal` in a different costume: an unbounded set of sources that no allowlist can enumerate, handled the same way - withhold the statement from that account and follow up in CloudTrail. An S3 bucket ARN reaches that row honestly rather than by accident. S3 ARNs carry no account field, so `aws:SourceArn` alone never identifies whose bucket drove the call, which is exactly why AWS pairs `aws:SourceArn` with `aws:SourceAccount`. When the companion key is present the pair resolves normally; when it is absent the source is genuinely unidentifiable.
 
@@ -1019,9 +1021,11 @@ Closing exactly that path is what `DenyServiceConfusedDeputy` is for - unguarded
 2. Deploy to a test OU with the discovered allowlist and watch for denials before going organization-wide.
 3. Rolling back is setting `deny_service_confused_deputy` to `false` for the affected target, which removes this statement and leaves the other six in place.
 
-**A guard that cannot be read**: A source guard the parser cannot read is recorded as a violation rather than dropped, so the statement is withheld from that account and an allowlist nobody could compute is never deployed as if it were complete. Three constructs reach this: `aws:SourceOrgID` on a service principal, because deciding whether it names this organization needs the organization ID, which the analyzers do not receive - guessing would put a foreign organization's sources in the allowlist or leave this one's out; a source key under an unrecognized operator, because a negated operator excludes rather than permits; and an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard.
+**An organization-scoped guard**: `aws:SourceOrgID` names an organization directly and `aws:SourceOrgPaths` carries it as the first element of a path such as `o-example12345/r-ab12/ou-ab12-11111111/`, so both reduce to the same comparison against this organization's own ID. That ID comes from `organizations:DescribeOrganization`, called once per run on the management account session Headroom already holds; the deployed statement resolves the same value through `data.aws_organizations_organization.current.id`, so discovery and deployment now agree. A scope naming this organization is a perfect guard - the statement already exempts it, so the resource needs no allowlist entry and files no violation. A scope naming any other organization is a violation, because the allowlist holds account IDs and another organization's accounts are not knowable from here. The comparison is exact: `o-example12345*` also matches every organization whose ID extends that prefix, so it falls to the violation side rather than being read as ours.
 
-The failure is recorded rather than raised. The parser runs inside six analyzers that six pre-existing checks share, and none of those checks reads a source guard, so raising would abort the estate run and take all six down over a construct they never consume. `aws:SourceOrgID` is AWS's own recommended service-principal guard, so raising made that a first-run failure for exactly the estates this tool targets. Resolving the organization ID would remove the ambiguity entirely and is a recommended follow-up: it needs a `DescribeOrganization` call, a new IAM permission, and the value threaded into all six analyzers.
+**A guard that cannot be read**: A source guard the parser cannot read is recorded as a violation rather than dropped, so the statement is withheld from that account and an allowlist nobody could compute is never deployed as if it were complete. Two constructs reach this: a source key under an unrecognized operator, because a negated operator excludes rather than permits; and an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard.
+
+The failure is recorded rather than raised. The parser runs inside six analyzers that six pre-existing checks share, and none of those checks reads a source guard, so raising would abort the estate run and take all six down over a construct they never consume. Reading the organization ID is the one place this check does fail loud instead: a `DescribeOrganization` response carrying no ID aborts the run, because every organization-scoped guard in the estate is classified against that value and continuing would put a foreign organization's sources in an allowlist, or leave this one's out, while looking like a healthy run.
 
 A resource whose policy could not be read at all reaches the same disposition. An SQS queue with an unparseable policy, or one naming a principal type the analyzer does not recognize, is recorded as a read failure instead of being skipped - the statement walk reads service principal sources before it reaches the principal types that raise, so discarding the queue would drop a guard that was read successfully. `deny_sqs_third_party_access` is unaffected: the recorded queue carries no third-party account and no wildcard, so that check's filter drops it exactly as the earlier warn-and-skip did.
 

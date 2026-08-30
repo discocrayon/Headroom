@@ -20,6 +20,8 @@ from headroom.aws.ecr import (
 )
 from headroom.aws.policy_documents import MalformedPolicyError
 
+ORG_ID = "o-example12345"
+
 
 def _no_registry_policy(mock_ecr_client: MagicMock) -> None:
     """
@@ -209,7 +211,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111", "222222222222"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].repository_name == "test-repo"
@@ -256,7 +258,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -307,7 +309,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].has_wildcard_principal is True
@@ -361,7 +363,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111", "222222222222"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -417,7 +419,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         actions = results[0].actions_by_account["999999999999"]
@@ -480,7 +482,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 2
         regions_found = {r.region for r in results}
@@ -538,7 +540,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111", "222222222222"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].third_party_account_ids == {"999999999999"}
@@ -592,7 +594,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -642,7 +644,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids)
+        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -684,7 +686,7 @@ class TestAnalyzeECRRepositoryPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError):
-            analyze_ecr_policies(mock_session, org_account_ids)
+            analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_ecr_client_error(self) -> None:
         """Test that ECR client errors during describe_repositories are raised."""
@@ -713,7 +715,7 @@ class TestAnalyzeECRRepositoryPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError):
-            analyze_ecr_policies(mock_session, org_account_ids)
+            analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_federated_principal_fails_fast(self) -> None:
         """Test that Federated principal causes immediate failure."""
@@ -765,7 +767,7 @@ class TestAnalyzeECRRepositoryPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            analyze_ecr_policies(mock_session, org_account_ids)
+            analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
         assert "Federated" in str(exc_info.value)
         assert "would break if the RCP is deployed" in str(exc_info.value)
@@ -806,7 +808,7 @@ class TestPolicyGrammar:
             "policyText": json.dumps(policy)
         }
 
-        return analyze_ecr_policies(mock_session, {"111111111111"})
+        return analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -1002,7 +1004,7 @@ class TestRegistryPolicy:
             }
 
         return analyze_ecr_policies(
-            mock_session, {TestRegistryPolicy.ORG_ACCOUNT}
+            mock_session, {TestRegistryPolicy.ORG_ACCOUNT}, ORG_ID
         )
 
     def test_third_party_in_registry_policy_is_found(self) -> None:

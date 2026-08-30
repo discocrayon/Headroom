@@ -13,6 +13,8 @@ from headroom.constants import DENY_S3_THIRD_PARTY_ACCESS
 from headroom.config import DEFAULT_RESULTS_DIR
 from headroom.aws.s3 import S3BucketPolicyAnalysis
 
+ORG_ID = "o-example12345"
+
 
 class TestDenyS3ThirdPartyAccessCheck:
     """Test deny_s3_third_party_access check with various scenarios."""
@@ -75,6 +77,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 account_id=account_id,
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -125,6 +128,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -167,6 +171,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -197,6 +202,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -217,6 +223,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=DEFAULT_RESULTS_DIR,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = S3BucketPolicyAnalysis(
@@ -244,6 +251,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=DEFAULT_RESULTS_DIR,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = S3BucketPolicyAnalysis(
@@ -300,6 +308,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -353,6 +362,7 @@ class TestDenyS3ThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -378,6 +388,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=DEFAULT_RESULTS_DIR,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = S3BucketPolicyAnalysis(

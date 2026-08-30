@@ -197,7 +197,8 @@ def _analyze_queue_policy(
     queue_arn: str,
     region: str,
     policy_json: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> SQSQueuePolicyAnalysis:
     """
     Analyze a single queue's resource policy.
@@ -208,6 +209,8 @@ def _analyze_queue_policy(
         region: AWS region
         policy_json: Policy JSON string
         org_account_ids: Set of organization account IDs to exclude
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         SQSQueuePolicyAnalysis result
@@ -241,7 +244,7 @@ def _analyze_queue_policy(
             continue
 
         sources.extend(
-            read_service_principal_sources(statement, org_account_ids, f"Queue {queue_arn}")
+            read_service_principal_sources(statement, org_account_ids, org_id, f"Queue {queue_arn}")
         )
 
         if _check_for_wildcard_principal(principal):
@@ -329,7 +332,8 @@ def _unreadable_queue(
 def _analyze_queues_in_region(
     session: Session,
     region: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[SQSQueuePolicyAnalysis]:
     """
     Analyze SQS queues in a specific region.
@@ -353,6 +357,8 @@ def _analyze_queues_in_region(
         session: boto3.Session for the target account
         region: AWS region to analyze
         org_account_ids: Set of organization account IDs to exclude
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of SQSQueuePolicyAnalysis results for queues with policies
@@ -400,7 +406,8 @@ def _analyze_queues_in_region(
                         queue_arn=queue_arn,
                         region=region,
                         policy_json=policy_json,
-                        org_account_ids=org_account_ids
+                        org_account_ids=org_account_ids,
+                        org_id=org_id
                     )
                     results.append(result)
                 except UnsupportedPrincipalTypeError:
@@ -418,7 +425,8 @@ def _analyze_queues_in_region(
 
 def analyze_sqs_queue_policies(
     session: Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[SQSQueuePolicyAnalysis]:
     """
     Analyze SQS queue policies across all regions.
@@ -440,6 +448,8 @@ def analyze_sqs_queue_policies(
     Args:
         session: boto3.Session for the target account
         org_account_ids: Set of organization account IDs to exclude from results
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of SQSQueuePolicyAnalysis results
@@ -453,7 +463,7 @@ def analyze_sqs_queue_policies(
 
     for region in regions:
         logger.info(f"Analyzing SQS queues in {region}")
-        regional_results = _analyze_queues_in_region(session, region, org_account_ids)
+        regional_results = _analyze_queues_in_region(session, region, org_account_ids, org_id)
         all_results.extend(regional_results)
 
     logger.info(

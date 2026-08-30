@@ -18,10 +18,14 @@ from headroom.analysis import (
     run_checks,
     run_checks_for_type,
     get_all_organization_account_ids,
+    get_organization_id,
     AccountInfo
 )
 from headroom.checks.base import BaseCheck
 from headroom.config import HeadroomConfig, AccountTagLayout
+
+
+ORG_ID = "o-example12345"
 
 
 class TestGetRelevantSubaccounts:
@@ -231,7 +235,7 @@ class TestRunChecks:
             mock_get_session.side_effect = [mock_headroom_session1, mock_headroom_session2]
 
             org_account_ids = {"111111111111", "222222222222", "333333333333"}
-            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids, ORG_ID)
 
             # Directory creation is handled by individual check functions, not run_checks
             # run_checks itself no longer creates directories
@@ -276,7 +280,7 @@ class TestRunChecks:
             mock_get_session.return_value = mock_headroom_session
 
             org_account_ids = {"111111111111", "222222222222"}
-            run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, account_infos, mock_config, org_account_ids, ORG_ID)
 
             # Verify check execute method was called with session
             # (check parameters are passed to constructor, not execute)
@@ -312,7 +316,7 @@ class TestRunChecks:
             mock_get_session.side_effect = RuntimeError("Failed to assume Headroom role")
 
             org_account_ids = {"111111111111", "222222222222"}
-            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids, ORG_ID)
 
     def test_run_checks_does_not_swallow_client_errors_or_continue(
         self,
@@ -346,7 +350,7 @@ class TestRunChecks:
             patch("headroom.analysis.results_exist", return_value=False),
             pytest.raises(ClientError) as exc_info,
         ):
-            run_checks(mock_security_session, sample_account_infos, mock_config, {"111111111111"})
+            run_checks(mock_security_session, sample_account_infos, mock_config, {"111111111111"}, ORG_ID)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
@@ -447,7 +451,7 @@ class TestRunChecks:
             mock_get_session.return_value = mock_headroom_session
 
             org_account_ids = {"111111111111", "222222222222"}
-            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, sample_account_infos, mock_config, org_account_ids, ORG_ID)
 
             # Verify get_headroom_session was only called for the second account
             assert mock_get_session.call_count == 1
@@ -498,7 +502,7 @@ class TestRunChecks:
             patch("headroom.checks.rcps.deny_sts_third_party_assumerole.ThirdPartyAssumeRoleCheck.execute") as mock_rcp_check
         ):
             org_account_ids: set[str] = set()
-            run_checks(mock_security_session, account_infos, mock_config, org_account_ids)
+            run_checks(mock_security_session, account_infos, mock_config, org_account_ids, ORG_ID)
 
             # Verify no sessions or checks attempted
             mock_get_session.assert_not_called()
@@ -534,7 +538,7 @@ class TestRunChecks:
             mock_results_exist.side_effect = [True, False]
 
             org_account_ids = {"111111111111"}
-            run_checks_for_type("scps", mock_session, account_info, mock_config, org_account_ids)
+            run_checks_for_type("scps", mock_session, account_info, mock_config, org_account_ids, ORG_ID)
 
             # Verify first check was skipped (not instantiated or executed)
             mock_check1.assert_not_called()
@@ -543,6 +547,62 @@ class TestRunChecks:
             # Verify second check was instantiated and executed
             mock_check2.assert_called_once()
             mock_check2_instance.execute.assert_called_once_with(mock_session)
+
+
+class TestGetOrganizationId:
+    """Test get_organization_id function."""
+
+    @staticmethod
+    def _mgmt_session(response: object) -> MagicMock:
+        """Build a management session whose describe_organization returns response."""
+        mock_org_client = MagicMock()
+        mock_org_client.describe_organization.return_value = response
+        mock_mgmt_session = MagicMock()
+        mock_mgmt_session.client.return_value = mock_org_client
+        return mock_mgmt_session
+
+    def test_returns_the_organization_id(self) -> None:
+        """The ID decides whether a source guard names this organization."""
+        mock_config = MagicMock()
+        mock_session = MagicMock()
+        mgmt_session = self._mgmt_session({"Organization": {"Id": "o-example12345"}})
+
+        with patch(
+            "headroom.analysis.get_management_account_session",
+            return_value=mgmt_session,
+        ) as mock_get_mgmt_session:
+            result = get_organization_id(mock_config, mock_session)
+
+        assert result == "o-example12345"
+        mock_get_mgmt_session.assert_called_once_with(mock_config, mock_session)
+
+    def test_missing_organization_aborts_the_run(self) -> None:
+        """
+        An unreadable organization ID must abort rather than be guessed.
+
+        Every source guard scoped to an organization is classified against
+        this value, so continuing without it would put a foreign
+        organization's sources in an allowlist, or leave this one's out.
+        """
+        mgmt_session = self._mgmt_session({})
+
+        with patch(
+            "headroom.analysis.get_management_account_session",
+            return_value=mgmt_session,
+        ):
+            with pytest.raises(RuntimeError, match="organization ID"):
+                get_organization_id(MagicMock(), MagicMock())
+
+    def test_organization_without_an_id_aborts_the_run(self) -> None:
+        """A response carrying an organization but no ID is equally unusable."""
+        mgmt_session = self._mgmt_session({"Organization": {}})
+
+        with patch(
+            "headroom.analysis.get_management_account_session",
+            return_value=mgmt_session,
+        ):
+            with pytest.raises(RuntimeError, match="organization ID"):
+                get_organization_id(MagicMock(), MagicMock())
 
 
 class TestGetAllOrganizationAccountIds:

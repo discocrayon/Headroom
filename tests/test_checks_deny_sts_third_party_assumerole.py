@@ -11,6 +11,8 @@ from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
 from headroom.aws.iam import TrustPolicyAnalysis
 from headroom.config import DEFAULT_RESULTS_DIR
 
+ORG_ID = "o-example12345"
+
 
 class TestCheckThirdPartyAssumeRole:
     """Test check_deny_sts_third_party_assumerole function with various scenarios."""
@@ -50,10 +52,11 @@ class TestCheckThirdPartyAssumeRole:
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
-            mock_analyze.assert_called_once_with(mock_session, org_account_ids)
+            mock_analyze.assert_called_once_with(mock_session, org_account_ids, ORG_ID)
             mock_write.assert_called_once()
 
             write_call_args = mock_write.call_args
@@ -108,6 +111,7 @@ class TestCheckThirdPartyAssumeRole:
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -154,6 +158,7 @@ class TestCheckThirdPartyAssumeRole:
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -187,6 +192,7 @@ class TestCheckThirdPartyAssumeRole:
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -231,6 +237,7 @@ class TestCheckThirdPartyAssumeRole:
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
                 exclude_account_ids=True,
             )
             check.execute(mock_session)
@@ -267,6 +274,7 @@ class TestCheckThirdPartyAssumeRole:
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 

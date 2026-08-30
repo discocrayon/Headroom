@@ -211,7 +211,8 @@ class PolicyFindings(NamedTuple):
 def _analyze_policy_statements(
     policy: JsonDict,
     context: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> PolicyFindings:
     """
     Read the third-party grants out of one ECR policy document.
@@ -223,6 +224,8 @@ def _analyze_policy_statements(
         policy: Parsed policy JSON
         context: Human-readable name for the policy, used in error messages
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         PolicyFindings summarizing the policy's third-party grants
@@ -252,7 +255,7 @@ def _analyze_policy_statements(
             continue
 
         sources.extend(
-            read_service_principal_sources(statement, org_account_ids, context)
+            read_service_principal_sources(statement, org_account_ids, org_id, context)
         )
 
         if _has_wildcard_principal(principal):
@@ -284,7 +287,8 @@ def _analyze_repository_in_region(
     ecr_client: ECRClient,
     repository: RepositoryTypeDef,
     region: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> ECRPolicyAnalysis:
     """
     Analyze a single ECR repository's policy.
@@ -294,6 +298,8 @@ def _analyze_repository_in_region(
         repository: Repository dict from describe_repositories
         region: AWS region
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         ECRPolicyAnalysis result for this repository
@@ -323,7 +329,7 @@ def _analyze_repository_in_region(
         raise
 
     findings = _analyze_policy_statements(
-        policy, f"Repository '{repository_name}' in {region}", org_account_ids
+        policy, f"Repository '{repository_name}' in {region}", org_account_ids, org_id
     )
 
     return ECRPolicyAnalysis(
@@ -357,7 +363,8 @@ def _grants_third_party_access(analysis: ECRPolicyAnalysis) -> bool:
 def _analyze_registry_policy(
     ecr_client: ECRClient,
     region: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> Optional[ECRPolicyAnalysis]:
     """
     Analyze the registry policy for one region.
@@ -371,6 +378,8 @@ def _analyze_registry_policy(
         ecr_client: Boto3 ECR client
         region: AWS region
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         ECRPolicyAnalysis for the registry policy, or None if the region's
@@ -393,7 +402,7 @@ def _analyze_registry_policy(
         raise
 
     findings = _analyze_policy_statements(
-        policy, f"Registry policy in {region}", org_account_ids
+        policy, f"Registry policy in {region}", org_account_ids, org_id
     )
 
     return ECRPolicyAnalysis(
@@ -408,7 +417,8 @@ def _analyze_registry_policy(
 
 def analyze_ecr_policies(
     session: Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[ECRPolicyAnalysis]:
     """
     Analyze an account's ECR policies for third-party access.
@@ -434,6 +444,8 @@ def analyze_ecr_policies(
     Args:
         session: boto3 Session for the target account
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of ECRPolicyAnalysis for policies granting third-party access
@@ -457,7 +469,7 @@ def analyze_ecr_policies(
             # surface: it governs every repository the region holds,
             # including repositories that carry no policy of their own
             registry_analysis = _analyze_registry_policy(
-                ecr_client, region, org_account_ids
+                ecr_client, region, org_account_ids, org_id
             )
             if registry_analysis is not None and _grants_third_party_access(registry_analysis):
                 results.append(registry_analysis)
@@ -468,7 +480,8 @@ def analyze_ecr_policies(
                         ecr_client,
                         repository,
                         region,
-                        org_account_ids
+                        org_account_ids,
+                        org_id
                     )
 
                     if _grants_third_party_access(analysis):

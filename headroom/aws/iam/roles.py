@@ -206,7 +206,8 @@ def _has_wildcard_principal(principal: Any) -> bool:
 
 def analyze_iam_roles_trust_policies(
     session: Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[TrustPolicyAnalysis]:
     """
     Analyze all IAM roles in an account and identify third-party account principals.
@@ -217,6 +218,8 @@ def analyze_iam_roles_trust_policies(
     Args:
         session: boto3 Session for the target account
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of TrustPolicyAnalysis for roles with third-party accounts or wildcards
@@ -275,7 +278,7 @@ def analyze_iam_roles_trust_policies(
                         continue
 
                     sources.extend(
-                        read_service_principal_sources(statement, org_account_ids, f"Role '{role_name}'")
+                        read_service_principal_sources(statement, org_account_ids, org_id, f"Role '{role_name}'")
                     )
 
                     # Validate that Federated principals don't have sts:AssumeRole
