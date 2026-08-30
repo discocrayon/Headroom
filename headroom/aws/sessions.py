@@ -5,11 +5,8 @@ from typing import Optional
 
 import botocore.session
 from boto3.session import Session
-from botocore.config import Config
 from mypy_boto3_sts.client import STSClient
 from mypy_boto3_sts.type_defs import AssumeRoleResponseTypeDef, CredentialsTypeDef
-
-from ..config import MAX_ACCOUNT_WORKERS
 
 __all__ = ["assume_role", "new_session"]
 
@@ -26,15 +23,6 @@ RETRY_MAX_ATTEMPTS = 5
 # registry on first use. Per-account sessions are not shared -- new_session()
 # builds a fresh botocore session each time -- so this is the only site at risk.
 _CLIENT_CONSTRUCTION_LOCK = Lock()
-
-# Ceiling on the STS client's connection pool, imported rather than redeclared.
-# It binds nothing today: assume_role builds a fresh client on every call and
-# boto3 caches none, so each client gets its own PoolManager and serves exactly
-# one AssumeRole request -- well inside botocore's default of 10. There is no
-# shared STS pool to exhaust. Kept because it costs nothing and becomes
-# load-bearing the day that client is built once per run and shared, which is
-# also the change that would save one TLS handshake per account.
-_STS_CLIENT_CONFIG = Config(max_pool_connections=MAX_ACCOUNT_WORKERS)
 
 
 def new_session(
@@ -112,11 +100,7 @@ def assume_role(
         )
 
     with _CLIENT_CONSTRUCTION_LOCK:
-        sts: STSClient = base_session.client(
-            "sts",
-            region_name=region,
-            config=_STS_CLIENT_CONFIG,
-        )
+        sts: STSClient = base_session.client("sts", region_name=region)
 
     resp: AssumeRoleResponseTypeDef = sts.assume_role(
         RoleArn=role_arn,

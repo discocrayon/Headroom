@@ -12,10 +12,10 @@ DEFAULT_RCPS_DIR = "test_environment/rcps"
 # measures at roughly 43 MB. Sixteen workers stay under a gigabyte.
 DEFAULT_ACCOUNT_WORKERS = 16
 
-# Upper bound on max_account_workers. At 32 workers resident memory passes
-# 1.5 GB; wanting more is a signal to revisit the design rather than raise this.
-# sessions.py also sizes the STS client's connection pool to this value, as a
-# ceiling that currently binds nothing -- see the comment there.
+# Upper bound on max_account_workers. Each worker costs roughly 43 MB of
+# sessions and parsed service models on top of a ~130 MB base, so 32 puts
+# resident memory just over 1.5 GB; wanting more is a signal to revisit the
+# design rather than raise this. SETUP.md tabulates the three settings.
 MAX_ACCOUNT_WORKERS = 32
 
 
