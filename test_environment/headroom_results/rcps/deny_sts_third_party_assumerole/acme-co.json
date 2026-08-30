@@ -7,7 +7,7 @@
     "roles_with_wildcards": 0,
     "violations": 0,
     "unique_third_party_accounts": [
-      "749430749651"
+      "999911114444"
     ],
     "third_party_account_count": 1
   },
@@ -16,7 +16,7 @@
       "role_name": "ThirdPartyVendorA",
       "role_arn": "arn:aws:iam::REDACTED:role/ThirdPartyVendorA",
       "third_party_account_ids": [
-        "749430749651"
+        "999911114444"
       ],
       "has_wildcard_principal": false
     }

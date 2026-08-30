@@ -22,7 +22,7 @@ resource "aws_kms_key" "third_party_vendor_crowdstrike" {
         Sid    = "Allow CrowdStrike Access"
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::749430749651:root"
+          AWS = "arn:aws:iam::999911114444:root"
         }
         Action = [
           "kms:Decrypt",
@@ -66,8 +66,8 @@ resource "aws_kms_key" "multiple_third_party_vendors" {
         Effect = "Allow"
         Principal = {
           AWS = [
-            "arn:aws:iam::758245563457:root",
-            "arn:aws:iam::517716713836:root"
+            "arn:aws:iam::999911116666:root",
+            "arn:aws:iam::999911110000:root"
           ]
         }
         Action = [

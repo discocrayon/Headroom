@@ -14,8 +14,8 @@ Tests `deny_secrets_manager_third_party_access` RCP check functionality.
 
 | Secret | Account | Third-Party Access | Expected Result |
 |--------|---------|-------------------|-----------------|
-| `headroom-test-vendor-a-secret` | acme-co | CrowdStrike (749430749651) | Compliant - Single third-party |
-| `headroom-test-vendor-b-secret` | shared-foo-bar | Barracuda (758245563457) + Check Point (517716713836) | Compliant - Multiple third-parties |
+| `headroom-test-vendor-a-secret` | acme-co | CrowdStrike (999911114444) | Compliant - Single third-party |
+| `headroom-test-vendor-b-secret` | shared-foo-bar | Barracuda (999911116666) + Check Point (999911110000) | Compliant - Multiple third-parties |
 | `headroom-test-wildcard-secret` | fort-knox | Wildcard (*) | Violation - Wildcard principal |
 | `headroom-test-org-only-secret` | shared-foo-bar | Org account only | Compliant - Filtered from results |
 | `headroom-test-no-policy-secret` | shared-foo-bar | None (no policy) | No findings - No policy attached |
@@ -79,14 +79,14 @@ terraform destroy -target=aws_secretsmanager_secret.third_party_vendor_a \
 ### acme-co
 
 **Expected:** 1 secret with third-party access (vendor-a-secret)
-- Third-party accounts: `749430749651` (CrowdStrike)
+- Third-party accounts: `999911114444` (CrowdStrike)
 - Actions: `secretsmanager:GetSecretValue`, `secretsmanager:DescribeSecret`
 
 ### shared-foo-bar
 
 **Expected:** 3 secrets total
 - 1 secret with third-party access (vendor-b-secret)
-  - Third-party accounts: `758245563457` (Barracuda), `517716713836` (Check Point)
+  - Third-party accounts: `999911116666` (Barracuda), `999911110000` (Check Point)
   - Actions: `secretsmanager:GetSecretValue`
 - 1 secret with org-only access (filtered from results)
 - 1 secret without policy (no findings)
@@ -110,7 +110,7 @@ The `deny_secrets_manager_third_party_access` RCP will:
 3. **Deny:** All other principals from accessing secrets
 
 **Allowlist Generation:**
-- Union of all third-party account IDs: `749430749651`, `758245563457`, `517716713836`
+- Union of all third-party account IDs: `999911114444`, `999911116666`, `999911110000`
 - Each secret's specific actions are tracked for documentation purposes
 
 **Wildcard Blocking:**
@@ -120,9 +120,9 @@ The `deny_secrets_manager_third_party_access` RCP will:
 ## Third-Party Vendors
 
 The test uses real third-party vendor account IDs:
-- **CrowdStrike:** `749430749651` (Security platform)
-- **Barracuda:** `758245563457` (Email security)
-- **Check Point:** `517716713836` (Network security)
+- **CrowdStrike:** `999911114444` (Security platform)
+- **Barracuda:** `999911116666` (Email security)
+- **Check Point:** `999911110000` (Network security)
 
 ## Troubleshooting
 

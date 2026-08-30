@@ -2,9 +2,9 @@
 
 # Third-party account IDs used for testing (common security vendors)
 locals {
-  test_third_party_crowdstrike = "749430749651"  # CrowdStrike
-  test_third_party_barracuda   = "758245563457"  # Barracuda
-  test_third_party_checkpoint  = "517716713836"  # Check Point
+  test_third_party_crowdstrike = "999911114444"  # CrowdStrike
+  test_third_party_barracuda   = "999911116666"  # Barracuda
+  test_third_party_checkpoint  = "999911110000"  # Check Point
 }
 
 # Bucket 1: Single third-party account access (compliant)

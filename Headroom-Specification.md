@@ -4882,7 +4882,7 @@ AWS Organization (Management Account: 222222222222)
 │           - IAM Users: 2 (terraform-user, temp-contractor with /contractors/ path)
 │           - IAM Roles: 1 (ThirdPartyVendorA)
 │           - EC2 Instances: 0-1 (test-imdsv2-only when testing)
-│           - Third-Party Accounts: 1 (CrowdStrike: 749430749651)
+│           - Third-Party Accounts: 1 (CrowdStrike: 999911114444)
 ```
 
 **Account ID Mapping:**
@@ -5034,34 +5034,34 @@ Creates IAM roles with diverse trust policy patterns to test RCP third-party det
 
 | Role Name | Account | Trust Policy | Third-Party IDs | Purpose |
 |-----------|---------|--------------|-----------------|---------|
-| ThirdPartyVendorA | acme-co | CrowdStrike | 749430749651 | Simple third-party |
-| ThirdPartyVendorB | shared-foo-bar | Barracuda + Check Point | 758245563457, 517716713836 | Multiple third-parties |
+| ThirdPartyVendorA | acme-co | CrowdStrike | 999911114444 | Simple third-party |
+| ThirdPartyVendorB | shared-foo-bar | Barracuda + Check Point | 999911116666, 999911110000 | Multiple third-parties |
 | WildcardRole | fort-knox | `Principal: "*"` | N/A (wildcard) | Wildcard detection |
 | LambdaExecutionRole | shared-foo-bar | `Service: lambda.amazonaws.com` | N/A (service) | Service principal skip |
 | MultiServiceRole | shared-foo-bar | Multiple services | N/A (services) | Service array handling |
-| MixedPrincipalsRole | shared-foo-bar | CyberArk + EC2 service | 365761988620 | Mixed AWS + Service |
+| MixedPrincipalsRole | shared-foo-bar | CyberArk + EC2 service | 999900007777 | Mixed AWS + Service |
 | SAMLFederationRole | shared-foo-bar | SAML provider | N/A (federated) | Federated SAML |
 | OIDCFederationRole | shared-foo-bar | GitHub OIDC | N/A (federated) | Federated OIDC |
-| OrgAccountCrossAccess | shared-foo-bar | Duckbill Group | 151784055945 | Org-external account |
-| ComplexMultiStatementRole | shared-foo-bar | Forcepoint + Lambda | 062897671886 | Multi-statement |
-| ThirdPartyUserRole | shared-foo-bar | Sophos w/ ExternalId | 978576646331 | ExternalId condition |
-| PlainAccountIdRole | shared-foo-bar | Vectra (plain ID) | 081802104111 | Plain account ID format |
-| MixedFormatsRole | shared-foo-bar | Ermetic + Zesty | 672188301118, 242987662583 | ARN + plain ID mix |
-| ConditionalThirdPartyRole | shared-foo-bar | Duckbill w/ ExternalId | 151784055945 | Conditional trust |
-| UltraComplexRole | shared-foo-bar | Check Point + CrowdStrike + ECS + SAML | 292230061137, 749430749651 | Complex multi-statement |
+| OrgAccountCrossAccess | shared-foo-bar | Duckbill Group | 999900004444 | Org-external account |
+| ComplexMultiStatementRole | shared-foo-bar | Forcepoint + Lambda | 999900001111 | Multi-statement |
+| ThirdPartyUserRole | shared-foo-bar | Sophos w/ ExternalId | 999911117777 | ExternalId condition |
+| PlainAccountIdRole | shared-foo-bar | Vectra (plain ID) | 999900002222 | Plain account ID format |
+| MixedFormatsRole | shared-foo-bar | Ermetic + Zesty | 999911112222, 999900005555 | ARN + plain ID mix |
+| ConditionalThirdPartyRole | shared-foo-bar | Duckbill w/ ExternalId | 999900004444 | Conditional trust |
+| UltraComplexRole | shared-foo-bar | Check Point + CrowdStrike + ECS + SAML | 999900006666, 999911114444 | Complex multi-statement |
 
 **Third-Party Account IDs (Real Vendors):**
-- 749430749651: CrowdStrike
-- 758245563457: Barracuda
-- 517716713836: Check Point
-- 365761988620: CyberArk
-- 062897671886: Forcepoint
-- 978576646331: Sophos
-- 081802104111: Vectra
-- 672188301118: Ermetic
-- 242987662583: Zesty
-- 151784055945: Duckbill Group
-- 292230061137: Check Point (additional account)
+- 999911114444: CrowdStrike
+- 999911116666: Barracuda
+- 999911110000: Check Point
+- 999900007777: CyberArk
+- 999900001111: Forcepoint
+- 999911117777: Sophos
+- 999900002222: Vectra
+- 999911112222: Ermetic
+- 999900005555: Zesty
+- 999900004444: Duckbill Group
+- 999900006666: Check Point (additional account)
 
 **All Roles Attached Policy:**
 ```json
@@ -5490,7 +5490,7 @@ module "rcps_acme_acquisition_ou" {
   # STS
   deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
-    "749430749651",
+    "999911114444",
   ]
 
   # Service confused deputy
@@ -5498,7 +5498,7 @@ module "rcps_acme_acquisition_ou" {
 }
 ```
 
-**Note:** Only contains CrowdStrike (749430749651) because acme-co is the only account in this OU and it only trusts CrowdStrike.
+**Note:** Only contains CrowdStrike (999911114444) because acme-co is the only account in this OU and it only trusts CrowdStrike.
 
 **`{account_name}_rcps.tf`**
 
@@ -5530,17 +5530,17 @@ module "rcps_shared_foo_bar" {
   # STS
   deny_sts_third_party_assumerole = true
   sts_third_party_assumerole_account_ids_allowlist = [
-    "062897671886",
-    "081802104111",
-    "151784055945",
-    "242987662583",
-    "292230061137",
-    "365761988620",
-    "517716713836",
-    "672188301118",
-    "749430749651",
-    "758245563457",
-    "978576646331",
+    "999900001111",
+    "999900002222",
+    "999900004444",
+    "999900005555",
+    "999900006666",
+    "999900007777",
+    "999911110000",
+    "999911112222",
+    "999911114444",
+    "999911116666",
+    "999911117777",
   ]
 
   # Service confused deputy
@@ -5641,17 +5641,17 @@ headroom_results/
     "roles_with_wildcards": 1,
     "violations": 1,
     "unique_third_party_accounts": [
-      "062897671886",
-      "081802104111",
-      "151784055945",
-      "242987662583",
-      "292230061137",
-      "365761988620",
-      "517716713836",
-      "672188301118",
-      "749430749651",
-      "758245563457",
-      "978576646331"
+      "999900001111",
+      "999900002222",
+      "999900004444",
+      "999900005555",
+      "999900006666",
+      "999900007777",
+      "999911110000",
+      "999911112222",
+      "999911114444",
+      "999911116666",
+      "999911117777"
     ],
     "third_party_account_count": 11
   },
@@ -5659,7 +5659,7 @@ headroom_results/
     {
       "role_name": "ThirdPartyVendorA",
       "role_arn": "arn:aws:iam::REDACTED:role/ThirdPartyVendorA",
-      "third_party_account_ids": ["749430749651"],
+      "third_party_account_ids": ["999911114444"],
       "has_wildcard_principal": false
     }
   ],
@@ -5862,7 +5862,7 @@ terraform destroy -target=aws_iam_role.wildcard_role
 
 **Expected Results:**
 - OU-level RCP recommended (if other accounts in OU also compliant)
-- Third-party allowlist: `["749430749651"]`
+- Third-party allowlist: `["999911114444"]`
 - Compliance: 100%
 
 **Generated File:** `rcps/acme_acquisition_ou_rcps.tf`

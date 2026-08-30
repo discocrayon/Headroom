@@ -1446,8 +1446,11 @@ test_data_standards:
     secondary: "222222222222"
     tertiary: "333333333333"
     beyond_ten: ["111122223333", "444455556666", "000011112222"]
+    third_party: "9999BBBBCCCC"  # Out-of-organization accounts: 999900001111, 999911110000, ...
+    third_party_reason: "The org-vs-third-party distinction is what the RCP checks turn on, so it should be visible in the fixture"
     never_use: "123456789012"  # Old AWS convention
     never_use_style: "Sequential runs such as 234567890123 or 987654321098"
+    never_use_real: "A vendor's published account ID is still a real one. The single exception in this repository is Canonical's Ubuntu image owner in test_environment/test_deny_ec2_ami_owner/data.tf, where the lookup is live and a fake resolves to no AMI."
 
   fake_resource_ids:
     rule: "Real prefix, real length, body is one repeated digit"

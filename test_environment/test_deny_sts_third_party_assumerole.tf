@@ -44,7 +44,7 @@ resource "aws_iam_role" "third_party_vendor_a" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::749430749651:root"
+          AWS = "arn:aws:iam::999911114444:root"
         }
         Action = "sts:AssumeRole"
       }
@@ -64,8 +64,8 @@ resource "aws_iam_role" "third_party_vendor_b" {
         Effect = "Allow"
         Principal = {
           AWS = [
-            "arn:aws:iam::758245563457:root",
-            "arn:aws:iam::517716713836:root"
+            "arn:aws:iam::999911116666:root",
+            "arn:aws:iam::999911110000:root"
           ]
         }
         Action = "sts:AssumeRole"
@@ -146,7 +146,7 @@ resource "aws_iam_role" "mixed_principals" {
       {
         Effect = "Allow"
         Principal = {
-          AWS     = "arn:aws:iam::365761988620:root"
+          AWS     = "arn:aws:iam::999900007777:root"
           Service = "ec2.amazonaws.com"
         }
         Action = "sts:AssumeRole"
@@ -166,7 +166,7 @@ resource "aws_iam_role" "saml_federation" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = "arn:aws:iam::365761988620:saml-provider/MyProvider"
+          Federated = "arn:aws:iam::999900007777:saml-provider/MyProvider"
         }
         Action = "sts:AssumeRoleWithSAML"
       }
@@ -185,7 +185,7 @@ resource "aws_iam_role" "oidc_federation" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = "arn:aws:iam::365761988620:oidc-provider/token.actions.githubusercontent.com"
+          Federated = "arn:aws:iam::999900007777:oidc-provider/token.actions.githubusercontent.com"
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
@@ -213,7 +213,7 @@ resource "aws_iam_role" "org_account_cross_access" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::151784055945:root"
+          AWS = "arn:aws:iam::999900004444:root"
         }
         Action = "sts:AssumeRole"
       }
@@ -232,7 +232,7 @@ resource "aws_iam_role" "complex_multi_statement" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::062897671886:root"
+          AWS = "arn:aws:iam::999900001111:root"
         }
         Action = "sts:AssumeRole"
       },
@@ -259,7 +259,7 @@ resource "aws_iam_role" "third_party_user" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::978576646331:root"
+          AWS = "arn:aws:iam::999911117777:root"
         }
         Action = "sts:AssumeRole"
         Condition = {
@@ -283,7 +283,7 @@ resource "aws_iam_role" "plain_account_id" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "081802104111"
+          AWS = "999900002222"
         }
         Action = "sts:AssumeRole"
       }
@@ -303,8 +303,8 @@ resource "aws_iam_role" "mixed_formats" {
         Effect = "Allow"
         Principal = {
           AWS = [
-            "arn:aws:iam::672188301118:root",
-            "242987662583"
+            "arn:aws:iam::999911112222:root",
+            "999900005555"
           ]
         }
         Action = "sts:AssumeRole"
@@ -324,7 +324,7 @@ resource "aws_iam_role" "conditional_third_party" {
       {
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::151784055945:root"
+          AWS = "arn:aws:iam::999900004444:root"
         }
         Action = "sts:AssumeRole"
         Condition = {
@@ -349,8 +349,8 @@ resource "aws_iam_role" "ultra_complex" {
         Effect = "Allow"
         Principal = {
           AWS = [
-            "arn:aws:iam::292230061137:root",
-            "arn:aws:iam::749430749651:root"
+            "arn:aws:iam::999900006666:root",
+            "arn:aws:iam::999911114444:root"
           ]
           Service = "ecs-tasks.amazonaws.com"
         }
@@ -359,7 +359,7 @@ resource "aws_iam_role" "ultra_complex" {
       {
         Effect = "Allow"
         Principal = {
-          Federated = "arn:aws:iam::365761988620:saml-provider/CorporateSSO"
+          Federated = "arn:aws:iam::999900007777:saml-provider/CorporateSSO"
         }
         Action = "sts:AssumeRoleWithSAML"
         Condition = {

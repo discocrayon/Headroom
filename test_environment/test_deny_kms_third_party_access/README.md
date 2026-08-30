@@ -16,15 +16,15 @@ This test suite validates the KMS third-party access detection and RCP generatio
 
 | Key | Account | Third-Party Accounts | Actions | Expected Result |
 |-----|---------|---------------------|---------|-----------------|
-| third_party_vendor_crowdstrike | acme-co | 749430749651 (CrowdStrike) | kms:Decrypt, kms:DescribeKey | Compliant |
-| multiple_third_party_vendors | shared-foo-bar | 758245563457 (Barracuda), 517716713836 (Check Point) | kms:Decrypt, kms:Encrypt, kms:GenerateDataKey | Compliant |
+| third_party_vendor_crowdstrike | acme-co | 999911114444 (CrowdStrike) | kms:Decrypt, kms:DescribeKey | Compliant |
+| multiple_third_party_vendors | shared-foo-bar | 999911116666 (Barracuda), 999911110000 (Check Point) | kms:Decrypt, kms:Encrypt, kms:GenerateDataKey | Compliant |
 | wildcard_key | shared-foo-bar | None (wildcard principal) | kms:Decrypt | Violation |
 | org_only | fort-knox | None | N/A | No findings |
 | service_principal | fort-knox | None (AWS service only) | N/A | No findings |
 
 ### Key Details
 
-1. **third_party_vendor_crowdstrike**: KMS key in acme-co account allowing CrowdStrike (749430749651) to decrypt and describe the key. This simulates a security vendor needing access to encrypted data.
+1. **third_party_vendor_crowdstrike**: KMS key in acme-co account allowing CrowdStrike (999911114444) to decrypt and describe the key. This simulates a security vendor needing access to encrypted data.
 
 2. **multiple_third_party_vendors**: KMS key in shared-foo-bar account allowing two third-party vendors (Barracuda and Check Point) to encrypt, decrypt, and generate data keys. This tests tracking multiple third-party accounts on a single key.
 
@@ -96,10 +96,10 @@ terraform destroy -target=aws_kms_alias.third_party_vendor_crowdstrike \
     "keys_third_parties_can_access": 1,
     "keys_with_wildcards": 0,
     "violations": 0,
-    "unique_third_party_accounts": ["749430749651"],
+    "unique_third_party_accounts": ["999911114444"],
     "third_party_account_count": 1,
     "actions_by_account": {
-      "749430749651": ["kms:Decrypt", "kms:DescribeKey"]
+      "999911114444": ["kms:Decrypt", "kms:DescribeKey"]
     }
   },
   "keys_third_parties_can_access": [
@@ -107,9 +107,9 @@ terraform destroy -target=aws_kms_alias.third_party_vendor_crowdstrike \
       "key_id": "...",
       "key_arn": "arn:aws:kms:us-east-1:111111111111:key/...",
       "region": "us-east-1",
-      "third_party_account_ids": ["749430749651"],
+      "third_party_account_ids": ["999911114444"],
       "actions_by_account": {
-        "749430749651": ["kms:Decrypt", "kms:DescribeKey"]
+        "999911114444": ["kms:Decrypt", "kms:DescribeKey"]
       },
       "has_wildcard_principal": false
     }
@@ -130,11 +130,11 @@ terraform destroy -target=aws_kms_alias.third_party_vendor_crowdstrike \
     "keys_third_parties_can_access": 2,
     "keys_with_wildcards": 1,
     "violations": 1,
-    "unique_third_party_accounts": ["517716713836", "758245563457"],
+    "unique_third_party_accounts": ["999911110000", "999911116666"],
     "third_party_account_count": 2,
     "actions_by_account": {
-      "758245563457": ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"],
-      "517716713836": ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"]
+      "999911116666": ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"],
+      "999911110000": ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"]
     }
   },
   "keys_third_parties_can_access": [...],
@@ -166,7 +166,7 @@ terraform destroy -target=aws_kms_alias.third_party_vendor_crowdstrike \
 ## RCP Placement Recommendation
 
 Headroom will recommend:
-- **Account-level RCP** for acme-co (allows 749430749651)
+- **Account-level RCP** for acme-co (allows 999911114444)
 - **No RCP** for shared-foo-bar (wildcard principal blocks deployment)
 - **No RCP** for fort-knox (no third-party access)
 
