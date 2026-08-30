@@ -11,8 +11,7 @@ from typing import Generator, List
 from headroom.checks.rcps.deny_ecr_third_party_access import DenyECRThirdPartyAccessCheck
 from headroom.constants import DENY_ECR_THIRD_PARTY_ACCESS
 from headroom.aws.ecr import ECRPolicyAnalysis
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestCheckDenyECRThirdPartyAccess:

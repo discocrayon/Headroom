@@ -19,8 +19,7 @@ from headroom.aws.secretsmanager import (
     analyze_secrets_manager_policies,
 )
 from headroom.types import JsonDict
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestExtractAccountIdsFromPrincipal:

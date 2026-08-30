@@ -12,8 +12,7 @@ from headroom.checks.rcps.deny_sqs_third_party_access import DenySQSThirdPartyAc
 from headroom.constants import DENY_SQS_THIRD_PARTY_ACCESS
 from headroom.aws.policy_documents import unreadable_service_principal_source
 from headroom.aws.sqs import SQSQueuePolicyAnalysis
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestDenySQSThirdPartyAccessCheck:

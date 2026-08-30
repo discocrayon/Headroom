@@ -23,9 +23,7 @@ from headroom.analysis import (
 )
 from headroom.checks.base import BaseCheck
 from headroom.config import HeadroomConfig, AccountTagLayout
-
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestGetRelevantSubaccounts:
@@ -565,7 +563,7 @@ class TestGetOrganizationId:
         """The ID decides whether a source guard names this organization."""
         mock_config = MagicMock()
         mock_session = MagicMock()
-        mgmt_session = self._mgmt_session({"Organization": {"Id": "o-example12345"}})
+        mgmt_session = self._mgmt_session({"Organization": {"Id": ORG_ID}})
 
         with patch(
             "headroom.analysis.get_management_account_session",
@@ -573,7 +571,7 @@ class TestGetOrganizationId:
         ) as mock_get_mgmt_session:
             result = get_organization_id(mock_config, mock_session)
 
-        assert result == "o-example12345"
+        assert result == ORG_ID
         mock_get_mgmt_session.assert_called_once_with(mock_config, mock_session)
 
     def test_missing_organization_aborts_the_run(self) -> None:

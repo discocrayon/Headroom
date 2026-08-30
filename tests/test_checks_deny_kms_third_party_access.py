@@ -12,8 +12,7 @@ from headroom.checks.rcps.deny_kms_third_party_access import DenyKMSThirdPartyAc
 from headroom.constants import DENY_KMS_THIRD_PARTY_ACCESS
 from headroom.config import DEFAULT_RESULTS_DIR
 from headroom.aws.kms import KMSGrantFinding, KMSKeyPolicyAnalysis
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestCheckDenyKMSThirdPartyAccess:

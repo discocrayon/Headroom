@@ -16,6 +16,7 @@ from headroom.aws.policy_documents import (
     unreadable_service_principal_source,
 )
 from headroom.types import JsonDict
+from tests.constants import ORG_ID
 
 
 class TestNormalizeStatements:
@@ -106,7 +107,6 @@ class TestHasNotPrincipal:
 class TestServicePrincipalSources:
     """Test read_service_principal_sources against every disposition."""
     ORG_ACCOUNTS = {"111111111111"}
-    ORG_ID = "o-example12345"
     WHERE = "Bucket 'a-bucket'"
 
     @staticmethod
@@ -126,7 +126,7 @@ class TestServicePrincipalSources:
         statement = self._statement({"AWS": "arn:aws:iam::999999999999:root"})
 
         assert read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         ) == []
 
     def test_unguarded_service_principal_is_recorded_not_allowlisted(self) -> None:
@@ -142,7 +142,7 @@ class TestServicePrincipalSources:
         statement = self._statement({"Service": "sns.amazonaws.com"})
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert len(sources) == 1
@@ -159,7 +159,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].source_account_ids == []
@@ -174,7 +174,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].source_account_ids == ["999999999999"]
@@ -188,7 +188,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].source_account_ids == ["999999999999"]
@@ -203,7 +203,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].source_account_ids == ["999999999999"]
@@ -217,7 +217,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_wildcard_source is True
@@ -231,7 +231,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_wildcard_source is True
@@ -249,7 +249,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_wildcard_source is True
@@ -265,7 +265,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].source_account_ids == ["999999999999"]
@@ -279,7 +279,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert [source.service_principal for source in sources] == [
@@ -298,7 +298,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert len(sources) == 1
@@ -316,11 +316,11 @@ class TestServicePrincipalSources:
         """
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
-            {"StringEquals": {"aws:SourceOrgID": self.ORG_ID}},
+            {"StringEquals": {"aws:SourceOrgID": ORG_ID}},
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].read_failure is None
@@ -343,7 +343,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].read_failure is None
@@ -360,11 +360,11 @@ class TestServicePrincipalSources:
         """
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
-            {"StringLike": {"aws:SourceOrgID": f"{self.ORG_ID}*"}},
+            {"StringLike": {"aws:SourceOrgID": f"{ORG_ID}*"}},
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_wildcard_source is True
@@ -374,12 +374,12 @@ class TestServicePrincipalSources:
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringEquals": {
-                "aws:SourceOrgPaths": f"{self.ORG_ID}/r-ab12/ou-ab12-11111111/"
+                "aws:SourceOrgPaths": f"{ORG_ID}/r-ab12/ou-ab12-11111111/"
             }},
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].read_failure is None
@@ -390,11 +390,11 @@ class TestServicePrincipalSources:
         """A wildcard below our own organization stays inside it."""
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
-            {"StringLike": {"aws:SourceOrgPaths": f"{self.ORG_ID}/*"}},
+            {"StringLike": {"aws:SourceOrgPaths": f"{ORG_ID}/*"}},
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_wildcard_source is False
@@ -407,7 +407,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_wildcard_source is True
@@ -420,7 +420,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_wildcard_source is True
@@ -430,12 +430,12 @@ class TestServicePrincipalSources:
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringEquals": {
-                "aws:SourceOrgID": [self.ORG_ID, "o-notours98765"]
+                "aws:SourceOrgID": [ORG_ID, "o-notours98765"]
             }},
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_wildcard_source is True
@@ -444,11 +444,11 @@ class TestServicePrincipalSources:
         """IAM matches condition key names without regard to case."""
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
-            {"StringEquals": {"aws:sourceorgid": self.ORG_ID}},
+            {"StringEquals": {"aws:sourceorgid": ORG_ID}},
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_source_condition is True
@@ -462,7 +462,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].read_failure is not None
@@ -476,7 +476,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].read_failure is not None
@@ -490,7 +490,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].read_failure is not None
@@ -504,7 +504,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].read_failure is not None
@@ -518,7 +518,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].read_failure is None
@@ -531,7 +531,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_source_condition is False
@@ -545,7 +545,7 @@ class TestServicePrincipalSources:
         )
 
         sources = read_service_principal_sources(
-            statement, self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            statement, self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         )
 
         assert sources[0].has_source_condition is False
@@ -554,7 +554,7 @@ class TestServicePrincipalSources:
     def test_wildcard_principal_string_reports_nothing(self) -> None:
         """`Principal: "*"` is not a dict and names no service."""
         assert read_service_principal_sources(
-            self._statement("*"), self.ORG_ACCOUNTS, self.ORG_ID, self.WHERE
+            self._statement("*"), self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         ) == []
 
 

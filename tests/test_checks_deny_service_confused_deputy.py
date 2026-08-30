@@ -13,6 +13,7 @@ from headroom.aws.policy_documents import (
 from headroom.checks.rcps.deny_service_confused_deputy import (
     DenyServiceConfusedDeputyCheck,
 )
+from tests.constants import ORG_ID
 
 ORG_ACCOUNTS = {"111111111111"}
 THIRD_PARTY = "999999999999"
@@ -25,9 +26,6 @@ ANALYZERS = [
     "analyze_sqs_queue_policies",
     "analyze_iam_roles_trust_policies",
 ]
-
-
-ORG_ID = "o-example12345"
 
 # One out-of-organization account per analyzer, deliberately not in ascending
 # order, so an assertion on the allowlist pins the sort as well as the union.
