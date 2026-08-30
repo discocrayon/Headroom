@@ -844,8 +844,12 @@ def run_checks(
     `submit` puts the work item on the queue and only then calls
     `_adjust_thread_count`, so the item whose thread failed to start is
     already queued while `submit` never returned its future: it is not in
-    `accounts_by_future` and nothing can cancel it. An existing worker picks
-    it up, finds the abort set, and returns at its first checkpoint.
+    `accounts_by_future` and nothing can cancel it. If a worker already
+    exists it picks the item up, finds the abort set, and returns at its
+    first checkpoint. If the failure came on the first submit there is no
+    worker to pick it up and the item is never run at all -- the same
+    outcome by a different route, since `shutdown` joins no threads and
+    leaves the queue where it lies.
     """
     pending = []
     for account_info in relevant_account_infos:
@@ -855,9 +859,10 @@ def run_checks(
             continue
         pending.append(account_info)
 
-    # Both halves come off what the pool is actually given, not off the
-    # config: ThreadPoolExecutor spawns threads on demand, so the cap is not
-    # the worker count when there is less work than cap.
+    # The account count is what the pool is given. The worker count is not:
+    # the executor is built with the full `max_account_workers`, and this is
+    # the most threads it can go on to create, since ThreadPoolExecutor
+    # spawns on demand and never has more work queued than `pending`.
     logger.info(
         f"Analyzing {len(pending)} account(s) with "
         f"{min(len(pending), config.max_account_workers)} worker(s)"

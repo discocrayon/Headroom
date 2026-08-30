@@ -273,10 +273,12 @@ One line sizes the whole run, printed once the resume filter has run:
 INFO:headroom.analysis:[-] Analyzing 116 account(s) with 16 worker(s)
 ```
 
-Both counts are what the pool is given, not what is configured. Accounts whose results are
-already on disk are filtered out before this line, so on a resumed run the count is smaller
-than the organization; and because threads are spawned on demand, a run with less work than
-`max_account_workers` reports the smaller number.
+Neither count is read off the configuration. Accounts whose results are already on disk are
+filtered out before this line, so on a resumed run the account count is smaller than the
+organization. The worker count is the most threads the run can create rather than the
+number the pool was built with: the executor always gets the full `max_account_workers`,
+but it spawns threads on demand and never has more work queued than there are accounts, so
+a run with less work than the cap reports the smaller number.
 
 The default level is INFO, which reports one line per account as it starts, finishes, or
 stops. Per-region progress is DEBUG, so a run at the default level says nothing between
