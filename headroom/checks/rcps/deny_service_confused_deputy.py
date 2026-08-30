@@ -100,7 +100,12 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
       organization resources, which the allowlist must carry
     - Source guards naming sources no allowlist can express, which withhold
       the statement from the account
-    - The count of service principals trusted with no source guard at all
+
+    Service principals trusted with no source guard are dropped rather than
+    reported. The statement's Null condition keeps the deny off requests
+    carrying no source account, so an unguarded trust neither needs
+    permitting nor blocks anything - and listing them would put every
+    service role trust policy in the account into the results.
     """
 
     def __init__(
