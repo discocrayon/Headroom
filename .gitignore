@@ -23,6 +23,10 @@ my_config.yaml
 .superpowers/
 docs/superpowers/
 
+# Design and plan documents. Local scratch for working out a change; anything
+# durable they produce belongs in Headroom-Specification.md or documentation/.
+design-docs/
+
 # Editor swap files
 *.swp
 *.swo
