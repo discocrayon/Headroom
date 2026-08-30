@@ -33,6 +33,51 @@ from headroom.log_context import NO_ACCOUNT, AccountContextFilter
 from tests.constants import ORG_ID
 
 
+# The AAAABBBBCCCC pattern in HOW_TO_ADD_A_CHECK.md has 1000 values.
+# `_account_infos` starts at the tertiary one, 333333333333, which both reads
+# clearest for the first account and puts every ID it builds out of reach of the
+# 111111111111 and 222222222222 that the `_config` helpers below already use.
+FIRST_ACCOUNT_TRIPLE = 333
+MAX_GENERATED_ACCOUNTS = 1000 - FIRST_ACCOUNT_TRIPLE
+
+
+def _account_infos(*names: str) -> List[AccountInfo]:
+    """
+    Build one AccountInfo per name, each with a distinct twelve-digit ID.
+
+    One derivation serves all three callers. Three copies of it is what let
+    `str(index + 1) * 12` survive here after the pool tests were fixed: that
+    expression is twelve digits only through index 8.
+
+    Args:
+        *names: Account names, in the order the IDs are assigned
+
+    Returns:
+        One account per name, IDs ascending from 333333333333
+
+    Raises:
+        ValueError: If more names arrive than the pattern has values left
+    """
+    if len(names) > MAX_GENERATED_ACCOUNTS:
+        raise ValueError(
+            f"only {MAX_GENERATED_ACCOUNTS} accounts can be built: the "
+            f"AAAABBBBCCCC pattern has 1000 values and this helper starts at "
+            f"{FIRST_ACCOUNT_TRIPLE}, so {len(names)} of them cannot all have a "
+            "twelve-digit ID"
+        )
+    return [
+        AccountInfo(
+            account_id="".join(
+                digit * 4 for digit in f"{FIRST_ACCOUNT_TRIPLE + index:03d}"
+            ),
+            environment="prod",
+            name=name,
+            owner="team",
+        )
+        for index, name in enumerate(names)
+    ]
+
+
 class TestSecurityAnalysisSession:
     def test_get_security_analysis_session_success(self) -> None:
         config = HeadroomConfig(
@@ -863,25 +908,12 @@ class TestDuplicateAccountNameGuard:
             exclude_account_ids=exclude_account_ids,
         )
 
-    @staticmethod
-    def _accounts(*names: str) -> List[AccountInfo]:
-        """Build one AccountInfo per name, each with a distinct account ID."""
-        return [
-            AccountInfo(
-                account_id=str(index + 1) * 12,
-                environment="prod",
-                name=name,
-                owner="team",
-            )
-            for index, name in enumerate(names)
-        ]
-
     def test_duplicate_names_abort_when_ids_are_excluded(self) -> None:
         """Two accounts sharing a name would write the same file, so abort."""
         with pytest.raises(RuntimeError, match="shared-name"):
             _verify_no_duplicate_account_names(
                 self._config(exclude_account_ids=True),
-                self._accounts("shared-name", "unique", "shared-name"),
+                _account_infos("shared-name", "unique", "shared-name"),
             )
 
     def test_the_abort_message_names_no_account_id(self) -> None:
@@ -894,7 +926,7 @@ class TestDuplicateAccountNameGuard:
         with pytest.raises(RuntimeError) as excinfo:
             _verify_no_duplicate_account_names(
                 self._config(exclude_account_ids=True),
-                self._accounts("shared-name", "shared-name"),
+                _account_infos("shared-name", "shared-name"),
             )
 
         message = str(excinfo.value)
@@ -909,14 +941,14 @@ class TestDuplicateAccountNameGuard:
         """
         _verify_no_duplicate_account_names(
             self._config(exclude_account_ids=False),
-            self._accounts("shared-name", "shared-name"),
+            _account_infos("shared-name", "shared-name"),
         )
 
     def test_unique_names_pass(self) -> None:
         """Distinct names never collide, whatever the redaction setting."""
         _verify_no_duplicate_account_names(
             self._config(exclude_account_ids=True),
-            self._accounts("one", "two", "three"),
+            _account_infos("one", "two", "three"),
         )
 
     def test_case_insensitive_collision_is_caught(self) -> None:
@@ -932,7 +964,7 @@ class TestDuplicateAccountNameGuard:
         with pytest.raises(RuntimeError) as excinfo:
             _verify_no_duplicate_account_names(
                 self._config(exclude_account_ids=True),
-                self._accounts("Prod", "prod"),
+                _account_infos("Prod", "prod"),
             )
 
         message = str(excinfo.value)
@@ -958,7 +990,7 @@ class TestDuplicateAccountNameGuard:
         with pytest.raises(RuntimeError) as excinfo:
             _verify_no_duplicate_account_names(
                 self._config(exclude_account_ids=True),
-                self._accounts(composed, decomposed),
+                _account_infos(composed, decomposed),
             )
 
         assert "(2 accounts)" in str(excinfo.value)
@@ -987,7 +1019,7 @@ class TestDuplicateAccountNameGuard:
         with pytest.raises(RuntimeError) as excinfo:
             _verify_no_duplicate_account_names(
                 self._config(exclude_account_ids=True),
-                self._accounts(long_s_acute, s_acute),
+                _account_infos(long_s_acute, s_acute),
             )
 
         assert "(2 accounts)" in str(excinfo.value)
@@ -995,19 +1027,6 @@ class TestDuplicateAccountNameGuard:
 
 class TestAccountNamesAreFilenameSafe:
     """Test the guard on account names that do not survive becoming a path."""
-
-    @staticmethod
-    def _accounts(*names: str) -> List[AccountInfo]:
-        """Build one AccountInfo per name, each with a distinct account ID."""
-        return [
-            AccountInfo(
-                account_id=str(index + 1) * 12,
-                environment="prod",
-                name=name,
-                owner="team",
-            )
-            for index, name in enumerate(names)
-        ]
 
     def test_a_name_holding_a_separator_aborts(self) -> None:
         """
@@ -1020,7 +1039,7 @@ class TestAccountNamesAreFilenameSafe:
         silently.
         """
         with pytest.raises(RuntimeError, match="Prod/US"):
-            _verify_account_names_are_filename_safe(self._accounts("Prod/US"))
+            _verify_account_names_are_filename_safe(_account_infos("Prod/US"))
 
     def test_a_name_that_climbs_out_of_the_results_directory_aborts(self) -> None:
         """
@@ -1033,7 +1052,7 @@ class TestAccountNamesAreFilenameSafe:
         policies are generated from.
         """
         with pytest.raises(RuntimeError, match=r"\.\./Prod"):
-            _verify_account_names_are_filename_safe(self._accounts("../Prod"))
+            _verify_account_names_are_filename_safe(_account_infos("../Prod"))
 
     def test_a_name_that_would_hide_the_file_aborts(self) -> None:
         """
@@ -1045,21 +1064,13 @@ class TestAccountNamesAreFilenameSafe:
         out of the directory.
         """
         with pytest.raises(RuntimeError):
-            _verify_account_names_are_filename_safe(self._accounts(""))
+            _verify_account_names_are_filename_safe(_account_infos(""))
 
     def test_ordinary_names_pass(self) -> None:
         """Names that are already filenames are left alone."""
         _verify_account_names_are_filename_safe(
-            self._accounts("Prod US", "prod-us", "caf\u00e9", "Prod.US")
+            _account_infos("Prod US", "prod-us", "caf\u00e9", "Prod.US")
         )
-
-
-# The AAAABBBBCCCC pattern in HOW_TO_ADD_A_CHECK.md has 1000 values. `_accounts`
-# below starts at the tertiary one, 333333333333, which both reads clearest for
-# the first account and puts every ID it builds out of reach of the
-# 111111111111 and 222222222222 that `_config` beside it already uses.
-FIRST_ACCOUNT_TRIPLE = 333
-MAX_GENERATED_ACCOUNTS = 1000 - FIRST_ACCOUNT_TRIPLE
 
 
 class TestRunChecksPool:
@@ -1068,35 +1079,15 @@ class TestRunChecksPool:
     @staticmethod
     def _accounts(count: int) -> List[AccountInfo]:
         """
-        Build `count` accounts with distinct names and twelve-digit IDs.
+        Build `count` accounts named `account-0` upward.
 
         Args:
             count: How many accounts to build
 
         Returns:
             Accounts named `account-0` upward, each with a distinct account ID
-
-        Raises:
-            ValueError: If `count` exceeds the values the pattern has left
         """
-        if count > MAX_GENERATED_ACCOUNTS:
-            raise ValueError(
-                f"only {MAX_GENERATED_ACCOUNTS} accounts can be built: the "
-                f"AAAABBBBCCCC pattern has 1000 values and this helper starts "
-                f"at {FIRST_ACCOUNT_TRIPLE}, so {count} of them cannot all "
-                "have a twelve-digit ID"
-            )
-        return [
-            AccountInfo(
-                account_id="".join(
-                    digit * 4 for digit in f"{FIRST_ACCOUNT_TRIPLE + index:03d}"
-                ),
-                environment="prod",
-                name=f"account-{index}",
-                owner="team",
-            )
-            for index in range(count)
-        ]
+        return _account_infos(*(f"account-{index}" for index in range(count)))
 
     @staticmethod
     def _config(max_account_workers: int) -> HeadroomConfig:
@@ -1113,7 +1104,7 @@ class TestRunChecksPool:
 
     def test_the_account_helper_builds_twelve_digit_account_ids(self) -> None:
         """
-        Every ID `_accounts` builds matches the repository's account pattern.
+        Every ID `_account_infos` builds matches the repository's pattern.
 
         `str(index + 1) * 12` held that shape only through index 8, and four
         of the tests below already ask for 200 accounts: 191 of those IDs came
@@ -1122,9 +1113,11 @@ class TestRunChecksPool:
 
         The pattern here is copied from the `fake_account_ids` block in
         `HOW_TO_ADD_A_CHECK.md` rather than derived from the construction it
-        checks. It is also what bounds the helper: 1000 values exist, the
-        offset spends 300 of them buying the last two assertions, and asking
-        for more than the rest has to fail rather than silently widen an ID.
+        checks. It is also what bounds the derivation: 1000 values exist and
+        it starts at 333, so 667 accounts is the most it can build before an
+        ID repeats. Clearing the two IDs `_config` uses would need an offset
+        of only 223; the remaining 110 buy 333333333333 for the first account,
+        which is the value the convention names as tertiary.
         """
         account_ids = [
             account.account_id for account in self._accounts(MAX_GENERATED_ACCOUNTS)
