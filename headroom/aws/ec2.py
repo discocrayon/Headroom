@@ -1,7 +1,7 @@
 """EC2-related security analysis functions for Headroom."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Lock
 from typing import Dict, List, Optional
 from weakref import WeakKeyDictionary
@@ -124,6 +124,14 @@ class Ec2Instance:
     than a copy: an unfrozen field assignment in one check would be visible to
     the next three.
 
+    Frozen also generates `__hash__` from the compared fields, which a dict
+    field silently poisons: every instance raised `TypeError: unhashable
+    type: 'dict'` on `hash()`, while strict mypy went on accepting
+    `set[Ec2Instance]`. `tags` is excluded from the hash rather than from
+    `==`, because two instances differing only by tag are genuinely different
+    instances; sharing a hash bucket costs nothing and comparing equal would
+    be wrong.
+
     Four checks previously swept every region independently for the same data.
     They now share one collection pass, and this is its output: the eight values
     those checks actually consume. Everything else in the API response --
@@ -139,7 +147,7 @@ class Ec2Instance:
         http_tokens: MetadataOptions HttpTokens; AWS defaults to 'optional'
         http_endpoint: MetadataOptions HttpEndpoint; AWS defaults to 'enabled'
         hop_limit: MetadataOptions HttpPutResponseHopLimit; AWS defaults to 1
-        tags: Instance tags as a key to value mapping
+        tags: Instance tags as a key to value mapping, excluded from the hash
     """
     instance_id: str
     image_id: Optional[str]
@@ -148,7 +156,7 @@ class Ec2Instance:
     http_tokens: str
     http_endpoint: str
     hop_limit: int
-    tags: Dict[str, str]
+    tags: Dict[str, str] = field(hash=False)
 
 
 _INSTANCE_MEMO: WeakKeyDictionary[Session, Dict[str, List[Ec2Instance]]] = WeakKeyDictionary()
