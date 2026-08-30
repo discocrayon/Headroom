@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .models import TerraformPlan
-from ..types import OrganizationalUnit
+from ..types import AccountOrgPlacement, OrganizationalUnit
 from ..utils import make_safe_variable_name
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "account_id_local_name",
+    "make_account_base_names",
     "make_ou_base_names",
     "make_safe_variable_name",
     "ou_id_local_name",
@@ -135,6 +137,83 @@ def make_ou_base_names(
 
         claimed_by[base_name] = ou_id
         base_names[ou_id] = base_name
+
+    return base_names
+
+
+def account_id_local_name(base_name: str) -> str:
+    """
+    Return the name of the local variable holding an account's ID.
+
+    The account twin of `ou_id_local_name`, and it exists for the same reason:
+    generate_org_info declares the local, generate_scps and generate_rcps
+    reference it, and keeping the rule in one function is what stops a policy
+    from targeting a local that nobody declared.
+
+    Args:
+        base_name: Account identifier from make_account_base_names()
+
+    Returns:
+        Local variable name, without the "local." prefix
+    """
+    return f"{base_name}_account_id"
+
+
+def make_account_base_names(
+    accounts: Dict[str, AccountOrgPlacement]
+) -> Dict[str, str]:
+    """
+    Map every account to the Terraform identifier that names it.
+
+    The account twin of `make_ou_base_names`, and it exists for the same
+    reason: everything generated for an account - its policy file, its module
+    name, the ID local it targets - is built from this one name, so two
+    accounts reducing to one identifier has to abort rather than let the
+    second quietly take the first's place.
+
+    Pass every account in the organization, not the analyzed subset.
+    `_generate_account_locals` declares a local for every account the
+    hierarchy holds, so a collision between an analyzed account and a skipped
+    one is still a duplicate local in the generated Terraform.
+
+    Unlike the OU message, this one names the account names rather than the
+    account IDs: `exclude_account_ids` exists so an operator never sees them,
+    and the generated Terraform looks accounts up by name anyway.
+
+    Args:
+        accounts: All accounts in the organization
+
+    Returns:
+        Dictionary mapping account ID -> Terraform identifier
+
+    Raises:
+        RuntimeError: If two accounts canonicalize to the same identifier, or
+            if a name reduces to nothing a Terraform identifier can be built
+            from
+    """
+    base_names: Dict[str, str] = {}
+    claimed_by: Dict[str, str] = {}
+
+    for account_id in sorted(accounts):
+        account_name = accounts[account_id].account_name
+        base_name = make_safe_variable_name(account_name)
+
+        if not base_name:
+            raise RuntimeError(
+                f"Account {account_name!r} has no name that can become a "
+                "Terraform identifier"
+            )
+        if base_name in claimed_by:
+            raise RuntimeError(
+                f"Accounts {claimed_by[base_name]!r} and {account_name!r} both "
+                f"claim the Terraform identifier {base_name!r}. Their names "
+                "differ only in characters a Terraform identifier cannot keep, "
+                "so one account's policies would be generated over the other's. "
+                "Rename one."
+            )
+
+        claimed_by[base_name] = account_name
+        base_names[account_id] = base_name
 
     return base_names
 

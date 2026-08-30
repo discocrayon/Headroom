@@ -920,19 +920,40 @@ def run_checks(
         raise
 
 
-def _is_usable_as_a_filename(name: str) -> bool:
+# Both Linux and macOS cap a single path component at 255 bytes, and
+# `ResultFilePathResolver._build_filename` spends eighteen of them on the
+# longest suffix it adds: `_`, a twelve-digit account ID, and `.json`.
+MAX_FILENAME_COMPONENT_BYTES = 255
+RESULT_FILENAME_SUFFIX_BYTES = len("_111111111111.json")
+MAX_ACCOUNT_NAME_BYTES = MAX_FILENAME_COMPONENT_BYTES - RESULT_FILENAME_SUFFIX_BYTES
+
+
+def _unusable_as_a_filename_because(name: str) -> Optional[str]:
     """
-    Report whether a name lands in the directory it is joined to.
+    Report why a name cannot become a result filename, or None if it can.
+
+    The reason travels with the name because the failures are unrelated to
+    each other, and an operator reading one message about several accounts
+    needs to know which account hit which.
 
     Args:
         name: Account name that will be interpolated into a result filename
 
     Returns:
-        True if the name is a plain filename the readers' glob will match
+        A phrase completing "cannot be used because ...", or None if usable
     """
-    if not name or name.startswith("."):
-        return False
-    return Path(name).name == name
+    if not name:
+        return "it is empty"
+    if "\x00" in name:
+        return "it holds a null byte"
+    if len(name.encode("utf-8")) > MAX_ACCOUNT_NAME_BYTES:
+        return (
+            f"it is too long: {MAX_ACCOUNT_NAME_BYTES} bytes is the most that "
+            "leaves room for the account ID and the extension"
+        )
+    if Path(name).name != name:
+        return "it reads as a path rather than a filename"
+    return None
 
 
 def _verify_account_names_are_filename_safe(account_infos: List[AccountInfo]) -> None:
@@ -945,22 +966,32 @@ def _verify_account_names_are_filename_safe(account_infos: List[AccountInfo]) ->
     setting.
 
     `ResultFilePathResolver` interpolates the name and hands the result to
-    `Path`, which reads a separator as structure rather than as text. Three
-    names go wrong there, and the two quiet ones are the reason this runs
-    before the scan rather than being left to fail at write time:
+    `Path`, which reads a separator as structure rather than as text. Four
+    names go wrong, and the quiet one is the reason this runs before the scan
+    rather than being left to fail at write time:
 
     - `Prod/US` becomes `check_dir/Prod/US.json`. With no such directory a
       worker thread raises FileNotFoundError partway through the run. With
-      one, the write succeeds somewhere the reader does not look.
+      one, the write succeeds somewhere the reader does not look, and the
+      account is silently missing from the results policy generation reads.
     - `../Prod` becomes `check_dir/../Prod.json`. The write succeeds, one
       level up, over whatever was already there.
-    - An empty name becomes `.json`, which the readers' `*.json` glob does
-      not match.
+    - A name holding a null byte reaches `open()`, which raises ValueError.
+    - A name past `MAX_ACCOUNT_NAME_BYTES` overruns the 255-byte component
+      limit, and `open()` raises OSError. Organizations caps a name at 50,
+      but `use_account_name_from_tags` reads it from a tag value, which runs
+      to 256.
 
-    The last two lose the account silently: policy generation reads the
-    results directory, finds nothing for that account, and generates as
-    though it did not exist. Organizations constrains an account name only by
-    length, so it will hand back every one of these.
+    An empty name is rejected too, though not for a filename reason: it
+    becomes `.json`, which `pathlib`'s glob matches perfectly well. It cannot
+    become a Terraform identifier, so `make_account_base_names` would abort
+    generation after the whole scan had run. Rejecting it here is the same
+    check, paid in seconds.
+
+    A leading dot is deliberately allowed. `pathlib.Path.glob` matches
+    dotfiles -- `glob.glob` is the one that skips them -- and neither reader
+    takes account identity from the filename, so `.Prod.json` is read back
+    like any other result.
 
     Like the duplicate-name guard, the message names the offending names and
     never the account IDs.
@@ -972,23 +1003,23 @@ def _verify_account_names_are_filename_safe(account_infos: List[AccountInfo]) ->
         RuntimeError: If an account name is not usable as a filename
     """
     unsafe = sorted(
-        account_info.name
+        (account_info.name, reason)
         for account_info in account_infos
-        if not _is_usable_as_a_filename(account_info.name)
+        if (reason := _unusable_as_a_filename_because(account_info.name))
     )
 
     if not unsafe:
         return
 
-    listed = ", ".join(repr(name) for name in unsafe)
+    listed = ", ".join(f"{name!r} ({reason})" for name, reason in unsafe)
     raise RuntimeError(
         f"These account names cannot be used as result filenames: {listed}. "
         "The name is interpolated into the filename, so a path separator "
-        "reads as a directory and a leading dot hides the file from the "
-        "glob that reads results back -- either way the account's results "
-        "are written somewhere policy generation does not look. Rename the "
-        "accounts, or set use_account_name_from_tags and give them a tag "
-        "that is a plain filename."
+        "reads as a directory and the account's results are written "
+        "somewhere policy generation does not look, while a null byte or an "
+        "over-long name fails the write outright. Rename the accounts, or "
+        "set use_account_name_from_tags and give them a tag that is a plain "
+        "filename."
     )
 
 

@@ -17,6 +17,8 @@ from .models import (
     TerraformPlan,
 )
 from .utils import (
+    account_id_local_name,
+    make_account_base_names,
     make_ou_base_names,
     make_safe_variable_name,
     ou_id_local_name,
@@ -51,7 +53,7 @@ def _replace_account_id_in_arn(
         account_info = organization_hierarchy.accounts.get(account_id)
         if account_info:
             safe_account_name = make_safe_variable_name(account_info.account_name)
-            parts[4] = f"${{local.{safe_account_name}_account_id}}"
+            parts[4] = f"${{local.{account_id_local_name(safe_account_name)}}}"
             return ":".join(parts)
     return arn
 
@@ -327,13 +329,15 @@ def _render_account_scp_terraform(
     if not account_info:
         raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
 
-    # Convert account name to terraform-friendly format
-    account_name = make_safe_variable_name(account_info.account_name)
+    # Every reference to an account is built from this one identifier, and two
+    # accounts whose names fold to it abort here rather than overwrite each
+    # other in the plan.
+    account_name = make_account_base_names(organization_hierarchy.accounts)[account_id]
     filepath = output_path / f"{account_name}_scps.tf"
 
     terraform_content = _build_scp_terraform_module(
         module_name=f"scps_{account_name}",
-        target_id_reference=f"local.{account_name}_account_id",
+        target_id_reference=f"local.{account_id_local_name(account_name)}",
         recommendations=account_recs,
         comment=account_info.account_name,
         organization_hierarchy=organization_hierarchy

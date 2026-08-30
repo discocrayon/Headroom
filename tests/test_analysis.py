@@ -933,6 +933,43 @@ class TestDuplicateAccountNameGuard:
         assert "shared-name (2 accounts)" in message
         assert not re.search(r"\d{12}", message)
 
+    def test_the_count_is_the_group_size_not_a_pair(self) -> None:
+        """
+        Three accounts on one name report three, not two.
+
+        Every other test here collides exactly two accounts, so a message
+        hardcoding "(2 accounts)" would satisfy all of them while telling an
+        operator the wrong number of accounts to go and rename.
+        """
+        with pytest.raises(RuntimeError) as excinfo:
+            _verify_no_duplicate_account_names(
+                self._config(exclude_account_ids=True),
+                _account_infos("shared-name", "shared-name", "shared-name"),
+            )
+
+        assert "shared-name (3 accounts)" in str(excinfo.value)
+
+    def test_every_colliding_group_is_reported_not_just_the_first(self) -> None:
+        """
+        Two independent collisions both appear in the one message.
+
+        The guard runs once and aborts, so a message that listed only the
+        first group would send the operator back for a second full run to
+        discover the second -- and every other test here has just one group,
+        so truncating the list passes them all.
+        """
+        with pytest.raises(RuntimeError) as excinfo:
+            _verify_no_duplicate_account_names(
+                self._config(exclude_account_ids=True),
+                _account_infos(
+                    "alpha", "alpha", "unique", "beta", "beta"
+                ),
+            )
+
+        message = str(excinfo.value)
+        assert "alpha (2 accounts)" in message
+        assert "beta (2 accounts)" in message
+
     def test_duplicate_names_are_allowed_when_ids_are_included(self) -> None:
         """
         With IDs in the filename, two accounts named alike do not collide.
@@ -1054,17 +1091,58 @@ class TestAccountNamesAreFilenameSafe:
         with pytest.raises(RuntimeError, match=r"\.\./Prod"):
             _verify_account_names_are_filename_safe(_account_infos("../Prod"))
 
-    def test_a_name_that_would_hide_the_file_aborts(self) -> None:
+    def test_an_empty_name_aborts(self) -> None:
         """
-        An empty name yields `.json`, which `*.json` does not match.
+        An empty name cannot become a Terraform identifier.
 
-        Organizations constrains an account name only by length, so an empty
-        name is a value it will return. A dotfile is written successfully and
-        then read back by nothing, which is the same silent drop as climbing
-        out of the directory.
+        Not a filename failure: it yields `.json`, which `pathlib`'s glob
+        matches and the readers read back fine. It fails later, in
+        `make_account_base_names`, which is after the whole scan has run --
+        so the guard pays that same check in seconds instead.
         """
         with pytest.raises(RuntimeError):
             _verify_account_names_are_filename_safe(_account_infos(""))
+
+    def test_a_name_too_long_for_the_filesystem_aborts(self) -> None:
+        """
+        A name is capped by what the filename it lands in can hold.
+
+        Organizations caps an account name at 50 characters, but
+        `use_account_name_from_tags` takes the name from a tag value, and a
+        tag value runs to 256. The resolver adds `_`, a twelve-digit account
+        ID, and `.json` -- eighteen bytes -- to a component both Linux and
+        macOS cap at 255, so 237 is the longest name that fits. Past it the
+        worker raises OSError partway through the run.
+        """
+        _verify_account_names_are_filename_safe(_account_infos("a" * 237))
+
+        with pytest.raises(RuntimeError, match="too long"):
+            _verify_account_names_are_filename_safe(_account_infos("a" * 238))
+
+    def test_a_name_holding_a_null_byte_aborts(self) -> None:
+        """
+        A null byte cannot reach a syscall, so the write raises ValueError.
+
+        `Path` carries the byte without complaint and compares equal to the
+        name it came from, so the separator check above passes it through.
+        Only `open()` rejects it, which is a worker thread failing partway
+        through the run rather than a name the operator can fix up front.
+        """
+        with pytest.raises(RuntimeError, match="null byte"):
+            _verify_account_names_are_filename_safe(_account_infos("a\x00b"))
+
+    def test_a_leading_dot_is_not_a_reason_to_abort(self) -> None:
+        """
+        `pathlib.Path.glob` matches dotfiles; `glob.glob` is the one that does not.
+
+        Both readers glob `*.json` through `pathlib`, which returns
+        `.Prod.json` alongside every other result, and neither takes account
+        identity from the filename -- `parse_results` and `generate_rcps`
+        both read it out of the JSON `summary`. A hidden result file is read
+        back like any other, so rejecting the name would drop an account for
+        no reason.
+        """
+        _verify_account_names_are_filename_safe(_account_infos(".Prod"))
 
     def test_ordinary_names_pass(self) -> None:
         """Names that are already filenames are left alone."""

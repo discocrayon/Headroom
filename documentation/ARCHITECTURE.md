@@ -188,9 +188,10 @@ a logger's filters do not see records propagated up from child loggers. Work out
 worker is stamped `-`.
 
 Two properties of account names are checked before any account is scanned, because both fail
-in ways a fourteen-minute run would only reveal at the end. A name that cannot be a filename
--- one containing a path separator, or beginning with a dot -- would send an account's
-results outside the directory policy generation reads, silently. And with
+in ways a full run would only reveal at the end. A name that cannot be a filename -- one
+containing a path separator, holding a null byte, or too long for the 255-byte component
+limit -- would send an account's results outside the directory policy generation reads, or
+fail the write partway through. And with
 `exclude_account_ids` set, the name alone is the filename, so two accounts sharing one would
 interleave their JSON into a single file; names are compared the way a case-insensitive,
 normalization-folding filesystem compares them. Both aborts name the offending names and

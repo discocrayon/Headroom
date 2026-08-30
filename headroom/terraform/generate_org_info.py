@@ -12,8 +12,9 @@ from typing import Dict, List, Optional, Set
 from boto3.session import Session
 
 from .utils import (
+    account_id_local_name,
+    make_account_base_names,
     make_ou_base_names,
-    make_safe_variable_name,
     ou_id_local_name,
     ou_path_names,
 )
@@ -344,6 +345,9 @@ def _generate_account_locals(
     content_parts.append("  # Account IDs by name")
 
     ou_base_names = make_ou_base_names(organizational_units)
+    # Claims one Terraform identifier per account, so two names that fold
+    # alike abort here rather than declare the same local twice.
+    account_base_names = make_account_base_names(accounts)
     ordered_accounts = sorted(
         accounts.values(),
         key=lambda account: account.account_name
@@ -358,7 +362,7 @@ def _generate_account_locals(
         if accounts_source is None:
             continue
 
-        safe_account_name = make_safe_variable_name(account.account_name)
+        safe_account_name = account_base_names[account.account_id]
         matches = (
             f"[for account in {accounts_source} : account.id "
             f"if account.name == \"{account.account_name}\"]"
@@ -367,7 +371,7 @@ def _generate_account_locals(
             f"  # Validation for {account.account_name} account",
             f"  validation_check_{safe_account_name}_account = (length({matches}) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {account.account_name} account, found ${{length({matches})}}\")",
             "",
-            f"  {safe_account_name}_account_id = [",
+            f"  {account_id_local_name(safe_account_name)} = [",
             f"    for account in {accounts_source} :",
             f"    account.id if account.name == \"{account.account_name}\"",
             "  ][0]",
