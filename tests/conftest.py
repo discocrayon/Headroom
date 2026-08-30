@@ -13,10 +13,12 @@ before it chose. Three tests in `TestRunChecksPool` spawn a thread purely to
 get away from it, and say so in their docstrings.
 
 `configure_logging` installs `AccountContextFilter` and Headroom's format on
-every handler on the root logger. Under pytest those handlers belong to
-pytest -- `LogCaptureHandler` and the live-log handlers -- so the one test
-that calls it for real re-formats `caplog` output for the rest of the
-session.
+the handlers it owns. It no longer reaches pytest's: `LogCaptureHandler` and
+the live-log handlers are already on the root logger when it runs, so it
+leaves them alone. What still leaks is the other way round -- a test that
+empties the handler list first, to reach the branch production actually
+takes, leaves the handler `basicConfig` installed on the root logger for the
+rest of the session, and pytest's own handlers gone with it.
 
 Restoring is unconditional rather than conditional on having detected a
 change: it costs a list copy per test, and a fixture that only sometimes runs

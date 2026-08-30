@@ -21,7 +21,17 @@ class TestRestoreProcessWideState:
     """
 
     def test_a_test_may_leave_the_global_state_dirty(self) -> None:
-        """Set the account context and install Headroom's log format."""
+        """
+        Set the account context and install Headroom's log format.
+
+        The handler list is emptied first. `configure_logging` configures only
+        handlers it installed itself, and under pytest every root handler
+        belongs to the logging plugin, so left alone it would touch nothing
+        and there would be no pollution for the fixture to restore. Emptying
+        the list is also what production looks like: measured, a fresh
+        interpreter and both Headroom imports leave it empty.
+        """
+        logging.getLogger().handlers = []
         set_account("payments_111111111111")
         configure_logging()
 

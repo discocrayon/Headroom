@@ -86,9 +86,63 @@ class TestAccountContextFilter:
             "b_222222222222": "b_222222222222",
         }
 
+    def test_an_explicit_account_on_the_record_is_left_alone(self) -> None:
+        """
+        `extra={"account": ...}` on a log call outranks the thread's account.
+
+        The filter exists to label records that carry no account of their own.
+        A caller that named one has said something the thread-local cannot
+        know -- the account a message is *about*, rather than the one whose
+        worker happened to emit it -- and overwriting it silently relabels
+        the record.
+        """
+        set_account("payments_111111111111")
+        record = _bare_record()
+        record.account = "billing_222222222222"
+
+        try:
+            assert AccountContextFilter().filter(record) is True
+            assert record.account == "billing_222222222222"  # type: ignore[attr-defined]
+        finally:
+            set_account(NO_ACCOUNT)
+
 
 class TestConfigureLogging:
     """Test what configure_logging installs, and that repeating it is safe."""
+
+    def test_a_handler_headroom_did_not_install_keeps_its_formatter(self) -> None:
+        """
+        Only the handler this function's own basicConfig installed is touched.
+
+        A root handler that was already there belongs to whoever put it there
+        -- an embedding application, or a library that called basicConfig on
+        import. Rewriting its formatter changes output Headroom does not own,
+        and to a format string with no `[account]` field the filter buys
+        nothing anyway.
+
+        basicConfig returns early once a handler exists, so on this path it
+        installs nothing and there is nothing of Headroom's to configure.
+        """
+        root_logger = logging.getLogger()
+        preexisting_handlers = list(root_logger.handlers)
+        preexisting_level = root_logger.level
+
+        foreign_format = logging.Formatter("HOST %(message)s")
+        foreign_handler = logging.StreamHandler(io.StringIO())
+        foreign_handler.setFormatter(foreign_format)
+        root_logger.handlers = [foreign_handler]
+
+        try:
+            configure_logging()
+
+            assert foreign_handler.formatter is foreign_format
+            assert not any(
+                isinstance(installed, AccountContextFilter)
+                for installed in foreign_handler.filters
+            )
+        finally:
+            root_logger.handlers = preexisting_handlers
+            root_logger.setLevel(preexisting_level)
 
     def test_an_empty_root_gets_a_handler_rather_than_nothing(self) -> None:
         """
@@ -100,14 +154,13 @@ class TestConfigureLogging:
         logger with the default format and no filter, and every later record
         formats without complaint and without the account.
 
-        The only thing keeping that list non-empty today is `analysis.py`
-        calling `basicConfig` at import time together with `main.py` importing
-        it at module scope -- an invariant nothing states or enforces, and one
-        that deferring the heavy `analysis` import to cut startup cost would
-        quietly break.
-
-        The other test in this class pre-installs a NullHandler, which is
-        exactly what keeps it off this path.
+        Nothing in Headroom installs a root handler before this runs.
+        Measured: a fresh interpreter starts with an empty handler list, and
+        importing `headroom.main` or `headroom.analysis` leaves it empty --
+        so in production this branch is the one that always runs. Under
+        pytest it is not, because the logging plugin has already installed
+        its capture handlers, which is why this test empties the list first
+        rather than trusting the ambient state.
 
         The root logger's handler list and level are process-global and
         shared with pytest, so this puts both back. Emptying the handler list
@@ -155,9 +208,13 @@ class TestConfigureLogging:
         silences the run while still printing errors.
 
         Root is reset to WARNING here because that is where a fresh
-        interpreter starts. The suite has already imported `headroom.analysis`,
-        which raises it to INFO at import time, so without the reset this would
-        be asserting against that import rather than against this function.
+        interpreter starts, and the reset is what makes the assertion mean
+        something: nothing else raises the level, so a test that inherited an
+        already-raised root would pass without this function doing anything.
+        Measured, no Headroom import moves it -- root is at WARNING after
+        importing `headroom.main` and after `headroom.analysis` -- but an
+        earlier test in the process can, and the guarantee here is about this
+        function rather than about run order.
         """
         root_logger = logging.getLogger()
         preexisting_handlers = list(root_logger.handlers)
@@ -215,35 +272,35 @@ class TestConfigureLogging:
 
     def test_repeat_calls_leave_one_account_filter_on_the_handler(self) -> None:
         """
-        A second call must not install a second filter.
+        A second call must not install a second filter, or a second handler.
 
         main() calls configure_logging() once, but nothing enforces that.
         Handler.addFilter dedups by identity, not by class, so a fresh
         AccountContextFilter() built on every call would never be recognized
-        as a duplicate. The check runs against a handler of its own, and
-        restores every pre-existing handler's filters and formatter
-        afterwards, so it cannot leak state into the process's real root
-        handler for a later test to inherit.
+        as a duplicate.
+
+        The handler under test is the one configure_logging's own basicConfig
+        installs, because that is the only handler it will touch. Probing with
+        a pre-installed handler cannot test this: such a handler is now left
+        alone by design, and a NullHandler -- what an earlier version of this
+        test used -- never runs a filter or a formatter from handle() anyway.
         """
         root_logger = logging.getLogger()
         preexisting_handlers = list(root_logger.handlers)
-        original_filters = {handler: list(handler.filters) for handler in preexisting_handlers}
-        original_formatters = {handler: handler.formatter for handler in preexisting_handlers}
+        preexisting_level = root_logger.level
+        root_logger.handlers = []
 
-        probe_handler = logging.NullHandler()
-        root_logger.addHandler(probe_handler)
         try:
             configure_logging()
             configure_logging()
 
+            assert len(root_logger.handlers) == 1
             account_filters = [
                 installed_filter
-                for installed_filter in probe_handler.filters
+                for installed_filter in root_logger.handlers[0].filters
                 if isinstance(installed_filter, AccountContextFilter)
             ]
             assert len(account_filters) == 1
         finally:
-            root_logger.removeHandler(probe_handler)
-            for handler in preexisting_handlers:
-                handler.filters = original_filters[handler]
-                handler.formatter = original_formatters[handler]
+            root_logger.handlers = preexisting_handlers
+            root_logger.setLevel(preexisting_level)
