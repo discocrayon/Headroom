@@ -23,7 +23,12 @@ from mypy_boto3_ecr.type_defs import RepositoryTypeDef
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..types import JsonDict
 from .helpers import get_all_regions, paginate
-from .policy_documents import has_not_principal, normalize_statements
+from .policy_documents import (
+    ServicePrincipalSource,
+    has_not_principal,
+    normalize_statements,
+    read_service_principal_sources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,10 @@ class ECRPolicyAnalysis:
         has_wildcard_principal: True if the policy grants to principals the
             analyzer cannot enumerate - `Principal: "*"`, or an Allow with
             NotPrincipal, which reaches everyone it does not name
+        service_principal_sources: Service principals this policy trusts,
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag.
     """
     scope: PolicyScope
     region: str
@@ -77,6 +86,7 @@ class ECRPolicyAnalysis:
     repository_arn: Optional[str] = None
     actions_by_account: Dict[str, List[str]] = field(default_factory=dict)
     has_wildcard_principal: bool = False
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
 def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
@@ -186,10 +196,15 @@ class PolicyFindings(NamedTuple):
         actions_by_account: ECR actions each of those accounts is allowed
         has_wildcard_principal: True if the policy grants to principals the
             analyzer cannot enumerate
+        service_principal_sources: Service principals this policy trusts,
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag.
     """
     third_party_account_ids: Set[str]
     actions_by_account: Dict[str, List[str]]
     has_wildcard_principal: bool
+    service_principal_sources: List[ServicePrincipalSource]
 
 
 def _analyze_policy_statements(
@@ -219,6 +234,7 @@ def _analyze_policy_statements(
     third_party_accounts: Set[str] = set()
     actions_by_account: defaultdict[str, Set[str]] = defaultdict(set)
     has_wildcard = False
+    sources: List[ServicePrincipalSource] = []
 
     for statement in normalize_statements(policy, context):
         if statement.get("Effect") != "Allow":
@@ -233,6 +249,10 @@ def _analyze_policy_statements(
         principal = statement.get("Principal")
         if not principal:
             continue
+
+        sources.extend(
+            read_service_principal_sources(statement, org_account_ids, context)
+        )
 
         if _has_wildcard_principal(principal):
             has_wildcard = True
@@ -255,6 +275,7 @@ def _analyze_policy_statements(
             for account_id, actions in actions_by_account.items()
         },
         has_wildcard_principal=has_wildcard,
+        service_principal_sources=sources,
     )
 
 
@@ -312,6 +333,33 @@ def _analyze_repository_in_region(
         repository_arn=repository_arn,
         actions_by_account=findings.actions_by_account,
         has_wildcard_principal=findings.has_wildcard_principal,
+        service_principal_sources=findings.service_principal_sources,
+    )
+
+
+def _has_actionable_service_principal_source(
+    sources: List[ServicePrincipalSource]
+) -> bool:
+    """
+    Report whether any recorded service principal source is worth keeping.
+
+    An unguarded service principal asks nothing of the allowlist: with no
+    source condition, every account behind that service can drive the
+    call, so there is no third party to record and nothing to withhold.
+    Keeping the policy in results anyway would return every ordinary
+    service integration in the account and bury the ones that matter.
+
+    Args:
+        sources: The service principal sources one policy's statements
+            recorded
+
+    Returns:
+        True if a source names an out-of-organization account or a guard
+        no allowlist can express
+    """
+    return any(
+        source.source_account_ids or source.has_wildcard_source
+        for source in sources
     )
 
 
@@ -323,9 +371,12 @@ def _grants_third_party_access(analysis: ECRPolicyAnalysis) -> bool:
         analysis: Result for one ECR policy
 
     Returns:
-        True if the policy names a third-party account or a wildcard principal
+        True if the policy names a third-party account, a wildcard
+        principal, or a service principal source worth allowlisting
     """
-    return bool(analysis.third_party_account_ids) or analysis.has_wildcard_principal
+    if bool(analysis.third_party_account_ids) or analysis.has_wildcard_principal:
+        return True
+    return _has_actionable_service_principal_source(analysis.service_principal_sources)
 
 
 def _analyze_registry_policy(
@@ -376,6 +427,7 @@ def _analyze_registry_policy(
         third_party_account_ids=findings.third_party_account_ids,
         actions_by_account=findings.actions_by_account,
         has_wildcard_principal=findings.has_wildcard_principal,
+        service_principal_sources=findings.service_principal_sources,
     )
 
 

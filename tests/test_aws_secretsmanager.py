@@ -421,6 +421,63 @@ class TestAnalyzeSecretPolicy:
                 org_account_ids
             )
 
+    def test_guarded_service_principal_is_recorded(self) -> None:
+        """
+        A secret policy pinning a third-party source records it.
+
+        The account reaches the allowlist through the confused deputy
+        check, not through this analysis's third_party_account_ids.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "secretsmanager:GetSecretValue",
+                    "Condition": {
+                        "StringEquals": {"aws:SourceAccount": "999999999999"}
+                    },
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "guarded-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:guarded-secret",
+            policy,  # type: ignore[arg-type]
+            org_account_ids
+        )
+
+        assert result is not None
+        assert len(result.service_principal_sources) == 1
+        source = result.service_principal_sources[0]
+        assert source.service_principal == "sns.amazonaws.com"
+        assert source.source_account_ids == ["999999999999"]
+
+    def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
+        """The field stays empty when no statement names a service."""
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Action": "secretsmanager:GetSecretValue"
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "unguarded-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:unguarded-secret",
+            policy,  # type: ignore[arg-type]
+            org_account_ids
+        )
+
+        assert result is not None
+        assert result.service_principal_sources == []
+
 
 class TestAnalyzeSecretsManagerPolicies:
     """Test full Secrets Manager policy analysis."""

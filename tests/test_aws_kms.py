@@ -721,6 +721,49 @@ class TestPolicyGrammar:
 
         assert results == []
 
+    def test_guarded_service_principal_is_recorded(self) -> None:
+        """
+        A key policy pinning a third-party source records it on the key.
+
+        The account reaches the allowlist through the confused deputy
+        check, not through this analysis's third_party_account_ids.
+        """
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "sns.amazonaws.com"},
+                "Action": "kms:Decrypt",
+                "Resource": "*",
+                "Condition": {
+                    "StringEquals": {"aws:SourceAccount": "999999999999"}
+                },
+            }],
+        }
+
+        results = self._analyze(policy=policy)
+
+        assert len(results[0].service_principal_sources) == 1
+        source = results[0].service_principal_sources[0]
+        assert source.service_principal == "sns.amazonaws.com"
+        assert source.source_account_ids == ["999999999999"]
+
+    def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
+        """The field stays empty when no statement names a service."""
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "kms:Decrypt",
+                "Resource": "*",
+            }],
+        }
+
+        results = self._analyze(policy=policy)
+
+        assert results[0].service_principal_sources == []
+
 
 class TestKeyGrants:
     """

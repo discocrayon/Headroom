@@ -9,7 +9,7 @@ specifically for identifying third-party account access (RCP checks).
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, NamedTuple, Optional, Set
 
 from boto3.session import Session
@@ -18,7 +18,12 @@ from mypy_boto3_s3.client import S3Client
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
-from .policy_documents import has_not_principal, normalize_statements
+from .policy_documents import (
+    ServicePrincipalSource,
+    has_not_principal,
+    normalize_statements,
+    read_service_principal_sources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +98,10 @@ class S3BucketPolicyAnalysis:
         actions_by_account: Dict mapping account IDs to sets of allowed
             actions. Only the policy contributes: ACL permissions are not IAM
             actions, and an ACL grantee never reaches the allowlist
+        service_principal_sources: Service principals this policy trusts,
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag.
     """
     bucket_name: str
     bucket_arn: str
@@ -100,6 +109,7 @@ class S3BucketPolicyAnalysis:
     has_wildcard_principal: bool
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
 def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
@@ -186,6 +196,32 @@ def _has_non_account_principals(principal: Any) -> bool:
         # Check if any non-account-based principal types are present
         return "Federated" in principal or "CanonicalUser" in principal
     return False
+
+
+def _has_actionable_service_principal_source(
+    sources: List[ServicePrincipalSource]
+) -> bool:
+    """
+    Report whether any recorded service principal source is worth keeping.
+
+    An unguarded service principal asks nothing of the allowlist: with no
+    source condition, every account behind that service can drive the
+    call, so there is no third party to record and nothing to withhold.
+    Keeping the bucket in results anyway would return every ordinary
+    service integration in the account and bury the ones that matter.
+
+    Args:
+        sources: The service principal sources one bucket's statements
+            recorded
+
+    Returns:
+        True if a source names an out-of-organization account or a guard
+        no allowlist can express
+    """
+    return any(
+        source.source_account_ids or source.has_wildcard_source
+        for source in sources
+    )
 
 
 def _normalize_actions(action: Any) -> Set[str]:
@@ -359,6 +395,7 @@ def analyze_s3_bucket_policies(
 
         third_party_accounts: Set[str] = set()
         actions_by_account: Dict[str, Set[str]] = {}
+        sources: List[ServicePrincipalSource] = []
 
         # The ACL is read before the policy because a bucket that shares only
         # by ACL carries no policy at all, and abandoning the bucket for want
@@ -386,6 +423,10 @@ def analyze_s3_bucket_policies(
                 if not principal:
                     continue
 
+                sources.extend(
+                    read_service_principal_sources(statement, org_account_ids, f"Bucket '{bucket_name}'")
+                )
+
                 if _has_wildcard_principal(principal):
                     has_wildcard = True
 
@@ -402,14 +443,16 @@ def analyze_s3_bucket_policies(
                             actions_by_account[account_id] = set()
                         actions_by_account[account_id].update(actions)
 
-        if third_party_accounts or has_wildcard or has_non_account_principals:
+        has_service_source = _has_actionable_service_principal_source(sources)
+        if third_party_accounts or has_wildcard or has_non_account_principals or has_service_source:
             results.append(S3BucketPolicyAnalysis(
                 bucket_name=bucket_name,
                 bucket_arn=bucket_arn,
                 third_party_account_ids=third_party_accounts,
                 has_wildcard_principal=has_wildcard,
                 has_non_account_principals=has_non_account_principals,
-                actions_by_account=actions_by_account
+                actions_by_account=actions_by_account,
+                service_principal_sources=sources,
             ))
 
     return results
