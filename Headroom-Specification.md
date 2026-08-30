@@ -74,6 +74,17 @@
 - Grant principal classification (IAM ARN, AWS service principal) with fail-fast on anything else
 - Multi-region KMS key scanning with pagination support for keys and grants
 - KMS actions tracking per third-party account
+- **Secrets Manager Third-Party Access Check:** Secret resource policy analysis across organization
+- Third-party account detection and wildcard principal identification
+- Principal type validation (AWS, Service, Federated, CanonicalUser) with fail-fast on the last two
+- Multi-region secret scanning with pagination support
+- Secrets Manager actions tracking per third-party account, and which secrets each one can reach
+- **SQS Third-Party Access Check:** Queue resource policy analysis across organization
+- Third-party account detection and wildcard principal identification
+- Principal type validation (AWS, Service, Federated) with fail-fast on Federated
+- Multi-region queue scanning with pagination support
+- A queue whose policy cannot be parsed is recorded rather than dropped, so an incomplete read withholds the confused deputy statement instead of vanishing on a log line
+- SQS actions tracking per third-party account, and which queues each one can reach
 - **Service Confused Deputy Check:** Source-guard analysis on every `Allow` statement naming a `Service` principal, across the six resource types the other RCP checks already analyze - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies
 - Narrows the AWS service exemption the other six statements must carry, which nothing previously narrowed back down
 - Out-of-organization source account detection from `aws:SourceAccount` and `aws:SourceArn`, unioned into the statement's source allowlist
@@ -114,13 +125,23 @@ headroom/
 ├── write_results.py         # Result file management
 ├── output.py                # User-facing output
 ├── types.py                 # Shared data models
+├── enums.py                 # CheckCategory and other shared enums
+├── utils.py                 # Cross-cutting helpers
 ├── aws/
 │   ├── ec2.py              # EC2 analysis
-│   ├── ecr.py              # ECR repository policy analysis
+│   ├── ecr.py              # ECR repository and registry policy analysis
+│   ├── eks.py              # EKS cluster analysis
+│   ├── helpers.py          # Region enumeration and other shared AWS helpers
+│   ├── kms.py              # KMS key policy and key grant analysis
+│   ├── lambda_functions.py # Lambda function URL analysis
+│   ├── policy_documents.py # Shared IAM policy grammar - see Shared Policy Grammar
 │   ├── rds.py              # RDS analysis
-│   ├── s3.py               # S3 bucket policy analysis
+│   ├── s3.py               # S3 bucket policy and ACL analysis
+│   ├── secretsmanager.py   # Secret resource policy analysis
+│   ├── sqs.py              # Queue resource policy analysis
 │   ├── iam/
 │   │   ├── roles.py        # Trust policy analysis (RCP)
+│   │   ├── saml_providers.py  # SAML provider enumeration (SCP)
 │   │   └── users.py        # User enumeration (SCP)
 │   ├── organization.py     # Organizations API integration
 │   └── sessions.py         # Session management
@@ -128,19 +149,31 @@ headroom/
 │   ├── base.py             # BaseCheck abstract class
 │   ├── registry.py         # Check registration system
 │   ├── scps/
+│   │   ├── deny_ec2_ami_owner.py
+│   │   ├── deny_ec2_imds_hop_limit.py
 │   │   ├── deny_ec2_imds_v1.py
+│   │   ├── deny_ec2_public_ip.py
+│   │   ├── deny_eks_create_cluster_without_tag.py
+│   │   ├── deny_iam_saml_provider_not_aws_sso.py
 │   │   ├── deny_iam_user_creation.py
+│   │   ├── deny_lambda_auth_type_none.py
 │   │   └── deny_rds_unencrypted.py
 │   └── rcps/
-│       ├── deny_deny_sts_third_party_assumerole.py
+│       ├── deny_ecr_third_party_access.py
+│       ├── deny_kms_third_party_access.py
 │       ├── deny_s3_third_party_access.py
-│       └── deny_ecr_third_party_access.py
+│       ├── deny_secrets_manager_third_party_access.py
+│       ├── deny_service_confused_deputy.py
+│       ├── deny_sqs_third_party_access.py
+│       └── deny_sts_third_party_assumerole.py
 ├── placement/
 │   └── hierarchy.py        # OU hierarchy analysis
 └── terraform/
     ├── generate_org_info.py
     ├── generate_scps.py
     ├── generate_rcps.py
+    ├── models.py           # Terraform generation data models
+    ├── reconcile.py        # Reconciliation against existing Terraform
     └── utils.py
 ```
 
@@ -394,7 +427,7 @@ class BaseCheck(ABC, Generic[T]):
         account_id: str,
         results_dir: str,
         exclude_account_ids: bool = False,
-        **kwargs: Any,  # RCP checks use org_account_ids
+        **kwargs: Any,  # RCP checks use org_account_ids and org_id
     ) -> None:
         """Initialize check with common parameters."""
 
@@ -863,6 +896,7 @@ def has_not_principal(statement: Mapping[str, Any]) -> bool: ...
 def read_service_principal_sources(
     statement: Mapping[str, Any],
     org_account_ids: Set[str],
+    org_id: str,
     resource_description: str,
 ) -> List[ServicePrincipalSource]: ...
 
@@ -956,7 +990,8 @@ FAIL_FAST_PRINCIPAL_TYPES = {"Federated"}
 
 def analyze_ecr_policies(
     session: boto3.Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[ECRPolicyAnalysis]:
     """
     Analyze all ECR policies, at both scopes, for third-party access.
@@ -990,7 +1025,8 @@ def analyze_ecr_policies(
 def _analyze_registry_policy(
     ecr_client: ECRClient,
     region: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> Optional[ECRPolicyAnalysis]:
     """
     Analyze the registry policy for one region.
@@ -1006,7 +1042,8 @@ def _analyze_registry_policy(
 def _analyze_policy_statements(
     policy: JsonDict,
     context: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> PolicyFindings:
     """
     Read the third-party grants out of one ECR policy document.
@@ -1053,14 +1090,15 @@ class UnsupportedPrincipalTypeError(Exception):
 # checks/rcps/deny_ecr_third_party_access.py
 
 class DenyECRThirdPartyAccessCheck(BaseCheck[ECRPolicyAnalysis]):
-    def __init__(self, org_account_ids: Set[str], **kwargs):
+    def __init__(self, org_account_ids: Set[str], org_id: str, **kwargs):
         super().__init__(**kwargs)
         self.org_account_ids = org_account_ids
+        self.org_id = org_id
         self.all_third_party_accounts: Set[str] = set()
         self.all_actions_by_account: Dict[str, List[str]] = {}
 
     def analyze(self, session):
-        return analyze_ecr_policies(session, self.org_account_ids)
+        return analyze_ecr_policies(session, self.org_account_ids, self.org_id)
 
     def categorize_result(self, result):
         # Policies with wildcards are "violations", at either scope
@@ -1210,7 +1248,8 @@ KMS_RETIRE_GRANT_ACTION = "kms:RetireGrant"
 
 def analyze_kms_key_policies(
     session: boto3.Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[KMSKeyPolicyAnalysis]:
     """
     Analyze all KMS keys in an account for third-party access.
@@ -1316,7 +1355,7 @@ class UnknownGranteePrincipalError(Exception):
 
 class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
     def analyze(self, session):
-        return analyze_kms_key_policies(session, self.org_account_ids)
+        return analyze_kms_key_policies(session, self.org_account_ids, self.org_id)
 
     def categorize_result(self, result):
         # Keys with wildcard principals are "violations"
@@ -1452,7 +1491,8 @@ ALLOWED_PRINCIPAL_TYPES = {"AWS", "Service", "Federated"}
 
 def analyze_iam_roles_trust_policies(
     session: boto3.Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[TrustPolicyAnalysis]:
     """
     Analyze all IAM role trust policies for third-party access.
@@ -1547,15 +1587,16 @@ class InvalidFederatedPrincipalError(Exception):
 
 **Check Implementation:**
 ```python
-# checks/rcps/check_deny_sts_third_party_assumerole.py
+# checks/rcps/deny_sts_third_party_assumerole.py
 
 class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
-    def __init__(self, org_account_ids: Set[str], **kwargs):
+    def __init__(self, org_account_ids: Set[str], org_id: str, **kwargs):
         super().__init__(**kwargs)
         self.org_account_ids = org_account_ids
+        self.org_id = org_id
 
     def analyze(self, session):
-        return analyze_iam_roles_trust_policies(session, self.org_account_ids)
+        return analyze_iam_roles_trust_policies(session, self.org_account_ids, self.org_id)
 
     def categorize_result(self, result):
         # Roles with wildcards are "violations"
@@ -1640,7 +1681,8 @@ class AclGrantFindings(NamedTuple):
 
 def analyze_s3_bucket_policies(
     session: boto3.Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[S3BucketPolicyAnalysis]:
     """
     Analyze all S3 bucket policies and ACLs for third-party access.
@@ -1854,6 +1896,557 @@ The RCP uses `aws:PrincipalAccount` condition for allowlisting. This only works 
 - Buckets with Federated/CanonicalUser principals → marked as violations
 - Only buckets with account-based third-party access → used for allowlist generation
 
+### Secrets Manager Third-Party Access
+
+**Purpose:** Analyze Secrets Manager resource policies to identify third-party (non-org) account access and wildcard principals.
+
+**Data Model:**
+```python
+@dataclass
+class SecretsPolicyAnalysis:
+    """Analysis of a Secrets Manager secret's resource policy."""
+    secret_name: str
+    secret_arn: str
+    third_party_account_ids: Set[str]         # Accounts outside the organization
+    has_wildcard_principal: bool              # Principal "*", or an Allow with NotPrincipal
+    has_non_account_principals: bool          # Federated or CanonicalUser - see Fail-Fast below
+    actions_by_account: Dict[str, Set[str]]
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+```
+
+The analysis records no region. The scan is regional, but a secret ARN
+carries its own region, so `ServicePrincipalSourceFinding` stamps
+`region=None` for a secret and the ARN is the only regional identifier a
+consumer needs.
+
+**Analysis Function:**
+```python
+# aws/secretsmanager.py
+
+ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES
+
+def analyze_secrets_manager_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str],
+    org_id: str
+) -> List[SecretsPolicyAnalysis]:
+    """
+    Analyze all Secrets Manager resource policies for third-party access.
+
+    Algorithm:
+    1. Get all enabled regions via get_all_regions()
+    2. For each region:
+       a. List all secrets via the list_secrets paginator
+       b. Read each secret's policy via get_resource_policy()
+       c. Skip a secret carrying no policy
+       d. Parse the policy JSON
+       e. For each Allow statement, record its service principal sources,
+          then extract its AWS principals
+       f. Identify third-party accounts (not in org_account_ids)
+       g. Track which actions each third-party account can perform
+    3. Return the secrets worth reporting
+
+    Multi-Region: Scans all enabled AWS regions
+    Pagination: list_secrets is paginated
+
+    Raises:
+    - UnsupportedPrincipalTypeError: Federated or CanonicalUser principal (fail-fast)
+    - UnknownPrincipalTypeError: a principal type the analyzer cannot classify
+    - MalformedPolicyError: Statement is neither an object nor a list
+    - ClientError: any API failure other than a secret having no policy
+    """
+
+def _analyze_secrets_in_region(
+    session: boto3.Session,
+    region: str,
+    org_account_ids: Set[str],
+    org_id: str
+) -> List[SecretsPolicyAnalysis]:
+    """
+    Analyze the secrets in one region.
+
+    GetResourcePolicy answers ResourceNotFoundException both for a secret
+    that carries no policy and for a secret deleted mid-scan. Neither can
+    grant anyone access, so both are skipped. Every other ClientError is
+    raised: a region that could not be read is not a region with nothing in
+    it, and these results populate an allowlist.
+    """
+
+def _analyze_secret_policy(
+    secret_name: str,
+    secret_arn: str,
+    policy: JsonDict,
+    org_account_ids: Set[str],
+    org_id: str
+) -> Optional[SecretsPolicyAnalysis]:
+    """
+    Analyze a single secret's resource policy.
+
+    Returns None unless the secret carries a third-party account, a wildcard
+    principal, a non-account principal, or an actionable service principal
+    source. The third of those is unreachable here - see Fail-Fast below.
+    The fourth is kept for deny_service_confused_deputy, the only check that
+    reads it; deny_secrets_manager_third_party_access filters it back out.
+    """
+
+def _extract_account_ids_from_principal(
+    principal: Union[str, List[str], Dict[str, Union[str, List[str]]]]
+) -> Set[str]:
+    """
+    Extract AWS account IDs from a resource policy principal field.
+
+    Principal Type Handling:
+    - AWS: Extract account IDs from ARNs or plain IDs
+    - Service: Skip (e.g., lambda.amazonaws.com)
+    - Federated, CanonicalUser: Raise UnsupportedPrincipalTypeError (fail-fast)
+    - Anything else: Raise UnknownPrincipalTypeError
+    """
+
+def _has_wildcard_principal(principal: Any) -> bool:
+    """Check if principal contains "*" (wildcard)."""
+
+def _has_non_account_principals(principal: Any) -> bool:
+    """Check if principal names a Federated or CanonicalUser identity."""
+
+def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
+    """Normalize actions to set format."""
+```
+
+**Custom Exceptions:**
+```python
+class UnknownPrincipalTypeError(Exception):
+    """Raised when an unknown principal type is encountered in a resource policy."""
+
+class UnsupportedPrincipalTypeError(Exception):
+    """
+    Raised when a resource policy contains principal types that can't be handled by RCP.
+
+    Federated and CanonicalUser principals don't have account IDs, so the RCP
+    (which uses aws:PrincipalAccount for allowlisting) would break their access.
+    """
+```
+
+**Check Implementation:**
+```python
+# checks/rcps/deny_secrets_manager_third_party_access.py
+
+class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
+    # This check spells its parameters out rather than taking **kwargs.
+    def __init__(
+        self,
+        check_name: str,
+        account_name: str,
+        account_id: str,
+        results_dir: str,
+        org_account_ids: Set[str],
+        org_id: str,
+        exclude_account_ids: bool = False,
+    ) -> None:
+        super().__init__(...)
+        self.org_account_ids = org_account_ids
+        self.org_id = org_id
+        self.all_third_party_accounts: Set[str] = set()
+        self.actions_by_account: Dict[str, Set[str]] = {}
+        self.secrets_by_account: Dict[str, Set[str]] = {}
+
+    def analyze(self, session):
+        # Drops the secrets kept only for a service principal source
+        all_results = analyze_secrets_manager_policies(
+            session, self.org_account_ids, self.org_id
+        )
+        return [
+            r for r in all_results
+            if r.has_wildcard_principal or r.has_non_account_principals or r.third_party_account_ids
+        ]
+
+    def categorize_result(self, result):
+        # Secrets with wildcard or non-account principals are "violations"
+        # Secrets with named third-party access are "compliant"
+        if result.has_wildcard_principal or result.has_non_account_principals:
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
+
+    def build_summary_fields(self, check_result):
+        # NOTE: a violation counts toward secrets_third_parties_can_access only
+        # if it also names a third-party account. Every sibling check counts
+        # every violation. See Counting below.
+        wildcards_with_third_party = sum(
+            1 for s in check_result.violations if s.get("third_party_account_ids")
+        )
+        return {
+            "total_secrets_analyzed": len(violations) + len(exemptions) + len(compliant),
+            "secrets_third_parties_can_access": wildcards_with_third_party + len(compliant),
+            "secrets_with_wildcards": len(check_result.violations),
+            "violations": len(check_result.violations),
+            "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
+            "third_party_account_count": len(self.all_third_party_accounts),
+            "actions_by_third_party_account": actions_by_account_sorted,
+            "secrets_by_third_party_account": secrets_by_account_sorted,
+        }
+
+    def _build_results_data(self, check_result):
+        # Overrides the base field names
+        return {
+            "summary": check_result.summary,
+            "secrets_third_parties_can_access": check_result.violations + check_result.compliant,
+            "secrets_with_wildcards": check_result.violations,
+        }
+```
+
+**Result JSON Schema:**
+```json
+{
+  "summary": {
+    "account_name": "string",
+    "account_id": "string",
+    "check": "deny_secrets_manager_third_party_access",
+    "total_secrets_analyzed": 0,
+    "secrets_third_parties_can_access": 0,
+    "secrets_with_wildcards": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_third_party_account": {
+      "999999999999": ["secretsmanager:GetSecretValue"]
+    },
+    "secrets_by_third_party_account": {
+      "999999999999": ["arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret-AbCdEf"]
+    },
+    "violations": 0
+  },
+  "secrets_third_parties_can_access": [
+    {
+      "secret_name": "shared-secret",
+      "secret_arn": "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret-AbCdEf",
+      "third_party_account_ids": ["999999999999"],
+      "has_wildcard_principal": false,
+      "has_non_account_principals": false,
+      "actions_by_account": {
+        "999999999999": ["secretsmanager:GetSecretValue"]
+      }
+    }
+  ],
+  "secrets_with_wildcards": []
+}
+```
+
+**Fail-Fast:**
+
+`has_non_account_principals` is set and then immediately raised on, so no
+analysis this module returns can carry it as `True`. The field and the check
+branches that read it are reachable only by constructing the dataclass
+directly, which the tests do. S3 is the analyzer where the flag is live: its
+ALLOWED_PRINCIPAL_TYPES admits CanonicalUser, so it records the principal and
+keeps going, and the flag reaches the check and files the violation. Preserve
+the field rather than deriving its absence - the categorization contract is
+shared across all
+seven, and a Federated principal is a violation wherever it is found.
+
+**Counting:**
+
+`secrets_third_parties_can_access` counts a violation only when that
+violation also names a third-party account. Every sibling check counts every
+violation, on the reasoning that a wildcard principal means every third party
+can reach the resource. Recorded as observed, not endorsed: this
+under-reports relative to its siblings, and the metric is descriptive - it
+gates nothing. `violations` is what withholds the RCP from the account.
+
+**Allowlist Variable Name:**
+
+The generated Terraform names this check's allowlist
+`secrets_manager_third_party_account_ids_allowlist`, with no `_access_`
+segment, while its enable flag `deny_secrets_manager_third_party_access`
+keeps it. See RCP Terraform Generation - deriving the allowlist name from
+the pattern the other checks follow produces a variable `terraform plan`
+rejects.
+
+
+### SQS Third-Party Access
+
+**Purpose:** Analyze SQS queue resource policies to identify third-party (non-org) account access and wildcard principals.
+
+**Data Model:**
+```python
+@dataclass
+class SQSQueuePolicyAnalysis:
+    """Analysis of an SQS queue's resource policy."""
+    queue_url: str
+    queue_arn: str
+    region: str
+    third_party_account_ids: Set[str]         # Accounts outside the organization
+    has_wildcard_principal: bool              # Principal "*", or an Allow with NotPrincipal
+    has_non_account_principals: bool          # Federated - see Fail-Fast below
+    actions_by_account: Dict[str, Set[str]]
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+```
+
+`service_principal_sources` carries one further payload here that it carries
+nowhere else: a single entry recording that the queue's policy could not be
+read at all. See Recording an Unreadable Queue below.
+
+**Analysis Function:**
+```python
+# aws/sqs.py
+
+ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES
+
+# Error codes meaning a queue no longer exists. A queue deleted between
+# list_queues and get_queue_attributes is the only benign reason that read
+# fails: the queue is gone, so it holds no policy and can grant nobody
+# access. Every other failure is a read Headroom could not complete and must
+# not report as an absence of findings.
+QUEUE_GONE_ERROR_CODES = frozenset({
+    "AWS.SimpleQueueService.NonExistentQueue",
+    "QueueDoesNotExist",
+})
+
+def analyze_sqs_queue_policies(
+    session: boto3.Session,
+    org_account_ids: Set[str],
+    org_id: str
+) -> List[SQSQueuePolicyAnalysis]:
+    """
+    Analyze SQS queue policies across all regions.
+
+    Algorithm:
+    1. Get all enabled regions via get_all_regions()
+    2. For each region:
+       a. List all queues via the list_queues paginator
+       b. Get each queue's Policy and QueueArn attributes
+       c. Skip a queue carrying no policy
+       d. Parse the policy JSON
+       e. For each Allow statement, record its service principal sources,
+          then extract its AWS principals
+       f. Identify wildcard principals
+       g. Identify Federated principals (fail-fast)
+       h. Map actions to account IDs
+       i. Subtract org_account_ids to leave the third parties
+    3. Return every queue that carried a policy
+
+    Multi-Region: Scans all enabled AWS regions
+    Pagination: list_queues is paginated
+
+    Raises:
+    - UnsupportedPrincipalTypeError: Federated principal found (fail-fast)
+    - ClientError: if any region's queues cannot be read
+    """
+
+def _analyze_queues_in_region(
+    session: boto3.Session,
+    region: str,
+    org_account_ids: Set[str],
+    org_id: str
+) -> List[SQSQueuePolicyAnalysis]:
+    """
+    Analyze the queues in one region.
+
+    A read that fails aborts the run rather than returning an empty list.
+    Returning nothing would be indistinguishable from a region that genuinely
+    holds no queues with third-party access, and these results populate
+    sqs_third_party_access_account_ids_allowlist, so the generated RCP would
+    omit every partner whose queues live only in the unreadable region and
+    deny them on deploy.
+
+    The two exceptions are a queue deleted mid-scan, which is skipped, and a
+    queue whose policy cannot be parsed, which is recorded via
+    _unreadable_queue rather than discarded.
+
+    This assumes the Headroom role is exempt from region-allowlist SCPs, which
+    makes an AccessDenied here a genuine permissions gap rather than an
+    expected regional block. See documentation/SETUP.md.
+    """
+
+def _analyze_queue_policy(
+    queue_url: str,
+    queue_arn: str,
+    region: str,
+    policy_json: str,
+    org_account_ids: Set[str],
+    org_id: str
+) -> SQSQueuePolicyAnalysis:
+    """
+    Analyze a single queue's resource policy.
+
+    Returns an analysis for every queue, with no retention filter. The five
+    other analyzers drop an analysis that found nothing worth reporting;
+    this one does not, so deny_service_confused_deputy sees every queue's
+    sources and deny_sqs_third_party_access does the filtering in its own
+    analyze(). Adding a has_actionable_service_principal_source gate here
+    would change nothing and would suggest a filter that is not there.
+    """
+
+def _unreadable_queue(
+    queue_url: str,
+    queue_arn: str,
+    region: str,
+    error: Exception,
+) -> SQSQueuePolicyAnalysis:
+    """
+    Record a queue whose policy could not be read.
+
+    Every field deny_sqs_third_party_access reads is left empty, so that
+    check's filter drops the queue exactly as the earlier warn-and-skip did.
+    The one populated field is service_principal_sources, holding a single
+    unreadable_service_principal_source entry, which only
+    deny_service_confused_deputy reads and which it files as a violation.
+    """
+
+def _extract_account_ids_from_principal(principal: PrincipalType) -> Set[str]:
+    """
+    Extract AWS account IDs from a queue policy principal field.
+
+    Principal Type Handling:
+    - AWS: Extract account IDs from ARNs or plain IDs
+    - Service: Skip (e.g., sns.amazonaws.com)
+    - Federated: Raise UnsupportedPrincipalTypeError (fail-fast)
+    - Anything else: Raise UnknownPrincipalTypeError
+    """
+
+def _check_for_wildcard_principal(principal: PrincipalType) -> bool:
+    """Check if principal contains "*" (wildcard)."""
+
+def _check_for_non_account_principals(principal: PrincipalType) -> bool:
+    """Check if principal names a Federated identity."""
+
+def _normalize_actions(actions: ActionsType) -> Set[str]:
+    """Normalize actions to set format."""
+```
+
+**Custom Exceptions:**
+```python
+class UnknownPrincipalTypeError(Exception):
+    """Raised when an unknown principal type is encountered in a queue policy."""
+
+class UnsupportedPrincipalTypeError(Exception):
+    """
+    Raised when a queue policy contains principal types that can't be handled by RCP.
+
+    Federated principals don't have account IDs, so the RCP
+    (which uses aws:PrincipalAccount for allowlisting) would break their access.
+    """
+```
+
+**Check Implementation:**
+```python
+# checks/rcps/deny_sqs_third_party_access.py
+
+class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
+    def __init__(self, org_account_ids: Set[str], org_id: str, **kwargs):
+        super().__init__(**kwargs)
+        self.org_account_ids = org_account_ids
+        self.org_id = org_id
+        self.all_third_party_accounts: Set[str] = set()
+        self.actions_by_account: Dict[str, Set[str]] = {}
+        self.queues_by_account: Dict[str, Set[str]] = {}
+
+    def analyze(self, session):
+        # This is where every queue with nothing to report is dropped,
+        # including the unreadable ones
+        all_results = analyze_sqs_queue_policies(
+            session, self.org_account_ids, self.org_id
+        )
+        return [
+            r for r in all_results
+            if r.has_wildcard_principal or r.has_non_account_principals or r.third_party_account_ids
+        ]
+
+    def categorize_result(self, result):
+        # Queues with wildcard or non-account principals are "violations"
+        # Queues with named third-party access are "compliant"
+        if result.has_wildcard_principal or result.has_non_account_principals:
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
+
+    def build_summary_fields(self, check_result):
+        return {
+            "total_queues_analyzed": len(violations) + len(exemptions) + len(compliant),
+            "queues_third_parties_can_access": len(violations) + len(compliant),
+            "queues_with_wildcards": len(check_result.violations),
+            "violations": len(check_result.violations),
+            "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
+            "third_party_account_count": len(self.all_third_party_accounts),
+            "actions_by_third_party_account": actions_by_account_sorted,
+            "queues_by_third_party_account": queues_by_account_sorted,
+        }
+
+    def _build_results_data(self, check_result):
+        # Overrides the base field names
+        return {
+            "summary": check_result.summary,
+            "queues_third_parties_can_access": check_result.violations + check_result.compliant,
+            "queues_with_wildcards": check_result.violations,
+        }
+```
+
+**Result JSON Schema:**
+```json
+{
+  "summary": {
+    "account_name": "string",
+    "account_id": "string",
+    "check": "deny_sqs_third_party_access",
+    "total_queues_analyzed": 0,
+    "queues_third_parties_can_access": 0,
+    "queues_with_wildcards": 0,
+    "unique_third_party_accounts": [],
+    "third_party_account_count": 0,
+    "actions_by_third_party_account": {
+      "999999999999": ["sqs:ReceiveMessage", "sqs:SendMessage"]
+    },
+    "queues_by_third_party_account": {
+      "999999999999": ["arn:aws:sqs:us-east-1:111111111111:partner-events"]
+    },
+    "violations": 0
+  },
+  "queues_third_parties_can_access": [
+    {
+      "queue_url": "https://sqs.us-east-1.amazonaws.com/111111111111/partner-events",
+      "queue_arn": "arn:aws:sqs:us-east-1:111111111111:partner-events",
+      "region": "us-east-1",
+      "third_party_account_ids": ["999999999999"],
+      "has_wildcard_principal": false,
+      "has_non_account_principals": false,
+      "actions_by_account": {
+        "999999999999": ["sqs:ReceiveMessage", "sqs:SendMessage"]
+      }
+    }
+  ],
+  "queues_with_wildcards": []
+}
+```
+
+**Recording an Unreadable Queue:**
+
+SQS is the only analyzer that records a resource it could not read instead of
+logging and moving on. The reason is the shape this project keeps finding: a
+resource that vanishes on a `logger.warning` suppresses the allowlist entry
+and the blocker together, so the RCP ships looking clean and breaks the
+integration on deployment.
+
+The statement walk reads service principal sources before it reaches the
+principal types that raise, so a queue can fail partway through with a guard
+already read. Recording the queue does not preserve that guard - it dies with
+the raise. What it preserves is the knowledge that the read was incomplete,
+which is what matters: `deny_service_confused_deputy` turns the entry into a
+violation, and the DenyServiceConfusedDeputy statement is withheld from the
+account rather than deployed against an allowlist that could not be computed.
+
+`UnsupportedPrincipalTypeError` is re-raised rather than recorded. A Federated
+principal is not an unreadable policy - it is a policy read successfully whose
+contents make the RCP undeployable, which is a finding the account's operator
+must act on.
+
+**Fail-Fast:**
+
+`has_non_account_principals` is set and then immediately raised on, so no
+analysis this module returns can carry it as `True`. The field and the check
+branches that read it are reachable only by constructing the dataclass
+directly, which the tests do. S3 is the analyzer where the flag is live: its
+ALLOWED_PRINCIPAL_TYPES admits CanonicalUser, so it records the principal and
+keeps going, and the flag reaches the check and files the violation. Preserve
+the field rather than deriving its absence - the categorization contract is
+shared across all seven.
+
+
 ### Service Confused Deputy
 
 **Purpose:** Narrow the AWS service exemption every other RCP statement must
@@ -1880,15 +2473,8 @@ door.
 
 **Data Model:**
 ```python
-# aws/policy_documents.py - recorded by all six analyzers
-
-@dataclass
-class ServicePrincipalSource:
-    """One Allow statement's Service principal and the source guard on it."""
-    service_principal: str            # e.g. "sns.amazonaws.com"
-    source_account_ids: List[str]     # Out-of-org accounts only, sorted
-    has_source_condition: bool        # Any source key guards the statement
-    has_wildcard_source: bool         # A source no allowlist can enumerate
+# aws/policy_documents.py defines ServicePrincipalSource, which all six
+# analyzers record; see Shared Policy Grammar above for its fields.
 
 # checks/rcps/deny_service_confused_deputy.py - one source, plus its resource
 
@@ -3602,7 +4188,8 @@ def get_iam_users_analysis(
 
 def analyze_iam_roles_trust_policies(
     session: boto3.Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[TrustPolicyAnalysis]:
     """
     Analyze IAM role trust policies for third-party access.
@@ -3660,7 +4247,8 @@ def run_checks_for_type(
     headroom_session: boto3.Session,
     account_info: AccountInfo,
     config: HeadroomConfig,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> None:
     """
     Execute all checks of a given type for single account.
@@ -3671,12 +4259,13 @@ def run_checks_for_type(
        a. Get check_name from class.CHECK_NAME
        b. Check if results already exist via results_exist()
        c. If exists: skip
-       d. Instantiate check with common parameters + org_account_ids
+       d. Instantiate check with common parameters + org_account_ids + org_id
        e. Call check.execute(headroom_session)
 
     Check instantiation uses **kwargs pattern:
-    - SCP checks ignore org_account_ids
-    - RCP checks use org_account_ids
+    - SCP checks ignore org_account_ids and org_id
+    - RCP checks use org_account_ids; all seven take org_id, which only the
+      source guard readers consult
     """
 
 def run_checks(
@@ -4256,7 +4845,7 @@ iam_allowed_users = [
 ]
 ```
 
-#### STS Third-Party AssumeRole Test (`test_deny_deny_sts_third_party_assumerole.tf`)
+#### STS Third-Party AssumeRole Test (`test_deny_sts_third_party_assumerole.tf`)
 
 Creates IAM roles with diverse trust policy patterns to test RCP third-party detection.
 
