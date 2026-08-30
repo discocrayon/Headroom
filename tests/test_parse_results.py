@@ -71,7 +71,7 @@ class TestOrganizationStructureAnalysis:
 
         # Mock root response
         mock_org_client.list_roots.return_value = {
-            "Roots": [{"Id": "r-1234"}]
+            "Roots": [{"Id": "r-1111"}]
         }
 
         # Mock OU responses
@@ -94,7 +94,7 @@ class TestOrganizationStructureAnalysis:
 
         result = analyze_organization_structure(mock_session)
 
-        assert result.root_id == "r-1234"
+        assert result.root_id == "r-1111"
         assert "ou-1234" in result.organizational_units
         assert "111111111111" in result.accounts
         assert "222222222222" in result.accounts
@@ -121,7 +121,7 @@ class TestOrganizationStructureAnalysis:
         mock_org_client = Mock()
         mock_session.client.return_value = mock_org_client
 
-        mock_org_client.list_roots.return_value = {"Roots": [{"Id": "r-1234"}]}
+        mock_org_client.list_roots.return_value = {"Roots": [{"Id": "r-1111"}]}
         mock_org_client.list_organizational_units_for_parent.side_effect = [
             {"OrganizationalUnits": [{"Id": "ou-1234", "Name": "Production"}]},
             {"OrganizationalUnits": []},
@@ -174,12 +174,12 @@ class TestOrganizationStructureAnalysis:
 
         # Mock organization hierarchy
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "management-account", "r-1234", ["Root"]),
+                "111111111111": AccountOrgPlacement("111111111111", "management-account", "r-1111", ["Root"]),
                 "222222222222": AccountOrgPlacement("222222222222", "prod-account", "ou-1234", ["Production"])
             }
         )
@@ -187,7 +187,7 @@ class TestOrganizationStructureAnalysis:
         with patch('headroom.aws.organization.analyze_organization_structure', return_value=mock_hierarchy):
             result = create_account_ou_mapping(mock_session)
 
-        assert result["111111111111"] == "r-1234"
+        assert result["111111111111"] == "r-1111"
         assert result["222222222222"] == "ou-1234"
 
     def test_analyze_organization_structure_client_error_handling(self) -> None:
@@ -198,7 +198,7 @@ class TestOrganizationStructureAnalysis:
 
         # Mock root response
         mock_org_client.list_roots.return_value = {
-            "Roots": [{"Id": "r-1234"}]
+            "Roots": [{"Id": "r-1111"}]
         }
 
         # Mock OU responses with errors
@@ -234,7 +234,7 @@ class TestOrganizationStructureAnalysis:
 
         # Mock root response
         mock_org_client.list_roots.return_value = {
-            "Roots": [{"Id": "r-1234"}]
+            "Roots": [{"Id": "r-1111"}]
         }
 
         # Mock OU responses (empty)
@@ -263,7 +263,7 @@ class TestOrganizationStructureAnalysis:
 
         # Mock root response
         mock_org_client.list_roots.return_value = {
-            "Roots": [{"Id": "r-1234"}]
+            "Roots": [{"Id": "r-1111"}]
         }
 
         # Mock OU listing failure
@@ -619,12 +619,12 @@ class TestSCPPlacementDetermination:
         ]
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
                 "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"])
             }
         )
@@ -646,12 +646,12 @@ class TestSCPPlacementDetermination:
         ]
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
                 "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"])
             }
         )
@@ -675,12 +675,12 @@ class TestSCPPlacementDetermination:
         ]
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222", "333333333333"])
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
                 "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"]),
                 "333333333333": AccountOrgPlacement("333333333333", "account-3", "ou-1234", ["Production"])
             }
@@ -707,11 +707,11 @@ class TestSCPPlacementDetermination:
         ]
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
-                "222222222222": AccountOrgPlacement("222222222222", "account-2", "r-1234", ["Root"])
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
+                "222222222222": AccountOrgPlacement("222222222222", "account-2", "r-1111", ["Root"])
             }
         )
 
@@ -758,11 +758,11 @@ class TestSCPPlacementDetermination:
         ]
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
-                "222222222222": AccountOrgPlacement("222222222222", "account-2", "r-1234", ["Root"])
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
+                "222222222222": AccountOrgPlacement("222222222222", "account-2", "r-1111", ["Root"])
             }
         )
 
@@ -788,7 +788,7 @@ class TestSCPPlacementDetermination:
         ]
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["111111111111"])
             },
@@ -810,7 +810,7 @@ class TestSCPPlacementDetermination:
         ]
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["111111111111", "222222222222"]),
                 "ou-5678": OrganizationalUnit("ou-5678", "Development", None, [], ["333333333333"])
@@ -838,7 +838,7 @@ class TestSCPPlacementDetermination:
         ]
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["111111111111"])
             },
@@ -869,10 +869,10 @@ class TestParseResultsIntegration:
 
         # Mock organization hierarchy (now passed as parameter)
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "test-account", "r-1234", ["Root"])
+                "111111111111": AccountOrgPlacement("111111111111", "test-account", "r-1111", ["Root"])
             }
         )
 
@@ -909,7 +909,7 @@ class TestParseResultsIntegration:
 
         # Organization hierarchy is now passed by caller
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={}
         )
@@ -956,7 +956,7 @@ class TestParseResultsIntegration:
         }
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={}
         )
@@ -980,7 +980,7 @@ class TestParseResultsIntegration:
 
         # Organization hierarchy is now passed by caller (role assumption happens before this)
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={}
         )
@@ -1007,7 +1007,7 @@ class TestParseResultsIntegration:
 
         # Organization hierarchy is now passed by caller (analysis happens before this)
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={},
             accounts={}
         )
@@ -1042,12 +1042,12 @@ class TestParseResultsIntegration:
         }
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "test-account", "r-1234", ["Root"])
+                "111111111111": AccountOrgPlacement("111111111111", "test-account", "r-1111", ["Root"])
             }
         )
 
@@ -1089,12 +1089,12 @@ class TestParseResultsIntegration:
         }
 
         mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "test-account", "r-1234", ["Root"]),
+                "111111111111": AccountOrgPlacement("111111111111", "test-account", "r-1111", ["Root"]),
                 "222222222222": AccountOrgPlacement("222222222222", "prod-account", "ou-1234", ["Production"])
             }
         )
@@ -1123,7 +1123,7 @@ class TestGenerateSCPTerraform:
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
             hierarchy = OrganizationHierarchy(
-                root_id="r-1234",
+                root_id="r-1111",
                 organizational_units={},
                 accounts={
                     "222222222222": AccountOrgPlacement("222222222222", "fort-knox", "ou-1234", ["Production"]),
@@ -1174,7 +1174,7 @@ class TestGenerateSCPTerraform:
         """
         with tempfile.TemporaryDirectory() as temp_dir:
             hierarchy = OrganizationHierarchy(
-                root_id="r-1234",
+                root_id="r-1111",
                 organizational_units={},
                 accounts={
                     "222222222222": AccountOrgPlacement("222222222222", "fort-knox", "ou-1234", ["Production"]),
@@ -1212,7 +1212,7 @@ class TestGenerateSCPTerraform:
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
             hierarchy = OrganizationHierarchy(
-                root_id="r-1234",
+                root_id="r-1111",
                 organizational_units={
                     "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
                 },
@@ -1254,12 +1254,12 @@ class TestGenerateSCPTerraform:
         """Test generating Terraform files for root-level SCP recommendations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
-            # Note: r-1234 is the org root ID, not an account. Accounts are placed under it.
+            # Note: r-1111 is the org root ID, not an account. Accounts are placed under it.
             hierarchy = OrganizationHierarchy(
-                root_id="r-1234",
+                root_id="r-1111",
                 organizational_units={},
                 accounts={
-                    "222222222222": AccountOrgPlacement("222222222222", "fort-knox", "r-1234", ["Root"])
+                    "222222222222": AccountOrgPlacement("222222222222", "fort-knox", "r-1111", ["Root"])
                 }
             )
 
@@ -1296,15 +1296,15 @@ class TestGenerateSCPTerraform:
         """Test generating Terraform files for mixed account, OU, and root level recommendations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
-            # Note: r-1234 is the org root ID. Accounts can be placed under it or under OUs.
+            # Note: r-1111 is the org root ID. Accounts can be placed under it or under OUs.
             hierarchy = OrganizationHierarchy(
-                root_id="r-1234",
+                root_id="r-1111",
                 organizational_units={
                     "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
                 },
                 accounts={
                     "222222222222": AccountOrgPlacement("222222222222", "fort-knox", "ou-1234", ["Production"]),
-                    "111111111111": AccountOrgPlacement("111111111111", "prod-account", "r-1234", ["Root"])
+                    "111111111111": AccountOrgPlacement("111111111111", "prod-account", "r-1111", ["Root"])
                 }
             )
 
@@ -1881,12 +1881,12 @@ class TestAmiOwnerAllowlistWiring:
         ]
 
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
                 "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"])
             }
         )
@@ -1906,14 +1906,14 @@ class TestAmiOwnerAllowlistWiring:
         ]
 
         hierarchy = OrganizationHierarchy(
-            root_id="r-1234",
+            root_id="r-1111",
             organizational_units={
                 "ou-1234": OrganizationalUnit(
                     "ou-1234", "Production", None, [], ["222222222222", "333333333333"]
                 )
             },
             accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
                 "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"]),
                 "333333333333": AccountOrgPlacement("333333333333", "account-3", "ou-1234", ["Production"])
             }

@@ -832,8 +832,8 @@ Encryption context constraints are recorded as a boolean rather than parsed, so 
 **Example Output**:
 ```json
 {
-  "key_id": "1234abcd-12ab-34cd-56ef-1234567890ab",
-  "key_arn": "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+  "key_id": "11111111-1111-1111-1111-111111111111",
+  "key_arn": "arn:aws:kms:us-east-1:111111111111:key/11111111-1111-1111-1111-111111111111",
   "region": "us-east-1",
   "third_party_account_ids": ["999999999999"],
   "actions_by_account": {
