@@ -10,11 +10,22 @@ from mypy_boto3_sts.type_defs import AssumeRoleResponseTypeDef, CredentialsTypeD
 
 __all__ = ["assume_role", "new_session"]
 
-# Retry attempts every client inherits from the session. botocore's `standard`
-# mode defaults to three; five gives throttling headroom now that many accounts
-# are analyzed at once. `adaptive` is deliberately not used: it adds client-side
-# rate limiting that throttles unpredictably, and workers are spread across
-# separate accounts, which are separate rate-limit buckets.
+# Retry attempts every client inherits from the session. Five is parity, not
+# headroom: botocore's default retry_mode is `legacy`, whose `_retry.json`
+# `__default__` already allows five attempts, while `standard` allows three --
+# so setting the mode and nothing else would have lowered the ceiling.
+#
+# What `standard` does change is which failures are retried. Legacy keyed
+# several of its rules on HTTP status alone, 429 and 509 among them; standard
+# retries 500, 502, 503 and 504 on status and otherwise matches the parsed
+# error code, which is how it picks up the throttling family. A throttling
+# response that carries no error code botocore recognizes is therefore retried
+# by legacy and not by standard -- the one direction in which this is a
+# narrowing.
+#
+# `adaptive` is deliberately not used: it adds client-side rate limiting that
+# throttles unpredictably, and workers are spread across separate accounts,
+# which are separate rate-limit buckets.
 RETRY_MAX_ATTEMPTS = 5
 
 # Guards client construction on the shared security-analysis session. Every
