@@ -212,7 +212,7 @@ is AP-009, not a proxy.
   "Resource": "*",
   "Condition": {
     "StringNotEqualsIfExists": {
-      "aws:PrincipalOrgID": "o-exampleorgid",
+      "aws:PrincipalOrgID": "o-11111111111",
       "aws:PrincipalAccount": [
         "111111111111",
         "333333333333"
@@ -616,7 +616,7 @@ The six RCP statements above all exempt AWS service principals, because a servic
   "Resource": "*",
   "Condition": {
     "StringNotEqualsIfExists": {
-      "aws:SourceOrgID": "o-exampleorgid",
+      "aws:SourceOrgID": "o-11111111111",
       "aws:SourceAccount": [
         "999999999999"
       ]

@@ -381,7 +381,7 @@ def get_organization_id(config: HeadroomConfig, session: Session) -> str:
         session: boto3 Session with access to security analysis account
 
     Returns:
-        This organization's ID, such as `o-example12345`
+        This organization's ID, such as `o-11111111111`
 
     Raises:
         ValueError: If management_account_id is not set in config
