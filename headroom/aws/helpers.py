@@ -3,15 +3,16 @@ Shared AWS helper utilities for region discovery and pagination.
 """
 
 from collections.abc import Iterator
+from functools import wraps
 from threading import Lock
-from typing import Any
+from typing import Any, Callable, List, Set, Tuple, TypeVar
 from weakref import WeakKeyDictionary
 
 from boto3.session import Session
 from botocore.client import BaseClient
 from mypy_boto3_ec2.client import EC2Client
 
-__all__ = ["get_all_regions", "paginate"]
+__all__ = ["get_all_regions", "memoize_per_session", "paginate"]
 
 _REGION_MEMO: WeakKeyDictionary[Session, list[str]] = WeakKeyDictionary()
 _REGION_MEMO_LOCK = Lock()
@@ -35,9 +36,12 @@ def get_all_regions(session: Session) -> list[str]:
     Note that an enabled region does not guarantee the service is available
     there; handling a missing regional endpoint is the caller's concern.
 
-    The result is memoized per session. Eleven checks each ask for the region
-    list and the answer cannot change within a run, so the other ten calls are
-    pure latency.
+    The result is memoized per session. Eleven calls reach this function for
+    each account -- one per region-sweeping analyzer, four of them in
+    `aws/ec2.py` -- and the answer cannot change within a run, so the other
+    ten are pure latency. `deny_service_confused_deputy` adds no twelfth:
+    its copies of the four shared analyzers are absorbed a layer up, by
+    `memoize_per_session`, and never reach here at all.
 
     The memo is keyed on the session object itself, never on an account ID or
     name. That is what keeps one account's region list out of another account's
@@ -69,6 +73,85 @@ def get_all_regions(session: Session) -> list[str]:
         _REGION_MEMO[session] = regions
 
     return regions
+
+
+_Result = TypeVar("_Result")
+
+
+def memoize_per_session(
+    analyzer: Callable[[Session, Set[str], str], List[_Result]]
+) -> Callable[[Session, Set[str], str], List[_Result]]:
+    """
+    Serve a resource-policy analysis once per account instead of twice.
+
+    Six analyzers have two callers each: their own third-party-access check,
+    and `deny_service_confused_deputy`, which re-reads the same policies for
+    the source guards on them. Four of the six sweep every enabled region, so
+    an account pays 4 x 17 region probes for policies it has already read --
+    the same waste the four identical EC2 sweeps were, arriving by a
+    different route.
+
+    The memo is keyed on the session object itself, never on an account ID or
+    name. That is what keeps one account's resource policies out of another
+    account's allowlist. Entries live in a `WeakKeyDictionary`, so an
+    account's entry is released as soon as its worker drops the session; these
+    entries hold every bucket, key, and role policy in the account, so
+    retaining them past the worker would move the pool's memory ceiling away
+    from where `MAX_ACCOUNT_WORKERS` says it is.
+
+    A session is sufficient as the whole key only because `org_account_ids`
+    and `org_id` are fixed for a run. Rather than trust that silently, a
+    second call for the same session carrying different values raises: being
+    served the first call's answer to a different question would be both
+    plausible and wrong.
+
+    The lock is released across the analyzer call rather than held. Holding it
+    would serialize every worker behind one account's policy sweep. Two
+    threads cannot race to fill the same entry because each session belongs to
+    exactly one worker; the lock exists only because the `WeakKeyDictionary`
+    is shared between workers.
+
+    Callers must not mutate what this returns. It is the cached list itself,
+    not a copy, so sorting or filtering it in place changes what the other
+    check for this account reads.
+
+    Args:
+        analyzer: A `(session, org_account_ids, org_id)` analysis function
+
+    Returns:
+        The same function, answering repeat calls for a session from memory
+    """
+    memo: WeakKeyDictionary[Session, Tuple[frozenset[str], str, List[_Result]]] = WeakKeyDictionary()
+    lock = Lock()
+
+    @wraps(analyzer)
+    def memoized(session: Session, org_account_ids: Set[str], org_id: str) -> List[_Result]:
+        with lock:
+            entry = memo.get(session)
+
+        if entry is not None:
+            cached_account_ids, cached_org_id, cached_results = entry
+            if cached_account_ids != org_account_ids or cached_org_id != org_id:
+                raise RuntimeError(
+                    f"{analyzer.__name__} was called twice for one session with different "
+                    "organization arguments. The memo is keyed on the session alone, so the "
+                    "second call would have been served the first call's results."
+                )
+            return cached_results
+
+        results = analyzer(session, org_account_ids, org_id)
+
+        with lock:
+            memo[session] = (frozenset(org_account_ids), org_id, results)
+
+        return results
+
+    # Exposed so tests can assert the entry is released with its session, and
+    # so `test_every_doubly_called_analyzer_is_memoized` can tell a decorated
+    # analyzer from one that quietly lost the decorator.
+    setattr(memoized, "session_memo", memo)
+
+    return memoized
 
 
 def paginate(

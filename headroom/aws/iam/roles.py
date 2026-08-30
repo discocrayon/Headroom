@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
 from ...constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
+from ..helpers import memoize_per_session
 from ..policy_documents import (
     ServicePrincipalSource,
     has_actionable_service_principal_source,
@@ -204,6 +205,7 @@ def _has_wildcard_principal(principal: Any) -> bool:
     return False
 
 
+@memoize_per_session
 def analyze_iam_roles_trust_policies(
     session: Session,
     org_account_ids: Set[str],

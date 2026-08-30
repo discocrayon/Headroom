@@ -771,6 +771,67 @@ class TestAnalyzeECRRepositoryPolicies:
         assert "Federated" in str(exc_info.value)
         assert "would break if the RCP is deployed" in str(exc_info.value)
 
+    def test_a_second_caller_is_served_from_the_memo(self) -> None:
+        """
+        `deny_service_confused_deputy` re-reads what the ECR check just read.
+
+        Both checks run against one account's session, back to back, and this
+        analyzer sweeps every enabled region. Reading the repositories twice
+        costs the account a second full sweep for policies that cannot have
+        changed between two checks of the same run.
+
+        The counts come from the client, not from the memo: a decorator that
+        stopped being applied would leave every other ECR test green and show
+        up only here.
+        """
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}, {"RegionName": "eu-west-1"}]
+        }
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {
+                "repositories": [
+                    {
+                        "repositoryName": "test-repo",
+                        "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/test-repo",
+                    }
+                ]
+            }
+        ]
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+        mock_ecr_client.get_repository_policy.return_value = {
+            "policyText": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                        "Action": ["ecr:BatchGetImage"],
+                    }
+                ],
+            })
+        }
+
+        org_account_ids = {"111111111111"}
+
+        first = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
+        second = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
+
+        assert first == second
+        assert mock_ec2_client.describe_regions.call_count == 1
+        assert mock_ecr_client.get_repository_policy.call_count == 2
+
 
 class TestPolicyGrammar:
     """Policy elements the repository analyzer must read the way IAM does."""
