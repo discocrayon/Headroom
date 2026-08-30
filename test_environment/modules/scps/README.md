@@ -32,7 +32,7 @@ module "scps" {
 
 - **`target_id`** (string): Organization account, root, or unit to attach the SCP to
   - Must be a 12-digit AWS account ID, an OU ID starting with `ou-`, or a root ID starting with `r-`
-  - Examples: `"444444444444"`, `"ou-abcd-12345678"`, `"r-abcd"`
+  - Examples: `"444444444444"`, `"ou-1111-11111111"`, `"r-1111"`
 
 ### Security Policy Variables
 

@@ -374,7 +374,7 @@ class TestServicePrincipalSources:
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringEquals": {
-                "aws:SourceOrgPaths": f"{ORG_ID}/r-ab12/ou-ab12-11111111/"
+                "aws:SourceOrgPaths": f"{ORG_ID}/r-1111/ou-1111-11111111/"
             }},
         )
 
