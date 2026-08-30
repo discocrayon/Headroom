@@ -1054,15 +1054,43 @@ class TestAccountNamesAreFilenameSafe:
         )
 
 
+# The AAAABBBBCCCC pattern in HOW_TO_ADD_A_CHECK.md has 1000 values. `_accounts`
+# below starts at the tertiary one, 333333333333, which both reads clearest for
+# the first account and puts every ID it builds out of reach of the
+# 111111111111 and 222222222222 that `_config` beside it already uses.
+FIRST_ACCOUNT_TRIPLE = 333
+MAX_GENERATED_ACCOUNTS = 1000 - FIRST_ACCOUNT_TRIPLE
+
+
 class TestRunChecksPool:
     """Test the worker pool and its cooperative abort."""
 
     @staticmethod
     def _accounts(count: int) -> List[AccountInfo]:
-        """Build `count` accounts with distinct names and IDs."""
+        """
+        Build `count` accounts with distinct names and twelve-digit IDs.
+
+        Args:
+            count: How many accounts to build
+
+        Returns:
+            Accounts named `account-0` upward, each with a distinct account ID
+
+        Raises:
+            ValueError: If `count` exceeds the values the pattern has left
+        """
+        if count > MAX_GENERATED_ACCOUNTS:
+            raise ValueError(
+                f"only {MAX_GENERATED_ACCOUNTS} accounts can be built: the "
+                f"AAAABBBBCCCC pattern has 1000 values and this helper starts "
+                f"at {FIRST_ACCOUNT_TRIPLE}, so {count} of them cannot all "
+                "have a twelve-digit ID"
+            )
         return [
             AccountInfo(
-                account_id=str(index + 1) * 12,
+                account_id="".join(
+                    digit * 4 for digit in f"{FIRST_ACCOUNT_TRIPLE + index:03d}"
+                ),
                 environment="prod",
                 name=f"account-{index}",
                 owner="team",
@@ -1082,6 +1110,37 @@ class TestRunChecksPool:
             ),
             max_account_workers=max_account_workers,
         )
+
+    def test_the_account_helper_builds_twelve_digit_account_ids(self) -> None:
+        """
+        Every ID `_accounts` builds matches the repository's account pattern.
+
+        `str(index + 1) * 12` held that shape only through index 8, and four
+        of the tests below already ask for 200 accounts: 191 of those IDs came
+        out 24 or 36 digits long. Nothing downstream validates an account ID,
+        so the suite stayed green on them.
+
+        The pattern here is copied from the `fake_account_ids` block in
+        `HOW_TO_ADD_A_CHECK.md` rather than derived from the construction it
+        checks. It is also what bounds the helper: 1000 values exist, the
+        offset spends 300 of them buying the last two assertions, and asking
+        for more than the rest has to fail rather than silently widen an ID.
+        """
+        account_ids = [
+            account.account_id for account in self._accounts(MAX_GENERATED_ACCOUNTS)
+        ]
+        config = self._config(1)
+
+        assert all(
+            re.fullmatch(r"(\d)\1{3}(\d)\2{3}(\d)\3{3}", account_id)
+            for account_id in account_ids
+        )
+        assert len(set(account_ids)) == MAX_GENERATED_ACCOUNTS
+        assert config.management_account_id not in account_ids
+        assert config.security_analysis_account_id not in account_ids
+
+        with pytest.raises(ValueError, match=str(MAX_GENERATED_ACCOUNTS)):
+            self._accounts(MAX_GENERATED_ACCOUNTS + 1)
 
     def test_every_pending_account_is_analyzed(self) -> None:
         """All accounts without results reach the worker."""
@@ -1214,7 +1273,7 @@ class TestRunChecksPool:
             )
 
         mock_session.assert_not_called()
-        assert "Checks aborted for account: account-0_111111111111" in caplog.text
+        assert "Checks aborted for account: account-0_333333333333" in caplog.text
 
     def test_no_further_checks_run_once_abort_is_set(self) -> None:
         """
@@ -1317,8 +1376,8 @@ class TestRunChecksPool:
 
         reported = [call.args[0] for call in mock_logger.error.call_args_list]
         assert len(reported) == 2
-        assert any("account-0_111111111111" in line for line in reported)
-        assert any("account-1_222222222222" in line for line in reported)
+        assert any("account-0_333333333333" in line for line in reported)
+        assert any("account-1_333333334444" in line for line in reported)
 
     def test_abort_stops_run_checks_for_type_between_checks(self) -> None:
         """
@@ -1460,7 +1519,7 @@ class TestRunChecksPool:
         thread.start()
         thread.join(timeout=5)
 
-        assert stamped == ["account-0_111111111111"]
+        assert stamped == ["account-0_333333333333"]
 
     @staticmethod
     def _stamp_on_this_thread() -> str:
@@ -1925,8 +1984,8 @@ class TestRunChecksPool:
         assert abort.is_set()
 
         logged = [call.args[0] for call in mock_logger.info.call_args_list]
-        assert "Checks completed for account: account-0_111111111111" in logged
-        assert "Checks aborted for account: account-0_111111111111" not in logged
+        assert "Checks completed for account: account-0_333333333333" in logged
+        assert "Checks aborted for account: account-0_333333333333" not in logged
 
     def test_an_aborted_account_does_not_log_that_its_checks_completed(self) -> None:
         """
@@ -1962,8 +2021,8 @@ class TestRunChecksPool:
             )
 
         logged = [call.args[0] for call in mock_logger.info.call_args_list]
-        assert "Checks aborted for account: account-0_111111111111" in logged
-        assert "Checks completed for account: account-0_111111111111" not in logged
+        assert "Checks aborted for account: account-0_333333333333" in logged
+        assert "Checks completed for account: account-0_333333333333" not in logged
 
     def test_the_real_registry_runs_every_check_per_account_across_workers(self) -> None:
         """
