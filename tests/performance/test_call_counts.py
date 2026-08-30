@@ -3,8 +3,21 @@ Call-count contracts for the per-account memos.
 
 These pin the savings from caching the region list, the EC2 instance list, and
 the six resource-policy analyses shared with `deny_service_confused_deputy`.
-They assert counts rather than wall clock, so they cannot flake, and they fail
-the day a new check reintroduces a redundant sweep.
+They assert counts rather than wall clock, so they cannot flake.
+
+They are memo unit tests, not registry-driven regression guards, and the
+distinction matters because it is easy to read them as the latter. Each
+assertion hand-enumerates what it drives -- `range(11)` here, a literal
+`SHARED_ANALYZERS` list below -- so a check registered tomorrow is outside
+every one of them. Measured: registering a twelfth check that asks for the
+region list twice and sweeps every region twice leaves this file green, and so
+does adding a seventh doubly-called, region-sweeping, unmemoized analyzer to
+`deny_service_confused_deputy`. Driving them from `get_all_check_classes`
+would close that; nothing does today.
+
+What they do catch is regression in the other direction: disabling either memo
+fails the matching test, and an analyzer that loses its decorator fails the
+third.
 """
 
 from typing import Any, Callable, Dict, List, Set
@@ -115,8 +128,15 @@ class TestCallCounts:
 
         Clients are the unit because they are what a sweep builds: one per
         region per sweeping analyzer, plus one global client each for S3 and
-        IAM. Counting them catches a seventh doubly-called analyzer that
-        arrives without a memo, which is the failure this pins.
+        IAM.
+
+        The expected value is the first pass's own count, so this pins the
+        delta between the two passes and not the absolute cost: two redundant
+        clients built inside one sweep leave it green, because both passes pay
+        them. It is not circular -- removing a decorator from any of the six
+        fails it -- but it cannot see a sweep that got more expensive, and the
+        list it iterates is hand-maintained, so a seventh doubly-called
+        analyzer has to be added here to be covered.
         """
         session = _session([{}])
 
