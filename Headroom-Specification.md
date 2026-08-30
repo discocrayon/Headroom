@@ -4275,12 +4275,14 @@ def run_checks_for_type(
     Algorithm:
     1. Get all check classes for type via registry.get_all_check_classes(check_type)
     2. For each check class:
-       a. Return False immediately if the abort Event is set, so a worker
-          whose run has been aborted stops at a check boundary rather than at
-          the end
-       b. Get check_name from class.CHECK_NAME
-       c. Check if results already exist via results_exist()
-       d. If exists: skip
+       a. Get check_name from class.CHECK_NAME
+       b. Check if results already exist via results_exist()
+       c. If exists: skip, before the abort is consulted. A check on disk is
+          work this account does not owe, so an abort that lands with only
+          such checks left has stopped nothing, and reporting otherwise
+          labels a complete account aborted
+       d. Return False if the abort Event is set, so a worker whose run has
+          been aborted stops at a check boundary rather than at the end
        e. Instantiate check with common parameters + org_account_ids + org_id
        f. Call check.execute(headroom_session)
     3. Return True, having reached the end without a checkpoint stopping it
