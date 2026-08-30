@@ -2,9 +2,10 @@ import logging
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextlib import ExitStack
 
 import pytest
-from typing import Any, Dict, Iterable, Iterator, List, Tuple, cast, get_args
+from typing import Any, Dict, Iterable, Iterator, List, Set, Tuple, cast, get_args
 from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
@@ -25,6 +26,8 @@ from headroom.analysis import (
     INACTIVE_ACCOUNT_STATES,
     AccountInfo
 )
+from headroom.checks.base import BaseCheck
+from headroom.checks.registry import get_all_check_classes, get_check_names
 from headroom.config import HeadroomConfig, AccountTagLayout
 from headroom.log_context import NO_ACCOUNT, AccountContextFilter
 from tests.constants import ORG_ID
@@ -1959,3 +1962,94 @@ class TestRunChecksPool:
         logged = [call.args[0] for call in mock_logger.info.call_args_list]
         assert "Checks aborted for account: account-0_111111111111" in logged
         assert "Checks completed for account: account-0_111111111111" not in logged
+
+    def test_the_real_registry_runs_every_check_per_account_across_workers(self) -> None:
+        """
+        The registry-driven pipeline, run by more than one worker.
+
+        `TestRunChecks.test_run_checks_success` in
+        tests/test_analysis_extended.py is the only other test that reaches
+        the real check classes, and it is pinned to one worker because its
+        assertions count calls on shared MagicMocks. Every multi-worker test
+        in this class replaces `_run_checks_for_account` or
+        `get_headroom_session` with a stand-in, so the loop in
+        `run_checks_for_type` -- registry lookup, per-account construction,
+        `execute` -- has never run concurrently under test at all.
+
+        Measurement is a list under a lock rather than mock call counts,
+        which is what lets the worker count rise here: `MagicMock.__call__`
+        does a read-modify-write on `call_count` and loses increments under
+        contention.
+
+        The barrier holds every account inside its first check at once, so
+        the isolation asserted below is a fact about four accounts genuinely
+        in flight, not about a pool that happened to get through them one at
+        a time. An account that reaches no check never arrives, and the
+        barrier times out rather than hanging.
+
+        What this pins is the premise the three per-session memos rest on:
+        every check of one account sees one session on one thread, and no
+        session reaches two accounts. The registry supplies the scope rather
+        than the expected value -- the oracle for "each account ran the same
+        checks, each exactly once" is the other accounts, so a registry that
+        reports the wrong list cannot make it pass. Patching over
+        `get_all_check_classes()` is what keeps a check registered tomorrow
+        covered without editing this test.
+        """
+        accounts = self._accounts(4)
+        barrier = threading.Barrier(len(accounts), timeout=5)
+        lock = threading.Lock()
+        executions: List[Tuple[str, str, int, int]] = []
+        accounts_past_the_barrier: Set[str] = set()
+        sessions_built: List[MagicMock] = []
+
+        def build_a_session(
+            config: HeadroomConfig, security_session: object, account_id: str
+        ) -> MagicMock:
+            session = MagicMock()
+            with lock:
+                sessions_built.append(session)
+            return session
+
+        def record(check: BaseCheck, session: object) -> None:
+            with lock:
+                is_first_for_this_account = check.account_name not in accounts_past_the_barrier
+                accounts_past_the_barrier.add(check.account_name)
+            if is_first_for_this_account:
+                barrier.wait()
+            with lock:
+                executions.append(
+                    (check.account_name, check.check_name, id(session), threading.get_ident())
+                )
+
+        with ExitStack() as patches:
+            patches.enter_context(patch("headroom.analysis.results_exist", return_value=False))
+            patches.enter_context(
+                patch("headroom.analysis.all_check_results_exist", return_value=False)
+            )
+            patches.enter_context(
+                patch("headroom.analysis.get_headroom_session", side_effect=build_a_session)
+            )
+            for check_class in get_all_check_classes():
+                patches.enter_context(
+                    patch.object(check_class, "execute", autospec=True, side_effect=record)
+                )
+            run_checks(MagicMock(), accounts, self._config(len(accounts)), set(), ORG_ID)
+
+        rows_by_account: Dict[str, List[Tuple[str, str, int, int]]] = {}
+        for row in executions:
+            rows_by_account.setdefault(row[0], []).append(row)
+
+        assert sorted(rows_by_account) == sorted(account.name for account in accounts)
+
+        checks_per_account = [sorted(row[1] for row in rows) for rows in rows_by_account.values()]
+        assert checks_per_account[0] == sorted(get_check_names())
+        assert all(checks == checks_per_account[0] for checks in checks_per_account)
+        assert len(set(checks_per_account[0])) == len(checks_per_account[0])
+
+        for rows in rows_by_account.values():
+            assert len({row[2] for row in rows}) == 1
+            assert len({row[3] for row in rows}) == 1
+
+        assert len({rows[0][2] for rows in rows_by_account.values()}) == len(accounts)
+        assert len({rows[0][3] for rows in rows_by_account.values()}) == len(accounts)
