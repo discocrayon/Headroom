@@ -26,4 +26,7 @@ module "rcps_acme_acquisition_ou" {
   sts_third_party_assumerole_account_ids_allowlist = [
     "749430749651",
   ]
+
+  # Service confused deputy
+  deny_service_confused_deputy = false
 }
