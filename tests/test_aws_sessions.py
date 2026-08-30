@@ -15,12 +15,10 @@ from unittest.mock import ANY, MagicMock, patch
 
 import headroom
 from headroom.aws.sessions import (
-    _STS_CLIENT_CONFIG,
     RETRY_MAX_ATTEMPTS,
     assume_role,
     new_session,
 )
-from headroom.config import MAX_ACCOUNT_WORKERS
 
 
 @pytest.fixture
@@ -221,7 +219,7 @@ class TestAssumeRole:
         )
 
         mock_base_session.client.assert_called_once_with(
-            "sts", region_name="us-west-2", config=_STS_CLIENT_CONFIG
+            "sts", region_name="us-west-2"
         )
 
 
@@ -300,7 +298,7 @@ class TestAssumeRoleRegionHandling:
         assume_role("arn:aws:iam::111111111111:role/Headroom", "TestSession", base_session)
 
         base_session.client.assert_called_once_with(
-            "sts", region_name="us-west-2", config=_STS_CLIENT_CONFIG
+            "sts", region_name="us-west-2"
         )
 
     def test_returned_session_reaches_sts_regionally(self, hermetic_aws_env: None) -> None:
@@ -442,27 +440,3 @@ class TestSessionRetryConfiguration:
             "max_attempts", RETRY_MAX_ATTEMPTS
         )
 
-    def test_the_sts_client_pool_is_sized_to_the_worker_cap(self) -> None:
-        """
-        The STS client is built with the pool ceiling, not left at botocore's 10.
-
-        The ceiling binds nothing today: assume_role builds a fresh client on
-        every call and boto3 caches none, so each client gets its own
-        PoolManager and serves exactly one AssumeRole request. This pins the
-        wiring, not a live constraint, so the sizing survives until the client
-        is built once per run and shared -- at which point it starts to matter.
-        """
-        base_session = MagicMock()
-        base_session.region_name = "us-east-1"
-        base_session.client.return_value.assume_role.return_value = {
-            "Credentials": {
-                "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
-                "SecretAccessKey": "secret",
-                "SessionToken": "token",
-            }
-        }
-
-        assume_role("arn:aws:iam::111111111111:role/Headroom", "s", base_session)
-
-        config = base_session.client.call_args.kwargs["config"]
-        assert config.max_pool_connections == MAX_ACCOUNT_WORKERS
