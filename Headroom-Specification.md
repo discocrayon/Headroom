@@ -2832,7 +2832,7 @@ withheld from the statement regardless of what it contributed.
 
 **Rows five and six: an organization scope.** `aws:SourceOrgID` names an
 organization directly and `aws:SourceOrgPaths` carries it as the first element
-of a path such as `o-example12345/r-ab12/ou-ab12-11111111/`, so both reduce to
+of a path such as `o-11111111111/r-ab12/ou-ab12-11111111/`, so both reduce to
 the same comparison against this organization's own ID. That ID comes from
 `get_organization_id`, which calls `organizations:DescribeOrganization` on the
 management account session the run already holds. The deployed statement
@@ -2848,7 +2848,7 @@ organization sets `has_wildcard_source`, because the allowlist holds account
 IDs and another organization's accounts are not knowable from here.
 
 The comparison is exact, with no wildcard expansion. A trailing wildcard on our
-own ID, `o-example12345*`, also matches every organization whose ID extends
+own ID, `o-11111111111*`, also matches every organization whose ID extends
 that prefix, so reading it as ours would deploy the statement against sources
 it does not cover. It falls to the violation side instead, which withholds
 rather than over-blocks.

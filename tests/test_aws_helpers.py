@@ -204,8 +204,8 @@ class TestMemoizePerSession:
         analyzer = self._counting_analyzer()
         session = MagicMock()
 
-        first = analyzer(session, {"111111111111"}, "o-11111111")
-        second = analyzer(session, {"111111111111"}, "o-11111111")
+        first = analyzer(session, {"111111111111"}, "o-11111111111")
+        second = analyzer(session, {"111111111111"}, "o-11111111111")
 
         assert first == second == ["result-1"]
         assert len(analyzer.calls) == 1
@@ -236,9 +236,9 @@ class TestMemoizePerSession:
         session_a, session_b = MagicMock(), MagicMock()
         session_a.region_name = session_b.region_name = "us-east-1"
 
-        assert analyzer(session_a, {"111111111111"}, "o-11111111") == ["result-1"]
-        assert analyzer(session_b, {"111111111111"}, "o-11111111") == ["result-2"]
-        assert analyzer(session_a, {"111111111111"}, "o-11111111") == ["result-1"]
+        assert analyzer(session_a, {"111111111111"}, "o-11111111111") == ["result-1"]
+        assert analyzer(session_b, {"111111111111"}, "o-11111111111") == ["result-2"]
+        assert analyzer(session_a, {"111111111111"}, "o-11111111111") == ["result-1"]
 
         assert session_a in analyzer.session_memo
         assert session_b in analyzer.session_memo
@@ -255,13 +255,13 @@ class TestMemoizePerSession:
         analyzer = self._counting_analyzer()
         session = MagicMock()
 
-        analyzer(session, {"111111111111"}, "o-11111111")
+        analyzer(session, {"111111111111"}, "o-11111111111")
 
         with pytest.raises(RuntimeError, match="different organization arguments"):
-            analyzer(session, {"111111111111", "222222222222"}, "o-11111111")
+            analyzer(session, {"111111111111", "222222222222"}, "o-11111111111")
 
         with pytest.raises(RuntimeError, match="different organization arguments"):
-            analyzer(session, {"111111111111"}, "o-22222222")
+            analyzer(session, {"111111111111"}, "o-22222222222")
 
     def test_memo_entry_is_released_when_the_session_is_dropped(self) -> None:
         """
@@ -277,7 +277,7 @@ class TestMemoizePerSession:
         gc.collect()
 
         session = MagicMock()
-        analyzer(session, {"111111111111"}, "o-11111111")
+        analyzer(session, {"111111111111"}, "o-11111111111")
         assert len(analyzer.session_memo) == 1
 
         del session
