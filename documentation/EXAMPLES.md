@@ -25,12 +25,27 @@ Affected Accounts: 2
 Third-Party Accounts: 2
 Reasoning: All accounts under this OU allow the same third-party accounts with no violations - safe for OU-level RCP
 ----------------------------------------
-INFO:headroom.parse_results:SCP placement analysis completed
-INFO:headroom.parse_results:RCP placement analysis completed
-INFO:headroom.aws.organization:Found organization root: r-ab1c
-INFO:headroom.terraform.generate_scps:Generated SCP Terraform file: test_environment/scps/root_scps.tf
-INFO:headroom.terraform.generate_rcps:Generated RCP Terraform file: test_environment/rcps/acme_acquisition_ou_rcps.tf
+INFO:headroom.parse_results:[-] SCP placement analysis completed
+INFO:headroom.parse_results:[-] RCP placement analysis completed
+INFO:headroom.aws.organization:[-] Found organization root: r-ab1c
+INFO:headroom.terraform.generate_scps:[-] Generated SCP Terraform file: test_environment/scps/root_scps.tf
+INFO:headroom.terraform.generate_rcps:[-] Generated RCP Terraform file: test_environment/rcps/acme_acquisition_ou_rcps.tf
 ```
+
+The bracket after the logger name is the account the line belongs to. Accounts are
+analyzed concurrently, so lines interleave; `-` marks work that belongs to no single
+account, which is everything outside the analysis phase. During analysis the lines look
+like this instead, and arrive in no particular order:
+
+```
+INFO:headroom.analysis:[payments_111111111111] Running checks for account: payments_111111111111
+INFO:headroom.analysis:[sandbox_222222222222] Running checks for account: sandbox_222222222222
+INFO:headroom.analysis:[sandbox_222222222222] Checks completed for account: sandbox_222222222222
+INFO:headroom.analysis:[payments_111111111111] Checks completed for account: payments_111111111111
+```
+
+See [Reading the Logs](SETUP.md#reading-the-logs) for the per-region detail that DEBUG adds
+and for what an aborted run reports.
 
 ## Generated Terraform Files
 

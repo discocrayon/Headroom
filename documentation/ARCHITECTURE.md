@@ -38,7 +38,7 @@ headroom/
 │   ├── ec2.py     # EC2 analysis functions
 │   ├── ecr.py     # ECR repository policy analysis
 │   ├── eks.py     # EKS analysis functions
-│   ├── helpers.py # Shared AWS helpers (region enumeration, pagination)
+│   ├── helpers.py # Shared AWS helpers (region enumeration, per-session memo, pagination)
 │   ├── iam/       # IAM analysis package
 │   │   ├── roles.py   # RCP-focused IAM role trust policy analysis
 │   │   ├── saml_providers.py  # IAM SAML provider analysis
@@ -87,6 +87,7 @@ headroom/
 ├── config.py      # Configuration models (HeadroomConfig, AccountTagLayout)
 ├── constants.py   # Shared constants
 ├── enums.py       # CheckType, PlacementLevel and other shared enums
+├── log_context.py # Stamps every log record with the account its thread is analyzing
 ├── main.py        # Application entry point
 ├── output.py      # Centralized output handling
 ├── parse_results.py  # Results processing and recommendations
@@ -168,7 +169,25 @@ first call's answer to a different question.
 
 The one genuinely shared object is the security-analysis session, which every worker uses
 to assume its target role. Client construction on that session is serialized by a lock in
-`aws/sessions.py`; the `AssumeRole` round trip is not, so workers still overlap.
+`aws/sessions.py`; the `AssumeRole` round trip is not, so workers still overlap. The lock is
+there because boto3 documents a `Session` as unsafe to share between threads, not because a
+particular unguarded mutation was found -- botocore guards the obvious ones itself.
+
+Because accounts interleave in the output, `log_context.py` stamps every record with the
+account its thread is working on and every line carries it in brackets. Most log calls under
+`headroom/aws/` name only a region or a resource, which is ambiguous the moment two accounts
+are in flight; the filter is installed on the root handler rather than on a logger, because
+a logger's filters do not see records propagated up from child loggers. Work outside a
+worker is stamped `-`.
+
+Two properties of account names are checked before any account is scanned, because both fail
+in ways a fourteen-minute run would only reveal at the end. A name that cannot be a filename
+-- one containing a path separator, or beginning with a dot -- would send an account's
+results outside the directory policy generation reads, silently. And with
+`exclude_account_ids` set, the name alone is the filename, so two accounts sharing one would
+interleave their JSON into a single file; names are compared the way a case-insensitive,
+normalization-folding filesystem compares them. Both aborts name the offending names and
+never the account IDs.
 
 Failure aborts the run. The first worker exception sets an abort `Event` that in-flight
 workers check at each check boundary, cancels the queued accounts, joins the workers, and
@@ -181,7 +200,9 @@ without a warning -- unlike an asyncio future, it has no `__del__`. Every failur
 therefore logged by name once the workers are joined, so an operator missing the Headroom
 role in forty accounts learns that in one run rather than in forty. The sweep runs outside
 the `with` block on purpose: inside it, `__exit__` has not joined the workers yet and the
-other futures hold nothing to find.
+other futures hold nothing to find. A cancelled account is the one outcome that logs nothing
+of its own -- it never ran, and it holds no exception to report -- so a final line counts
+them, which is the number that says how much of the organization the results on disk cover.
 
 The checkpoint a worker polls sits below the results-already-on-disk skip, never above it.
 A check already on disk is work the account does not owe, so an abort that lands with only
