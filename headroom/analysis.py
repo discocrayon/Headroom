@@ -701,9 +701,14 @@ def _log_every_failure(
     and is told about the next.
 
     Cancelled futures are skipped because `exception()` raises
-    `CancelledError` for them, and unfinished ones because it would block.
-    Neither can hold a failure worth reporting: a cancelled account never
-    ran, and by the time this runs `__exit__` has joined everything that did.
+    `CancelledError` for them, and a cancelled account never ran anyway.
+
+    Unfinished ones are skipped because `exception()` would block, and that
+    branch is not dead. `__exit__` has normally joined every worker before
+    this runs, but a second Ctrl-C lands inside `shutdown(wait=True)` and
+    reaches the outer handler with workers still going. Waiting there to
+    collect their failures is the opposite of what an operator pressing
+    Ctrl-C twice is asking for.
 
     Args:
         accounts_by_future: Every future submitted, mapped to its account
@@ -824,15 +829,23 @@ def run_checks(
     as prompt as a failure: bounded by the one check each in-flight worker is
     already inside.
 
-    Submission sits inside the same `try`, and `futures` is bound before the
-    `with`, because the submit loop can raise too. `executor.submit` reaches
-    `_adjust_thread_count`, whose `Thread.start()` raises
-    `RuntimeError("can't start new thread")` on a host at its thread limit --
-    likeliest at `max_account_workers=32` -- and a Ctrl-C can land there as
-    readily as in `as_completed`. Submitting outside the `try` would let either
-    escape before `futures` was bound, leaving the abort unset and `__exit__`
-    running every account already submitted to completion: the drain this
-    handler exists to prevent.
+    Submission sits inside the same `try` because the submit loop can raise
+    too. `executor.submit` reaches `_adjust_thread_count`, whose
+    `Thread.start()` raises `RuntimeError("can't start new thread")` on a host
+    at its thread limit -- likeliest at `max_account_workers=32` -- and a
+    Ctrl-C can land there as readily as in `as_completed`. Submitting outside
+    the `try` would let either escape with `abort` unset and nothing
+    cancelled, and `__exit__` would then run every account already submitted
+    to completion: the drain this handler exists to prevent.
+    `accounts_by_future` is bound before the `with` so the handler always has
+    the partial map to cancel, whatever the submit loop got through.
+
+    The Event is what covers that window, not the cancel loop. CPython's
+    `submit` puts the work item on the queue and only then calls
+    `_adjust_thread_count`, so the item whose thread failed to start is
+    already queued while `submit` never returned its future: it is not in
+    `accounts_by_future` and nothing can cancel it. An existing worker picks
+    it up, finds the abort set, and returns at its first checkpoint.
     """
     pending = []
     for account_info in relevant_account_infos:
@@ -1003,9 +1016,17 @@ def _verify_no_duplicate_account_names(
     followed by a combining acute has no precomposed form, so NFC returns it
     unchanged; the fold then maps `ſ` to `s`, yielding the decomposition
     of `ś` rather than `ś`. The two names key differently while APFS
-    stores them in one inode. Unicode's closed form is canonical caseless
-    matching (D145) -- `NFD(casefold(NFD(x)))`, whose trailing NFD
-    re-normalizes whatever the fold decomposed -- and that is what this uses.
+    stores them in one inode. Decomposing first is what closes that: under
+    NFD both spellings reach the fold already decomposed, and both come out
+    `s` followed by the combining acute.
+
+    Unicode's closed form for this comparison is canonical caseless matching
+    (D145), `NFD(casefold(NFD(x)))`, and that is what this uses. The trailing
+    NFD is there because D145 specifies it, not because a name has been found
+    that needs it -- against this Unicode data no single codepoint changes
+    key when it is dropped, the example above included. It costs one pass,
+    and it means the guard does not have to be re-derived from scratch when
+    the case-folding data changes.
 
     This can abort a run on a filesystem that folds neither axis, where the
     names would not actually have collided; that is a deliberate trade-off --

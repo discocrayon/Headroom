@@ -1208,9 +1208,13 @@ class TestRunChecksPool:
         The pool half of the abort: a failure sets the Event workers poll.
 
         The two checkpoint tests prove a worker stops once the Event is set.
-        This proves the Event gets set, which nothing else pins: deleting
-        `abort.set()` leaves the rest of the suite green while turning a
-        prompt abort into one that waits out every in-flight account.
+        This proves the Event gets set. Deleting `abort.set()` fails three
+        tests rather than this one alone -- the interrupt and submit-failure
+        tests below reach it by their own paths -- but those assert on
+        cancellation counts and read the Event only as a means. This one
+        holds the Event the worker was handed and asserts on it directly, so
+        a regression here names what broke instead of only that something
+        did.
         """
         events: List[threading.Event] = []
         lock = threading.Lock()

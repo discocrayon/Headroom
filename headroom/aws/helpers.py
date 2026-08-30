@@ -47,9 +47,19 @@ def get_all_regions(session: Session) -> list[str]:
 
     The memo is keyed on the session object itself, never on an account ID or
     name. That is what keeps one account's region list out of another account's
-    results. Entries live in a WeakKeyDictionary, so an account's entry is
-    released as soon as its worker drops the session and nothing accumulates
-    across a 300-account run.
+    results. Entries live in a WeakKeyDictionary, so an account's entry goes
+    when its worker drops the session and nothing accumulates across a
+    300-account run.
+
+    An account that raises is the exception, and it applies to all three of
+    Headroom's per-session memos. Its worker's exception is stored on its
+    future, the traceback pins the worker's frame, and the frame holds the
+    session -- so the entry outlives the worker and is released only when
+    `run_checks` returns and drops `accounts_by_future`. What bounds that is
+    how many accounts are in flight when the abort lands, so
+    `max_account_workers` rather than the size of the organization, which is
+    why the ceiling `MAX_ACCOUNT_WORKERS` states still holds on the failure
+    path.
 
     The lock is released across the `describe_regions` call rather than held.
     Holding it would serialize every worker behind one account's region
@@ -97,16 +107,27 @@ def memoize_per_session(
     The memo is keyed on the session object itself, never on an account ID or
     name. That is what keeps one account's resource policies out of another
     account's allowlist. Entries live in a `WeakKeyDictionary`, so an
-    account's entry is released as soon as its worker drops the session; these
-    entries hold every bucket, key, and role policy in the account, so
-    retaining them past the worker would move the pool's memory ceiling away
-    from where `MAX_ACCOUNT_WORKERS` says it is.
+    account's entry goes when its worker drops the session -- except on the
+    failure path, for the reason `get_all_regions` gives above. These are the
+    largest of the three memos, holding every bucket, key, and role policy in
+    the account, which is what makes that bound worth having.
 
     A session is sufficient as the whole key only because `org_account_ids`
     and `org_id` are fixed for a run. Rather than trust that silently, a
     second call for the same session carrying different values raises: being
     served the first call's answer to a different question would be both
     plausible and wrong.
+
+    That guard cannot fire in a real run, and it is not the cross-account
+    check it resembles. `perform_analysis` computes both values once and
+    threads them unchanged into every account, so the comparison is always
+    between two copies of one thing; only a direct caller can trip it. The
+    failure it does not catch is the one that would matter: one session
+    reaching two accounts carries identical organization arguments and would
+    be served the first account's policies in silence. Nothing here can see
+    that, because the analyzer signature carries no account identity. What
+    rules it out is one session per worker and one worker per account,
+    upstream in `run_checks`.
 
     The lock is released across the analyzer call rather than held, for the
     reason `get_all_regions` gives above: holding it would serialize every
