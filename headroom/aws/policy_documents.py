@@ -17,6 +17,7 @@ __all__ = [
     "MalformedPolicyError",
     "ServicePrincipalSource",
     "UnknownSourceConditionError",
+    "has_actionable_service_principal_source",
     "has_not_principal",
     "normalize_statements",
     "read_service_principal_sources",
@@ -344,3 +345,32 @@ def read_service_principal_sources(
         )
         for service in services
     ]
+
+
+def has_actionable_service_principal_source(
+    sources: List[ServicePrincipalSource]
+) -> bool:
+    """
+    Report whether any service principal source is worth keeping.
+
+    A source is actionable when it names an out-of-organization account the
+    allowlist must carry, or when its guard names sources no allowlist can
+    express. An unguarded source is not actionable: the confused deputy
+    statement's Null condition keeps the deny off any request that carries
+    no source account at all, so an unguarded trust neither needs
+    permitting nor blocks anything. Treating it as actionable would return
+    every ordinary service integration in the account and bury the sources
+    that matter.
+
+    Args:
+        sources: The service principal sources one resource's statements
+            recorded
+
+    Returns:
+        True if a source names an out-of-organization account or a guard
+        no allowlist can express
+    """
+    return any(
+        source.source_account_ids or source.has_wildcard_source
+        for source in sources
+    )

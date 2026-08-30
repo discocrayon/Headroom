@@ -19,6 +19,7 @@ from mypy_boto3_iam.client import IAMClient
 from ...constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..policy_documents import (
     ServicePrincipalSource,
+    has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
     read_service_principal_sources,
@@ -203,32 +204,6 @@ def _has_wildcard_principal(principal: Any) -> bool:
     return False
 
 
-def _has_actionable_service_principal_source(
-    sources: List[ServicePrincipalSource]
-) -> bool:
-    """
-    Report whether any recorded service principal source is worth keeping.
-
-    An unguarded service principal asks nothing of the allowlist: with no
-    source condition, every account behind that service can drive the
-    call, so there is no third party to record and nothing to withhold.
-    Keeping the role in results anyway would return every ordinary service
-    integration in the account and bury the ones that matter.
-
-    Args:
-        sources: The service principal sources one role's statements
-            recorded
-
-    Returns:
-        True if a source names an out-of-organization account or a guard
-        no allowlist can express
-    """
-    return any(
-        source.source_account_ids or source.has_wildcard_source
-        for source in sources
-    )
-
-
 def analyze_iam_roles_trust_policies(
     session: Session,
     org_account_ids: Set[str]
@@ -336,7 +311,7 @@ def analyze_iam_roles_trust_policies(
                             third_party_accounts.add(account_id)
 
                 # Only include roles with findings
-                has_service_source = _has_actionable_service_principal_source(sources)
+                has_service_source = has_actionable_service_principal_source(sources)
                 if third_party_accounts or has_wildcard or has_service_source:
                     results.append(TrustPolicyAnalysis(
                         role_name=role_name,

@@ -20,6 +20,7 @@ from ..types import JsonDict
 from .helpers import get_all_regions
 from .policy_documents import (
     ServicePrincipalSource,
+    has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
     read_service_principal_sources,
@@ -161,32 +162,6 @@ def _has_non_account_principals(
     if isinstance(principal, dict):
         return "Federated" in principal or "CanonicalUser" in principal
     return False
-
-
-def _has_actionable_service_principal_source(
-    sources: List[ServicePrincipalSource]
-) -> bool:
-    """
-    Report whether any recorded service principal source is worth keeping.
-
-    An unguarded service principal asks nothing of the allowlist: with no
-    source condition, every account behind that service can drive the
-    call, so there is no third party to record and nothing to withhold.
-    Keeping the secret in results anyway would return every ordinary
-    service integration in the account and bury the ones that matter.
-
-    Args:
-        sources: The service principal sources one secret's statements
-            recorded
-
-    Returns:
-        True if a source names an out-of-organization account or a guard
-        no allowlist can express
-    """
-    return any(
-        source.source_account_ids or source.has_wildcard_source
-        for source in sources
-    )
 
 
 def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
@@ -383,7 +358,7 @@ def _analyze_secret_policy(
                     actions_by_account[account_id] = set()
                 actions_by_account[account_id].update(actions)
 
-    has_service_source = _has_actionable_service_principal_source(sources)
+    has_service_source = has_actionable_service_principal_source(sources)
     if third_party_accounts or has_wildcard or has_non_account_principals or has_service_source:
         return SecretsPolicyAnalysis(
             secret_name=secret_name,

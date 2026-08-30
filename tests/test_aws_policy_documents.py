@@ -2,13 +2,15 @@
 Tests for headroom.aws.policy_documents module.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pytest
 
 from headroom.aws.policy_documents import (
     MalformedPolicyError,
+    ServicePrincipalSource,
     UnknownSourceConditionError,
+    has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
     read_service_principal_sources,
@@ -385,3 +387,35 @@ class TestServicePrincipalSources:
         assert read_service_principal_sources(
             self._statement("*"), self.ORG_ACCOUNTS, self.WHERE
         ) == []
+
+
+class TestHasActionableServicePrincipalSource:
+    """Test has_actionable_service_principal_source against every disposition."""
+
+    @staticmethod
+    def _source(
+        source_account_ids: List[str], has_wildcard_source: bool
+    ) -> ServicePrincipalSource:
+        """Build one service principal source with the fields under test."""
+        return ServicePrincipalSource(
+            service_principal="sns.amazonaws.com",
+            source_account_ids=source_account_ids,
+            has_source_condition=True,
+            has_wildcard_source=has_wildcard_source,
+        )
+
+    def test_an_out_of_org_account_id_is_actionable(self) -> None:
+        """A source naming an out-of-organization account is worth keeping."""
+        sources = [self._source(["999999999999"], False)]
+
+        assert has_actionable_service_principal_source(sources) is True
+
+    def test_a_wildcard_guard_is_actionable(self) -> None:
+        """A guard no allowlist can express is worth keeping, even unresolved."""
+        sources = [self._source([], True)]
+
+        assert has_actionable_service_principal_source(sources) is True
+
+    def test_no_sources_is_not_actionable(self) -> None:
+        """A statement naming no service principal has nothing worth keeping."""
+        assert has_actionable_service_principal_source([]) is False

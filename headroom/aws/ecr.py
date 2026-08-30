@@ -25,6 +25,7 @@ from ..types import JsonDict
 from .helpers import get_all_regions, paginate
 from .policy_documents import (
     ServicePrincipalSource,
+    has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
     read_service_principal_sources,
@@ -337,32 +338,6 @@ def _analyze_repository_in_region(
     )
 
 
-def _has_actionable_service_principal_source(
-    sources: List[ServicePrincipalSource]
-) -> bool:
-    """
-    Report whether any recorded service principal source is worth keeping.
-
-    An unguarded service principal asks nothing of the allowlist: with no
-    source condition, every account behind that service can drive the
-    call, so there is no third party to record and nothing to withhold.
-    Keeping the policy in results anyway would return every ordinary
-    service integration in the account and bury the ones that matter.
-
-    Args:
-        sources: The service principal sources one policy's statements
-            recorded
-
-    Returns:
-        True if a source names an out-of-organization account or a guard
-        no allowlist can express
-    """
-    return any(
-        source.source_account_ids or source.has_wildcard_source
-        for source in sources
-    )
-
-
 def _grants_third_party_access(analysis: ECRPolicyAnalysis) -> bool:
     """
     Report whether an analysis found anything an RCP could break.
@@ -376,7 +351,7 @@ def _grants_third_party_access(analysis: ECRPolicyAnalysis) -> bool:
     """
     if bool(analysis.third_party_account_ids) or analysis.has_wildcard_principal:
         return True
-    return _has_actionable_service_principal_source(analysis.service_principal_sources)
+    return has_actionable_service_principal_source(analysis.service_principal_sources)
 
 
 def _analyze_registry_policy(
