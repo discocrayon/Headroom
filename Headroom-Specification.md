@@ -74,12 +74,13 @@
 - Grant principal classification (IAM ARN, AWS service principal) with fail-fast on anything else
 - Multi-region KMS key scanning with pagination support for keys and grants
 - KMS actions tracking per third-party account
-- **Service Confused Deputy Check:** Source-guard analysis on every `Allow` statement naming a `Service` principal, across all six resource types plus IAM role trust policies
+- **Service Confused Deputy Check:** Source-guard analysis on every `Allow` statement naming a `Service` principal, across the six resource types the other RCP checks already analyze - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies
 - Narrows the AWS service exemption the other six statements must carry, which nothing previously narrowed back down
 - Out-of-organization source account detection from `aws:SourceAccount` and `aws:SourceArn`, unioned into the statement's source allowlist
 - Wildcard source detection - a source no allowlist can enumerate withholds the statement from that account
 - Fail-fast on a source guard that cannot be read (`aws:SourceOrgID`, an unrecognized operator, a value that is neither an account ID nor a wildcard)
-- No additional AWS API calls: the six existing analyzers record the sources during the statement walk they already perform
+- No additional AWS API calls in the existing six checks: they record the sources during the statement walk they already perform
+- The seventh check re-runs those same six analyzers, so the RCP read APIs are issued twice per account per run. Caching is deliberately not implemented; it is a separate optimization if the duplication proves material
 
 ### 5. Policy Placement Intelligence
 - Organization structure analysis for optimal policy deployment levels
@@ -888,11 +889,17 @@ form AWS recommends, it restricts rather than grants, and a resource policy's
 place any analyzer reads a `Condition`, and it reads exactly three keys -
 `aws:SourceAccount`, `aws:SourceArn` and `aws:SourceOrgID` - on statements
 naming a `Service` principal. Each of the six analyzers calls it inside the
-`Effect` gate it already applies and records the result on its analysis
-dataclass as `service_principal_sources`, so the seventh check reads six
-existing analyses rather than making AWS calls of its own. One `Condition`
-block guards every principal in its statement, so each service the statement
-names carries the same guard and gets its own entry.
+`Effect` gate it already applies - and the IAM analyzer inside its
+`_grants_assume_role` gate as well, so a trust statement naming a service under
+some action other than `sts:AssumeRole` is never recorded, which matches the
+reach of the statement's action list - then stores the result on its analysis
+dataclass as `service_principal_sources`. Populating that field costs those six
+checks nothing; it happens during the statement walk they already perform. The
+seventh check does not reuse their analyses, though: it calls the same six
+analyzer functions again and reads only the new field, which is what makes the
+read APIs run twice per account. See Service Confused Deputy below. One
+`Condition` block guards every principal in its statement, so each service the
+statement names carries the same guard and gets its own entry.
 `has_actionable_service_principal_source` is the predicate each analyzer uses
 to decide whether a source alone is reason to keep an analysis it would
 otherwise drop; an unguarded source is not, for the reasons in Service
@@ -1879,7 +1886,7 @@ class ServicePrincipalSource:
 class ServicePrincipalSourceFinding:
     resource_type: str                # ecr | kms | s3 | secretsmanager | sqs | iam
     resource_identifier: str          # Name or ARN, whichever the analyzer records
-    region: Optional[str]             # None for resources with no region in their identity
+    region: Optional[str]             # None where the analysis records no region - see Region below
     service_principal: str
     source_account_ids: List[str]
     has_source_condition: bool
@@ -1894,9 +1901,9 @@ statement walk it already performs.
 
 **Analysis Function:**
 
-There is no seventh `aws/` module. The check composes the six analyzers, so a
-run costs no additional AWS API calls, and each analyzer supplies the identity
-of the resource its sources were found on:
+There is no seventh `aws/` module. The check calls the same six analyzer
+functions the other RCP checks call and reads only the new field. Each supplies
+the identity of the resource its sources were found on:
 
 | Analyzer | `resource_type` | `resource_identifier` | `region` |
 |---|---|---|---|
@@ -1911,6 +1918,32 @@ Trust policies matter as much as resource policies here. A role trusting a
 service principal with no source guard is the canonical confused-deputy
 vulnerability, and `sts:AssumeRole` is in the statement's action list.
 
+**API cost.** Recording `service_principal_sources` costs the existing six
+checks nothing. This check is not free, however. Nothing caches an analysis
+between checks - `run_checks_for_type` instantiates and executes each check
+independently, and the only cache in `headroom/aws/` is the per-region AMI
+cache - so registering this check issues every RCP read API twice per account
+per run: `ListRepositories` / `GetRepositoryPolicy` / `GetRegistryPolicy`,
+`ListKeys` / `GetKeyPolicy` / `ListGrants`, `ListBuckets` / `GetBucketPolicy`,
+`ListSecrets` / `GetResourcePolicy`, `ListQueues` / `GetQueueAttributes`, and
+`ListRoles`. Registration alone triggers the second pass; the
+`deny_service_confused_deputy` Terraform flag gates the rendered statement, not
+the scan. Caching is deliberately not implemented and is a separate
+optimization if the duplication proves material, so quota and runtime for the
+RCP pass should be budgeted at double.
+
+**Region.** S3 buckets and IAM roles are global names, so there is no region to
+record. A Secrets Manager secret is regional:
+`analyze_secrets_manager_policies` iterates `get_all_regions` and analyzes each
+region separately, and every `SecretsPolicyAnalysis` carries a `secret_arn`
+that encodes the region. The finding's `region` is `None` there because
+`SecretsPolicyAnalysis` has no `region` field for the check to read - a gap in
+that dataclass rather than a property of the resource. Because the finding's
+`resource_identifier` is `secret_name` rather than the ARN, two secrets sharing
+a name in different regions produce identical findings and an operator cannot
+tell which region to look in. Adding a `region` field to
+`SecretsPolicyAnalysis` would close both.
+
 ```python
 # checks/rcps/deny_service_confused_deputy.py
 
@@ -1920,13 +1953,17 @@ def _findings_for_resource(
     resource_identifier: str,
     region: Optional[str],
 ) -> List[ServicePrincipalSourceFinding]:
+    """One finding per source, stamped with the resource's identity. No
+    filtering here - the filter lives in analyze."""
+
+def analyze(self, session: Session) -> List[ServicePrincipalSourceFinding]:
     """
-    Pair each source with the resource it was found on.
+    Collect service principal sources from every resource type.
 
     Algorithm:
-    1. For each analyzer, iterate its analyses
-    2. For each analysis, flatten service_principal_sources into findings
-       carrying that resource's type, identifier and region
+    1. Call each of the six analyzer functions in turn
+    2. Pass each analysis's service_principal_sources through
+       _findings_for_resource with that resource's type, identifier and region
     3. Return only the findings with an out-of-organization source account or
        a wildcard source. An unguarded source is dropped - see Source Guards
     """
@@ -2068,6 +2105,14 @@ alone never identifies whose bucket drove the call, which is exactly why AWS's
 guidance pairs `aws:SourceArn` with `aws:SourceAccount`. When the companion key
 is present the pair resolves normally; when it is absent the source is
 genuinely unidentifiable and withholding is the conservative answer.
+
+One statement can occupy two rows at once. `aws:SourceAccount` holding
+`["*", "999999999999"]` resolves the out-of-organization account *and* sets the
+wildcard flag, and `categorize_result` unions the resolved accounts into
+`all_third_party_accounts` before it branches on the wildcard - so the
+statement contributes an allowlist entry and files a violation. The violation
+governs: `blocks_rcp` is `summary["violations"] > 0`, so the account is
+withheld from the statement regardless of what it contributed.
 
 **Row five: fail fast.** `aws:SourceOrgID` on a service principal raises,
 because deciding whether it names this organization needs the organization ID,
@@ -2889,6 +2934,13 @@ module "rcps_root" {
 # `secrets_manager_third_party_access_account_ids_allowlist`, which
 # `terraform plan` rejects with "An argument named ... is not expected here".
 # Do not normalize it.
+#
+# The service confused deputy check is a third shape:
+# `service_confused_deputy_source_account_ids_allowlist`, with `source_`
+# before `account_ids` because the list holds the accounts a service acted
+# for rather than the calling principals. The pattern would predict
+# `service_confused_deputy_account_ids_allowlist`. Do not normalize that one
+# either.
 
 variable "deny_sts_third_party_assumerole" {
   type        = bool
@@ -3609,6 +3661,7 @@ def get_results_dir(
 
 # SCP Checks (alphabetical by service)
 DENY_EC2_AMI_OWNER = "deny_ec2_ami_owner"
+DENY_EC2_IMDS_HOP_LIMIT = "deny_ec2_imds_hop_limit"
 DENY_EC2_IMDS_V1 = "deny_ec2_imds_v1"
 DENY_EC2_PUBLIC_IP = "deny_ec2_public_ip"
 DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG = "deny_eks_create_cluster_without_tag"
@@ -3622,6 +3675,7 @@ DENY_ECR_THIRD_PARTY_ACCESS = "deny_ecr_third_party_access"
 DENY_KMS_THIRD_PARTY_ACCESS = "deny_kms_third_party_access"
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
 DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS = "deny_secrets_manager_third_party_access"
+DENY_SERVICE_CONFUSED_DEPUTY = "deny_service_confused_deputy"
 DENY_SQS_THIRD_PARTY_ACCESS = "deny_sqs_third_party_access"
 DENY_STS_THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 
@@ -4331,6 +4385,13 @@ variable "target_id" {
 # `secrets_manager_third_party_access_account_ids_allowlist`, which
 # `terraform plan` rejects with "An argument named ... is not expected here".
 # Do not normalize it.
+#
+# The service confused deputy check is a third shape:
+# `service_confused_deputy_source_account_ids_allowlist`, with `source_`
+# before `account_ids` because the list holds the accounts a service acted
+# for rather than the calling principals. The pattern would predict
+# `service_confused_deputy_account_ids_allowlist`. Do not normalize that one
+# either.
 
 variable "deny_sts_third_party_assumerole" {
   type        = bool

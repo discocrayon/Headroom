@@ -961,12 +961,14 @@ A key found only through a grant looks the same, with an empty `actions_by_accou
 Nothing narrowed that exemption back down. An account outside the organization that configures an AWS service in its own account - a trail, a Config delivery channel, an SNS topic - can have that service reach a bucket, key, queue, secret, repository or role in an organization account while the RCP stands aside. `DenyServiceConfusedDeputy` is the second half of the pair, and this check supplies the allowlist it needs. Severity is bounded by the resource policy: the RCP failing to deny is not the same as access being granted, so this closes a defense-in-depth gap rather than an open door.
 
 **How it Works**:
-- Reuses the six analyzers the other RCP checks already run - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies - and makes no AWS calls of its own
-- Reads every `Allow` statement naming a `Service` principal, inside the `Effect` gate each analyzer already applies
+- Runs the same six analyzers the other RCP checks run - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies - reading a field those analyzers now record during the statement walk they already perform
+- Reads every `Allow` statement naming a `Service` principal, inside the `Effect` gate each analyzer already applies, and in the IAM analyzer inside its AssumeRole action gate as well - so a trust statement naming a service under some action other than `sts:AssumeRole` is not recorded, which matches the reach of the RCP statement's action list
 - Resolves the source guard on that statement: `aws:SourceAccount` directly, `aws:SourceArn` by extracting the account the ARN carries
 - Keeps only the sources naming an account outside the organization, or a guard no allowlist can enumerate
 
 Trust policies matter here as much as resource policies. A role that trusts a service principal with no source guard is the canonical confused-deputy vulnerability, and `sts:AssumeRole` is in the statement's action list.
+
+**API cost**: recording the new field costs the other six checks nothing, but this check is not free. Nothing caches an analysis between checks, so registering it issues every RCP read API a second time per account per run - repository, key, bucket, secret, queue and role listings and their policies. Registration alone triggers that second pass; the `deny_service_confused_deputy` Terraform flag gates the rendered statement, not the scan. Caching is deliberately not implemented and is a separate optimization if the duplication proves material, so budget quota and runtime for the RCP pass at double.
 
 **Detection**:
 - Out-of-organization accounts pinned by `aws:SourceAccount` or `aws:SourceArn` on a service-principal grant, which become the statement's `aws:SourceAccount` allowlist
@@ -985,6 +987,8 @@ Trust policies matter here as much as resource policies. A role that trusts a se
 | `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | Raises `UnknownSourceConditionError` |
 
 Row four is `has_wildcard_principal` in a different costume: an unbounded set of sources that no allowlist can enumerate, handled the same way - withhold the statement from that account and follow up in CloudTrail. An S3 bucket ARN reaches that row honestly rather than by accident. S3 ARNs carry no account field, so `aws:SourceArn` alone never identifies whose bucket drove the call, which is exactly why AWS pairs `aws:SourceArn` with `aws:SourceAccount`. When the companion key is present the pair resolves normally; when it is absent the source is genuinely unidentifiable.
+
+One statement can occupy two rows at once. `aws:SourceAccount` holding `["*", "999999999999"]` resolves the out-of-organization account and sets the wildcard flag, and the check unions the resolved accounts into `unique_third_party_accounts` before it branches on the wildcard - so that statement contributes an allowlist entry and files a violation. The violation governs: any violation withholds the statement from the account regardless of what it contributed.
 
 **The `Null` gate**: The statement carries `Null { "aws:SourceAccount": "false" }`, which reads as "this key is not null", that is, it is present. The Deny therefore applies only to service calls that carry a source account. A call populating only `aws:SourceArn`, or no source keys at all, falls outside the statement entirely. This narrows the service exemption rather than closing it, and is what makes the control deployable without first discovering every service integration in the estate. `StringNotEqualsIfExists` on `aws:SourceOrgID` then catches sources in standalone accounts, which belong to no organization and so carry no organization ID: an attacker cannot escape the control by using an unattached account.
 
@@ -1014,7 +1018,9 @@ Row four is `has_wildcard_principal` in a different costume: an unbounded set of
 }
 ```
 
-A wildcard finding has the same shape with `source_account_ids` empty and `has_wildcard_source` true, and is written to `violations` rather than `compliant_instances`. `region` is null for the resource types that have no region in their identity - S3 buckets, Secrets Manager secrets, and IAM roles - and `resource_identifier` is `registry` for a finding from a per-region ECR registry policy rather than a repository policy.
+A wildcard finding has the same shape with `source_account_ids` empty and `has_wildcard_source` true, and is written to `violations` rather than `compliant_instances`. `resource_identifier` is `registry` for a finding from a per-region ECR registry policy rather than a repository policy.
+
+`region` is null for three resource types, for two different reasons. S3 buckets and IAM roles are global names, so there is no region to record. Secrets Manager secrets are regional - the analyzer iterates every region, and each secret's ARN encodes its own - but `SecretsPolicyAnalysis` carries no `region` field for the check to read, so the null is a gap in that dataclass rather than a property of the resource. Since the finding identifies a secret by name rather than by ARN, two secrets sharing a name in different regions produce identical findings and an operator cannot tell which region to look in.
 
 ---
 
