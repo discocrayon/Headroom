@@ -2,6 +2,7 @@
 Tests for headroom.log_context module.
 """
 
+import io
 import logging
 import threading
 
@@ -108,11 +109,15 @@ class TestConfigureLogging:
         The other test in this class pre-installs a NullHandler, which is
         exactly what keeps it off this path.
 
-        The root logger's handler list is process-global and shared with
-        pytest, so this puts it back.
+        The root logger's handler list and level are process-global and
+        shared with pytest, so this puts both back. Emptying the handler list
+        is what lets configure_logging's basicConfig take its one effective
+        branch, and that branch raises the level as well as installing the
+        handler.
         """
         root_logger = logging.getLogger()
         preexisting_handlers = list(root_logger.handlers)
+        preexisting_level = root_logger.level
         root_logger.handlers = []
         set_account("payments_111111111111")
 
@@ -136,6 +141,77 @@ class TestConfigureLogging:
                 )
         finally:
             root_logger.handlers = preexisting_handlers
+            root_logger.setLevel(preexisting_level)
+
+    def test_an_empty_root_is_left_logging_at_info(self) -> None:
+        """
+        configure_logging must set the level, not only install the handler.
+
+        basicConfig reaches root.setLevel only inside the branch it takes when
+        the root handler list is empty, and only when it was passed a level.
+        Called with no level it installs a handler and leaves root at WARNING
+        -- and disarms every later basicConfig, which is a no-op once a
+        handler exists. Headroom reports progress at INFO, so that combination
+        silences the run while still printing errors.
+
+        Root is reset to WARNING here because that is where a fresh
+        interpreter starts. The suite has already imported `headroom.analysis`,
+        which raises it to INFO at import time, so without the reset this would
+        be asserting against that import rather than against this function.
+        """
+        root_logger = logging.getLogger()
+        preexisting_handlers = list(root_logger.handlers)
+        preexisting_level = root_logger.level
+        root_logger.handlers = []
+        root_logger.setLevel(logging.WARNING)
+
+        try:
+            configure_logging()
+
+            assert root_logger.isEnabledFor(logging.INFO)
+        finally:
+            root_logger.handlers = preexisting_handlers
+            root_logger.setLevel(preexisting_level)
+
+    def test_a_record_from_a_child_logger_arrives_stamped(self) -> None:
+        """
+        The one test that exercises level, propagation, filter, and format
+        together.
+
+        Every other test in this class calls `handler.filter` and
+        `formatter.format` by hand. That shows the pieces work; it cannot show
+        they are wired to each other, and it cannot see the level at all,
+        because neither call consults it. This emits through a child logger
+        the way `headroom/aws/` does and reads what the root handler wrote.
+
+        The expected line is the format string filled in by hand, not built
+        from LOG_FORMAT, so a change to the format has to be made here too.
+        """
+        root_logger = logging.getLogger()
+        preexisting_handlers = list(root_logger.handlers)
+        preexisting_level = root_logger.level
+        root_logger.handlers = []
+        root_logger.setLevel(logging.WARNING)
+
+        try:
+            configure_logging()
+
+            installed = root_logger.handlers[0]
+            assert isinstance(installed, logging.StreamHandler)
+            captured = io.StringIO()
+            installed.setStream(captured)
+            set_account("payments_111111111111")
+
+            logging.getLogger("headroom.aws.sqs").info("Analyzing SQS queues in eu-west-1")
+
+            assert captured.getvalue() == (
+                "INFO:headroom.aws.sqs:[payments_111111111111] "
+                "Analyzing SQS queues in eu-west-1\n"
+            )
+        finally:
+            root_logger.handlers = preexisting_handlers
+            root_logger.setLevel(preexisting_level)
+            set_account(NO_ACCOUNT)
 
     def test_repeat_calls_leave_one_account_filter_on_the_handler(self) -> None:
         """

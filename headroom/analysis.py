@@ -17,8 +17,6 @@ from .write_results import results_exist
 from .aws.sessions import assume_role, new_session
 from .utils import format_account_identifier
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
