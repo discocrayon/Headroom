@@ -440,3 +440,30 @@ class TestSessionRetryConfiguration:
             "max_attempts", RETRY_MAX_ATTEMPTS
         )
 
+    def test_a_client_built_from_the_session_resolves_five_standard_attempts(
+        self,
+        hermetic_aws_env: None,
+    ) -> None:
+        """
+        The resolved values, read off a real client rather than off the calls.
+
+        The test above pins the two knob names, which is worth having -- both
+        survive a rename attempt. It cannot pin either value: setting
+        RETRY_MAX_ATTEMPTS to 1 left the whole suite green, and so did a
+        second set_config_variable overriding the first, which assert_any_call
+        has no way to see because it only asks whether a call ever happened.
+
+        Five is asserted as a literal, and it is not an arbitrary one: legacy,
+        the mode botocore uses by default, already allowed five attempts, and
+        `standard` allows three, so this is the number that keeps the ceiling
+        where it was while changing the retry predicate. `total_max_attempts`
+        is botocore's own name for the count including the first try.
+        """
+        client = new_session(region_name="us-east-1").client("sts")
+
+        # botocore populates Config.retries at runtime from OPTION_DEFAULTS;
+        # the stubs do not declare it.
+        resolved = client.meta.config.retries  # type: ignore[attr-defined]
+
+        assert resolved == {"total_max_attempts": 5, "mode": "standard"}
+
