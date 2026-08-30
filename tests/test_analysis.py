@@ -19,6 +19,7 @@ from headroom.analysis import (
     run_checks_for_type,
     _build_account_info_from_account_dict,
     _run_checks_for_account,
+    _verify_account_names_are_filename_safe,
     _verify_no_duplicate_account_names,
     ACTIVE_ACCOUNT_STATE,
     INACTIVE_ACCOUNT_STATES,
@@ -135,6 +136,40 @@ class TestPerformAnalysis:
             mock_get_subs.assert_called_once_with(config, mock_session)
             assert mock_logger.info.call_count == 8
             mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
+
+    def test_perform_analysis_aborts_before_run_checks_on_an_unusable_name(self) -> None:
+        """
+        The filename guard must gate run_checks, not merely exist.
+
+        Pins two things the direct-call tests cannot. That the call is there
+        at all: deleting it leaves every test in
+        TestAccountNamesAreFilenameSafe green. And that it is unconditional --
+        exclude_account_ids is false here, because both naming modes put the
+        account name into the filename, unlike the duplicate-name guard next
+        to it.
+        """
+        config = HeadroomConfig(
+            management_account_id="222222222222",
+            security_analysis_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner"),
+            exclude_account_ids=False,
+        )
+        account_infos = [
+            AccountInfo(account_id="333333333333", environment="prod", name="Prod/US", owner="team"),
+        ]
+        mock_session = MagicMock()
+        with (
+            patch("headroom.analysis.get_security_analysis_session", return_value=mock_session),
+            patch("headroom.analysis.get_all_organization_account_ids", return_value=set()),
+            patch("headroom.analysis.get_organization_id", return_value=ORG_ID),
+            patch("headroom.analysis.get_subaccount_information", return_value=account_infos),
+            patch("headroom.analysis.run_checks") as mock_run_checks,
+        ):
+            with pytest.raises(RuntimeError, match="Prod/US"):
+                perform_analysis(config)
+
+            mock_run_checks.assert_not_called()
 
     def test_perform_analysis_aborts_before_run_checks_on_duplicate_names(self) -> None:
         """
@@ -953,6 +988,67 @@ class TestDuplicateAccountNameGuard:
             )
 
         assert "(2 accounts)" in str(excinfo.value)
+
+
+class TestAccountNamesAreFilenameSafe:
+    """Test the guard on account names that do not survive becoming a path."""
+
+    @staticmethod
+    def _accounts(*names: str) -> List[AccountInfo]:
+        """Build one AccountInfo per name, each with a distinct account ID."""
+        return [
+            AccountInfo(
+                account_id=str(index + 1) * 12,
+                environment="prod",
+                name=name,
+                owner="team",
+            )
+            for index, name in enumerate(names)
+        ]
+
+    def test_a_name_holding_a_separator_aborts(self) -> None:
+        """
+        `Prod/US` builds a path into a subdirectory, not a filename.
+
+        `Path(check_dir) / "Prod/US.json"` is `check_dir/Prod/US.json`. With
+        no such directory the worker thread raises FileNotFoundError partway
+        through the run; with one, the file is written where the reader's
+        `*.json` glob cannot see it and the account drops out of the analysis
+        silently.
+        """
+        with pytest.raises(RuntimeError, match="Prod/US"):
+            _verify_account_names_are_filename_safe(self._accounts("Prod/US"))
+
+    def test_a_name_that_climbs_out_of_the_results_directory_aborts(self) -> None:
+        """
+        `../Prod` writes outside the check directory, silently.
+
+        Verified: the write succeeds, lands one level up, overwrites whatever
+        was there, and the reader's glob returns nothing for that account. Of
+        the three ways a separator can go wrong this is the worst, because
+        nothing fails and the account is simply missing from the results the
+        policies are generated from.
+        """
+        with pytest.raises(RuntimeError, match=r"\.\./Prod"):
+            _verify_account_names_are_filename_safe(self._accounts("../Prod"))
+
+    def test_a_name_that_would_hide_the_file_aborts(self) -> None:
+        """
+        An empty name yields `.json`, which `*.json` does not match.
+
+        Organizations constrains an account name only by length, so an empty
+        name is a value it will return. A dotfile is written successfully and
+        then read back by nothing, which is the same silent drop as climbing
+        out of the directory.
+        """
+        with pytest.raises(RuntimeError):
+            _verify_account_names_are_filename_safe(self._accounts(""))
+
+    def test_ordinary_names_pass(self) -> None:
+        """Names that are already filenames are left alone."""
+        _verify_account_names_are_filename_safe(
+            self._accounts("Prod US", "prod-us", "caf\u00e9", "Prod.US")
+        )
 
 
 class TestRunChecksPool:

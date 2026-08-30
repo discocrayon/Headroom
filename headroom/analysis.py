@@ -2,6 +2,7 @@ import logging
 import threading
 import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 
@@ -808,6 +809,65 @@ def run_checks(
         raise
 
 
+def _verify_account_names_are_filename_safe(account_infos: List[AccountInfo]) -> None:
+    """
+    Abort if an account's name would not survive becoming a result filename.
+
+    Both naming modes put the account name into the filename -- alone when
+    `exclude_account_ids` is set, and ahead of the account ID otherwise -- so
+    unlike the duplicate-name guard this one is not conditional on that
+    setting.
+
+    `ResultFilePathResolver` interpolates the name and hands the result to
+    `Path`, which reads a separator as structure rather than as text. Three
+    names go wrong there, and the two quiet ones are the reason this runs
+    before the scan rather than being left to fail at write time:
+
+    - `Prod/US` becomes `check_dir/Prod/US.json`. With no such directory a
+      worker thread raises FileNotFoundError partway through the run. With
+      one, the write succeeds somewhere the reader does not look.
+    - `../Prod` becomes `check_dir/../Prod.json`. The write succeeds, one
+      level up, over whatever was already there.
+    - An empty name becomes `.json`, which the readers' `*.json` glob does
+      not match.
+
+    The last two lose the account silently: policy generation reads the
+    results directory, finds nothing for that account, and generates as
+    though it did not exist. Organizations constrains an account name only by
+    length, so it will hand back every one of these.
+
+    Like the duplicate-name guard, the message names the offending names and
+    never the account IDs.
+
+    Args:
+        account_infos: Accounts about to be analyzed
+
+    Raises:
+        RuntimeError: If an account name is not usable as a filename
+    """
+    unsafe = sorted(
+        account_info.name
+        for account_info in account_infos
+        if not account_info.name
+        or account_info.name.startswith(".")
+        or Path(account_info.name).name != account_info.name
+    )
+
+    if not unsafe:
+        return
+
+    listed = ", ".join(repr(name) for name in unsafe)
+    raise RuntimeError(
+        f"These account names cannot be used as result filenames: {listed}. "
+        "The name is interpolated into the filename, so a path separator "
+        "reads as a directory and a leading dot hides the file from the "
+        "glob that reads results back -- either way the account's results "
+        "are written somewhere policy generation does not look. Rename the "
+        "accounts, or set use_account_name_from_tags and give them a tag "
+        "that is a plain filename."
+    )
+
+
 def _verify_no_duplicate_account_names(
     config: HeadroomConfig,
     account_infos: List[AccountInfo]
@@ -914,6 +974,7 @@ def perform_analysis(config: HeadroomConfig) -> None:
     relevant_account_infos = get_relevant_subaccounts(account_infos)
     logger.info(f"Filtered to {len(relevant_account_infos)} relevant accounts for analysis")
 
+    _verify_account_names_are_filename_safe(relevant_account_infos)
     _verify_no_duplicate_account_names(config, relevant_account_infos)
 
     run_checks(security_session, relevant_account_infos, config, org_account_ids, org_id)
