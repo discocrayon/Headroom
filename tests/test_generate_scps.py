@@ -613,6 +613,39 @@ def test_plan_omits_root_when_nothing_is_placed_there(tmp_path: Path) -> None:
     assert not (tmp_path / "root_scps.tf").exists()
 
 
+def test_an_account_named_root_does_not_take_the_root_policy_file(tmp_path: Path) -> None:
+    """
+    'Root' reduces to `root`, which is already the root policy file's name.
+
+    make_account_base_names keeps accounts apart from each other, and
+    make_ou_base_names keeps OUs apart from each other and from `root`.
+    Neither sees this one: the account namespace and the fixed root filename
+    only meet at the path, which is where claim_plan_path compares them.
+
+    Left unguarded the root policy silently becomes the account's, or the
+    account's becomes the root policy, depending on which is rendered second.
+    """
+    org = OrganizationHierarchy(
+        root_id="r-root",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="Root",
+                parent_ou_id=None,
+                ou_path=["r-root"]
+            )
+        }
+    )
+    recommendations = [
+        make_rec(level="root"),
+        make_rec(level="account", affected_accounts=["111111111111"]),
+    ]
+
+    with pytest.raises(RuntimeError, match="root_scps.tf"):
+        generate_scp_terraform(recommendations, org, str(tmp_path))
+
+
 def test_generate_scp_terraform_returns_what_it_wrote(tmp_path: Path) -> None:
     org = make_org_empty()
 

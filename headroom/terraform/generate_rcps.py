@@ -20,6 +20,7 @@ from .models import (
 )
 from .utils import (
     account_id_local_name,
+    claim_plan_path,
     make_account_base_names,
     make_ou_base_names,
     ou_id_local_name,
@@ -803,19 +804,19 @@ def _render_rcp_terraform_plan(
 
     if root_recommendations:
         filepath, content = _render_root_rcp_terraform(root_recommendations, output_path)
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, "the organization root")
 
     for account_id, recs in account_recommendations.items():
         filepath, content = _render_account_rcp_terraform(
             account_id, recs, organization_hierarchy, output_path
         )
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, f"account {organization_hierarchy.accounts[account_id].account_name!r}")
 
     for ou_id, recs in ou_recommendations.items():
         filepath, content = _render_ou_rcp_terraform(
             ou_id, recs, organization_hierarchy, output_path
         )
-        plan[filepath] = content
+        claim_plan_path(plan, filepath, content, f"OU {organization_hierarchy.organizational_units[ou_id].name!r}")
 
     return plan
 
