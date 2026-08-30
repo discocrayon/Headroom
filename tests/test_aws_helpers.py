@@ -106,8 +106,20 @@ class TestGetAllRegions:
         A memo keyed wrongly does not crash. It serves one account's region
         list to another account, and the resulting results look entirely
         plausible, so this is the failure mode worth pinning.
+
+        Both sessions carry the same `region_name` because production does:
+        `assume_role` reads the region off the one shared base session and
+        hands it to every per-account session it mints. An unconfigured
+        MagicMock is the opposite -- each attribute access invents a distinct
+        child -- so without that line every attribute of a session looks like
+        a usable key and a memo keyed on one would pass this test.
+
+        The membership assertions are what pins the key. Comparing the two
+        region lists cannot tell a session-keyed memo from one keyed on any
+        value that merely differs between two mocks.
         """
         session_a, session_b = MagicMock(), MagicMock()
+        session_a.region_name = session_b.region_name = "us-east-1"
         ec2_a, ec2_b = MagicMock(), MagicMock()
         session_a.client.return_value = ec2_a
         session_b.client.return_value = ec2_b
@@ -117,6 +129,9 @@ class TestGetAllRegions:
         assert get_all_regions(session_a) == ["us-east-1"]
         assert get_all_regions(session_b) == ["eu-west-1"]
         assert get_all_regions(session_a) == ["us-east-1"]
+
+        assert session_a in _REGION_MEMO
+        assert session_b in _REGION_MEMO
 
     def test_memo_entry_is_released_when_the_session_is_dropped(self) -> None:
         """
@@ -202,13 +217,31 @@ class TestMemoizePerSession:
         A memo keyed wrongly does not crash. It serves one account's
         resource policies to another account, and the generated allowlist
         looks entirely plausible, so this is the failure mode worth pinning.
+
+        Both sessions carry the same `region_name` because production does:
+        `assume_role` reads the region off the one shared base session and
+        hands it to every per-account session it mints. An unconfigured
+        MagicMock is the opposite -- each attribute access invents a distinct
+        child -- so without that line every attribute of a session looks like
+        a usable key and a memo keyed on one would pass this test. This memo
+        has no incidental cover elsewhere in the suite: re-keying the other
+        two makes unrelated tests fail, because a region string cannot be
+        weakly referenced, while re-keying this one leaves the suite green.
+
+        The membership assertions are what pins the key. Comparing the three
+        results cannot tell a session-keyed memo from one keyed on any value
+        that merely differs between two mocks.
         """
         analyzer = self._counting_analyzer()
         session_a, session_b = MagicMock(), MagicMock()
+        session_a.region_name = session_b.region_name = "us-east-1"
 
         assert analyzer(session_a, {"111111111111"}, "o-11111111") == ["result-1"]
         assert analyzer(session_b, {"111111111111"}, "o-11111111") == ["result-2"]
         assert analyzer(session_a, {"111111111111"}, "o-11111111") == ["result-1"]
+
+        assert session_a in analyzer.session_memo
+        assert session_b in analyzer.session_memo
 
     def test_differing_organization_arguments_are_rejected(self) -> None:
         """

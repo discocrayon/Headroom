@@ -1895,6 +1895,17 @@ class TestGetInstances:
 
         A memo keyed wrongly would report one account's instances as another
         account's, and the results would look entirely plausible.
+
+        Both sessions carry the same `region_name` because production does:
+        `assume_role` reads the region off the one shared base session and
+        hands it to every per-account session it mints. An unconfigured
+        MagicMock is the opposite -- each attribute access invents a distinct
+        child -- so without that line every attribute of a session looks like
+        a usable key and a memo keyed on one would pass this test.
+
+        The membership assertions are what pins the key. Comparing the two
+        instance lists cannot tell a session-keyed memo from one keyed on any
+        value that merely differs between two mocks.
         """
         session_a = self._session([{
             "Reservations": [{
@@ -1909,8 +1920,13 @@ class TestGetInstances:
             }]
         }])
 
+        session_a.region_name = session_b.region_name = "us-east-1"
+
         assert get_instances(session_a, "us-east-1")[0].instance_id == "i-11111111111111111"
         assert get_instances(session_b, "us-east-1")[0].instance_id == "i-22222222222222222"
+
+        assert session_a in _INSTANCE_MEMO
+        assert session_b in _INSTANCE_MEMO
 
     def test_memo_entry_is_released_when_the_session_is_dropped(self) -> None:
         """
