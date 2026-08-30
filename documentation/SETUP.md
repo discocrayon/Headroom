@@ -117,6 +117,12 @@ security_analysis_account_id: '111111111111'  # Required for this option
 - `max_account_workers`: how many accounts to analyze at once. Defaults to 16, and must be
   between 1 and 32. See [Tuning `max_account_workers`](#tuning-max_account_workers).
 
+Every key is one of the above. Headroom refuses to start on a key it does not recognize,
+rather than ignoring it: a dropped key is indistinguishable from a misspelled one, and the
+setting most likely to be misspelled is one whose loss changes how the run behaves without
+changing whether it succeeds. `max_account_worker: 1` used to configure sixteen workers and
+say nothing. The same applies to the keys inside `account_tag_layout`.
+
 ### Skipping Accounts
 
 ```yaml
@@ -214,14 +220,24 @@ overwhelmingly network-bound, so the interpreter is idle most of the run.
 
 | Workers | Resident memory | 300 accounts |
 | --- | --- | --- |
-| 1 | baseline | ~3.8 hours |
-| 8 | ~0.4 GB | ~29 minutes |
-| 16 (default) | ~0.8 GB | ~14 minutes |
-| 32 (maximum) | ~1.5 GB | ~7 minutes |
+| 1 | baseline | ~3.8 hours (measured) |
+| 8 | ~0.4 GB | ~30 minutes (projected) |
+| 16 (default) | ~0.8 GB | ~16 minutes (projected) |
+| 32 (maximum) | ~1.5 GB | ~9 minutes (projected) |
 
-Row 1 is the serial time with the per-session caches in place -- the region list, the EC2
-instance list, and the resource policies two checks each read; before those, a serial run
-took roughly 4.9 hours.
+Only the serial row is measured. It was taken with the region-list and EC2-instance caches
+in place; before those, a serial run took roughly 4.9 hours. A third cache, covering the
+resource policies two checks each read, landed afterwards and removes about 68 region
+probes per account, so the serial row is if anything now pessimistic.
+
+The other three rows are projected from it rather than measured, and the projection is not
+a straight division. Roughly 2.2 minutes of a 300-account run is GIL-bound Python that no
+number of workers removes -- client construction and JSON parsing, measured at about 0.45
+seconds per account -- so the model is `2.2 + 225.8 / workers`. Dividing the whole 228
+minutes instead puts the 32-worker row at 7 minutes, about 30% optimistic, and that is the
+row an operator raising the cap is relying on. Real numbers will be worse again: workers
+contend for the lock around client construction on the shared session, and AWS throttles
+per account rather than per worker.
 
 Set it to `1` to analyze accounts one at a time. That runs the same code path as any other
 value rather than a separate serial branch, so it is a safe way to get readable logs and a
@@ -230,6 +246,37 @@ simple stack trace while debugging.
 A failure in any account aborts the whole run. Queued accounts never start, and accounts
 already in flight stop after their current check. Nothing is lost: each check writes its own
 result file as it completes, and a re-run skips the results already on disk.
+
+### Reading the Logs
+
+Every line carries the account its thread is working on, in brackets after the logger name:
+
+```
+INFO:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1
+```
+
+Accounts are analyzed concurrently, so lines from different accounts interleave and most of
+them name only a region or a resource. The bracket is what makes a line attributable. Work
+that does not belong to any one account -- startup, configuration, Terraform generation --
+is stamped `-`.
+
+The default level is INFO, which reports one line per account as it starts, finishes, or
+stops. Per-region progress is DEBUG, so a run at the default level says nothing between
+starting an account and finishing it. Raise the level when an account looks stuck:
+
+```python
+import logging
+logging.getLogger("headroom").setLevel(logging.DEBUG)
+```
+
+When a run aborts, the last lines account for what did not happen. Every account that
+failed is named, not only the one whose error propagated, and a final line gives the number
+of accounts that were cancelled before they started:
+
+```
+ERROR:headroom.analysis:[-] Checks failed for account payments_111111111111: ClientError(...)
+ERROR:headroom.analysis:[-] Aborting: 184 account(s) were never analyzed. Results on disk cover the rest, and a re-run resumes from them.
+```
 
 ## Test Environment
 
@@ -274,3 +321,14 @@ aws account get-region-opt-status --region-name <region> --account-id <member-ac
 - Ensure `management_account_id` is always set
 - Only set `security_analysis_account_id` if running from management account
 - Validate YAML syntax in your config file
+- `Extra inputs are not permitted` names a key Headroom does not recognize. Check it against
+  [Configuration Parameters](#configuration-parameters); it is usually a typo.
+
+### "cannot be used as result filenames"
+
+An account name becomes part of its result filename, so a name containing `/` builds a path
+into a subdirectory rather than a filename, and a name starting with `.` produces a file the
+reader's `*.json` glob does not match. Either way the account's results end up somewhere
+policy generation does not look. Headroom checks this before the scan starts and names the
+accounts. Rename them, or set `use_account_name_from_tags: true` and give them a `name` tag
+that is a plain filename.
