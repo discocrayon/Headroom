@@ -6,7 +6,7 @@ Tests for DenyEc2ImdsV1 dataclass and get_ec2_imds_v1_analysis function.
 
 import gc
 import logging
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 from unittest.mock import MagicMock
@@ -1905,6 +1905,42 @@ class TestGetInstances:
 
         with pytest.raises(FrozenInstanceError):
             instance.http_tokens = "required"  # type: ignore[misc]
+
+    def test_a_projected_instance_can_be_hashed(self) -> None:
+        """
+        Frozen advertises hashability, so it has to actually hash.
+
+        `frozen=True` generates `__hash__` over the compared fields, and
+        `tags` is a dict, so the generated hash raised `TypeError:
+        unhashable type: 'dict'` for every instance ever built. Nothing
+        hashes one today, which is why no test caught it -- but strict mypy
+        accepts `set[Ec2Instance]` and `dict[Ec2Instance, ...]` without a
+        word, so the first caller to dedupe instances gets a green type check
+        and a runtime crash.
+
+        `tags` is excluded from the hash rather than from `==`: dropping it
+        from equality would make two instances differing only by tag compare
+        equal, which is a wrong answer where an unhashable object is merely
+        an unusable one. Two such instances therefore share a hash and stay
+        distinct in a set, which is what the last assertion pins.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "State": {"Name": "running"},
+                    "Tags": [{"Key": "Name", "Value": "web"}],
+                }],
+            }]
+        }])
+
+        instance = get_instances(session, "us-east-1")[0]
+        retagged = replace(instance, tags={"Name": "batch"})
+
+        assert hash(instance) == hash(retagged)
+        assert instance != retagged
+        assert len({instance, retagged}) == 2
 
     def test_each_region_is_described_separately(self) -> None:
         """Two regions are distinct memo entries, not one shared answer."""
