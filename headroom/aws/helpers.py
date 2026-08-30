@@ -36,12 +36,14 @@ def get_all_regions(session: Session) -> list[str]:
     Note that an enabled region does not guarantee the service is available
     there; handling a missing regional endpoint is the caller's concern.
 
-    The result is memoized per session. Eleven calls reach this function for
-    each account -- one per region-sweeping analyzer, four of them in
-    `aws/ec2.py` -- and the answer cannot change within a run, so the other
-    ten are pure latency. `deny_service_confused_deputy` adds no twelfth:
-    its copies of the four shared analyzers are absorbed a layer up, by
-    `memoize_per_session`, and never reach here at all.
+    The result is memoized per session. Eleven functions call this, one per
+    region-sweeping analyzer and four of them in `aws/ec2.py`, and the answer
+    cannot change within a run, so ten of the eleven calls an account makes
+    are pure latency. `deny_service_confused_deputy` re-invokes six analyzers
+    that another check also calls, four of which sweep regions, but
+    `memoize_per_session` absorbs whichever of each pair runs second -- so the
+    count stays eleven whatever order the registry yields the checks in, and
+    which of the two checks reaches here is not worth asserting.
 
     The memo is keyed on the session object itself, never on an account ID or
     name. That is what keeps one account's region list out of another account's
@@ -50,10 +52,11 @@ def get_all_regions(session: Session) -> list[str]:
     across a 300-account run.
 
     The lock is released across the `describe_regions` call rather than held.
-    Holding it would serialize every worker behind one account's region lookup.
-    Two threads cannot race to fill the same entry because each session belongs
-    to exactly one worker; the lock exists only because the outer
-    WeakKeyDictionary is shared between workers.
+    Holding it would serialize every worker behind one account's region
+    lookup. The lock exists only because the WeakKeyDictionary is shared
+    between workers; the entry itself is uncontended, since one worker owns a
+    session. Two threads filling it would cost a duplicate API call and
+    nothing else -- the value written is a fresh list either way.
 
     Callers must not mutate what this returns. It is the cached list itself,
     not a copy, so sorting or filtering it in place changes the region list
@@ -105,11 +108,9 @@ def memoize_per_session(
     served the first call's answer to a different question would be both
     plausible and wrong.
 
-    The lock is released across the analyzer call rather than held. Holding it
-    would serialize every worker behind one account's policy sweep. Two
-    threads cannot race to fill the same entry because each session belongs to
-    exactly one worker; the lock exists only because the `WeakKeyDictionary`
-    is shared between workers.
+    The lock is released across the analyzer call rather than held, for the
+    reason `get_all_regions` gives above: holding it would serialize every
+    worker behind one account's policy sweep, and the entry is uncontended.
 
     Callers must not mutate what this returns. It is the cached list itself,
     not a copy, so sorting or filtering it in place changes what the other
