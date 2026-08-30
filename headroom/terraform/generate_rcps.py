@@ -40,6 +40,7 @@ from ..constants import (
     DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
     DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
+    DENY_SERVICE_CONFUSED_DEPUTY,
     DENY_SQS_THIRD_PARTY_ACCESS,
 )
 from ..write_results import get_results_dir
@@ -558,6 +559,13 @@ RCP_TERRAFORM_VARIABLES: Dict[str, RcpTerraformVars] = {
         comment="STS",
         enable_var="deny_sts_third_party_assumerole",
         allowlist_var="sts_third_party_assumerole_account_ids_allowlist",
+    ),
+    DENY_SERVICE_CONFUSED_DEPUTY: RcpTerraformVars(
+        # Not a service, so it sits after the alphabetical run rather than
+        # inside it. One statement covers every service the other six do.
+        comment="Service confused deputy",
+        enable_var="deny_service_confused_deputy",
+        allowlist_var="service_confused_deputy_source_account_ids_allowlist",
     ),
 }
 

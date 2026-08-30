@@ -1,0 +1,296 @@
+"""Tests for the deny_service_confused_deputy RCP check."""
+
+import tempfile
+from typing import Any, Dict, Iterator, List
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from headroom.aws.policy_documents import ServicePrincipalSource
+from headroom.checks.rcps.deny_service_confused_deputy import (
+    DenyServiceConfusedDeputyCheck,
+)
+
+ORG_ACCOUNTS = {"111111111111"}
+THIRD_PARTY = "999999999999"
+
+ANALYZERS = [
+    "analyze_ecr_policies",
+    "analyze_kms_key_policies",
+    "analyze_s3_bucket_policies",
+    "analyze_secrets_manager_policies",
+    "analyze_sqs_queue_policies",
+    "analyze_iam_roles_trust_policies",
+]
+
+
+@pytest.fixture
+def temp_results_dir() -> Iterator[str]:
+    """Provide a throwaway results directory."""
+    with tempfile.TemporaryDirectory() as directory:
+        yield directory
+
+
+def _source(
+    service: str = "sns.amazonaws.com",
+    accounts: List[str] | None = None,
+    has_condition: bool = True,
+    wildcard: bool = False,
+) -> ServicePrincipalSource:
+    """Build one ServicePrincipalSource with sensible defaults."""
+    return ServicePrincipalSource(
+        service_principal=service,
+        source_account_ids=accounts if accounts is not None else [],
+        has_source_condition=has_condition,
+        has_wildcard_source=wildcard,
+    )
+
+
+def _sqs_analysis(sources: List[ServicePrincipalSource]) -> MagicMock:
+    """Build a stand-in SQS analysis carrying the given sources."""
+    analysis = MagicMock()
+    analysis.service_principal_sources = sources
+    analysis.queue_arn = "arn:aws:sqs:us-west-2:111111111111:a-queue"
+    analysis.region = "us-west-2"
+    return analysis
+
+
+def _run(temp_results_dir: str, sqs_sources: List[ServicePrincipalSource]) -> Dict[str, Any]:
+    """
+    Execute the check with only SQS returning findings.
+
+    Returns the results payload the check wrote.
+    """
+    module = "headroom.checks.rcps.deny_service_confused_deputy"
+    check = DenyServiceConfusedDeputyCheck(
+        check_name="deny_service_confused_deputy",
+        account_name="test-account",
+        account_id="111111111111",
+        results_dir=temp_results_dir,
+        org_account_ids=ORG_ACCOUNTS,
+    )
+
+    with patch(f"{module}.analyze_sqs_queue_policies") as mock_sqs:
+        mock_sqs.return_value = [_sqs_analysis(sqs_sources)]
+
+        patches = [
+            patch(f"{module}.{name}", return_value=[])
+            for name in ANALYZERS
+            if name != "analyze_sqs_queue_policies"
+        ]
+        for entered in patches:
+            entered.start()
+        try:
+            # write_check_results is imported by headroom/checks/base.py:17,
+            # so that is where it must be patched
+            with patch("headroom.checks.base.write_check_results") as mock_write:
+                check.execute(MagicMock())
+        finally:
+            for entered in patches:
+                entered.stop()
+
+    results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
+    return results_data
+
+
+def _analysis(**fields: Any) -> MagicMock:
+    """Build a stand-in analysis carrying the given attributes."""
+    analysis = MagicMock()
+    for name, value in fields.items():
+        setattr(analysis, name, value)
+    return analysis
+
+
+def _run_single_analyzer(
+    temp_results_dir: str, analyzer_name: str, analysis: MagicMock
+) -> Dict[str, Any]:
+    """
+    Execute the check with only the named analyzer returning a finding.
+
+    The other five analyzers return nothing, isolating which analyzer fed
+    the resulting finding.
+
+    Returns the results payload the check wrote.
+    """
+    module = "headroom.checks.rcps.deny_service_confused_deputy"
+    check = DenyServiceConfusedDeputyCheck(
+        check_name="deny_service_confused_deputy",
+        account_name="test-account",
+        account_id="111111111111",
+        results_dir=temp_results_dir,
+        org_account_ids=ORG_ACCOUNTS,
+    )
+
+    patches = [
+        patch(
+            f"{module}.{name}",
+            return_value=[analysis] if name == analyzer_name else [],
+        )
+        for name in ANALYZERS
+    ]
+    for entered in patches:
+        entered.start()
+    try:
+        with patch("headroom.checks.base.write_check_results") as mock_write:
+            check.execute(MagicMock())
+    finally:
+        for entered in patches:
+            entered.stop()
+
+    results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
+    return results_data
+
+
+class TestServiceConfusedDeputyCheck:
+    """Test categorization, filtering, and summary fields."""
+
+    def test_third_party_source_reaches_the_allowlist(
+        self, temp_results_dir: str
+    ) -> None:
+        """A guarded out-of-org source is what the allowlist carries."""
+        data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
+
+        assert data["summary"]["unique_third_party_accounts"] == [THIRD_PARTY]
+        assert data["summary"]["third_party_account_count"] == 1
+
+    def test_a_guarded_source_is_not_a_violation(
+        self, temp_results_dir: str
+    ) -> None:
+        """An expressible source costs the account no RCP coverage."""
+        data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
+
+        assert data["summary"]["violations"] == 0
+
+    def test_a_wildcard_source_is_a_violation(
+        self, temp_results_dir: str
+    ) -> None:
+        """No allowlist can express an unbounded source set."""
+        data = _run(temp_results_dir, [_source(wildcard=True)])
+
+        assert data["summary"]["violations"] == 1
+
+    def test_unguarded_sources_reach_nothing(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        An unguarded service principal asks nothing of the allowlist.
+
+        The statement's Null condition keeps the deny off requests
+        carrying no source account, so an unguarded trust neither needs
+        permitting nor blocks the statement. Listing it would put every
+        service role trust policy in the account into the results.
+        """
+        data = _run(temp_results_dir, [_source(has_condition=False)])
+
+        assert data["summary"]["violations"] == 0
+        assert data["summary"]["unique_third_party_accounts"] == []
+        assert data["compliant_instances"] == []
+
+    def test_the_finding_names_its_resource(
+        self, temp_results_dir: str
+    ) -> None:
+        """A finding without its resource cannot be acted on."""
+        data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
+
+        # The base _build_results_data names this key compliant_instances
+        finding = data["compliant_instances"][0]
+        assert finding["resource_type"] == "sqs"
+        assert finding["resource_identifier"].endswith("a-queue")
+        assert finding["region"] == "us-west-2"
+        assert finding["service_principal"] == "sns.amazonaws.com"
+        assert finding["source_account_ids"] == [THIRD_PARTY]
+
+
+class TestEveryAnalyzerFeedsTheCheck:
+    """Each of the six analyzers must reach analyze()'s findings list."""
+
+    def test_ecr_finding_names_its_repository(self, temp_results_dir: str) -> None:
+        """A repository policy's finding names that repository."""
+        analysis = _analysis(
+            service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+            repository_name="a-repo",
+            region="us-east-1",
+        )
+        data = _run_single_analyzer(temp_results_dir, "analyze_ecr_policies", analysis)
+
+        finding = data["compliant_instances"][0]
+        assert finding["resource_type"] == "ecr"
+        assert finding["resource_identifier"] == "a-repo"
+        assert finding["region"] == "us-east-1"
+
+    def test_ecr_registry_policy_falls_back_to_registry(
+        self, temp_results_dir: str
+    ) -> None:
+        """A registry policy names no repository, so the finding says so."""
+        analysis = _analysis(
+            service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+            repository_name=None,
+            region="us-east-1",
+        )
+        data = _run_single_analyzer(temp_results_dir, "analyze_ecr_policies", analysis)
+
+        finding = data["compliant_instances"][0]
+        assert finding["resource_identifier"] == "registry"
+
+    def test_kms_finding_names_its_key(self, temp_results_dir: str) -> None:
+        """A key policy's finding names that key."""
+        analysis = _analysis(
+            service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+            key_id="a-key",
+            region="us-east-1",
+        )
+        data = _run_single_analyzer(temp_results_dir, "analyze_kms_key_policies", analysis)
+
+        finding = data["compliant_instances"][0]
+        assert finding["resource_type"] == "kms"
+        assert finding["resource_identifier"] == "a-key"
+        assert finding["region"] == "us-east-1"
+
+    def test_s3_finding_names_its_bucket_with_no_region(
+        self, temp_results_dir: str
+    ) -> None:
+        """A bucket policy's finding names that bucket; S3 is global."""
+        analysis = _analysis(
+            service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+            bucket_name="a-bucket",
+        )
+        data = _run_single_analyzer(temp_results_dir, "analyze_s3_bucket_policies", analysis)
+
+        finding = data["compliant_instances"][0]
+        assert finding["resource_type"] == "s3"
+        assert finding["resource_identifier"] == "a-bucket"
+        assert finding["region"] is None
+
+    def test_secretsmanager_finding_names_its_secret_with_no_region(
+        self, temp_results_dir: str
+    ) -> None:
+        """A secret policy's finding names that secret; Secrets Manager is global."""
+        analysis = _analysis(
+            service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+            secret_name="a-secret",
+        )
+        data = _run_single_analyzer(
+            temp_results_dir, "analyze_secrets_manager_policies", analysis
+        )
+
+        finding = data["compliant_instances"][0]
+        assert finding["resource_type"] == "secretsmanager"
+        assert finding["resource_identifier"] == "a-secret"
+        assert finding["region"] is None
+
+    def test_iam_finding_names_its_role_with_no_region(
+        self, temp_results_dir: str
+    ) -> None:
+        """A trust policy's finding names that role; IAM is global."""
+        analysis = _analysis(
+            service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+            role_name="a-role",
+        )
+        data = _run_single_analyzer(
+            temp_results_dir, "analyze_iam_roles_trust_policies", analysis
+        )
+
+        finding = data["compliant_instances"][0]
+        assert finding["resource_type"] == "iam"
+        assert finding["resource_identifier"] == "a-role"
+        assert finding["region"] is None
