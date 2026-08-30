@@ -4257,6 +4257,12 @@ change therefore holds both shapes, and resuming into one is expected: the
 account segment is not read back by anything, and the fix is not worth
 re-scanning accounts already on disk for.
 
+`ReservationTypeDef` declares `OwnerId` optional, so a reservation arriving
+without one raises a `RuntimeError` naming the region and the instances that
+reservation covered. It is not inferred from the calling identity: the owning
+account is what makes the ARN resolvable, and a wrong one is worse than a
+stopped run.
+
 ### IAM Integration
 
 ```python

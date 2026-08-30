@@ -263,6 +263,17 @@ them name only a region or a resource. The bracket is what makes a line attribut
 that does not belong to any one account -- startup, configuration, Terraform generation --
 is stamped `-`.
 
+One line sizes the whole run, printed once the resume filter has run:
+
+```
+INFO:headroom.analysis:[-] Analyzing 116 account(s) with 16 worker(s)
+```
+
+Both counts are what the pool is given, not what is configured. Accounts whose results are
+already on disk are filtered out before this line, so on a resumed run the count is smaller
+than the organization; and because threads are spawned on demand, a run with less work than
+`max_account_workers` reports the smaller number.
+
 The default level is INFO, which reports one line per account as it starts, finishes, or
 stops. Per-region progress is DEBUG, so a run at the default level says nothing between
 starting an account and finishing it. Raise the level when an account looks stuck:
