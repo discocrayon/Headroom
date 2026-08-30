@@ -202,7 +202,8 @@ def _describe_instances(session: Session, region: str) -> List[Ec2Instance]:
         Projected instances, terminated ones excluded
 
     Raises:
-        RuntimeError: If describe_instances fails
+        RuntimeError: If describe_instances fails, or returns a reservation
+            with no OwnerId
     """
     regional_ec2: EC2Client = session.client('ec2', region_name=region)
     instances = []
@@ -210,7 +211,18 @@ def _describe_instances(session: Session, region: str) -> List[Ec2Instance]:
     try:
         for page in paginate(regional_ec2, 'describe_instances'):
             for reservation in page['Reservations']:
-                owner_id = reservation['OwnerId']
+                owner_id = reservation.get('OwnerId')
+                if not owner_id:
+                    instance_ids = [
+                        instance.get('InstanceId')
+                        for instance in reservation.get('Instances', [])
+                    ]
+                    raise RuntimeError(
+                        f"DescribeInstances in {region} returned a reservation with no "
+                        f"OwnerId, covering instance(s) {instance_ids}. OwnerId is the "
+                        f"account in every instance ARN this run reports, and the "
+                        f"response carries nothing else to take it from."
+                    )
                 for instance in reservation['Instances']:
                     if instance['State']['Name'] == 'terminated':
                         continue
