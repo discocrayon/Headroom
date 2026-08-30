@@ -10,6 +10,7 @@ This module provides functions for analyzing IAM resources:
 # Trust policy analysis (RCP checks)
 from .roles import (
     InvalidFederatedPrincipalError,
+    MalformedStatementError,
     TrustPolicyAnalysis,
     UnknownPrincipalTypeError,
     analyze_iam_roles_trust_policies,
@@ -32,6 +33,7 @@ __all__ = [
     "TrustPolicyAnalysis",
     "UnknownPrincipalTypeError",
     "InvalidFederatedPrincipalError",
+    "MalformedStatementError",
     "analyze_iam_roles_trust_policies",
     # Users (SCP)
     "IamUserAnalysis",

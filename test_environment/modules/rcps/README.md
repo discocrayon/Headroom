@@ -11,8 +11,19 @@ RCPs are AWS Organizations policies that help you enforce security controls on r
 4. Restricting Secrets Manager secret access to organization principals
 5. Restricting SQS queue access to organization principals
 6. Enforcing organization identity for IAM role assumptions
+7. Restricting AWS services acting on a caller's behalf to organization sources
 
 ## Policy Details
+
+Each section's allowlist condition applies only when that allowlist is
+non-empty. An empty allowlist omits the key it would populate -
+`aws:PrincipalAccount`, or `aws:SourceAccount` in the confused deputy
+statement - rather than emitting `[]`, which could match nothing and void the
+Deny; the organization condition alone then denies every outsider that statement reaches.
+
+There is deliberately no `dp:exclude:identity` resource-tag exemption. Anyone
+holding the service's tagging permission could set it, exempting their own
+resources from the policy that exists to constrain them.
 
 ### ECR Repository Access Restriction
 
@@ -20,8 +31,7 @@ The `deny_ecr_third_party_access` RCP denies all `ecr:*` actions unless one of t
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `ecr_third_party_access_account_ids_allowlist`
-3. The resource is tagged with `dp:exclude:identity: true`
-4. The principal is an AWS service
+3. The principal is an AWS service
 
 ### KMS Key Access Restriction
 
@@ -29,8 +39,7 @@ The `deny_kms_third_party_access` RCP denies all `kms:*` actions unless one of t
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `kms_third_party_access_account_ids_allowlist`
-3. The resource is tagged with `dp:exclude:identity: true`
-4. The principal is an AWS service
+3. The principal is an AWS service
 
 ### S3 Bucket Access Restriction
 
@@ -38,8 +47,7 @@ The `deny_s3_third_party_access` RCP denies all `s3:*` actions unless one of the
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `s3_third_party_access_account_ids_allowlist`
-3. The resource is tagged with `dp:exclude:identity: true`
-4. The principal is an AWS service
+3. The principal is an AWS service
 
 ### Secrets Manager Secret Access Restriction
 
@@ -47,8 +55,7 @@ The `deny_secrets_manager_third_party_access` RCP denies all `secretsmanager:*` 
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `secrets_manager_third_party_account_ids_allowlist`
-3. The resource is tagged with `dp:exclude:identity: true`
-4. The principal is an AWS service
+3. The principal is an AWS service
 
 ### SQS Queue Access Restriction
 
@@ -56,8 +63,7 @@ The `deny_sqs_third_party_access` RCP denies all `sqs:*` actions unless one of t
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `sqs_third_party_access_account_ids_allowlist`
-3. The resource is tagged with `dp:exclude:identity: true`
-4. The principal is an AWS service
+3. The principal is an AWS service
 
 ### IAM AssumeRole Restriction
 
@@ -65,8 +71,19 @@ The `deny_sts_third_party_assumerole` RCP denies `sts:AssumeRole` actions unless
 
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `sts_third_party_assumerole_account_ids_allowlist`
-3. The resource is tagged with `dp:exclude:identity: true`
-4. The principal is an AWS service
+3. The principal is an AWS service
+
+### Service Confused Deputy Restriction
+
+The six statements above exempt AWS service principals, because a service call carries no `aws:PrincipalOrgID` and the deny would otherwise match every service integration in the organization. The `deny_service_confused_deputy` RCP narrows that exemption back down for `ecr:*`, `kms:*`, `s3:*`, `secretsmanager:*`, `sqs:*`, and `sts:AssumeRole`. It applies only when all of the following are true:
+
+1. The caller is an AWS service (checked via `aws:PrincipalIsAWSService`)
+2. The request carries an `aws:SourceAccount`. The gate keys on that one condition key, so a
+   call populating only `aws:SourceArn` - or no source keys at all - falls outside this
+   statement entirely. This narrows the service exemption rather than closing it.
+3. That source account is neither in this organization (checked via `aws:SourceOrgID`) nor in the `service_confused_deputy_source_account_ids_allowlist`
+
+Reference: https://github.com/aws-samples/data-perimeter-policy-examples
 
 ## Usage
 
@@ -112,6 +129,12 @@ module "account_rcp" {
     "666666666666",
     "777777777777"
   ]
+
+  # Service confused deputy
+  deny_service_confused_deputy = true
+  service_confused_deputy_source_account_ids_allowlist = [
+    "999999999999"
+  ]
 }
 ```
 
@@ -126,6 +149,7 @@ module "account_rcp" {
 - `deny_secrets_manager_third_party_access` (bool): Whether to deny Secrets Manager access from third-party accounts
 - `deny_sqs_third_party_access` (bool): Whether to deny SQS access from third-party accounts
 - `deny_sts_third_party_assumerole` (bool): Whether to deny STS AssumeRole from third-party accounts
+- `deny_service_confused_deputy` (bool): Whether to deny AWS services acting on behalf of sources outside the organization
 
 ### Optional
 
@@ -135,6 +159,7 @@ module "account_rcp" {
 - `secrets_manager_third_party_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access Secrets Manager secrets
 - `sqs_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access SQS queues
 - `sts_third_party_assumerole_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs that are permitted to assume roles
+- `service_confused_deputy_source_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to drive AWS service calls into resources
 
 ## Notes
 

@@ -137,7 +137,7 @@ This document categorizes the different patterns of Service Control Policies (SC
 **Philosophy:** This IS an exception mechanism. Exception tags acknowledge that a resource is non-standard and requires special handling.
 
 **Examples:**
-- Allow IMDSv1 for legacy workloads tagged `ExemptFromIMDSv2=true`
+- Allow a launch to answer IMDSv1 when the `RunInstances` request is tagged `ExemptFromIMDSv2=true` (visible afterwards as the instance's own tag)
 - Allow specific security group rules for resources tagged `NetworkExemption=legacy-app`
 
 **Implementation Example (from `deny_ec2_imds_v1`):**
@@ -145,26 +145,49 @@ This document categorizes the different patterns of Service Control Policies (SC
 ```json
 {
   "Effect": "Deny",
-  "Action": "*",
-  "Resource": "*",
+  "Action": "ec2:RunInstances",
+  "Resource": "arn:aws:ec2:*:*:instance/*",
   "Condition": {
-    "NumericLessThan": {
-      "ec2:RoleDelivery": "2.0"
-    },
     "StringNotEquals": {
-      "aws:PrincipalTag/ExemptFromIMDSv2": "true"
+      "ec2:MetadataHttpTokens": "required",
+      "aws:RequestTag/ExemptFromIMDSv2": "true"
     }
   }
 }
 ```
 
-**Codebase Reference:** `test_environment/modules/scps/locals.tf` lines 8-20, 27-37
+**Codebase Reference:** `test_environment/modules/scps/locals.tf`, the
+`DenyRunInstancesMetadataHttpTokensOptional` statement. Referenced by Sid
+rather than by line number, which goes stale.
 
 **Characteristics:**
 - Reactive exemption for specific resources
 - "You need an exception" signal
 - Should be audited and reviewed regularly
 - Provides clear trail of what's been exempted and why
+
+**The tag name is not the exemption; the condition key is.** The same
+`ExemptFromIMDSv2` name reads a launch request's tag under `aws:RequestTag`, a
+role's tag under `aws:PrincipalTag`, and nothing at all on the instance
+itself. A scanner that decides deployability has to check the dimension the
+statement reads, or it clears an account whose launches enforcement will
+break. See AP-009 in `HOW_TO_ADD_A_CHECK.md`.
+
+**An exemption on a key the scan cannot read needs a proxy, chosen on
+purpose.** This one lives on a `RunInstances` request in flight, which no scan
+observes. `deny_ec2_imds_v1` reads the *instance's* tag instead, because the
+`TagSpecifications` entry that supplies the request tag is what puts the tag
+on the instance - so the tag on a running instance is the trace of the
+exemption that let it launch, and evidence its relaunch will be exempt too.
+
+A proxy is a judgement, not a lookup, and it must be argued rather than
+assumed. This one is wrong when a tag was applied after launch with
+`CreateTags`, or when the thing that recreates the instance does not declare
+the tag; both leave a tagged instance whose relaunch enforcement denies. That
+is accepted here as the cost of honouring a declared exemption. What is not
+acceptable is reaching for a same-named tag on a *different* condition key -
+`aws:PrincipalTag` is not `aws:RequestTag`, and substituting one for the other
+is AP-009, not a proxy.
 
 ---
 
@@ -253,6 +276,11 @@ This document categorizes the different patterns of Service Control Policies (SC
 
 **Examples:**
 - Only allow EC2 instances from specific AMI owners (amazon, aws-marketplace, trusted account IDs)
+  - The scanner must record the value the condition key will actually hold,
+    not the value that names the same thing elsewhere in the API. `ec2:Owner`
+    is the AMI's `ImageOwnerAlias` when it has one and its numeric `OwnerId`
+    otherwise, so an allowlist built from `OwnerId` alone denies every
+    Amazon and Marketplace AMI - measurements in `documentation/CHECKS.md`
 - Only allow S3 buckets with specific encryption types
 - Restrict actions based on approved source IPs or VPCs
 
@@ -261,8 +289,13 @@ This document categorizes the different patterns of Service Control Policies (SC
 ```json
 {
   "Effect": "Deny",
-  "Action": "ec2:RunInstances",
-  "Resource": "arn:aws:ec2:*:*:instance/*",
+  "Action": [
+    "ec2:CreateFleet",
+    "ec2:RequestSpotFleet",
+    "ec2:RequestSpotInstances",
+    "ec2:RunInstances"
+  ],
+  "Resource": "arn:aws:ec2:*::image/*",
   "Condition": {
     "StringNotEquals": {
       "ec2:Owner": [
@@ -293,6 +326,7 @@ This document categorizes the different patterns of Service Control Policies (SC
 
 **Examples:**
 - Region restrictions: Deny all actions unless `aws:RequestedRegion` is in approved list
+- Confused deputy protection: Deny an AWS service acting on a caller's behalf unless the source account is in the organization or in an approved list, and only when the request carries a source account at all (`deny_service_confused_deputy`)
 
 **Policy Structure:**
 
@@ -379,7 +413,7 @@ This check identifies EC2 instances whose IMDS hop limit exceeds 1. The SCP deni
 - Deny `ec2:RunInstances` on instance resources
 - When `ec2:MetadataHttpPutResponseHopLimit` is numerically greater than 1
 
-**Headroom's Role:** Scans all accounts and reports each instance's configured hop limit and whether its metadata endpoint is enabled. Instances with IMDS disabled are compliant regardless of hop limit, since there is no reachable endpoint.
+**Headroom's Role:** Scans all accounts and reports each instance's configured hop limit and whether its metadata endpoint is enabled. The hop limit is counted whether or not the endpoint is enabled, because the SCP counts it that way: AWS accepts a launch naming both a hop limit and a disabled endpoint, so the condition key is present and the deny fires. The endpoint state is reported for context - a violation on an instance whose endpoint is off is free to remedy, since nothing reads the hop limit there.
 
 **Note:** This is the first Pattern 2 policy in the codebase to use a numeric comparison rather than a string or boolean match. The pattern is unchanged -- `NumericGreaterThan` expresses the same "deny unless the condition holds" shape as `StringNotEquals` elsewhere.
 
@@ -403,14 +437,31 @@ This check identifies RDS databases (instances and Aurora clusters) without encr
 ### Pattern 4: `deny_ec2_imds_v1`
 
 **Check:** `headroom/checks/scps/deny_ec2_imds_v1.py`
-**Terraform:** `test_environment/modules/scps/locals.tf` lines 3-37
+**Terraform:** `test_environment/modules/scps/locals.tf`, the
+`DenyRunInstancesMetadataHttpTokensOptional` statement
 **Tag:** `ExemptFromIMDSv2`
 
-This check identifies EC2 instances with IMDSv1 enabled. The SCP denies IMDSv1 configuration unless the instance or principal is tagged with `ExemptFromIMDSv2=true`.
+This check identifies EC2 instances with IMDSv1 enabled. The variable gates
+one statement, which denies a `RunInstances` call whose
+`ec2:MetadataHttpTokens` is not `required` unless the request carries
+`ExemptFromIMDSv2=true` under `aws:RequestTag`.
 
-**Two-statement approach:**
-1. Deny modification of IAM role delivery to less than version 2.0 (unless principal has exemption tag)
-2. Deny launching instances with `MetadataHttpTokens != "required"` (unless request has exemption tag)
+**One variable, one statement.** An earlier revision put a second statement
+behind this variable: `DenyRoleDeliveryLessThan2`, denying any API call made
+with credentials fetched over IMDSv1, exempted by `aws:PrincipalTag` on the
+calling role. Two statements evaluated at different times and exempting on
+different keys meant one scan verdict licensing both kinds of evidence, so a
+role-tagged IMDSv1 instance was reported as a clean exemption while the
+surviving statement - which reads no role tag - would have denied that
+account's next launch. It was removed rather than split into its own
+variable. A tag on the instance's IAM role now exempts nothing.
+
+**Scope:** enforcement reaches launches only. Every instance the scan sees has
+already launched and cannot be denied by the statement; an IMDSv1 instance
+counts as evidence that the account's next launch would be. Credential use
+from an instance already running is out of scope by decision - covering it
+again means a new variable carrying its own verdict, not a second statement
+on this one.
 
 ### Pattern 1 Example: `deny_iam_saml_provider_not_aws_sso`
 
@@ -541,6 +592,62 @@ This RCP restricts Secrets Manager secret access to organization principals and 
 
 ---
 
+### Pattern 6: `deny_service_confused_deputy`
+
+**Check:** `headroom/checks/rcps/deny_service_confused_deputy.py`
+**Terraform:** `test_environment/modules/rcps/locals.tf`
+**Variable:** `service_confused_deputy_source_account_ids_allowlist`
+
+The six RCP statements above all exempt AWS service principals, because a service call carries no `aws:PrincipalOrgID` and the Deny would otherwise match every service integration in the organization. This statement narrows that exemption back down, denying the same six services' actions when an AWS service acts on behalf of a source account outside the organization.
+
+```json
+{
+  "Sid": "DenyServiceConfusedDeputy",
+  "Effect": "Deny",
+  "Principal": "*",
+  "Action": [
+    "ecr:*",
+    "kms:*",
+    "s3:*",
+    "secretsmanager:*",
+    "sqs:*",
+    "sts:AssumeRole"
+  ],
+  "Resource": "*",
+  "Condition": {
+    "StringNotEqualsIfExists": {
+      "aws:SourceOrgID": "o-exampleorgid",
+      "aws:SourceAccount": [
+        "999999999999"
+      ]
+    },
+    "Null": {
+      "aws:SourceAccount": "false"
+    },
+    "Bool": {
+      "aws:PrincipalIsAWSService": "true"
+    }
+  }
+}
+```
+
+**Policy Structure:**
+- Deny `ecr:*`, `kms:*`, `s3:*`, `secretsmanager:*`, `sqs:*` and `sts:AssumeRole` - the union of the six statements' actions, in one statement rather than six, to stay inside the 5,120-character RCP budget
+- Only when the caller **is** an AWS service (`Bool`, `true`), which is the inverse of the `BoolIfExists` `false` the other six carry
+- Only when the request carries an `aws:SourceAccount` (`Null` = `"false"` reads as "the key is present"). A service call populating only `aws:SourceArn`, or no source keys at all, falls outside this statement entirely - it narrows the service exemption rather than closing it, which is what makes the control deployable without first discovering every service integration in the estate
+- Unless that source account belongs to this organization (`aws:SourceOrgID`) or is in the allowlist (`aws:SourceAccount`). An empty allowlist omits the key rather than emitting `[]`, leaving the organization condition to deny every outside source
+- `aws:SourceOrgID` is compared with `StringNotEqualsIfExists`, so a source in a standalone account - which belongs to no organization and carries no organization ID - is still denied. An attacker cannot escape the control by using an unattached account
+
+**Why Pattern 6 rather than 5a:** the allowlisted account is not the principal. The principal is the AWS service, and the account being allowlisted is the one that configured it. The statement composes a conditional deny (the `Null` and `Bool` gates) with a condition-key value allowlist on `aws:SourceAccount`, which is the composition Pattern 6 describes - three condition keys - `aws:SourceOrgID`, `aws:SourceAccount` and `aws:PrincipalIsAWSService` - in four entries across three operator blocks, none of them `aws:PrincipalAccount`.
+
+**Headroom's Role:** Reads the source guard on every `Allow` statement that names a `Service` principal, across the six resource types the other RCP checks already analyze - ECR, KMS, S3, Secrets Manager, SQS and IAM role trust policies. Recording that guard costs those six checks nothing, but this check re-runs their six analyzers rather than reusing the results, so every RCP read API is issued twice per account per run. Caching is deliberately not implemented; it is a separate optimization if the duplication proves material. Out-of-organization accounts named by `aws:SourceAccount`, or extracted from `aws:SourceArn`, are unioned into the allowlist. A guard no allowlist can express - `*` in the account, or an ARN yielding no account with no companion `aws:SourceAccount` - is a violation that withholds the statement from that account, the same mechanism a wildcard principal already triggers.
+
+**Key Feature:** Service principals trusted with no source guard are neither listed nor counted. That is a volume decision, not a safety one: every log bucket and service role carries such a trust, so listing them would bury the sources that matter, and because five of the six analyzers drop an analysis with nothing to report while SQS keeps every queue that carries a policy, any estate-wide count taken here would be exhaustive for queues and incidental for the rest. They are still within the statement's reach - `aws:SourceAccount` is populated by the calling service, not by the resource policy, so an out-of-organization account driving an unguarded trust is denied once the statement deploys, and no resource policy names it for discovery to find. Closing that path is what the statement is for; finding the legitimate drivers of it before deploying is a CloudTrail exercise. See `documentation/CHECKS.md` for the full disposition table and the rollout steps.
+
+**A guard that cannot be read:** A source guard that cannot be read is recorded as a violation rather than dropped - a source key under an operator that does not pin it to a value, or an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard. A guard scoped to another organization by `aws:SourceOrgID` or `aws:SourceOrgPaths` reaches the same disposition by a different route: it is read successfully, but the allowlist holds account IDs and another organization's accounts are not knowable from here. A scope naming this organization needs no allowlist entry at all, because the statement already exempts it. The violation withholds the statement from that account, so a deployed RCP never denies access on the strength of an allowlist nobody could compute. It is recorded rather than raised because the parser sits inside six analyzers shared with six pre-existing checks that read no source guard, and raising would abort the estate run for all of them.
+
+---
+
 ### Pattern 5b: `deny_iam_user_creation`
 
 **Check:** `headroom/checks/scps/deny_iam_user_creation.py`
@@ -560,10 +667,37 @@ This check lists all IAM users in accounts. The SCP uses `NotResource` to deny `
 This check identifies EC2 instances and determines the owner of the AMI used to launch each instance. The SCP denies `ec2:RunInstances` unless the AMI owner is in the allowlist.
 
 **Policy Structure:**
-- Deny `ec2:RunInstances`
+- Deny the launch paths: `ec2:RunInstances`, `ec2:CreateFleet`,
+  `ec2:RequestSpotFleet`, `ec2:RequestSpotInstances`
+- Scoped to the **image** resource, `arn:aws:ec2:*::image/*`
 - Unless `ec2:Owner` is in the approved list (e.g., "amazon", "aws-marketplace", trusted account IDs)
 
-**Headroom's Role:** Scans all accounts and reports all EC2 instances with their AMI owners. This generates a comprehensive list of unique AMI owners that can be used to populate the allowlist. The check helps identify:
+**Why those actions:** they are EC2 actions AWS authorizes against the image
+resource with `ec2:Owner`, per the machine-readable service reference at
+`https://servicereference.us-east-1.amazonaws.com/v1/ec2/ec2.json`.
+
+`ec2:ModifyFleet` supports the key as well - raising a fleet's target capacity
+starts instances from its launch template's AMI - and is excluded as a
+deliberate scope decision.
+
+`ec2:RunScheduledInstances`, `ec2:ModifySpotFleetRequest` and
+`ec2:CreateLaunchTemplateVersion` are excluded for a different reason: they
+list no image resource, so a statement scoped to `image/*` never matches them
+and adding them would read as coverage while denying nothing.
+
+**Why the image resource:** `RunInstances` is authorized against every resource
+it touches - instance, volume, network interface, image - and `ec2:Owner` exists
+only on the image. Scoped to `instance/*` the key is absent from the request
+context, `StringNotEquals` on an absent key evaluates true, and the Deny matches
+every launch regardless of AMI. The operator is deliberately not
+`StringNotEqualsIfExists`: for a Deny statement, denying when the owner cannot
+be read is the safe direction.
+
+**Why the allowlist is never empty:** an empty `ec2_allowed_ami_owners` denies
+every launch rather than none of them, so Terraform generation aborts rather
+than rendering it. See the Allowlist Guard in the Headroom Specification.
+
+**Headroom's Role:** Scans all accounts and reports all EC2 instances with their AMI owners. The unique AMI owners observed across the accounts a placement covers are unioned into `ec2_allowed_ami_owners`. The check helps identify:
 - Amazon-owned AMIs (owner: "amazon")
 - AWS Marketplace AMIs (various vendor account IDs)
 - Custom AMIs (account-owned)
@@ -608,7 +742,7 @@ Headroom implements checks that analyze compliance with these policy patterns:
 
 1. **Scanning:** Headroom scans AWS accounts to find resources that would be affected by these policies
 2. **Categorization:** Results are categorized as violations, exemptions (Pattern 4), or compliant
-3. **Allowlist Generation:** For Patterns 5a/5b/5c, Headroom generates the lists of principals/resources/values that should be allowed
+3. **Allowlist Generation:** For Patterns 5a/5b/5c and the Pattern 6 compositions built on them, Headroom generates the lists of principals/resources/values that should be allowed
 4. **Terraform Generation:** Headroom can generate Terraform configurations that implement these patterns
 
 **Workflow:**

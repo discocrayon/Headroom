@@ -13,6 +13,8 @@ from headroom.checks.scps.deny_ec2_imds_v1 import DenyEc2ImdsV1Check
 from headroom.constants import DENY_EC2_IMDS_V1
 from headroom.config import DEFAULT_RESULTS_DIR
 from headroom.aws.ec2 import DenyEc2ImdsV1
+from headroom.checks.base import CategorizedCheckResult
+from headroom.enums import CheckCategory
 
 
 class TestCheckDenyEc2ImdsV1:
@@ -123,7 +125,7 @@ class TestCheckDenyEc2ImdsV1:
             assert summary["violations"] == 2
             assert summary["exemptions"] == 1
             assert summary["compliant"] == 1
-            assert summary["compliance_percentage"] == 50.0  # (1 compliant + 1 exemption) / 4 * 100
+            assert summary["compliance_percentage"] == 50.0  # (1 compliant + 1 exempt) / 4
 
             # Check violations
             violations = results_data["violations"]
@@ -274,20 +276,30 @@ class TestCheckDenyEc2ImdsV1:
             assert summary["compliant"] == 0
             assert summary["compliance_percentage"] == 0.0  # 0% compliance
 
-    def test_check_deny_ec2_imds_v1_all_exemptions(self, temp_results_dir: str) -> None:
-        """Test check function with all exemptions."""
+    def test_a_fleet_that_used_to_be_all_exemptions_now_reports_zero(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        Every instance answers IMDSv1, so the account is 0% ready, not 100%.
+
+        These two instances were once reported as exemptions, on the strength
+        of a tag on the role behind them, and the account came out at 100%
+        compliance - clean enough to license an org-wide launch-time IMDSv2
+        mandate against a fleet made entirely of IMDSv1 machines. The role tag
+        exempted a statement this module no longer generates.
+        """
         exemption_results = [
             DenyEc2ImdsV1(
                 region="us-east-1",
                 instance_id="i-exempt1",
                 imdsv1_allowed=True,
-                exemption_tag_present=True
+                exemption_tag_present=False
             ),
             DenyEc2ImdsV1(
                 region="us-west-2",
                 instance_id="i-exempt2",
                 imdsv1_allowed=True,
-                exemption_tag_present=True
+                exemption_tag_present=False
             )
         ]
 
@@ -310,17 +322,15 @@ class TestCheckDenyEc2ImdsV1:
             )
             check.execute(mock_session)
 
-            # Verify JSON structure for all exemptions
             write_call_args = mock_write.call_args
             results_data = write_call_args[1]["results_data"]
 
-            # Check summary for all exemptions
             summary = results_data["summary"]
             assert summary["total_instances"] == 2
-            assert summary["violations"] == 0
-            assert summary["exemptions"] == 2
+            assert summary["violations"] == 2
+            assert summary["exemptions"] == 0
             assert summary["compliant"] == 0
-            assert summary["compliance_percentage"] == 100.0  # 100% with exemptions
+            assert summary["compliance_percentage"] == 0.0
 
     def test_check_deny_ec2_imds_v1_json_formatting(
         self,
@@ -421,13 +431,148 @@ class TestCheckDenyEc2ImdsV1:
 
             # Verify individual result item structure
             for violation in results_data["violations"]:
-                expected_keys = {"region", "instance_id", "imdsv1_allowed", "exemption_tag_present"}
+                expected_keys = {
+                    "region", "instance_id", "imdsv1_allowed",
+                    "exemption_tag_present",
+                }
                 assert set(violation.keys()) == expected_keys
 
             for exemption in results_data["exemptions"]:
-                expected_keys = {"region", "instance_id", "imdsv1_allowed", "exemption_tag_present"}
+                expected_keys = {
+                    "region", "instance_id", "imdsv1_allowed",
+                    "exemption_tag_present",
+                }
                 assert set(exemption.keys()) == expected_keys
 
             for compliant in results_data["compliant_instances"]:
-                expected_keys = {"region", "instance_id", "imdsv1_allowed", "exemption_tag_present"}
+                expected_keys = {
+                    "region", "instance_id", "imdsv1_allowed",
+                    "exemption_tag_present",
+                }
                 assert set(compliant.keys()) == expected_keys
+
+
+class TestExemptTaggedInstancesAreAccepted:
+    """
+    An instance tagged ExemptFromIMDSv2=true does not block the SCP.
+
+    `DenyRunInstancesMetadataHttpTokensOptional` exempts a launch through
+    `aws:RequestTag/ExemptFromIMDSv2`, and the TagSpecifications entry that
+    supplies that request tag is what puts the tag on the resulting instance.
+    So the instance's tag is the observable trace of the exemption. Measured
+    with RunInstances --dry-run under the shipped statement: tagged `true`
+    launches, tagged `True` does not, untagged does not.
+
+    The proxy is imperfect - a tag applied with CreateTags after launch, or an
+    instance whose Terraform never declares it, wears the tag while its
+    relaunch carries nothing - and that is a known, accepted cost. The tag is
+    read as intent, not as a prediction.
+    """
+
+    def _check(self) -> DenyEc2ImdsV1Check:
+        return DenyEc2ImdsV1Check(
+            check_name=DENY_EC2_IMDS_V1,
+            account_name="legacy-app",
+            account_id="111111111111",
+            results_dir=DEFAULT_RESULTS_DIR,
+        )
+
+    def test_tagged_imdsv1_instance_is_an_exemption(self) -> None:
+        """The tag is the exemption, so the instance does not count."""
+        category, result_dict = self._check().categorize_result(
+            DenyEc2ImdsV1(
+                region="us-east-1",
+                instance_id="i-fake0",
+                imdsv1_allowed=True,
+                exemption_tag_present=True,
+            )
+        )
+
+        assert category == CheckCategory.EXEMPTION
+        assert result_dict == {
+            "region": "us-east-1",
+            "instance_id": "i-fake0",
+            "imdsv1_allowed": True,
+            "exemption_tag_present": True,
+        }
+
+    def test_untagged_imdsv1_instance_is_a_violation(self) -> None:
+        """Without the tag there is nothing to exempt the relaunch."""
+        category, _ = self._check().categorize_result(
+            DenyEc2ImdsV1(
+                region="us-east-1",
+                instance_id="i-fake1",
+                imdsv1_allowed=True,
+                exemption_tag_present=False,
+            )
+        )
+
+        assert category == CheckCategory.VIOLATION
+
+    def test_the_result_model_carries_no_role_fields(self) -> None:
+        """
+        The exemption is the instance's tag, never a role's.
+
+        `aws:PrincipalTag/ExemptFromIMDSv2` belonged to
+        `DenyRoleDeliveryLessThan2`, which this module no longer generates. A
+        role field here would mean someone reconnected an exemption to a
+        statement that does not exist.
+        """
+        assert set(DenyEc2ImdsV1.__dataclass_fields__) == {
+            "region",
+            "instance_id",
+            "imdsv1_allowed",
+            "exemption_tag_present",
+        }
+
+    def test_a_fully_exempt_fleet_reports_clean(self) -> None:
+        """
+        Every instance answers IMDSv1, every one is tagged, account is 100%.
+
+        This is the accepted proxy at its most extreme, and it is the intended
+        answer: each of those launches carries the tag that exempts it, so the
+        SCP denies none of them and there is no reason to withhold it.
+        """
+        check = self._check()
+        results = [
+            DenyEc2ImdsV1(
+                region="us-east-1",
+                instance_id=f"i-fake{i}",
+                imdsv1_allowed=True,
+                exemption_tag_present=True,
+            )
+            for i in range(3)
+        ]
+
+        categorized = CategorizedCheckResult(
+            violations=[],
+            exemptions=[check.categorize_result(r)[1] for r in results],
+            compliant=[],
+            summary={},
+        )
+        summary = check.build_summary_fields(categorized)
+
+        assert summary["violations"] == 0
+        assert summary["exemptions"] == 3
+        assert summary["compliance_percentage"] == 100.0
+
+    def test_one_untagged_instance_sinks_the_account(self) -> None:
+        """
+        The exemption is per instance, not per account.
+
+        A single IMDSv1 instance nobody tagged is a launch the SCP would deny,
+        so the account is not ready however many of its neighbours are exempt.
+        """
+        check = self._check()
+        exempt = check.categorize_result(DenyEc2ImdsV1(
+            region="us-east-1", instance_id="i-fake0",
+            imdsv1_allowed=True, exemption_tag_present=True))[1]
+        bare = check.categorize_result(DenyEc2ImdsV1(
+            region="us-east-1", instance_id="i-fake1",
+            imdsv1_allowed=True, exemption_tag_present=False))[1]
+
+        summary = check.build_summary_fields(CategorizedCheckResult(
+            violations=[bare], exemptions=[exempt], compliant=[], summary={}))
+
+        assert summary["violations"] == 1
+        assert summary["compliance_percentage"] == 50.0

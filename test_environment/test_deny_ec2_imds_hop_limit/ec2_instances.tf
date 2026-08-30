@@ -51,3 +51,26 @@ resource "aws_instance" "test_imds_disabled" {
     Name = "test-imds-disabled"
   }
 }
+
+# Instance: hop limit above 1 with the metadata endpoint disabled
+#
+# The regression case. The hop limit is inert on this running instance - no
+# IMDS is listening for a hop to cross - but the SCP is evaluated against the
+# launch request, and AWS accepts a request naming both. A dry run against a
+# live account confirms MaxImdsHopLimit denies exactly this shape, so the check
+# must report it a violation. Reporting it compliant, which it used to, cleared
+# accounts whose relaunches the SCP would deny.
+resource "aws_instance" "test_hop_limit_high_imds_disabled" {
+  provider      = aws.shared_foo_bar
+  ami           = data.aws_ami.amazon_linux_2023.id
+  instance_type = "t2.nano"
+
+  metadata_options {
+    http_endpoint               = "disabled"
+    http_put_response_hop_limit = 3
+  }
+
+  tags = {
+    Name = "test-hop-limit-high-imds-disabled"
+  }
+}

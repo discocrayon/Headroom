@@ -8,7 +8,7 @@ This directory contains EC2 instances used for testing the `deny_ec2_imds_hop_li
 
 - **Instance Type**: `t2.nano` (smallest/cheapest available)
 - **Cost per instance**: ~$0.0058/hour (~$4.18/month if left running)
-- **Total cost for 3 instances**: ~$0.0174/hour (~$12.54/month if left running)
+- **Total cost for 4 instances**: ~$0.0232/hour (~$16.72/month if left running)
 
 **⚠️ Important**: These instances should only be created when actively testing and should be destroyed immediately after testing is complete.
 
@@ -29,6 +29,8 @@ This directory contains EC2 instances used for testing the `deny_ec2_imds_hop_li
 ```
 
 A hop limit above 1 lets the IMDS response cross an extra network hop, which is what allows a container or a downstream proxy running on the instance to reach the metadata endpoint.
+
+**Expect this to deny modern default launches.** An AMI carrying `imds-support=v2.0`, current Amazon Linux 2023 included, supplies a hop limit above 1 to a launch that names no `MetadataOptions` at all, and a dry run confirms this statement denies that default launch. The instances below therefore pin a threshold that most real fleets do not meet without explicitly setting the hop limit.
 
 **This policy is launch-time only.** `ec2:ModifyInstanceMetadataOptions` has no fine-grained condition keys, so the hop limit can still be raised after launch. Closing that gap requires denying `ec2:ModifyInstanceMetadataOptions` outright or restricting it by `aws:PrincipalArn`, which is a separate policy decision and is not covered by this check.
 
@@ -53,7 +55,14 @@ A hop limit above 1 lets the IMDS response cross an extra network hop, which is 
 - **Instance Type**: `t2.nano`
 - **IMDS Configuration**: `http_endpoint = "disabled"`
 - **Tags**: `Name = "test-imds-disabled"`
-- **Expected Behavior**: Passes the check as compliant. With no reachable metadata endpoint there is no hop to cross, so the hop limit is irrelevant. This instance exercises the `imds_enabled = false` branch of `categorize_result`.
+- **Expected Behavior**: Passes the check as compliant. It names no hop limit, so `ec2:MetadataHttpPutResponseHopLimit` is absent from a relaunch request and `NumericGreaterThan` on an absent key is false - the SCP allows it and the check agrees.
+
+### Instance 4: Hop Limit 3 with IMDS Disabled (shared-foo-bar account)
+- **Provider**: `aws.shared_foo_bar`
+- **Instance Type**: `t2.nano`
+- **IMDS Configuration**: `http_endpoint = "disabled"`, `http_put_response_hop_limit = 3`
+- **Tags**: `Name = "test-hop-limit-high-imds-disabled"`
+- **Expected Behavior**: **Violation**, and it is the regression case. The hop limit is inert on the running instance, but AWS accepts a launch naming both a hop limit and a disabled endpoint, so the condition key is present on the relaunch and `MaxImdsHopLimit` denies it. Confirmed by dry run against a live account. The check used to report this compliant, which cleared accounts whose relaunches the SCP would deny. Remediation is free: nothing reads the hop limit while the endpoint is off.
 
 ## Usage
 

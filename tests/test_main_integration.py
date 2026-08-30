@@ -9,14 +9,33 @@ import pytest
 from unittest.mock import MagicMock, patch
 from typing import Dict, Any, Generator
 from headroom.main import main
+from pathlib import Path
+
+from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, ORG_INFO_FILENAME
 from headroom.types import (
-    RCPParseResult,
+    RCPCheckParseResult,
     RCPPlacementRecommendations,
     OrganizationHierarchy,
     OrganizationalUnit
 )
 
 from botocore.exceptions import ClientError
+
+
+def rcp_evidence() -> list[RCPCheckParseResult]:
+    """
+    Parse results that prove result files were actually read.
+
+    handle_rcp_workflow refuses to reconcile on no evidence, so a test that
+    wants main() to reach generation has to show it something.
+    """
+    return [
+        RCPCheckParseResult(
+            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            account_third_party_map={"111111111111": {"999999999999"}},
+            accounts_with_blockers=set(),
+        )
+    ]
 
 
 class TestMainIntegration:
@@ -80,6 +99,12 @@ class TestMainIntegration:
             patch('headroom.main.perform_analysis') as mock_perform_analysis,
             patch('builtins.print') as mock_print,
             patch('sys.exit') as mock_exit,
+            # Terraform generation and reconciliation touch the filesystem and
+            # delete files. No integration test should reach either for real.
+            patch('headroom.main.generate_scp_terraform', return_value={}),
+            patch('headroom.main.generate_rcp_terraform', return_value={}),
+            patch('headroom.main.determine_rcp_placement', return_value=[]),
+            patch('headroom.main.reconcile_generated_terraform') as mock_reconcile,
         ):
             yield {
                 'parse': mock_parse,
@@ -87,7 +112,8 @@ class TestMainIntegration:
                 'merge': mock_merge,
                 'perform_analysis': mock_perform_analysis,
                 'print': mock_print,
-                'exit': mock_exit
+                'exit': mock_exit,
+                'reconcile': mock_reconcile,
             }
 
     # Success path tests
@@ -122,7 +148,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = rcp_evidence()
             main()
 
         # Assert - Verify correct call sequence and parameters
@@ -167,7 +193,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = rcp_evidence()
             main()
 
         # Assert
@@ -217,7 +243,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = rcp_evidence()
             main()
 
         # Assert
@@ -541,7 +567,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = rcp_evidence()
             main()
 
         # Assert
@@ -583,7 +609,7 @@ class TestMainIntegration:
              patch('headroom.main.analyze_organization_structure'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
-            mock_parse_rcp.return_value = RCPParseResult(account_third_party_map={}, accounts_with_wildcards=set())
+            mock_parse_rcp.return_value = rcp_evidence()
             main()
 
         # Assert - Verify complete flow sequence
@@ -617,7 +643,12 @@ class TestMainIntegration:
         valid_yaml_config: Dict[str, Any],
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
-        """Covers early return path when analyze_scp_compliance returns empty list."""
+        """
+        Placing nothing still reconciles, rather than leaving the directory be.
+
+        This used to return early. Returning early is what let a previous run's
+        policy files stay deployed after their placement disappeared.
+        """
         mocks = mock_dependencies
         mocks['parse'].return_value = mock_cli_args
         mocks['load'].return_value = valid_yaml_config
@@ -630,19 +661,20 @@ class TestMainIntegration:
         with (
             patch('headroom.main.analyze_scp_compliance', return_value=[]),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
-            patch('headroom.main.parse_rcp_result_files', return_value=RCPParseResult(
-                account_third_party_map={},
-                accounts_with_wildcards=set()
-            )),
+            patch('headroom.main.parse_rcp_result_files', return_value=rcp_evidence()),
             patch('headroom.main.generate_terraform_org_info'),
             patch('headroom.main.analyze_organization_structure'),
             patch('headroom.main.ensure_org_info_symlink')
         ):
             main()
 
-        # get_security_analysis_session is now called even with no SCP recommendations
-        # because we still check for RCP recommendations
         mock_get_sess.assert_called_once_with(mock_final_config)
+
+        # Both directories are reconciled, and the only file the run accounts
+        # for is grab_org_info.tf - everything else generated is stale.
+        directories, expected = mocks['reconcile'].call_args[0]
+        assert directories == [Path("test_scps"), Path("test_rcps")]
+        assert expected == {Path("test_scps") / ORG_INFO_FILENAME}
 
     def test_main_early_return_when_no_management_account_id(
         self,
@@ -679,7 +711,6 @@ class TestMainIntegration:
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """Covers the ClientError exception handler branch (prints failure and exits)."""
-
         mocks = mock_dependencies
         mocks['parse'].return_value = mock_cli_args
         mocks['load'].return_value = valid_yaml_config
@@ -782,10 +813,13 @@ class TestMainIntegration:
         with (
             patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
-            patch('headroom.main.parse_rcp_result_files', return_value=RCPParseResult(
-                account_third_party_map={"111111111111": {"333333333333"}},
-                accounts_with_wildcards=set()
-            )),
+            patch('headroom.main.parse_rcp_result_files', return_value=[
+                RCPCheckParseResult(
+                    check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    account_third_party_map={"111111111111": {"333333333333"}},
+                    accounts_with_blockers=set(),
+                )
+            ]),
             patch('headroom.main.generate_terraform_org_info'),
             patch('headroom.main.analyze_organization_structure', return_value=mock_org_hierarchy),
             patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),

@@ -360,6 +360,53 @@ def get_subaccount_information(config: HeadroomConfig, session: Session) -> List
     return accounts
 
 
+def get_organization_id(config: HeadroomConfig, session: Session) -> str:
+    """
+    Get this organization's ID from the management account.
+
+    Every source guard scoped to an organization - `aws:SourceOrgID` and
+    `aws:SourceOrgPaths` - is classified against this value: a guard naming
+    this organization needs no allowlist entry, and one naming any other
+    organization names accounts no allowlist can carry. The deployed RCP
+    already resolves the same value through
+    `data.aws_organizations_organization.current.id`, so this is discovery
+    catching up to deployment.
+
+    A response without an ID aborts the run rather than falling back. The
+    fallback would put a foreign organization's sources in an allowlist, or
+    leave this organization's out, and would look like a healthy run while
+    doing it.
+
+    Args:
+        config: Headroom configuration
+        session: boto3 Session with access to security analysis account
+
+    Returns:
+        This organization's ID, such as `o-example12345`
+
+    Raises:
+        ValueError: If management_account_id is not set in config
+        RuntimeError: If role assumption fails, or if the response carries
+            no organization ID
+        ClientError: If the OrgAndAccountInfoReader role lacks
+            `organizations:DescribeOrganization`
+    """
+    mgmt_session = get_management_account_session(config, session)
+    org_client: OrganizationsClient = mgmt_session.client("organizations")
+
+    organization = org_client.describe_organization().get("Organization", {})
+    org_id = organization.get("Id")
+    if not org_id:
+        raise RuntimeError(
+            "DescribeOrganization returned no organization ID. Every source "
+            "guard scoped to an organization is classified against it, so "
+            "continuing would put a foreign organization's sources in an "
+            "allowlist, or leave this organization's out."
+        )
+
+    return org_id
+
+
 def get_all_organization_account_ids(config: HeadroomConfig, session: Session) -> Set[str]:
     """
     Get all account IDs in the organization (including management account).
@@ -440,6 +487,7 @@ def run_checks_for_type(
     account_info: AccountInfo,
     config: HeadroomConfig,
     org_account_ids: Set[str],
+    org_id: str,
     abort: threading.Event
 ) -> bool:
     """
@@ -454,6 +502,8 @@ def run_checks_for_type(
         account_info: Account information
         config: Headroom configuration
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
         abort: Set when another account has failed, ending this account's run
             at the next check boundary
 
@@ -485,6 +535,7 @@ def run_checks_for_type(
             account_id=account_info.account_id,
             results_dir=config.results_dir,
             org_account_ids=org_account_ids,
+            org_id=org_id,
             exclude_account_ids=config.exclude_account_ids,
         )
         check.execute(headroom_session)
@@ -510,6 +561,7 @@ def _run_checks_for_account(
     security_session: Session,
     config: HeadroomConfig,
     org_account_ids: Set[str],
+    org_id: str,
     abort: threading.Event
 ) -> None:
     """
@@ -539,6 +591,8 @@ def _run_checks_for_account(
         security_session: boto3 Session for security analysis account
         config: Headroom configuration
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
         abort: Set when another account has failed, ending this account's run
             at the next check boundary
     """
@@ -560,13 +614,13 @@ def _run_checks_for_account(
     scp_exist = all_check_results_exist("scps", account_info, config)
     if not scp_exist:
         completed = run_checks_for_type(
-            "scps", headroom_session, account_info, config, org_account_ids, abort
+            "scps", headroom_session, account_info, config, org_account_ids, org_id, abort
         ) and completed
 
     rcp_exist = all_check_results_exist("rcps", account_info, config)
     if not rcp_exist:
         completed = run_checks_for_type(
-            "rcps", headroom_session, account_info, config, org_account_ids, abort
+            "rcps", headroom_session, account_info, config, org_account_ids, org_id, abort
         ) and completed
 
     if not completed:
@@ -580,7 +634,8 @@ def run_checks(
     security_session: Session,
     relevant_account_infos: List[AccountInfo],
     config: HeadroomConfig,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> None:
     """
     Run security checks against all relevant accounts.
@@ -597,6 +652,8 @@ def run_checks(
         relevant_account_infos: List of accounts to check
         config: Headroom configuration
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Raises:
         ClientError: If assuming the Headroom role in an account fails
@@ -673,6 +730,7 @@ def run_checks(
                         security_session,
                         config,
                         org_account_ids,
+                        org_id,
                         abort,
                     )
                 )
@@ -782,6 +840,11 @@ def perform_analysis(config: HeadroomConfig) -> None:
     org_account_ids = get_all_organization_account_ids(config, security_session)
     logger.info(f"Found {len(org_account_ids)} accounts in organization")
 
+    # Classifies aws:SourceOrgID and aws:SourceOrgPaths guards on service
+    # principals: a guard naming this organization needs no allowlist entry
+    org_id = get_organization_id(config, security_session)
+    logger.info(f"Organization ID: {org_id}")
+
     account_infos = get_subaccount_information(config, security_session)
     logger.info(f"Fetched subaccount information: {account_infos}")
 
@@ -790,5 +853,5 @@ def perform_analysis(config: HeadroomConfig) -> None:
 
     _verify_no_duplicate_account_names(config, relevant_account_infos)
 
-    run_checks(security_session, relevant_account_infos, config, org_account_ids)
+    run_checks(security_session, relevant_account_infos, config, org_account_ids, org_id)
     logger.info("Security analysis completed")

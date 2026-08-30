@@ -29,7 +29,6 @@ class SamlProviderAnalysis:
         create_date: Creation timestamp, if reported by AWS.
         valid_until: Expiration timestamp, if reported by AWS.
     """
-
     arn: str
     name: str
     create_date: Optional[datetime]

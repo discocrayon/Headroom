@@ -9,8 +9,21 @@ from collections import defaultdict
 from pathlib import Path
 from typing import List
 
-from .models import TerraformModule, TerraformParameter, TerraformComment, TerraformElement
-from .utils import make_safe_variable_name, write_terraform_file
+from .models import (
+    TerraformComment,
+    TerraformElement,
+    TerraformModule,
+    TerraformParameter,
+    TerraformPlan,
+)
+from .utils import (
+    make_ou_base_names,
+    make_safe_variable_name,
+    ou_id_local_name,
+    ou_path_names,
+    write_terraform_plan,
+)
+from ..enums import PlacementLevel
 from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlacementRecommendations
 
 # Set up logging
@@ -44,19 +57,46 @@ def _replace_account_id_in_arn(
 
 
 def _get_safe_to_enable_policies(
+    module_name: str,
     recommendations: List[SCPPlacementRecommendations]
 ) -> set[str]:
     """
-    Get set of policies that are safe to enable from recommendations.
+    Get the policies to enable for one module, from its recommendations.
 
-    Only includes policies with 100% compliance.
-    Converts policy names from kebab-case to snake_case.
+    A recommendation reaching a module is itself the signal to enable the
+    policy: `affected_accounts` holds the zero-violation subset at every
+    level, so the placement has already established that no covered account
+    violates the check. There is nothing left to re-check here.
+
+    This used to gate on `compliance_percentage == 100.0`. Root and OU
+    recommendations hardcode that value, so the gate did nothing for them,
+    while account recommendations store an org-wide coverage fraction that is
+    below 100% by construction - account placement only happens when some
+    other account violates the check. Every per-account file therefore
+    emitted every policy as false.
+
+    Args:
+        module_name: Terraform module being built, used in the error
+        recommendations: Placement recommendations targeting this module
+
+    Returns:
+        Terraform variable names, converted from kebab-case to snake_case
+
+    Raises:
+        RuntimeError: If a "none" recommendation reaches a module
     """
     enabled_policies = set()
     for rec in recommendations:
-        if rec.compliance_percentage == 100.0:
-            check_name_terraform = rec.check_name.replace("-", "_")
-            enabled_policies.add(check_name_terraform)
+        if rec.recommended_level == PlacementLevel.NONE.value:
+            raise RuntimeError(
+                f"Module {module_name} was given a recommendation for "
+                f"{rec.check_name} at level 'none'. That is placement saying no "
+                f"account is safe for this check, not a placement to deploy, and "
+                f"grouping drops it before any module is built. Enabling it here "
+                f"would deny actions the covered accounts rely on."
+            )
+        check_name_terraform = rec.check_name.replace("-", "_")
+        enabled_policies.add(check_name_terraform)
     return enabled_policies
 
 
@@ -81,6 +121,7 @@ def _get_allowed_iam_user_arns(
 
 
 def _build_ec2_terraform_parameters(
+    module_name: str,
     enabled_policies: set[str],
     recommendations: List[SCPPlacementRecommendations]
 ) -> List[TerraformElement]:
@@ -94,9 +135,32 @@ def _build_ec2_terraform_parameters(
 
     parameters.append(TerraformComment("EC2"))
     deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_policies
+    ec2_allowed_ami_owners = (
+        _get_ec2_allowed_ami_owners(recommendations) if deny_ec2_ami_owner else []
+    )
+
+    # An empty allowlist denies every ec2:RunInstances call rather than none
+    # of them, so it is never rendered. Reaching here means the covered
+    # accounts observed no AMI owner at all, which an account running no
+    # instances does - a fact about those accounts rather than a broken run,
+    # so the policy stays off and the rest of the organization still
+    # generates. The other cause, a result file predating AMI owner
+    # collection, is rejected during parsing.
+    if deny_ec2_ami_owner and not ec2_allowed_ami_owners:
+        logger.warning(
+            f"Module {module_name}: leaving deny_ec2_ami_owner off because no "
+            f"instance in the accounts it covers had a resolvable AMI owner, so "
+            f"the allowlist would be empty."
+        )
+        parameters.append(TerraformComment(
+            "deny_ec2_ami_owner stays off here: no instance in the accounts this "
+            "module covers had a resolvable AMI owner, so the allowlist would be "
+            "empty - and an empty allowlist denies every launch, not none."
+        ))
+        deny_ec2_ami_owner = False
+
     parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
     if deny_ec2_ami_owner:
-        ec2_allowed_ami_owners = _get_ec2_allowed_ami_owners(recommendations)
         parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
 
     deny_ec2_imds_hop_limit = "deny_ec2_imds_hop_limit" in enabled_policies
@@ -208,11 +272,16 @@ def _build_scp_terraform_module(
 
     Returns:
         Complete Terraform module block as a string
+
+    Raises:
+        RuntimeError: If a recommendation that is not a placement reaches a
+            module, or a referenced account or OU is missing from the
+            organization hierarchy
     """
-    enabled_policies = _get_safe_to_enable_policies(recommendations)
+    enabled_policies = _get_safe_to_enable_policies(module_name, recommendations)
 
     parameters: List[TerraformElement] = []
-    parameters.extend(_build_ec2_terraform_parameters(enabled_policies, recommendations))
+    parameters.extend(_build_ec2_terraform_parameters(module_name, enabled_policies, recommendations))
     parameters.append(TerraformComment(""))
     parameters.extend(_build_eks_terraform_parameters(enabled_policies))
     parameters.append(TerraformComment(""))
@@ -233,20 +302,26 @@ def _build_scp_terraform_module(
     return module.render()
 
 
-def _generate_account_scp_terraform(
+def _render_account_scp_terraform(
     account_id: str,
     account_recs: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate Terraform file for account-level SCPs.
+    Render the Terraform file for one account's SCPs.
 
     Args:
         account_id: AWS account ID
         account_recs: List of SCP recommendations for this account
         organization_hierarchy: Organization structure information
-        output_path: Directory to write Terraform files to
+        output_path: Directory the file belongs in
+
+    Returns:
+        Tuple of (destination path, rendered content)
+
+    Raises:
+        RuntimeError: If the account is missing from the organization hierarchy
     """
     account_info = organization_hierarchy.accounts.get(account_id)
     if not account_info:
@@ -254,10 +329,8 @@ def _generate_account_scp_terraform(
 
     # Convert account name to terraform-friendly format
     account_name = make_safe_variable_name(account_info.account_name)
-    filename = f"{account_name}_scps.tf"
-    filepath = output_path / filename
+    filepath = output_path / f"{account_name}_scps.tf"
 
-    # Generate Terraform content
     terraform_content = _build_scp_terraform_module(
         module_name=f"scps_{account_name}",
         target_id_reference=f"local.{account_name}_account_id",
@@ -266,67 +339,74 @@ def _generate_account_scp_terraform(
         organization_hierarchy=organization_hierarchy
     )
 
-    # Write the file
-    write_terraform_file(filepath, terraform_content, "SCP")
+    return filepath, terraform_content
 
 
-def _generate_ou_scp_terraform(
+def _render_ou_scp_terraform(
     ou_id: str,
     ou_recs: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate Terraform file for OU-level SCPs.
+    Render the Terraform file for one OU's SCPs.
 
     Args:
         ou_id: Organizational Unit ID
         ou_recs: List of SCP recommendations for this OU
         organization_hierarchy: Organization structure information
-        output_path: Directory to write Terraform files to
+        output_path: Directory the file belongs in
+
+    Returns:
+        Tuple of (destination path, rendered content)
+
+    Raises:
+        RuntimeError: If the OU is missing from the organization hierarchy
     """
     ou_info = organization_hierarchy.organizational_units.get(ou_id)
     if not ou_info:
         raise RuntimeError(f"OU {ou_id} not found in organization hierarchy")
 
-    # Convert OU name to terraform-friendly format
-    ou_name = make_safe_variable_name(ou_info.name)
-    filename = f"{ou_name}_ou_scps.tf"
-    filepath = output_path / filename
+    # An OU is named for its path from the root, so a nested OU targets the
+    # local grab_org_info.tf declares for it and two OUs sharing a name in
+    # different branches cannot write to the same file.
+    base_name = make_ou_base_names(
+        organization_hierarchy.organizational_units
+    )[ou_id]
+    path_label = " / ".join(
+        ou_path_names(ou_id, organization_hierarchy.organizational_units)
+    )
+    filepath = output_path / f"{base_name}_ou_scps.tf"
 
-    # Generate Terraform content
     terraform_content = _build_scp_terraform_module(
-        module_name=f"scps_{ou_name}_ou",
-        target_id_reference=f"local.top_level_{ou_name}_ou_id",
+        module_name=f"scps_{base_name}_ou",
+        target_id_reference=f"local.{ou_id_local_name(base_name)}",
         recommendations=ou_recs,
-        comment=f"OU {ou_info.name}",
+        comment=f"OU {path_label}",
         organization_hierarchy=organization_hierarchy
     )
 
-    # Write the file
-    write_terraform_file(filepath, terraform_content, "SCP")
+    return filepath, terraform_content
 
 
-def _generate_root_scp_terraform(
+def _render_root_scp_terraform(
     root_recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate Terraform file for root-level SCPs.
+    Render the Terraform file for root-level SCPs.
 
     Args:
         root_recommendations: List of SCP recommendations for the root level
         organization_hierarchy: Organization structure information
-        output_path: Directory to write Terraform files to
+        output_path: Directory the file belongs in
+
+    Returns:
+        Tuple of (destination path, rendered content)
     """
-    if not root_recommendations:
-        return
+    filepath = output_path / "root_scps.tf"
 
-    filename = "root_scps.tf"
-    filepath = output_path / filename
-
-    # Generate Terraform content
     terraform_content = _build_scp_terraform_module(
         module_name="scps_root",
         target_id_reference="local.root_ou_id",
@@ -335,29 +415,29 @@ def _generate_root_scp_terraform(
         organization_hierarchy=organization_hierarchy
     )
 
-    # Write the file
-    write_terraform_file(filepath, terraform_content, "SCP")
+    return filepath, terraform_content
 
 
-def generate_scp_terraform(
+def _render_scp_terraform_plan(
     recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_dir: str = "test_environment/scps"
-) -> None:
+    output_path: Path
+) -> TerraformPlan:
     """
-    Generate Terraform files for SCP deployment based on recommendations.
+    Render every SCP file this run's recommendations call for.
+
+    Nothing is written here. A target absent from the returned plan is a target
+    this run does not want a file for, which is what lets reconciliation delete
+    the file a previous run left behind.
 
     Args:
         recommendations: List of SCP placement recommendations
         organization_hierarchy: Organization structure information
-        output_dir: Directory to write Terraform files to
+        output_path: Directory the files belong in
+
+    Returns:
+        Rendered file contents, keyed by destination path
     """
-    if not recommendations:
-        return
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
     # Group recommendations by level and target
     account_recommendations: GroupedSCPRecommendations = defaultdict(list)
     ou_recommendations: GroupedSCPRecommendations = defaultdict(list)
@@ -376,13 +456,61 @@ def generate_scp_terraform(
         if rec.recommended_level == "root":
             root_recommendations.append(rec)
 
-    # Generate Terraform files for each account
+    plan: TerraformPlan = {}
+
     for account_id, account_recs in account_recommendations.items():
-        _generate_account_scp_terraform(account_id, account_recs, organization_hierarchy, output_path)
+        filepath, content = _render_account_scp_terraform(
+            account_id, account_recs, organization_hierarchy, output_path
+        )
+        plan[filepath] = content
 
-    # Generate Terraform files for each OU
     for ou_id, ou_recs in ou_recommendations.items():
-        _generate_ou_scp_terraform(ou_id, ou_recs, organization_hierarchy, output_path)
+        filepath, content = _render_ou_scp_terraform(
+            ou_id, ou_recs, organization_hierarchy, output_path
+        )
+        plan[filepath] = content
 
-    # Generate Terraform file for root level
-    _generate_root_scp_terraform(root_recommendations, organization_hierarchy, output_path)
+    if root_recommendations:
+        filepath, content = _render_root_scp_terraform(
+            root_recommendations, organization_hierarchy, output_path
+        )
+        plan[filepath] = content
+
+    return plan
+
+
+def generate_scp_terraform(
+    recommendations: List[SCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy,
+    output_dir: str = "test_environment/scps"
+) -> TerraformPlan:
+    """
+    Generate Terraform files for SCP deployment based on recommendations.
+
+    An empty recommendation list is a plan for an empty directory, not a
+    no-op. The caller reconciles against the returned plan, so a policy that no
+    longer has a placement loses the file that deploys it.
+
+    Args:
+        recommendations: List of SCP placement recommendations
+        organization_hierarchy: Organization structure information
+        output_dir: Directory to write Terraform files to
+
+    Returns:
+        The files this run wants the directory to hold, keyed by path
+
+    Raises:
+        RuntimeError: If a recommendation names a target the organization
+            hierarchy does not have, or is not a placement at all
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Rendered in full first: a raise here has written nothing, leaving the
+    # previous run's output complete rather than half replaced.
+    plan = _render_scp_terraform_plan(
+        recommendations, organization_hierarchy, output_path
+    )
+    write_terraform_plan(plan, "SCP")
+
+    return plan

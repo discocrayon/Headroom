@@ -74,7 +74,7 @@ module "scps_root" {
 
 module "rcps_acme_acquisition_ou" {
   source = "../modules/rcps"
-  target_id = local.top_level_acme_acquisition_ou_id
+  target_id = local.acme_acquisition_ou_id
 
   # deny_sts_third_party_assumerole
   deny_sts_third_party_assumerole = true
@@ -186,7 +186,8 @@ test_environment/
 │       ├── deny_ecr_third_party_access/
 │       ├── deny_kms_third_party_access/
 │       ├── deny_secrets_manager_third_party_access/
-│       └── deny_sqs_third_party_access/
+│       ├── deny_sqs_third_party_access/
+│       └── deny_service_confused_deputy/
 ├── scps/
 │   ├── grab_org_info.tf
 │   ├── root_scps.tf

@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_ec2.client import EC2Client
 from mypy_boto3_ec2.type_defs import ImageTypeDef, InstanceTypeDef
 
+from ..constants import IMDS_EXEMPTION_TAG_KEY, IMDS_EXEMPTION_TAG_VALUE
 from ..enums import AmiOwnerUnknownReason
 from .helpers import get_all_regions, paginate
 
@@ -19,11 +20,34 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DenyEc2ImdsV1:
-    """Data class for EC2 IMDS v1 analysis results."""
+    """
+    Data model for EC2 IMDSv1 analysis.
+
+    Attributes:
+        region: AWS region where the instance runs
+        instance_id: EC2 instance identifier
+        imdsv1_allowed: True when the instance does not require a session
+            token. The metadata endpoint's state does not enter it: the SCP
+            tests HttpTokens on the launch request either way, so an instance
+            with the endpoint off and tokens optional is still counted.
+            Remedying it costs nothing, because nothing reads HttpTokens while
+            the endpoint is off
+        exemption_tag_present: True when the INSTANCE carries the exemption
+            tag with the exact value the SCP tests for. Read off the instance,
+            not off any role: the statement exempts through
+            `aws:RequestTag/ExemptFromIMDSv2`, and the instance's tag is the
+            observable trace of that request tag
+
+    An instance answering IMDSv1 is read as evidence about launches, not as a
+    finding against the instance. `deny_ec2_imds_v1` gates one statement,
+    `DenyRunInstancesMetadataHttpTokensOptional`, and the fleet already running
+    is deliberately outside what this check governs - see
+    `get_ec2_imds_v1_analysis`.
+    """
     region: str
     instance_id: str
-    imdsv1_allowed: bool  # Compliance status
-    exemption_tag_present: bool  # Exemption via `ExemptFromIMDSv2` tag
+    imdsv1_allowed: bool
+    exemption_tag_present: bool
 
 
 @dataclass
@@ -35,8 +59,10 @@ class DenyEc2AmiOwner:
         instance_id: EC2 instance identifier
         region: AWS region where instance exists
         ami_id: AMI identifier used to launch instance
-        ami_owner: AMI owner account ID or alias, or None when the AMI's owner
-            cannot be determined
+        ami_owner: AMI owner account ID, or None when the AMI's owner cannot
+            be determined
+        ami_owner_alias: The AMI's owner alias when AWS publishes one, else
+            None. This is what `ec2:Owner` resolves to - see EC2_OWNER_ALIASES
         ami_name: AMI name (may be None if the AMI no longer exists)
         owner_unknown_reason: Why the owner could not be determined, or None
             when `ami_owner` is populated
@@ -47,6 +73,7 @@ class DenyEc2AmiOwner:
     ami_owner: Optional[str]
     ami_name: Optional[str]
     owner_unknown_reason: Optional[str] = None
+    ami_owner_alias: Optional[str] = None
 
 
 @dataclass
@@ -57,8 +84,11 @@ class DenyEc2ImdsHopLimit:
     Attributes:
         region: AWS region where instance exists
         instance_id: EC2 instance identifier
-        hop_limit: IMDS HttpPutResponseHopLimit (AWS defaults to 1 when unset)
-        imds_enabled: True if the instance metadata endpoint is enabled
+        hop_limit: IMDS HttpPutResponseHopLimit (AWS defaults to 1 when unset,
+            but an AMI carrying imds-support=v2.0 supplies a higher default)
+        imds_enabled: True if the instance metadata endpoint is enabled.
+            Reported for context only - it does not affect whether a hop limit
+            counts as a violation, because the SCP counts it either way
     """
     region: str
     instance_id: str
@@ -244,37 +274,135 @@ def get_instances(session: Session, region: str) -> List[Ec2Instance]:
     return instances
 
 
+def _find_exemption_tag_value(
+    tags: Dict[str, str],
+    instance_id: str,
+) -> Optional[str]:
+    """
+    Find the exemption tag's value the way IAM matches the condition key.
+
+    The two halves of the match pull opposite ways, and the scanner has to
+    follow both. IAM matches the tag key in `aws:RequestTag/<key>` without
+    regard to case, so matching it exactly here would report an instance
+    tagged `exemptfromimdsv2` as a violation that enforcement exempts. The
+    value is compared with StringNotEquals, which is case-sensitive, so
+    lowercasing it would report an instance tagged "True" as exempt when
+    enforcement denies its relaunch.
+
+    An instance carrying the key twice in cases that differ has no
+    determinate answer. AWS documents that as an unexpected condition failure
+    rather than a match on one of them, so there is nothing to report, and
+    guessing which one IAM lands on would invent the exemption status of a
+    live workload.
+
+    Args:
+        tags: The instance's tags
+        instance_id: The instance the tags came from, named in the error
+
+    Returns:
+        The tag's value, or None when the instance does not carry it
+
+    Raises:
+        RuntimeError: If the instance carries the key more than once, in
+            cases that differ
+    """
+    wanted_key = IMDS_EXEMPTION_TAG_KEY.lower()
+    matches = {
+        key: value for key, value in tags.items() if key.lower() == wanted_key
+    }
+
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Instance {instance_id} carries {IMDS_EXEMPTION_TAG_KEY} more "
+            f"than once in cases that differ ({', '.join(sorted(matches))}). "
+            f"IAM matches the tag key in aws:RequestTag without regard to "
+            f"case, so every one of them matches the SCP's condition key "
+            f"while at most one value can - which AWS documents as an "
+            f"unexpected condition failure. Whether a relaunch of this "
+            f"instance is exempt cannot be determined, and guessing would "
+            f"misreport whether the SCP is safe to attach here."
+        )
+
+    return next(iter(matches.values()), None)
+
+
 def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
     """
-    Analyze EC2 instances for IMDS v1 configuration across all regions.
+    Report every live instance's IMDS token setting and exemption tag.
 
-    Instances come from get_instances, which reads each region once per
-    session and has already dropped terminated instances. This returns a
-    list of DenyEc2ImdsV1 with the relevant attributes filled in.
+    **The fleet already running is out of scope, deliberately.**
+    `deny_ec2_imds_v1` gates exactly one statement,
+    `DenyRunInstancesMetadataHttpTokensOptional`, which AWS evaluates against
+    a `RunInstances` request. Nothing this function reads can be denied by it:
+    every instance it sees has already launched. What an IMDSv1 instance
+    provides is evidence about the *next* launch in this account, and that is
+    the only thing the check does with it.
+
+    **The exemption is read off the instance, as a proxy for the request.**
+    The statement exempts a launch carrying `ExemptFromIMDSv2=true` in
+    `aws:RequestTag`, which is populated from the `TagSpecifications` that
+    also put the tag on the instance the launch creates. So an instance
+    wearing the tag today is the observable trace of a request tag, and good
+    evidence its relaunch will carry the same one. Measured against a live
+    account with `RunInstances --dry-run`, under the shipped statement:
+
+        tokens=optional, no tag                       DENY
+        tokens=optional, ExemptFromIMDSv2=true        allow
+        tokens=optional, ExemptFromIMDSv2=True        DENY
+        tokens=required, no tag                       allow
+
+    **The proxy is imperfect, and that is accepted.** A tag applied after
+    launch with `CreateTags` leaves an instance wearing it whose relaunch
+    carries nothing, and so does an instance whose Terraform or launch
+    template does not declare the tag. In both cases this scan reports an
+    exemption for a relaunch enforcement would deny. Headroom takes the tag as
+    a declaration of intent and does not second-guess how it will be
+    reapplied; an operator who tags an instance `ExemptFromIMDSv2` is saying
+    this workload is meant to keep IMDSv1, and that is the answer this check
+    reports.
+
+    No role is resolved and IAM is never called. `aws:PrincipalTag` belonged
+    to `DenyRoleDeliveryLessThan2`, a statement this module no longer
+    generates.
+
+    Instances come from `get_instances`, which reads each region once per
+    session and has already dropped the terminated ones.
 
     Args:
         session: boto3.Session with appropriate permissions
 
     Returns:
-        List of DenyEc2ImdsV1 objects containing analysis results
+        One DenyEc2ImdsV1 per live instance
+
+    Raises:
+        RuntimeError: If DescribeInstances fails in any region, or if an
+            instance carries the exemption tag key twice in differing cases
     """
     results = []
     regions = get_all_regions(session)
 
     for region in regions:
         for instance in get_instances(session, region):
-            # IMDSv1 is allowed when IMDS is enabled and tokens are optional;
-            # it is blocked when HttpTokens is 'required' or IMDS is disabled.
-            imdsv1_allowed = (
-                instance.http_endpoint == 'enabled' and instance.http_tokens == 'optional'
+            # HttpTokens alone decides, whether or not the metadata endpoint
+            # is enabled. A disabled endpoint does make IMDSv1 unreachable on
+            # the running instance, but the SCP reads the launch request,
+            # where a request turning the endpoint off carries no HttpTokens,
+            # leaving ec2:MetadataHttpTokens absent and StringNotEquals true.
+            # Excusing those instances cleared accounts whose relaunches the
+            # SCP denies.
+            imdsv1_allowed = instance.http_tokens == 'optional'
+
+            exemption_value = _find_exemption_tag_value(
+                instance.tags, instance.instance_id
             )
-            exemption_tag_present = instance.tags.get('ExemptFromIMDSv2', '').lower() == 'true'
 
             results.append(DenyEc2ImdsV1(
                 region=region,
                 instance_id=instance.instance_id,
                 imdsv1_allowed=imdsv1_allowed,
-                exemption_tag_present=exemption_tag_present
+                exemption_tag_present=(
+                    exemption_value == IMDS_EXEMPTION_TAG_VALUE
+                ),
             ))
 
     return results
@@ -285,6 +413,27 @@ def get_ec2_imds_v1_analysis(session: Session) -> List[DenyEc2ImdsV1]:
 # deregistered but not yet fully torn down. Neither leaves an owner to read.
 # AMI state set by DisableImage. A disabled image keeps its owner but cannot
 # launch, and DescribeImages omits it unless IncludeDisabled is set.
+# ec2:Owner resolves to the AMI's owner ALIAS when DescribeImages returns one,
+# and to the numeric OwnerId only when it does not. Measured with
+# RunInstances --dry-run against the Deny statement this repo generates:
+#
+#   AMI                            allowlist              result
+#   Amazon Linux 2023              [numeric OwnerId]      DENY
+#   (ImageOwnerAlias "amazon")     ["amazon"]             ALLOW
+#                                  [numeric, "amazon"]    ALLOW
+#   Rocky Linux                    [numeric OwnerId]      ALLOW
+#   (no ImageOwnerAlias)           ["amazon"]             DENY
+#
+# "aws-marketplace" is inferred from the "amazon" rows rather than measured:
+# every Marketplace AMI reachable for the test needed a subscription, and EC2
+# returns OptInRequired before it evaluates the statement, so the dry run
+# cannot tell an allow from a deny there.
+#
+# Recording only the numeric owner therefore builds an allowlist that denies
+# the very AMI a clean scan observed, because StringNotEquals matches whenever
+# the key holds anything other than a listed value.
+EC2_OWNER_ALIASES = frozenset({"amazon", "aws-marketplace"})
+
 DISABLED_AMI_STATE = "disabled"
 
 DEREGISTERED_AMI_ERROR_CODES = frozenset({
@@ -299,10 +448,12 @@ class _ResolvedAmi:
     Outcome of resolving one AMI's owner.
 
     Either `owner` is populated and `unknown_reason` is None, or the reverse.
+    `owner_alias` is set only when AWS publishes one for the image.
     """
     owner: Optional[str]
     name: Optional[str]
     unknown_reason: Optional[str]
+    owner_alias: Optional[str] = None
 
 
 def _describe_ami(regional_ec2: EC2Client, ami_id: str) -> Optional[ImageTypeDef]:
@@ -349,7 +500,8 @@ def _resolve_ami_owner(
 
     An AMI that DescribeImages returns without an OwnerId still raises, because
     that is the API breaking its own contract rather than a fact about this
-    account, and it would be wrong for every AMI rather than for this one.
+    account, and it would be wrong for every AMI rather than for this one. An
+    owner alias outside EC2_OWNER_ALIASES raises for the same reason.
 
     Args:
         regional_ec2: EC2 client for the region the instance runs in
@@ -361,7 +513,8 @@ def _resolve_ami_owner(
         The resolved owner, or the reason it is unknown
 
     Raises:
-        RuntimeError: If AWS returns the AMI without an OwnerId
+        RuntimeError: If AWS returns the AMI without an OwnerId, or with an
+            owner alias outside EC2_OWNER_ALIASES
         ClientError: If DescribeImages fails for any reason other than the AMI
             no longer resolving
     """
@@ -402,13 +555,28 @@ def _resolve_ami_owner(
             f"This is a critical security check failure."
         )
 
+    owner_alias = image.get('ImageOwnerAlias')
+    if owner_alias is not None and owner_alias not in EC2_OWNER_ALIASES:
+        raise RuntimeError(
+            f"AMI {ami_id} in {region}, used by instance {instance_id}, has the "
+            f"unrecognised owner alias '{owner_alias}'. ec2:Owner takes one of "
+            f"{sorted(EC2_OWNER_ALIASES)} or an account ID, so an alias outside "
+            f"that set cannot be turned into an allowlist entry, and guessing "
+            f"one would deny every launch in the accounts this covers."
+        )
+
     if image.get('State') == DISABLED_AMI_STATE:
         logger.warning(
             f"AMI {ami_id} in {region}, used by instance {instance_id}, has been "
             f"disabled. Its owner still resolves, but the image cannot launch."
         )
 
-    return _ResolvedAmi(owner=owner_id, name=image.get('Name'), unknown_reason=None)
+    return _ResolvedAmi(
+        owner=owner_id,
+        name=image.get('Name'),
+        unknown_reason=None,
+        owner_alias=owner_alias,
+    )
 
 
 def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
@@ -438,7 +606,7 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
 
     Raises:
         RuntimeError: If AWS API calls fail, or if AWS returns an AMI with no
-            OwnerId
+            OwnerId or an unrecognised owner alias
     """
     results = []
     regions = get_all_regions(session)
@@ -473,7 +641,8 @@ def get_ec2_ami_owner_analysis(session: Session) -> List[DenyEc2AmiOwner]:
                     ami_id=instance.image_id,
                     ami_owner=resolved.owner,
                     ami_name=resolved.name,
-                    owner_unknown_reason=resolved.unknown_reason
+                    owner_unknown_reason=resolved.unknown_reason,
+                    ami_owner_alias=resolved.owner_alias
                 ))
         except ClientError as e:
             raise RuntimeError(

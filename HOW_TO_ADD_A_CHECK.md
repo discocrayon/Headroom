@@ -90,8 +90,16 @@ execution_order:
 
   phase_5_terraform_generation:
     file: headroom/terraform/generate_{scps|rcps}.py
-    function: "_build_{scp|rcp}_terraform_module"
-    add: parameter generation logic
+    scp: "add parameter generation logic to _build_scp_terraform_module"
+    rcp: |
+      Add one RCP_TERRAFORM_VARIABLES entry naming the check's comment,
+      enable variable, and allowlist variable. The renderer loops the table,
+      so no branch needs editing. Parsing and placement are already driven by
+      the registry and need no change.
+    enforced_by: |
+      test_table_covers_every_registered_rcp_check fails by name if a
+      registered RCP check has no table entry. Do not silence it by removing
+      the check from the registry.
     ordering: "alphabetical by service"
 
   phase_6_tests:
@@ -128,6 +136,7 @@ import boto3
 
 from ...aws.{service} import {DataModel}, get_{check_name}_analysis
 from ...constants import {CHECK_CONSTANT}
+from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
@@ -144,7 +153,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
     def categorize_result(
         self,
         result: {DataModel}
-    ) -> tuple[str, JsonDict]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """Categorize single result."""
         result_dict = {
             # Map all dataclass fields:
@@ -152,8 +161,8 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         }
 
         if {VIOLATION_CONDITION}:
-            return ("violation", result_dict)
-        return ("compliant", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,
@@ -193,7 +202,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
 # TEMPLATE: SCP_PATTERN_4
 # DIFFERENCE: Adds exemption handling
 
-def categorize_result(self, result: {DataModel}) -> tuple[str, JsonDict]:
+def categorize_result(self, result: {DataModel}) -> tuple[CheckCategory, JsonDict]:
     """Categorize with exemption support."""
     result_dict = {
         "field": result.field,
@@ -202,13 +211,13 @@ def categorize_result(self, result: {DataModel}) -> tuple[str, JsonDict]:
 
     # Check exemption FIRST
     if result.has_exemption_tag:
-        return ("exemption", result_dict)
+        return (CheckCategory.EXEMPTION, result_dict)
 
     # Then check violation
     if {VIOLATION_CONDITION}:
-        return ("violation", result_dict)
+        return (CheckCategory.VIOLATION, result_dict)
 
-    return ("compliant", result_dict)
+    return (CheckCategory.COMPLIANT, result_dict)
 
 def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
     """Build summary including exemptions in compliant count."""
@@ -360,6 +369,7 @@ import boto3
 
 from ...aws.{service} import {DataModel}, analyze_{service}_{resource}_policies
 from ...constants import {CHECK_CONSTANT}
+from ...enums import CheckCategory
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
@@ -392,7 +402,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
     def categorize_result(
         self,
         result: {DataModel}
-    ) -> tuple[str, JsonDict]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """Categorize based on third-party access."""
         result_dict = {
             "resource_arn": result.resource_arn,
@@ -400,8 +410,8 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         }
 
         if result.third_party_account_ids:
-            return ("violation", result_dict)
-        return ("compliant", result_dict)
+            return (CheckCategory.VIOLATION, result_dict)
+        return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(
         self,
@@ -660,12 +670,12 @@ python -c "from headroom.checks.registry import get_check_names; assert '{check_
 
 ```python
 # ❌ BAD
-def categorize_result(self, result: T) -> tuple[str, Dict[str, Any]]:
+def categorize_result(self, result: T) -> tuple[CheckCategory, Dict[str, Any]]:
     pass
 
 # ✅ GOOD
 from ...types import JsonDict
-def categorize_result(self, result: T) -> tuple[str, JsonDict]:
+def categorize_result(self, result: T) -> tuple[CheckCategory, JsonDict]:
     pass
 ```
 
@@ -770,6 +780,235 @@ from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
 ```
 
+The copies drift, and they drift narrower. `roles.py`, `kms.py` and `ecr.py`
+each carried `r'^arn:aws:iam::(\d{12}):'` while `s3.py`, `sqs.py` and
+`secretsmanager.py` used the constant. The three copies silently dropped every
+STS session principal and every non-commercial partition, so the accounts
+never reached the allowlist and the RCP denied them.
+
+---
+
+### AP-008: String-Comparing IAM Policy Actions
+
+```python
+# ❌ BAD - misses sts:*, sts:Assume*, STS:AssumeRole, NotAction
+has_assume_role = "sts:AssumeRole" in action or "*" in action
+
+# ✅ GOOD - match the way IAM matches
+if _grants_assume_role(statement, role_name):
+```
+
+IAM compares action names case-insensitively and expands `*` and `?` anywhere
+in the name, and an `Allow` with `NotAction` grants everything its patterns do
+not cover. A statement your analyzer fails to recognize is dropped in
+silence - no violation, no error, just an account missing from an allowlist -
+so the comparison has to follow IAM's rules, not Python's.
+
+Prefer not gating on actions at all. Only the STS trust policy analyzer does;
+the other five read every `Allow` statement and keep actions for reporting.
+If you must gate, a statement naming both `Action` and `NotAction`, or
+neither, should raise rather than be guessed at.
+
+### AP-009: Scanning a Different Dimension Than the Policy Enforces
+
+```python
+# ❌ BAD - the SCP exempts by role tag; this reads the instance's tags
+for tag in instance.get('Tags', []):
+    if tag['Key'] == 'ExemptFromIMDSv2' and tag['Value'].lower() == 'true':
+        exemption_tag_present = True
+
+# ✅ GOOD - read the dimension the condition key reads
+resolved = resolve_instance_profile_role(iam_client, profile_arn)
+role_exemption_tag_present = (
+    resolved.tags.get(IMDS_EXEMPTION_TAG_KEY) == IMDS_EXEMPTION_TAG_VALUE
+)
+```
+
+*Both halves of this example are historical, and the verdict was
+statement-specific.* The role tag was right for `DenyRoleDeliveryLessThan2`,
+which exempts on `aws:PrincipalTag`. That statement was later removed (AP-011),
+leaving only the launch-time one, which exempts on `aws:RequestTag` - and for
+*that* statement the instance's own tag is the correct thing to read, because
+`TagSpecifications` populates the request key and tags the instance in one
+act. The check reads instance tags again today.
+
+So do not read this entry as "instance tags are always wrong". Read it as: the
+dimension is a property of the statement, and it changes when the statement
+does. Re-derive it every time the policy moves.
+
+A check decides whether a policy is safe to attach. That answer is only as
+good as the match between what the scanner measures and what the policy
+evaluates. Three ways they drift apart, all observed in this repo:
+
+1. **Wrong dimension.** `aws:PrincipalTag/X`, `aws:RequestTag/X` and a tag on
+   the resource are three different things wearing the same tag name. The
+   `deny_ec2_imds_v1` scanner read instance tags for a policy that exempts by
+   role tag, so accounts reported zero violations while enforcement would deny
+   every API call those instances made - the scan named the instances that
+   would break as its evidence the SCP was safe.
+2. **Wrong case sensitivity - in both directions at once.** A tag condition
+   key has two halves that match by opposite rules. IAM matches condition key
+   *names* without regard to case, and the tag key in
+   `aws:PrincipalTag/ExemptFromIMDSv2` is part of the name, so
+   `exemptfromimdsv2` matches. `StringNotEquals` compares the *value*
+   case-sensitively, so `True` does not match `true`. The original scanner had
+   both backwards: exact on the key, `.lower()` on the value. Check each half
+   against its own rule, and note that `StringEqualsIgnoreCase` exists when you
+   want the other comparison. Where a principal could carry the key twice in
+   cases that differ, AWS calls the result an unexpected condition failure -
+   raise rather than pick one.
+3. **Request state vs. resource state.** A condition key on a create action is
+   evaluated against the request, not against the object that results, so a
+   scan of running resources is not automatically a scan of what enforcement
+   will see. Be careful about the inverse mistake too: "the request" is not the
+   same as "the literal parameters the caller typed".
+   `ec2:MetadataHttpTokens` was measured resolving from the effective
+   configuration - an AMI with `imds-support=v2.0` populates it as `required`
+   for a request that names no `MetadataOptions` - so the naive reading
+   overstated the gap. Where a scan genuinely cannot observe the enforced
+   dimension, say so in the check's docstring instead of implying the clean
+   scan covers it.
+
+   **A docstring was not enough.** That remedy was applied here and the defect
+   survived it: the docstring said the clean scan did not cover the launch-time
+   statement, while the tool went on printing `100.0% - safe to deploy at root
+   level` for a fleet made entirely of IMDSv1 instances. Prose in a file the
+   operator is not reading does not correct a number the operator is reading.
+   A gap the scan cannot close has to change the verdict, or stop being part
+   of what the verdict licenses. See AP-011.
+
+   **And check whether the gap is real before designing around it.** "The scan
+   cannot observe a request in flight" was true and led straight to a wrong
+   conclusion, because an observable thing stood in for it: the request's tags
+   land on the resource it creates. A key you cannot read directly may still
+   have a proxy. Name the proxy, argue for it, measure it - AP-011 habit 3.
+
+   None of this is settleable from documentation. AWS's own guide says
+   `HttpTokens` requires `HttpEndpoint=enabled`; `RunInstances` accepts the
+   combination anyway. When a condition key's behaviour is load-bearing for a
+   generated policy, prove it with `run-instances --dry-run` under a throwaway
+   role carrying the statement, with a control request that must be denied so a
+   broken probe cannot pass as a clean result.
+4. **One key read two ways.** Every condition key a statement adds is a key
+   the scanner has to mirror, and a second key is where the two drift. Both
+   IMDS statements were briefly built around a `ec2:MetadataHttpEndpoint`
+   clause, on the theory that a launch disabling IMDS must stay possible; the
+   hop-limit statement never carried it, so the pair disagreed about the same
+   fleet. Dropping it left one key, `HttpTokens`, deciding in both the policy
+   and the check. Prefer the narrower statement whose extra permission the
+   operator can buy back for free - here, naming `HttpTokens=required` on a
+   launch with no metadata service, which changes no behaviour.
+
+Before writing the analyzer, read the statement and list every condition key
+in it. For each one, name what the scanner will read to model it. A key with
+no answer is a gap to document, not to approximate.
+
+---
+
+### AP-010: Judging a Target by Part of What It Governs
+
+```python
+# BAD - "the OU's accounts" read as the accounts parented directly to it
+ou_accounts = [
+    acc_id for acc_id, acc in organization_hierarchy.accounts.items()
+    if acc.parent_ou_id == ou_id
+]
+
+# GOOD - the OU's accounts are everything the attachment reaches
+ou_accounts = accounts_under_ou(ou_id, organization_hierarchy)
+```
+
+A policy attached to an OU applies to every account in that OU **and in every
+OU below it**. Placement used to decide one level at a time: an OU counted as
+safe when the accounts sharing its level were safe, and the allowlist it
+carried was unioned over those same accounts. In an organization nesting more
+than one level deep that shipped a policy declared safe for accounts it had
+never examined, carrying an allowlist that omitted their resources. Nothing
+errored - the report simply did not mention them.
+
+Two habits keep this from recurring:
+
+1. **Name the blast radius, then measure exactly it.** Write down what an
+   attachment reaches before writing the query that gathers it. Root reaches
+   every account. An OU reaches its subtree. An account reaches one account.
+   Anything narrower than the blast radius is a set of accounts being
+   declared safe without being looked at.
+2. **Test generators against each other, not only alone.** The same defect had
+   a second half: `generate_scps` emitted `local.<ou>_ou_id` for OUs that
+   `generate_org_info` declared only at depth one. Both modules' tests passed -
+   one asserted the reference was written, the other asserted the declaration
+   was written - and the mismatch surfaced only at `terraform plan`.
+   `tests/test_nested_ou_hierarchy.py` now generates both from one hierarchy
+   and asserts every `local.` a policy reads is one the org info declares.
+   Where two modules must agree on a name, put the rule in one function they
+   both call - here `ou_id_local_name()` - and test the pair together.
+
+---
+
+### AP-011: One Verdict Gating Two Statements
+
+```hcl
+# BAD - one variable, two statements, two different kinds of evidence
+{ include = var.deny_ec2_imds_v1, statement = { ... ec2:RoleDelivery ... } },
+{ include = var.deny_ec2_imds_v1, statement = { ... ec2:MetadataHttpTokens ... } },
+
+# GOOD - one variable, one statement, and a check that measures exactly it
+{ include = var.deny_ec2_imds_v1, statement = { ... ec2:MetadataHttpTokens ... } },
+```
+
+A check produces one number and the generator turns it into one boolean. If
+that boolean gates two statements, the check is licensing something it never
+measured.
+
+`deny_ec2_imds_v1` did this. Its two statements were evaluated at different
+times and exempted on different condition keys:
+`DenyRoleDeliveryLessThan2` at runtime, exempting by
+`aws:PrincipalTag/ExemptFromIMDSv2` on the calling role, and
+`DenyRunInstancesMetadataHttpTokensOptional` at launch, exempting by
+`aws:RequestTag/ExemptFromIMDSv2` on the request. The scanner read role tags,
+which was right for the first statement and meaningless for the second. So a
+role-tagged IMDSv1 instance was recorded as an *exemption*, the account came
+out at zero violations, and placement offered the combined policy at the
+organization root - for a fleet on which every single instance answered
+IMDSv1.
+
+Note the direction of the error. It is not that the evidence for the second
+statement was missing; it pointed the *other way*. The exempted instances did
+match that statement's condition, and the account most likely to be broken was
+the one that had configured the exemption on purpose, because it had a legacy
+IMDSv1 workload. The scan named the launches that would break as its evidence
+the policy was safe.
+
+Three habits keep this from recurring:
+
+1. **Count the statements a variable gates.** One is the number. When it is
+   two, either split the variable so each half carries its own verdict, or
+   remove a statement. `deny_ec2_imds_v1` was resolved by removing one: the
+   running fleet is now explicitly out of scope, documented as a scope
+   decision rather than a caveat, on the grounds that an IMDSv1 instance is
+   either migrated or tagged for exemption.
+2. **Remove the old variable name; do not quietly narrow it.** Keeping
+   `deny_ec2_imds_v1` while adding a second variable would leave every
+   committed `deny_ec2_imds_v1 = true` valid, applying cleanly, silently
+   enforcing less than the operator believed. Terraform rejects an argument a
+   module no longer declares - `Error: Unsupported argument`, raised at
+   `init` - and that error is the point. A name whose meaning changes without
+   a signal is the same defect wearing a fix.
+3. **A key you cannot read may still have a proxy - name it and measure it.**
+   `aws:RequestTag/ExemptFromIMDSv2` lives on a request in flight, which no
+   scan sees. It does not follow that the check must report no exemptions:
+   `TagSpecifications` populates that key *and* tags the instance it creates,
+   so the instance's tag is the trace of the request tag and evidence its
+   relaunch carries one. That proxy is now what the check reads.
+
+   The discipline is what separates a proxy from AP-009's mistake. A proxy is
+   named, argued from the mechanism that links it to the real key, measured
+   against enforcement, and has its failure modes written down and accepted -
+   here, a tag applied by `CreateTags` after launch, or a recreator that never
+   declares it. Reaching for a same-named tag on an unrelated condition key,
+   with no such argument, is not a proxy; that is how `aws:PrincipalTag` got
+   read for a statement that never mentioned it.
+
 ---
 
 ## 📝 Naming Conventions
@@ -866,6 +1105,86 @@ must_modify:
       terraform_content += f"  {check_name} = {{str({check_name}).lower()}}\n"
     location: "alphabetical by service"
 
+# A check whose SCP statement is scoped by an allowlist needs EVERY step
+# below. Stop short anywhere and the check still reports 100% compliance,
+# the SCP is still enabled, and the allowlist renders empty - which for a
+# Deny statement denies everything rather than nothing. deny_ec2_ami_owner
+# shipped with the first and last steps only.
+#
+# Collect the value the CONDITION KEY will hold, not the field of the same
+# name in the describe call. They can differ: ec2:Owner is an AMI's
+# ImageOwnerAlias when it has one and its numeric OwnerId otherwise, so
+# deny_ec2_ami_owner's allowlist of OwnerIds denied every Amazon and
+# Marketplace AMI the scan had just cleared. Measure it with a --dry-run
+# probe before believing either field, and shape the fixtures like real API
+# responses - an unrealistic one (OwnerId: "amazon") hid this for a release.
+if_check_has_allowlist:
+  - path: headroom/checks/{type}/{check_name}.py
+    function: "build_summary_fields"
+    add_line: "\"unique_{thing}s\": sorted(list({thing}s))"
+
+  - path: headroom/types.py
+    dataclass: "SCPCheckResult"
+    add_line: "{thing}s: Optional[List[str]] = None"
+
+  - path: headroom/parse_results.py
+    function: "_parse_single_scp_result_file"
+    add_line: "{thing}s=summary.get(\"unique_{thing}s\")"
+
+  - path: headroom/parse_results.py
+    add_function: "_build_{thing}s_for_recommendation"
+    call_from: ["_build_root_recommendation", "_build_ou_recommendation", "_build_account_recommendation"]
+    purpose: "Union the values across the accounts a placement covers"
+
+  - path: headroom/types.py
+    dataclass: "SCPPlacementRecommendations"
+    add_line: "{service}_allowed_{thing}s: Optional[List[str]] = None"
+
+  - path: headroom/terraform/generate_scps.py
+    function: "_build_{service}_terraform_parameters"
+    add_lines: |
+      Emit the list parameter only when it has entries. An empty allowlist
+      leaves the policy off, with a TerraformComment saying why - an empty
+      list on a Deny denies everything rather than nothing, and accounts
+      that own none of the resource legitimately report none. A result file
+      that predates the collection is the other cause, and parsing rejects
+      that outright: an absent summary key and an empty one mean opposite
+      things, and only the file itself can tell them apart.
+
+  - path: tests/test_parse_results.py
+    must_test: [summary_field_carried, union_across_accounts, other_checks_unaffected]
+
+  - path: tests/test_generate_scps.py
+    must_test: [renders_populated_allowlist, empty_allowlist_leaves_policy_off]
+
+if_check_has_exemptions:
+  - path: test_environment/modules/scps/locals.tf
+    read_first: |
+      List every condition key in the statement, including the ones that
+      express the exemption. For each, name what the scanner will read to
+      model it. See AP-009.
+
+  - path: headroom/aws/{service}.py
+    must_read: |
+      The dimension the condition key reads, not a same-named tag on a
+      convenient object. aws:PrincipalTag reads the calling role's tags;
+      aws:RequestTag reads the create request's; neither reads the resource's.
+
+  - path: headroom/constants.py
+    add_lines: |
+      The exemption tag key and value as constants, with a comment on the
+      operator that compares them. StringNotEquals is case-sensitive, so the
+      scanner must not lowercase what enforcement will not.
+
+  - path: headroom/checks/{type}/{check_name}.py
+    docstring: |
+      State which statements a clean scan clears and which it cannot. An
+      exemption the scan cannot observe - a launch-request tag, say - belongs
+      in the docstring, not in an implied guarantee.
+
+  - path: tests/test_aws_{service}.py
+    must_test: [right_dimension_exempts, wrong_dimension_does_not, value_case_is_exact]
+
 optional_modify:
   - path: test_environment/test_{check_name}.tf
     purpose: "Test infrastructure (if needed for E2E)"
@@ -931,7 +1250,7 @@ for page in paginator.paginate():
 # USE: For Pattern 4 checks with exemption tags
 # COPY: This exact pattern
 
-def categorize_result(self, result: Model) -> tuple[str, JsonDict]:
+def categorize_result(self, result: Model) -> tuple[CheckCategory, JsonDict]:
     result_dict = {
         "id": result.id,
         "exemption_tag": result.exemption_tag,
@@ -939,14 +1258,14 @@ def categorize_result(self, result: Model) -> tuple[str, JsonDict]:
 
     # Check exemption FIRST (before violation)
     if result.has_exemption:
-        return ("exemption", result_dict)
+        return (CheckCategory.EXEMPTION, result_dict)
 
     # Then check violation
     if result.violates_policy:
-        return ("violation", result_dict)
+        return (CheckCategory.VIOLATION, result_dict)
 
     # Everything else compliant
-    return ("compliant", result_dict)
+    return (CheckCategory.COMPLIANT, result_dict)
 
 def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
     total = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
@@ -1216,6 +1535,16 @@ step_6_e2e_optional:
 
 ```yaml
 verification_process:
+  step_0_machine_readable:
+    index: "https://servicereference.us-east-1.amazonaws.com/"
+    url: "https://servicereference.us-east-1.amazonaws.com/v1/{service}/{service}.json"
+    why: "Same data as the HTML reference below, as JSON. The HTML page renders
+      client-side, so it cannot be fetched or grepped - use this instead and
+      cite it in the policy comment."
+    shape: "Actions[].Resources[].ConditionKeys[] - the condition keys a given
+      action supports ON a given resource type"
+    example_query: "list every action whose image resource carries ec2:Owner"
+
   step_1:
     url: "https://docs.aws.amazon.com/service-authorization/latest/reference/reference_policies_actions-resources-contextkeys.html"
     action: "Find your service (e.g., Amazon RDS, Amazon EC2)"
@@ -1227,6 +1556,24 @@ verification_process:
   step_3:
     rule: "If condition key is NOT listed for an action, it CANNOT be used"
     do_not: "Assume support based on logic or web searches"
+
+  step_3b_resource_scope:
+    rule: "A resource-level condition key exists on ONE resource type. Scope the
+      statement's Resource to that type, not to whatever the action creates."
+    why: "An action is authorized against every resource it touches. On a
+      resource that does not carry the key, the key is absent - and a negated
+      operator (StringNotEquals, ArnNotLike, Bool with a false test) on an
+      absent key evaluates TRUE, so the Deny matches everything."
+    example: "ec2:Owner lives on the image resource. deny_ec2_ami_owner scoped
+      to arn:aws:ec2:*:*:instance/* denied every RunInstances call; scoped to
+      arn:aws:ec2:*::image/* it denies only untrusted AMI owners."
+    counterpart: "Use ...IfExists only where an absent key should mean allow.
+      In a Deny, that is usually the wrong direction - see BoolIfExists on
+      aws:PrincipalIsAWSService in modules/rcps/locals.tf, where it is right."
+    converse: "The same lookup decides which actions belong in the statement.
+      An action that lists no such resource type can never match a statement
+      scoped to it, so adding it reads as coverage while denying nothing -
+      ec2:RunScheduledInstances against arn:aws:ec2:*::image/*, for example."
 
   step_4_undocumented:
     if: "You want to include undocumented action"
@@ -1259,7 +1606,7 @@ base_class:
   class: BaseCheck[T]
   methods:
     - analyze(session) -> List[T]
-    - categorize_result(result: T) -> tuple[str, JsonDict]
+    - categorize_result(result: T) -> tuple[CheckCategory, JsonDict]
     - build_summary_fields(result) -> JsonDict
   template_method: execute()  # Calls your methods
 

@@ -14,11 +14,12 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.ecr_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.ecr_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.ecr_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -40,11 +41,12 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.kms_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.kms_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.kms_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -63,11 +65,12 @@ locals {
         "Action"    = "s3:*"
         "Resource"  = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.s3_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.s3_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.s3_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -89,11 +92,12 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.secrets_manager_third_party_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.secrets_manager_third_party_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.secrets_manager_third_party_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -115,11 +119,12 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.sqs_third_party_access_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.sqs_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sqs_third_party_access_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
           }
@@ -140,13 +145,62 @@ locals {
         ]
         "Resource" = "*"
         "Condition" = {
-          "StringNotEqualsIfExists" = {
-            "aws:PrincipalOrgID"                  = data.aws_organizations_organization.current.id
-            "aws:PrincipalAccount"                = var.sts_third_party_assumerole_account_ids_allowlist
-            "aws:ResourceTag/dp:exclude:identity" = "true"
-          }
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.sts_third_party_assumerole_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sts_third_party_assumerole_account_ids_allowlist } : {},
+          )
           "BoolIfExists" = {
             "aws:PrincipalIsAWSService" = "false"
+          }
+        }
+      }
+    },
+    # var.deny_service_confused_deputy
+    # -->
+    # Sid: DenyServiceConfusedDeputy
+    # Restricts AWS services acting on a caller's behalf to organization sources
+    #
+    # The six statements above exempt AWS service principals, because a
+    # service call carries no aws:PrincipalOrgID and the deny would
+    # otherwise match every service integration in the organization. This
+    # narrows that exemption back down.
+    #
+    # Null on aws:SourceAccount applies the deny only to service calls that
+    # carry that one key. A call populating only aws:SourceArn, or no source
+    # keys at all, falls outside it - this narrows the service exemption
+    # rather than closing it. StringNotEqualsIfExists on aws:SourceOrgID catches
+    # sources in standalone accounts, which belong to no organization and so
+    # carry no organization ID.
+    #
+    # Reference: https://github.com/aws-samples/data-perimeter-policy-examples
+    {
+      include = var.deny_service_confused_deputy,
+      statement = {
+        "Sid"       = "DenyServiceConfusedDeputy"
+        "Principal" = "*"
+        "Action" = [
+          "ecr:*",
+          "kms:*",
+          "s3:*",
+          "secretsmanager:*",
+          "sqs:*",
+          "sts:AssumeRole",
+        ]
+        "Resource" = "*"
+        "Condition" = {
+          "StringNotEqualsIfExists" = merge(
+            {
+              "aws:SourceOrgID" = data.aws_organizations_organization.current.id
+            },
+            length(var.service_confused_deputy_source_account_ids_allowlist) > 0 ? { "aws:SourceAccount" = var.service_confused_deputy_source_account_ids_allowlist } : {},
+          )
+          "Null" = {
+            "aws:SourceAccount" = "false"
+          }
+          "Bool" = {
+            "aws:PrincipalIsAWSService" = "true"
           }
         }
       }

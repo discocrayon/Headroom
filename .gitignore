@@ -21,6 +21,7 @@ my_config.yaml
 
 # Subagent-driven-development scratch workspace (ledger, briefs, review packages)
 .superpowers/
+docs/superpowers/
 
 # Editor swap files
 *.swp

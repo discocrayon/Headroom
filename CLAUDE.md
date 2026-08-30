@@ -1,196 +1,46 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for agents working in this repository. `AGENTS.md` points here; this file is the single source of truth.
 
-## Project Mental Model: PDRs as Products
+## Truth hierarchy
 
-### Core Philosophy
-**PDRs (Product Design Requirements) are the primary valuable product** - not the code. The implementation in `headroom/` is **regeneratable and disposable**.
+Code and tests define current behavior. `Headroom-Specification.md` is the specification: it expresses intent, and agents keep it current. The flow runs from code to specification, never back — do not regenerate or replace implementation from it, and do update the section describing behavior you changed, in the same change. Where the two disagree, resolve the discrepancy explicitly and say which side you changed.
 
-### Value Hierarchy
-1. **PDRs** = Primary intellectual property and specifications
-2. **Supporting Documentation** = Valuable context and guidance
-3. **Implementation Code** = Disposable artifact that can be rebuilt from PDRs
+## The pipeline
 
-### Project Structure Philosophy
-```
-headroom/
-├── mental_model.md                         # This file
-├── README.md                               # Project overview
-│
-├── Headroom-Specification.md               # 🎯 CORE SPECIFICATION (primary product)
-│
-├── design-docs/                            # 🔧 DESIGN DOCUMENTS
-│
-├── supporting-docs/                        # 📋 SUPPORTING (secondary value)
-│
-└── headroom/                         # 💻 REGENERATABLE (disposable)
-    └── [code that can be rebuilt from PDRs]
-```
+Headroom scans an AWS Organization and generates Terraform SCPs and RCPs that will not break existing workloads. One pass, one direction:
 
-## Working Principles for Claude
+Configuration → organization discovery → checks → result artifacts → placement → Terraform generation → reconciliation.
 
-### 1. PDR-First Approach
-- **Always prioritize PDR completeness and accuracy**
-- PDRs should contain complete specifications that enable full system reconstruction
-- Implementation code should be derivable from PDRs alone
+## Always
 
-### 2. Implementation Methodology - Test-Driven Development (TDD)
+- Use obviously fake AWS identifiers in code, tests, documentation, and examples: real prefix, real length, a repeated digit for the body (`111111111111`, `i-11111111111111111`, `ami-11111111111111111`). An identifier that arrives from a bug report, error message, console screenshot, or API response is real; rewrite it before it enters the repo, commit messages included.
+- Preserve wire compatibility of persisted results unless you are performing an explicit migration. A later run reads back both the result JSON and the result filenames, and `results_exist` tolerates the account-name and the account-name-plus-ID form so an existing results directory still resumes.
+- Check discovery under `headroom/checks/` intentionally uses dynamic imports: `headroom/checks/__init__.py` imports every module in `scps/` and `rcps/` so each `@register_check` decorator runs and a new check needs no edit elsewhere. That is the exception; everywhere else, import at the top of the file.
+- Organization membership, analyzable accounts, and hierarchy are distinct projections, and code that collapses them is wrong. `get_all_organization_account_ids` is deliberately unfiltered, because a closed account is still an organization member and still matches organization-based RCP conditions. `get_subaccount_information` drops the management account, `skip_account_ids`, and every non-ACTIVE account. `analyze_organization_structure` builds the OU tree that placement walks.
 
-#### Core Engineering Principle: Only Make New Mistakes
-- Avoid repeating mistakes; document lessons learned and create safeguards
-- Reapply learnings broadly to prevent similar patterns in other areas
-- Use failures as learning opportunities to improve system design
+## Routes
 
-#### TDD Workflow
-1. **Start with Tests**: Before writing any production code, create test files that define expected behavior
-2. **Red-Green-Refactor**: Follow the TDD cycle religiously
-   - Red: Write a failing test
-   - Green: Write minimal code to pass
-   - Refactor: Improve code quality while keeping tests green
-3. **Test Organization**:
-   - Unit tests in `tests/unit/`
-   - Integration tests in `tests/integration/`
-   - End-to-end tests in `tests/e2e/`
-   - Performance tests in `tests/performance/`
+Read the branch that matches your change and skip the rest. `Headroom-Specification.md` is 4,334 lines: open it to answer a specific question about intent, or to update the section covering what you changed, never as background reading.
 
-#### TDD as Continuous Learning
-- Each test suite becomes a knowledge repository of system behavior
-- Failed tests generate new test cases to prevent similar issues
-- Build comprehensive test suite that prevents regression of past mistakes
-- Use tests as living documentation of learned edge cases
+- **Adding or changing a check, or registry discovery** → `HOW_TO_ADD_A_CHECK.md`, `headroom/checks/registry.py`, and `tests/test_checks_registry.py`. Every stage from collection to Terraform is driven by the registry rather than by check name, with one exception: a new RCP check must also be named in `RCP_TERRAFORM_VARIABLES`, which `test_table_covers_every_registered_rcp_check` in `tests/test_generate_rcps.py` enforces.
+- **Principal, action, wildcard, or statement interpretation** → `headroom/aws/policy_documents.py` plus every service adapter that reads policy documents: `headroom/aws/ecr.py`, `kms.py`, `s3.py`, `secretsmanager.py`, `sqs.py`, and `iam/roles.py`. A change to how a statement is read is a change to all of them.
+- **Generated paths, symlinks, ownership markers, or reconciliation** → "Generation Is Reconciliation, Not Appending" in `documentation/ARCHITECTURE.md`, then `headroom/terraform/reconcile.py`, `ensure_org_info_symlink` in `headroom/main.py`, and `tests/test_terraform_reconcile.py`. Generation is render-before-mutate: the whole plan is built before any file is written or deleted, ownership is the marker on a file's first line, and a run that parses zero result files aborts rather than emptying the directories.
+- **Result JSON schemas, filenames, resume behavior, or cache detection** → the writer `headroom/write_results.py`, its one call site `BaseCheck.execute` in `headroom/checks/base.py`, and both readers, `headroom/parse_results.py` for SCPs and `headroom/terraform/generate_rcps.py` for RCPs. The readers only glob `*.json` per check directory and take account identity from the JSON `summary`; resume is a separate path, through `all_check_results_exist` in `headroom/analysis.py` into `results_exist`. So a filename change can silently re-scan or silently skip accounts without any reader failing. Tests: `tests/test_write_results.py`, `tests/test_parse_results.py`, and `TestRunChecks` in `tests/test_analysis_extended.py`.
+- **Account enumeration or hierarchy behavior** → `headroom/analysis.py` and `headroom/aws/organization.py`, keeping the three projections above distinct, with `tests/test_placement_hierarchy.py` and `tests/test_nested_ou_hierarchy.py`.
+- **Public CLI options or configuration** → `headroom/usage.py`, `headroom/config.py`, and `sample_config.yaml`, then update `README.md` and `documentation/SETUP.md`, with `tests/test_config.py` and `tests/test_main.py`.
+- **Documentation prose with no behavior change** → edit the file; no implementation file is implicated. `tests/test_documentation_links.py` is the only test that reads Markdown and it fails only on a relative link whose target is missing, so run it in place of `tox` when you add, move, or retarget a link.
 
-### 3. Two-Phase Documentation Workflow
+## Conventions
 
-**Phase 1 (Implementation/Iteration)**:
-- Focus on solving the problem and implementing functionality
-- Use TodoWrite to mark tasks as "implementation complete" when code works
-- Fast iteration encouraged - don't slow down for documentation during problem-solving
+`.cursorrules` is authoritative for code conventions. It carries the fail-fast rules, the single-source-of-defaults rule for CLI and config values, and the import rules including the check-discovery exception above.
 
-**Phase 2 (Commit Preparation)**:
-- Update all relevant documentation to reflect implementation
-- Mark todos as "fully complete" only after documentation is current
-- Required documentation updates before commit:
-  * PDR files updated with new capabilities/formats/achievements
-  * README updated with user-facing changes (supported formats, performance metrics)
-  * Technical specifications aligned with implementation
+## Completion
 
-**COMMIT RULE**: All related todos must be "fully complete" with synchronized documentation before git commit/push.
-
-## Development Commands
-
-### Testing and Code Quality
-- **Run tests**: `tox` - Runs full test suite with coverage, type checking, and pre-commit hooks
-- **Run specific test**: `pytest tests/test_specific.py` - Run individual test files
-- **Coverage**: Tests require 100% coverage for both `headroom/` and `tests/` directories
-- **Type checking**: `mypy headroom/ tests/` - Strict mypy configuration with no untyped definitions
-- **Pre-commit hooks**: `pre-commit run --all-files` - Runs autoflake, flake8, autopep8, and basic file checks
-
-### Development Tools
-- **Install dependencies**: `pip install -r requirements.txt`
-- **Run application**: `python -m headroom --config sample_config.yaml`
-
-## Architecture Overview
-
-### Core Structure
-This is a Python CLI tool for AWS security analysis with SCP (Service Control Policy) audit capabilities. The main package is `headroom/` with the following key modules:
-
-- **`main.py`**: Entry point that orchestrates configuration loading and analysis execution
-- **`config.py`**: Pydantic models for configuration validation (`HeadroomConfig`, `AccountTagLayout`)
-- **`usage.py`**: CLI argument parsing, YAML config loading, and config merging logic
-- **`analysis.py`**: AWS security analysis logic using cross-account role assumption
-
-### Configuration System
-The tool uses a hybrid configuration approach:
-1. YAML configuration file (required via `--config` flag)
-2. CLI arguments can override YAML values
-3. Pydantic validation ensures type safety and required fields
-
-Key configuration concepts:
-- **Security Analysis Account**: Optional separate account for running security analysis
-- **Management Account**: AWS Organizations management account for retrieving subaccount info
-- **Account Tag Layout**: Configurable tag keys for environment, name, and owner information
-
-### AWS Integration Pattern
-The tool follows a multi-account AWS pattern:
-1. Assumes `OrganizationAccountAccessRole` in security analysis account (if configured)
-2. Uses that session to assume `OrgAndAccountInfoReader` role in management account
-3. Retrieves organization account information with tags
-4. Filters out the management account from analysis
-
-## Code Conventions
-
-### From .cursorrules
-- Always add type annotations ensuring mypy compatibility
-- Never use bare `except Exception:` - catch specific exceptions
-- Always add tests and run `tox` for validation
-- Split docstrings over multiple lines for PEP 257 compliance
-- Wrap `with` statements in parentheses with proper indentation and trailing commas
-- Put data sources in separate `data.tf` files (for Terraform)
-- Never put a real AWS identifier (account ID, instance ID, AMI ID, ARN, KMS key ID, OU ID) in code, tests, docs, or commit messages - use obviously fake placeholders
-
-### Quality Standards
-- 100% test coverage required for both source and test code
-- Strict mypy configuration with no untyped definitions allowed
-- Pre-commit hooks enforce code formatting and basic quality checks
-- Python 3.13 target version
-
-## AI Agent Characteristics for Success
-
-You are a world-class full-stack software engineer with exceptional capabilities:
-
-1. **Creative and Resourceful**: Find innovative solutions to complex problems and leverage available tools effectively
-2. **Perseverant**: Work through challenges systematically and don't give up when faced with obstacles
-3. **Deep Cross-Disciplinary Expertise**: Understand security, AWS, AI/ML, software architecture, pytest and development best practices
-
-## Core Engineering Tenets
-
-### Only Make New Mistakes
-- Avoid repeating mistakes; if they happen, make sure they never happen again
-- Reapply learnings broadly to ensure similar patterns don't affect other areas
-- Document lessons learned and create safeguards against similar issues
-- Use test failures as design feedback - hard to test often means poor design
-
-### Future-Proofing Through Testing
-- Comprehensive unit tests with high coverage (100%)
-- Mock layers for external dependencies (e.g., AWS APIs)
-- Each test suite becomes a knowledge repository of system behavior
-- Failed tests generate new test cases to prevent similar issues
-- Maintain a "lessons learned" test file documenting past mistakes
-
-### Continuous Improvement
-- Challenge yourself and always aspire to be better
-- Seek feedback and iterate on solutions
-- Learn from each implementation and apply insights to future work
-- Regular test suite reviews to identify patterns and improve design
-- Share test discoveries across projects to elevate overall quality
-
-## Development Standards
-
-### Code Quality Requirements
-- Write clean, readable, and maintainable code
-- Tests serve as living documentation
-- Every error path must have a corresponding test
-- Proactively test boundary conditions and edge cases
-- Include performance benchmarks in test suite
-- Never do dynamic imports, always import at the top of the file
-
-### Coverage and Integration
-- Maintain 100% test coverage with meaningful tests
-- All tests must pass before considering any feature complete
-- Comprehensive integration testing from CLI to analysis completion
-
-## Key Reminders for AI Agents
-
-1. **PDRs are the product** - protect their quality and completeness
-2. **Implementation serves PDRs** - not the other way around
-3. **Regeneratable mindset** - anything in `headroom/` can be rebuilt
-4. **Specification-driven development** - PDRs define what to build
-5. **AI-agent friendly** - structure enables autonomous reconstruction
-6. **Test-driven approach** - tests define behavior before implementation
-7. **Learning from failures** - each mistake becomes a prevention mechanism
-8. **Only make new mistakes** - avoid repeating past errors through systematic learning
-
----
-
-*This framework ensures PDRs remain the primary valuable asset while enabling flexible, regeneratable implementations through disciplined AI agent engineering practices with exceptional quality standards.*
+- Read the implementation and the existing tests for every boundary you touch before editing.
+- Write the failing test first and watch it fail for the reason you expect, then write only enough code to pass it. One test, one implementation, repeat — do not write every test up front. Start a bug fix with the test that reproduces it.
+- An assertion that computes its expected value the way the code computes it passes by construction and can never disagree with the code. Take expected values from an independent source: a known-good literal, a worked example, the documented shape of the AWS policy.
+- Tests are flat under `tests/`, one file per module.
+- Run the smallest relevant test files while working, then `tox` before calling the work done.
+- If verification cannot run, report the exact unavailable dependency or environment constraint instead of a pass.
+- Update documentation when public behavior, configuration, output formats, invariants, or the routing above changed, including the section of `Headroom-Specification.md` that covers it, and otherwise leave it alone. Do this once, when the code has settled, rather than rewriting prose after every edit.

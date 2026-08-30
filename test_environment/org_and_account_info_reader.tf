@@ -17,7 +17,7 @@ resource "aws_iam_role" "org_and_account_info_reader" {
 
 resource "aws_iam_policy" "org_and_account_info_reader_policy" {
   name        = "OrgAndAccountInfoReaderPolicy"
-  description = "Allows listing accounts, describing OUs, and describing tags on accounts and OUs."
+  description = "Allows describing the organization, listing accounts, describing OUs, and describing tags on accounts and OUs."
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -26,6 +26,7 @@ resource "aws_iam_policy" "org_and_account_info_reader_policy" {
         Effect = "Allow",
         Action = [
           "organizations:DescribeAccount",
+          "organizations:DescribeOrganization",
           "organizations:DescribeOrganizationalUnit",
           "organizations:ListAccounts",
           "organizations:ListAccountsForParent",
