@@ -140,7 +140,7 @@ locals {
   "violations": [],
   "compliant_resources": [
     {
-      "instance_id": "i-1234567890abcdef0",
+      "instance_id": "i-11111111111111111",
       "region": "us-east-1",
       "metadata_options": {
         "HttpTokens": "required"

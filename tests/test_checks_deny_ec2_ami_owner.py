@@ -32,7 +32,7 @@ class TestCheckDenyEc2AmiOwner:
             DenyEc2AmiOwner(
                 instance_id="i-amazon-ami",
                 region="us-east-1",
-                ami_id="ami-12345678",
+                ami_id="ami-11111111111111111",
                 ami_owner="444444444444",
                 ami_name="Amazon Linux 2",
                 ami_owner_alias="amazon",
@@ -40,7 +40,7 @@ class TestCheckDenyEc2AmiOwner:
             DenyEc2AmiOwner(
                 instance_id="i-marketplace-ami",
                 region="us-east-1",
-                ami_id="ami-87654321",
+                ami_id="ami-22222222222222222",
                 ami_owner="555555555555",
                 ami_name="Marketplace AMI",
                 ami_owner_alias="aws-marketplace",
@@ -48,7 +48,7 @@ class TestCheckDenyEc2AmiOwner:
             DenyEc2AmiOwner(
                 instance_id="i-custom-ami",
                 region="us-west-2",
-                ami_id="ami-abcdef12",
+                ami_id="ami-33333333333333333",
                 ami_owner="222222222222",
                 ami_name="Custom AMI",
             ),
@@ -68,7 +68,7 @@ class TestCheckDenyEc2AmiOwner:
             DenyEc2AmiOwner(
                 instance_id="i-amazon-1",
                 region="us-east-1",
-                ami_id="ami-12345678",
+                ami_id="ami-11111111111111111",
                 ami_owner="444444444444",
                 ami_name="Amazon Linux 2",
                 ami_owner_alias="amazon",
@@ -76,7 +76,7 @@ class TestCheckDenyEc2AmiOwner:
             DenyEc2AmiOwner(
                 instance_id="i-amazon-2",
                 region="us-west-2",
-                ami_id="ami-87654321",
+                ami_id="ami-22222222222222222",
                 ami_owner="444444444444",
                 ami_name="Amazon Linux 2023",
                 ami_owner_alias="amazon",
@@ -196,7 +196,7 @@ class TestCheckDenyEc2AmiOwner:
         result = DenyEc2AmiOwner(
             instance_id="i-test",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="444444444444",
             ami_name="Amazon Linux 2",
             ami_owner_alias="amazon"
@@ -266,7 +266,7 @@ class TestCheckDenyEc2AmiOwner:
         result = DenyEc2AmiOwner(
             instance_id="i-test",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="444444444444",
             ami_name="Amazon Linux 2",
             ami_owner_alias="amazon",
@@ -299,7 +299,7 @@ class TestCheckDenyEc2AmiOwner:
                 DenyEc2AmiOwner(
                     instance_id="i-from-amazon",
                     region="us-east-1",
-                    ami_id="ami-12345678",
+                    ami_id="ami-11111111111111111",
                     ami_owner="444444444444",
                     ami_name="al2023",
                     ami_owner_alias="amazon",
@@ -307,7 +307,7 @@ class TestCheckDenyEc2AmiOwner:
                 DenyEc2AmiOwner(
                     instance_id="i-from-own-golden-image",
                     region="us-east-1",
-                    ami_id="ami-87654321",
+                    ami_id="ami-22222222222222222",
                     ami_owner="222222222222",
                     ami_name="golden-base",
                     ami_owner_alias=None,
@@ -342,7 +342,7 @@ class TestCheckDenyEc2AmiOwner:
         result = DenyEc2AmiOwner(
             instance_id="i-test",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="444444444444",
             ami_name="al2023",
             ami_owner_alias="amazon",

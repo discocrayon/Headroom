@@ -35,26 +35,26 @@ class TestDenyEc2ImdsV1:
         """Test creating DenyEc2ImdsV1 with valid data."""
         result = DenyEc2ImdsV1(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             imdsv1_allowed=True,
             exemption_tag_present=False,
         )
 
         assert result.region == "us-east-1"
-        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.instance_id == "i-11111111111111111"
         assert result.imdsv1_allowed is True
 
     def test_deny_ec2_imds_v1_imdsv2_enforced(self) -> None:
         """Test DenyEc2ImdsV1 with IMDSv2 enforced."""
         result = DenyEc2ImdsV1(
             region="eu-west-1",
-            instance_id="i-abcdef1234567890",
+            instance_id="i-33333333333333333",
             imdsv1_allowed=False,
             exemption_tag_present=False,
         )
 
         assert result.region == "eu-west-1"
-        assert result.instance_id == "i-abcdef1234567890"
+        assert result.instance_id == "i-33333333333333333"
         assert result.imdsv1_allowed is False
 
     def test_deny_ec2_imds_v1_carries_nothing_about_roles(self) -> None:
@@ -77,14 +77,14 @@ class TestDenyEc2ImdsV1:
         """Test DenyEc2ImdsV1 equality comparison."""
         result1 = DenyEc2ImdsV1(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             imdsv1_allowed=True,
             exemption_tag_present=False,
         )
 
         result2 = DenyEc2ImdsV1(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             imdsv1_allowed=True,
             exemption_tag_present=False,
         )
@@ -103,7 +103,7 @@ class TestDenyEc2ImdsV1:
         """Test DenyEc2ImdsV1 string representation."""
         result = DenyEc2ImdsV1(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             imdsv1_allowed=True,
             exemption_tag_present=False,
         )
@@ -111,7 +111,7 @@ class TestDenyEc2ImdsV1:
         repr_str = repr(result)
         assert "DenyEc2ImdsV1" in repr_str
         assert "us-east-1" in repr_str
-        assert "i-1234567890abcdef0" in repr_str
+        assert "i-11111111111111111" in repr_str
 
 
 class TestGetImdsV1Ec2Analysis:
@@ -170,11 +170,11 @@ class TestGetImdsV1Ec2Analysis:
                     "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
-                            "i-1234567890abcdef0",
+                            "i-11111111111111111",
                             tags=[{"Key": "Name", "Value": "test-instance-1"}]
                         ),
                         self.create_mock_instance(
-                            "i-0987654321fedcba0",
+                            "i-22222222222222222",
                             http_tokens="required",
                             tags=[{"Key": "ExemptFromIMDSv2", "Value": "true"}]
                         )
@@ -190,7 +190,7 @@ class TestGetImdsV1Ec2Analysis:
                     "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
-                            "i-abcdef1234567890",
+                            "i-33333333333333333",
                             http_endpoint="disabled"
                         )
                     ]
@@ -243,18 +243,18 @@ class TestGetImdsV1Ec2Analysis:
 
         # Check first instance (IMDSv1 allowed, no exemption)
         assert results[0].region == "us-east-1"
-        assert results[0].instance_id == "i-1234567890abcdef0"
+        assert results[0].instance_id == "i-11111111111111111"
         assert results[0].imdsv1_allowed is True
 
         # Check second instance (IMDSv2 required)
         assert results[1].region == "us-east-1"
-        assert results[1].instance_id == "i-0987654321fedcba0"
+        assert results[1].instance_id == "i-22222222222222222"
         assert results[1].imdsv1_allowed is False
 
         # Check third instance (endpoint disabled, but tokens still optional,
         # which the SCP counts and so does this check)
         assert results[2].region == "us-west-2"
-        assert results[2].instance_id == "i-abcdef1234567890"
+        assert results[2].instance_id == "i-33333333333333333"
         assert results[2].imdsv1_allowed is True
 
         # Check fourth instance (fallback region, IMDSv2 required)
@@ -538,16 +538,16 @@ class TestDenyEc2AmiOwner:
     def test_deny_ec2_ami_owner_creation(self) -> None:
         """Test creating DenyEc2AmiOwner with valid data."""
         result = DenyEc2AmiOwner(
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="amazon",
             ami_name="Amazon Linux 2"
         )
 
-        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.instance_id == "i-11111111111111111"
         assert result.region == "us-east-1"
-        assert result.ami_id == "ami-12345678"
+        assert result.ami_id == "ami-11111111111111111"
         assert result.ami_owner == "amazon"
         assert result.ami_name == "Amazon Linux 2"
 
@@ -569,7 +569,7 @@ class TestDenyEc2AmiOwner:
         result1 = DenyEc2AmiOwner(
             instance_id="i-test",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="amazon",
             ami_name="AL2"
         )
@@ -577,7 +577,7 @@ class TestDenyEc2AmiOwner:
         result2 = DenyEc2AmiOwner(
             instance_id="i-test",
             region="us-east-1",
-            ami_id="ami-12345678",
+            ami_id="ami-11111111111111111",
             ami_owner="amazon",
             ami_name="AL2"
         )
@@ -585,7 +585,7 @@ class TestDenyEc2AmiOwner:
         result3 = DenyEc2AmiOwner(
             instance_id="i-different",
             region="us-east-1",
-            ami_id="ami-87654321",
+            ami_id="ami-22222222222222222",
             ami_owner="aws-marketplace",
             ami_name="Marketplace"
         )
@@ -872,8 +872,8 @@ class TestGetEc2AmiOwnerAnalysis:
                 {
                     "OwnerId": "111111111111",
                     "Instances": [
-                        self.create_mock_instance("i-amazon", "ami-12345678"),
-                        self.create_mock_instance("i-marketplace", "ami-87654321")
+                        self.create_mock_instance("i-amazon", "ami-11111111111111111"),
+                        self.create_mock_instance("i-marketplace", "ami-22222222222222222")
                     ]
                 }
             ]
@@ -927,14 +927,14 @@ class TestGetEc2AmiOwnerAnalysis:
         assert len(results) == 3
 
         assert results[0].instance_id == "i-amazon"
-        assert results[0].ami_id == "ami-12345678"
+        assert results[0].ami_id == "ami-11111111111111111"
         assert results[0].ami_owner == "444444444444"
         assert results[0].ami_owner_alias == "amazon"
         assert results[0].ami_name == "Amazon Linux 2"
         assert results[0].region == "us-east-1"
 
         assert results[1].instance_id == "i-marketplace"
-        assert results[1].ami_id == "ami-87654321"
+        assert results[1].ami_id == "ami-22222222222222222"
         assert results[1].ami_owner == "555555555555"
         assert results[1].ami_owner_alias == "aws-marketplace"
         assert results[1].region == "us-east-1"
@@ -1249,30 +1249,30 @@ class TestDenyEc2PublicIp:
     def test_deny_ec2_public_ip_creation(self) -> None:
         """Test creating DenyEc2PublicIp with valid data."""
         result = DenyEc2PublicIp(
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             region="us-east-1",
             public_ip_address="54.123.45.67",
             has_public_ip=True,
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
 
-        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.instance_id == "i-11111111111111111"
         assert result.region == "us-east-1"
         assert result.public_ip_address == "54.123.45.67"
         assert result.has_public_ip is True
-        assert result.instance_arn == "arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+        assert result.instance_arn == "arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
 
     def test_deny_ec2_public_ip_without_public_ip(self) -> None:
         """Test DenyEc2PublicIp without public IP address."""
         result = DenyEc2PublicIp(
-            instance_id="i-0987654321fedcba0",
+            instance_id="i-22222222222222222",
             region="us-west-2",
             public_ip_address=None,
             has_public_ip=False,
-            instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-0987654321fedcba0"
+            instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
         )
 
-        assert result.instance_id == "i-0987654321fedcba0"
+        assert result.instance_id == "i-22222222222222222"
         assert result.region == "us-west-2"
         assert result.public_ip_address is None
         assert result.has_public_ip is False
@@ -1280,19 +1280,19 @@ class TestDenyEc2PublicIp:
     def test_deny_ec2_public_ip_equality(self) -> None:
         """Test DenyEc2PublicIp equality comparison."""
         result1 = DenyEc2PublicIp(
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             region="us-east-1",
             public_ip_address="54.123.45.67",
             has_public_ip=True,
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
 
         result2 = DenyEc2PublicIp(
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             region="us-east-1",
             public_ip_address="54.123.45.67",
             has_public_ip=True,
-            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-1234567890abcdef0"
+            instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
 
         result3 = DenyEc2PublicIp(
@@ -1351,11 +1351,11 @@ class TestGetEc2PublicIpAnalysis:
                     "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance_with_ip(
-                            "i-1111111111111111",
+                            "i-11111111111111111",
                             public_ip="54.123.45.67"
                         ),
                         self.create_mock_instance_with_ip(
-                            "i-2222222222222222",
+                            "i-22222222222222222",
                             public_ip=None
                         )
                     ]
@@ -1369,7 +1369,7 @@ class TestGetEc2PublicIpAnalysis:
                     "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance_with_ip(
-                            "i-3333333333333333",
+                            "i-33333333333333333",
                             public_ip="52.98.76.54"
                         )
                     ]
@@ -1396,17 +1396,17 @@ class TestGetEc2PublicIpAnalysis:
 
         assert len(results) == 3
 
-        assert results[0].instance_id == "i-1111111111111111"
+        assert results[0].instance_id == "i-11111111111111111"
         assert results[0].region == "us-east-1"
         assert results[0].public_ip_address == "54.123.45.67"
         assert results[0].has_public_ip is True
 
-        assert results[1].instance_id == "i-2222222222222222"
+        assert results[1].instance_id == "i-22222222222222222"
         assert results[1].region == "us-east-1"
         assert results[1].public_ip_address is None
         assert results[1].has_public_ip is False
 
-        assert results[2].instance_id == "i-3333333333333333"
+        assert results[2].instance_id == "i-33333333333333333"
         assert results[2].region == "us-west-2"
         assert results[2].public_ip_address == "52.98.76.54"
         assert results[2].has_public_ip is True
@@ -1589,13 +1589,13 @@ class TestDenyEc2ImdsHopLimit:
         """Test creating DenyEc2ImdsHopLimit with valid data."""
         result = DenyEc2ImdsHopLimit(
             region="us-east-1",
-            instance_id="i-1234567890abcdef0",
+            instance_id="i-11111111111111111",
             hop_limit=2,
             imds_enabled=True
         )
 
         assert result.region == "us-east-1"
-        assert result.instance_id == "i-1234567890abcdef0"
+        assert result.instance_id == "i-11111111111111111"
         assert result.hop_limit == 2
         assert result.imds_enabled is True
 
