@@ -5,7 +5,7 @@ Tests for headroom.aws.ecr module.
 import json
 
 import pytest
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
@@ -1009,7 +1009,7 @@ class TestRegistryPolicy:
         repositories: Optional[List[Any]] = None,
         repository_policy: Any = None,
         registry_error: Optional[str] = None,
-    ) -> List[ECRPolicyAnalysis]:
+    ) -> Sequence[ECRPolicyAnalysis]:
         """
         Run the analyzer over a single region.
 

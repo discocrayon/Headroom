@@ -5,7 +5,7 @@ Shared AWS helper utilities for region discovery and pagination.
 from collections.abc import Iterator
 from functools import wraps
 from threading import Lock
-from typing import Any, Callable, List, Set, Tuple, TypeVar
+from typing import Any, Callable, List, Sequence, Set, Tuple, TypeVar
 from weakref import WeakKeyDictionary
 
 from boto3.session import Session
@@ -18,7 +18,7 @@ _REGION_MEMO: WeakKeyDictionary[Session, list[str]] = WeakKeyDictionary()
 _REGION_MEMO_LOCK = Lock()
 
 
-def get_all_regions(session: Session) -> list[str]:
+def get_all_regions(session: Session) -> Sequence[str]:
     """
     Return the AWS regions that are enabled for the account.
 
@@ -68,9 +68,11 @@ def get_all_regions(session: Session) -> list[str]:
     session. Two threads filling it would cost a duplicate API call and
     nothing else -- the value written is a fresh list either way.
 
-    Callers must not mutate what this returns. It is the cached list itself,
-    not a copy, so sorting or filtering it in place changes the region list
-    every later check for this account reads.
+    Callers cannot mutate what this returns. It is the cached list itself,
+    not a copy, so sorting or filtering it in place would change the region
+    list every later check for this account reads; the return type is
+    `Sequence`, which has no such method, so strict mypy rejects the attempt
+    at the call site rather than leaving the rule to a docstring.
     """
     with _REGION_MEMO_LOCK:
         cached = _REGION_MEMO.get(session)
@@ -93,7 +95,7 @@ _Result = TypeVar("_Result")
 
 def memoize_per_session(
     analyzer: Callable[[Session, Set[str], str], List[_Result]]
-) -> Callable[[Session, Set[str], str], List[_Result]]:
+) -> Callable[[Session, Set[str], str], Sequence[_Result]]:
     """
     Serve a resource-policy analysis once per account instead of twice.
 
@@ -143,9 +145,11 @@ def memoize_per_session(
     reason `get_all_regions` gives above: holding it would serialize every
     worker behind one account's policy sweep, and the entry is uncontended.
 
-    Callers must not mutate what this returns. It is the cached list itself,
-    not a copy, so sorting or filtering it in place changes what the other
-    check for this account reads.
+    Callers cannot mutate what this returns. It is the cached list itself,
+    not a copy, so sorting or filtering it in place would change what the
+    other check for this account reads. The decorated function is typed as
+    returning `Sequence`, so strict mypy rejects the attempt even though the
+    analyzer it wraps still returns a list.
 
     Args:
         analyzer: A `(session, org_account_ids, org_id)` analysis function

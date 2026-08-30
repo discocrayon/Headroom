@@ -978,7 +978,7 @@ Nothing narrowed that exemption back down. An account outside the organization t
 
 Trust policies matter here as much as resource policies. A role that trusts a service principal with no source guard is the canonical confused-deputy vulnerability, and `sts:AssumeRole` is in the statement's action list.
 
-**API cost**: recording the new field costs the other six checks nothing, but this check is not free. Nothing caches an analysis between checks, so registering it issues every RCP read API a second time per account per run - repository, key, bucket, secret, queue and role listings and their policies. Registration alone triggers that second pass; the `deny_service_confused_deputy` Terraform flag gates the rendered statement, not the scan. Caching is deliberately not implemented and is a separate optimization if the duplication proves material, so budget quota and runtime for the RCP pass at double.
+**API cost**: recording the new field costs the other six checks nothing, and registering this check costs no extra API traffic either. `memoize_per_session` caches the six shared analyses against the session, so whichever check of a pair runs second - repository, key, bucket, secret, queue and role listings and their policies - is served from memory. Registry order decides which one pays. The `deny_service_confused_deputy` Terraform flag gates the rendered statement, not the scan.
 
 **Detection**:
 - Out-of-organization accounts pinned by `aws:SourceAccount` or `aws:SourceArn` on a service-principal grant, which become the statement's `aws:SourceAccount` allowlist

@@ -166,11 +166,13 @@ it was handed and which thread it ran on. Nothing checks it at runtime, and a
 thread-identity check on the memo would not: the pool reuses its worker threads across
 accounts, so two accounts sharing one session can be two accounts on one thread.
 
-The third cache exists because `deny_service_confused_deputy` re-reads what six other
-checks have already read: ECR, KMS, S3, Secrets Manager, SQS, and IAM role trust policies.
-Four of those six sweep every enabled region, so without the memo each account paid four
-extra region sweeps -- the same waste as the four identical EC2 sweeps, arriving by a
-different route. `memoize_per_session` in `aws/helpers.py` carries it, and refuses a second
+The third cache exists because `deny_service_confused_deputy` shares six analyzers with
+the resource-specific checks: ECR, KMS, S3, Secrets Manager, SQS, and IAM role trust
+policies. Which of a pair reads AWS and which is served from memory is registry order, not
+design -- it runs fourteenth of sixteen, so the first four are cached by the time it asks
+and it reads SQS and IAM role trust policies first. Four of those six sweep every enabled
+region, so without the memo each account paid four extra region sweeps -- the same waste as
+the four identical EC2 sweeps, arriving by a different route. `memoize_per_session` in `aws/helpers.py` carries it, and refuses a second
 call for one session that passes different organization arguments rather than serving the
 first call's answer to a different question.
 
