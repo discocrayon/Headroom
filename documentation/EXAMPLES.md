@@ -27,7 +27,7 @@ Reasoning: All accounts under this OU allow the same third-party accounts with n
 ----------------------------------------
 INFO:headroom.parse_results:[-] SCP placement analysis completed
 INFO:headroom.parse_results:[-] RCP placement analysis completed
-INFO:headroom.aws.organization:[-] Found organization root: r-ab1c
+INFO:headroom.aws.organization:[-] Found organization root: r-1111
 INFO:headroom.terraform.generate_scps:[-] Generated SCP Terraform file: test_environment/scps/root_scps.tf
 INFO:headroom.terraform.generate_rcps:[-] Generated RCP Terraform file: test_environment/rcps/acme_acquisition_ou_rcps.tf
 ```

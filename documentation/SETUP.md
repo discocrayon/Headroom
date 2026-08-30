@@ -228,7 +228,7 @@ overwhelmingly network-bound, so the interpreter is idle most of the run.
 | Workers | Resident memory | 300 accounts |
 | --- | --- | --- |
 | 1 | ~0.2 GB | ~3.8 hours |
-| 8 | ~0.4 GB | ~30 minutes |
+| 8 | ~0.5 GB | ~30 minutes |
 | 16 (default) | ~0.8 GB | ~16 minutes |
 | 32 (maximum) | ~1.5 GB | ~9 minutes |
 
@@ -240,13 +240,16 @@ column -- 43 MB a worker alone puts the default row at 0.7 GB rather than 0.8.
 No row of the runtime column is a wall-clock measurement, including the serial one. It is
 derived: a per-account census of the API calls the checks issue -- 203 requests and about
 192 fresh TLS handshakes, counted from the code -- against an assumed 100 ms mean
-round-trip and two extra round-trips per handshake, which is roughly 59 seconds an account
-and 3.8 hours for 300. `design-docs/2026-08-21-parallel-account-analysis.md` carries the
-census. The census is real; the latency is an assumption, and a slower or faster link
-moves every row in the column together. Before the region-list and EC2-instance caches the
-same census gave roughly 4.9 hours. A third cache, covering the resource policies two
-checks each read, landed afterwards and removes about 68 region probes per account, so the
-serial figure is if anything now pessimistic.
+round-trip and two extra round-trips per handshake. That comes to 587 round-trips, roughly
+59 seconds an account and 4.9 hours for 300.
+
+The 4.9 hours is the code the census counted, before the caches. The table's 3.8-hour row
+is what the region-list and EC2-instance caches leave of it, and
+`design-docs/2026-08-21-parallel-account-analysis.md` carries both numbers and the census
+they come from. A third cache, covering the resource policies two checks each read, landed
+afterwards and removes about 68 region probes per account, so even 3.8 hours is now
+pessimistic. The census is real; the latency is an assumption, and a slower or faster link
+moves every row in the column together.
 
 The other three rows come off that same serial figure, and the projection is not a
 straight division. Roughly 2.2 minutes of a 300-account run is GIL-bound Python that no
@@ -378,3 +381,34 @@ starts and names the accounts, with the reason beside each one. Rename them, or 
 
 A leading dot is fine: `pathlib.Path.glob` matches dotfiles, and the readers take account
 identity from the JSON rather than the filename.
+
+### "both claim the Terraform identifier"
+
+Everything generated for an account -- its policy file, its module name, the ID local the
+policy targets -- is named from the account name reduced to a Terraform identifier, and
+that reduction folds much wider than a filename does. Case, spaces, hyphens and every
+other non-alphanumeric all become one underscore, runs of underscores collapse, and
+leading and trailing underscores are stripped, so `Prod-US`, `Prod US`, `Prod_US`,
+`prod.us` and `PROD+US` are one identifier. Two accounts reducing alike would have the
+second's policy file written over the first's, so generation aborts instead, naming both
+accounts and the identifier they share. Rename one.
+
+A second form of the collision names a file rather than two accounts:
+
+```
+Two generated files claim 'root_scps.tf', the second for the organization root.
+```
+
+Accounts, OUs, and the organization root all name their files this way, and the root's
+two filenames are fixed. So an account called `Root` claims `root_scps.tf`, and an account
+called `Sandbox OU` claims whatever the `Sandbox` OU claims. The message names the file
+and whichever of the two claimed it second, which is a matter of render order rather than
+of which one is at fault -- rename the account either way.
+
+Unlike the filename guard above, both of these fire during Terraform generation rather
+than before the scan. Generation walks every account in the organization, while a
+pre-flight check sees only the accounts the scan will analyze -- the management account,
+`skip_account_ids`, and every non-ACTIVE account are already filtered out by then -- so a
+pre-flight version could not be complete and there is none. Nothing is lost to the abort:
+the results are already on disk, and a re-run after the rename resumes from them and goes
+straight to generation.

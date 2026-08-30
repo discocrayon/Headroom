@@ -2915,7 +2915,7 @@ withheld from the statement regardless of what it contributed.
 
 **Rows five and six: an organization scope.** `aws:SourceOrgID` names an
 organization directly and `aws:SourceOrgPaths` carries it as the first element
-of a path such as `o-11111111111/r-ab12/ou-ab12-11111111/`, so both reduce to
+of a path such as `o-11111111111/r-1111/ou-1111-11111111/`, so both reduce to
 the same comparison against this organization's own ID. That ID comes from
 `get_organization_id`, which calls `organizations:DescribeOrganization` on the
 management account session the run already holds. The deployed statement
@@ -4334,9 +4334,12 @@ results -- so an entry is released as soon as its worker drops the session and a
 
 Two further memos follow the same shape and the same reasoning:
 `aws/ec2.get_instances()` for one region's instances, and
-`aws/helpers.memoize_per_session()` for the six resource-policy analyses that
-`deny_service_confused_deputy` re-reads after each resource's own
-third-party-access check has read them. That last one also refuses a second call
+`aws/helpers.memoize_per_session()` for the six resource-policy analyses
+`deny_service_confused_deputy` shares with the resource-specific checks, where
+whichever of a pair runs second is served from memory. Registry order decides
+which one pays, not design: the check runs fourteenth of sixteen, so ECR, KMS,
+S3 and Secrets Manager are cached before it asks, while it reads SQS and IAM
+role trust policies first. That last memo also refuses a second call
 for one session carrying different organization arguments, since the session
 alone is a sufficient key only while those are fixed for the run.
 
