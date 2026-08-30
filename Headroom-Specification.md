@@ -212,13 +212,55 @@ headroom/
    name that cannot be a filename -- containing a path separator, or beginning with a dot
    -- would put the account's results outside the directory generation reads, without
    failing. And under `exclude_account_ids` the name alone is the filename, so two
-   accounts sharing one would interleave their JSON; names are compared as a
-   case-insensitive, normalization-folding filesystem compares them. Both aborts name the
-   offending names and never the account IDs.
+   accounts sharing one would interleave their JSON. Both aborts name the offending names
+   and never the account IDs. "Account name validation" below gives the comparison rule.
 5. **Placement:** Parse all result files → analyze org structure → determine policy levels
 6. **Generation:** Generate `grab_org_info.tf` + SCP Terraform files + RCP Terraform files
 
 ---
+
+### Account name validation
+
+Two checks run over the account names before the worker pool starts. Both failures are
+otherwise invisible until the end of a run, and one of them is silent even then.
+
+**A name that cannot be a filename.** A path separator, or a leading dot, puts the
+account's results somewhere other than the check directory that generation reads. The
+write succeeds, the reader's `*.json` glob never sees the file, and the account is
+missing from the policies with nothing in the log to say so. The check is unconditional:
+the account ID is in the filename under the default setting too, and it does not make a
+name with a slash in it safe.
+
+**Two accounts that resolve to one filename.** Only under `exclude_account_ids`, where
+the name alone is the filename. Run serially that is a quiet last-writer-wins; run with
+a worker per account it is two threads interleaving `json.dump` output into one file,
+yielding either corrupt JSON or a valid file holding both accounts' results spliced
+together, which then feeds policy generation.
+
+The comparison is the interesting part, because `==` is the wrong test. Development
+happens on macOS, where APFS folds two axes by default: case, so `Prod` and `prod` are
+one file, and Unicode normal form, so `café` composed and decomposed are one file even
+though the two strings hold different code points.
+
+Closing the two axes in sequence does not close their composition, because case folding
+can undo the normalization that just ran. `ſ` (U+017F LATIN SMALL LETTER LONG S) followed
+by a combining acute has no precomposed form, so NFC returns it unchanged; the fold then
+maps `ſ` to `s`, yielding the decomposition of `ś` rather than `ś` itself. Under
+`casefold(NFC(x))` the two names key differently while APFS stores them in one inode.
+Decomposing first is what closes that: under NFD both spellings reach the fold already
+decomposed, and both come out as `s` followed by the combining acute.
+
+Unicode's closed form for this comparison is canonical caseless matching, D145:
+`NFD(casefold(NFD(x)))`. That is what Headroom uses. The trailing NFD is there because
+D145 specifies it, not because a name has been found that needs it -- against the Unicode
+data in the interpreter this was measured on, no single code point changes key when it is
+dropped, the example above included. It costs one pass, and it means the guard does not
+have to be re-derived when the case-folding data changes.
+
+The guard is deliberately over-eager. On a filesystem that folds neither axis it can
+abort a run whose names would not in fact have collided. A loud abort an operator fixes
+by renaming an account beats two accounts' JSON interleaved into one file that policy
+generation then reads as one account's evidence.
 
 ## Data Models
 

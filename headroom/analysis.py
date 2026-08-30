@@ -999,47 +999,23 @@ def _verify_no_duplicate_account_names(
     """
     Abort if two accounts would write to the same result file.
 
-    With `exclude_account_ids` set, the result filename is the account name
-    alone: `ResultFilePathResolver._build_filename` drops the account ID, which
-    is the only guaranteed-unique component. Two accounts sharing a name then
-    resolve to one path.
+    With `exclude_account_ids` set the filename is the account name alone --
+    `ResultFilePathResolver._build_filename` drops the only guaranteed-unique
+    component -- so two accounts sharing a name resolve to one path. Run with
+    a worker per account, that is two threads interleaving `json.dump` output
+    into one file: either corrupt JSON, or a valid file holding both accounts'
+    results spliced together, which then feeds policy generation.
 
-    Run serially that is a quiet last-writer-wins. Run with a worker per
-    account it is two threads interleaving `json.dump` output into one file,
-    producing either corrupt JSON or a valid file holding two accounts' results
-    spliced together -- which then feeds policy generation.
-
-    Names are compared as the filesystem compares them, not as `==` does.
-    Development happens on macOS, where APFS folds two axes by default: case,
-    so `Prod` and `prod` are one file, and Unicode normal form, so `café`
-    composed and decomposed are one file even though the two strings hold
-    different code points.
-
-    Closing the two axes in sequence does not close their composition,
-    because case folding can undo the normalization that just ran. `ſ`
-    followed by a combining acute has no precomposed form, so NFC returns it
-    unchanged; the fold then maps `ſ` to `s`, yielding the decomposition
-    of `ś` rather than `ś`. The two names key differently while APFS
-    stores them in one inode. Decomposing first is what closes that: under
-    NFD both spellings reach the fold already decomposed, and both come out
-    `s` followed by the combining acute.
-
-    Unicode's closed form for this comparison is canonical caseless matching
-    (D145), `NFD(casefold(NFD(x)))`, and that is what this uses. The trailing
-    NFD is there because D145 specifies it, not because a name has been found
-    that needs it -- against this Unicode data no single codepoint changes
-    key when it is dropped, the example above included. It costs one pass,
-    and it means the guard does not have to be re-derived from scratch when
-    the case-folding data changes.
-
-    This can abort a run on a filesystem that folds neither axis, where the
-    names would not actually have collided; that is a deliberate trade-off --
-    a loud abort resolved by renaming beats two accounts' JSON interleaved
-    into one file that then feeds policy generation.
+    Names are compared the way a filesystem compares them, by Unicode
+    canonical caseless matching -- `NFD(casefold(NFD(x)))`, D145. It folds
+    case and normal form together rather than in sequence, which is not the
+    same thing; "Account name validation" in `Headroom-Specification.md`
+    carries the worked example that rules out the cheaper orderings, and the
+    trade-off this makes on a filesystem that folds neither axis.
 
     The message names the colliding spellings and how many accounts carry
-    them, never the account IDs. Printing those would defeat the setting that
-    created the collision.
+    them, never the account IDs -- printing those would defeat the setting
+    that created the collision.
 
     Args:
         config: Headroom configuration
