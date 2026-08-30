@@ -898,6 +898,21 @@ def run_checks(
         raise
 
 
+def _is_usable_as_a_filename(name: str) -> bool:
+    """
+    Report whether a name lands in the directory it is joined to.
+
+    Args:
+        name: Account name that will be interpolated into a result filename
+
+    Returns:
+        True if the name is a plain filename the readers' glob will match
+    """
+    if not name or name.startswith("."):
+        return False
+    return Path(name).name == name
+
+
 def _verify_account_names_are_filename_safe(account_infos: List[AccountInfo]) -> None:
     """
     Abort if an account's name would not survive becoming a result filename.
@@ -937,9 +952,7 @@ def _verify_account_names_are_filename_safe(account_infos: List[AccountInfo]) ->
     unsafe = sorted(
         account_info.name
         for account_info in account_infos
-        if not account_info.name
-        or account_info.name.startswith(".")
-        or Path(account_info.name).name != account_info.name
+        if not _is_usable_as_a_filename(account_info.name)
     )
 
     if not unsafe:

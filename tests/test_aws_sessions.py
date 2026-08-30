@@ -466,4 +466,3 @@ class TestSessionRetryConfiguration:
         resolved = client.meta.config.retries  # type: ignore[attr-defined]
 
         assert resolved == {"total_max_attempts": 5, "mode": "standard"}
-
