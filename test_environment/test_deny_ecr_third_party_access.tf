@@ -21,7 +21,7 @@ resource "aws_ecr_repository_policy" "third_party_datadog" {
         Sid    = "AllowDataDog"
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::464622532012:root"
+          AWS = "arn:aws:iam::999900008888:root"
         }
         Action = [
           "ecr:GetDownloadUrlForLayer",
@@ -55,7 +55,7 @@ resource "aws_ecr_repository_policy" "multiple_third_parties" {
         Effect = "Allow"
         Principal = {
           AWS = [
-            "arn:aws:iam::709825985650:root"
+            "arn:aws:iam::999911113333:root"
           ]
         }
         Action = [

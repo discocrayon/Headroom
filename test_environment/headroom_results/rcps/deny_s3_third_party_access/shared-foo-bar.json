@@ -7,51 +7,51 @@
     "buckets_with_wildcards": 0,
     "violations": 0,
     "unique_third_party_accounts": [
-      "517716713836",
-      "749430749651",
-      "758245563457"
+      "999911110000",
+      "999911114444",
+      "999911116666"
     ],
     "third_party_account_count": 3,
     "actions_by_third_party_account": {
-      "749430749651": [
+      "999911114444": [
         "s3:GetObject",
         "s3:ListBucket",
         "s3:PutObject"
       ],
-      "758245563457": [
+      "999911116666": [
         "s3:*",
         "s3:GetObject",
         "s3:PutObject"
       ],
-      "517716713836": [
+      "999911110000": [
         "s3:GetObject",
         "s3:PutObject"
       ]
     },
     "buckets_by_third_party_account": {
-      "749430749651": [
-        "arn:aws:s3:::headroom-test-mixed-access-754902277551"
+      "999911114444": [
+        "arn:aws:s3:::headroom-test-mixed-access-999911115555"
       ],
-      "758245563457": [
-        "arn:aws:s3:::headroom-test-multiple-third-parties-754902277551",
-        "arn:aws:s3:::headroom-test-wildcard-action-754902277551"
+      "999911116666": [
+        "arn:aws:s3:::headroom-test-multiple-third-parties-999911115555",
+        "arn:aws:s3:::headroom-test-wildcard-action-999911115555"
       ],
-      "517716713836": [
-        "arn:aws:s3:::headroom-test-multiple-third-parties-754902277551"
+      "999911110000": [
+        "arn:aws:s3:::headroom-test-multiple-third-parties-999911115555"
       ]
     }
   },
   "buckets_third_parties_can_access": [
     {
-      "bucket_name": "headroom-test-mixed-access-754902277551",
-      "bucket_arn": "arn:aws:s3:::headroom-test-mixed-access-754902277551",
+      "bucket_name": "headroom-test-mixed-access-999911115555",
+      "bucket_arn": "arn:aws:s3:::headroom-test-mixed-access-999911115555",
       "third_party_account_ids": [
-        "749430749651"
+        "999911114444"
       ],
       "has_wildcard_principal": false,
       "has_non_account_principals": false,
       "actions_by_account": {
-        "749430749651": [
+        "999911114444": [
           "s3:GetObject",
           "s3:ListBucket",
           "s3:PutObject"
@@ -59,35 +59,35 @@
       }
     },
     {
-      "bucket_name": "headroom-test-multiple-third-parties-754902277551",
-      "bucket_arn": "arn:aws:s3:::headroom-test-multiple-third-parties-754902277551",
+      "bucket_name": "headroom-test-multiple-third-parties-999911115555",
+      "bucket_arn": "arn:aws:s3:::headroom-test-multiple-third-parties-999911115555",
       "third_party_account_ids": [
-        "517716713836",
-        "758245563457"
+        "999911110000",
+        "999911116666"
       ],
       "has_wildcard_principal": false,
       "has_non_account_principals": false,
       "actions_by_account": {
-        "758245563457": [
+        "999911116666": [
           "s3:GetObject",
           "s3:PutObject"
         ],
-        "517716713836": [
+        "999911110000": [
           "s3:GetObject",
           "s3:PutObject"
         ]
       }
     },
     {
-      "bucket_name": "headroom-test-wildcard-action-754902277551",
-      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-action-754902277551",
+      "bucket_name": "headroom-test-wildcard-action-999911115555",
+      "bucket_arn": "arn:aws:s3:::headroom-test-wildcard-action-999911115555",
       "third_party_account_ids": [
-        "758245563457"
+        "999911116666"
       ],
       "has_wildcard_principal": false,
       "has_non_account_principals": false,
       "actions_by_account": {
-        "758245563457": [
+        "999911116666": [
           "s3:*"
         ]
       }
