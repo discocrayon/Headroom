@@ -12,6 +12,8 @@ from headroom.checks.rcps.deny_ecr_third_party_access import DenyECRThirdPartyAc
 from headroom.constants import DENY_ECR_THIRD_PARTY_ACCESS
 from headroom.aws.ecr import ECRPolicyAnalysis
 
+ORG_ID = "o-example12345"
+
 
 class TestCheckDenyECRThirdPartyAccess:
     """Test deny_ecr_third_party_access check with various scenarios."""
@@ -78,6 +80,7 @@ class TestCheckDenyECRThirdPartyAccess:
                 account_id=account_id,
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -131,6 +134,7 @@ class TestCheckDenyECRThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -174,6 +178,7 @@ class TestCheckDenyECRThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -204,6 +209,7 @@ class TestCheckDenyECRThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -226,6 +232,7 @@ class TestCheckDenyECRThirdPartyAccess:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = ECRPolicyAnalysis(
@@ -255,6 +262,7 @@ class TestCheckDenyECRThirdPartyAccess:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = ECRPolicyAnalysis(
@@ -321,6 +329,7 @@ class TestCheckDenyECRThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -379,6 +388,7 @@ class TestCheckDenyECRThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -426,6 +436,7 @@ class TestCheckDenyECRThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -449,6 +460,7 @@ class TestCheckDenyECRThirdPartyAccess:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = ECRPolicyAnalysis(
@@ -514,6 +526,7 @@ class TestRegistryScopedResults:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids={"111111111111"},
+            org_id=ORG_ID,
         )
 
     def test_registry_result_reports_no_repository(

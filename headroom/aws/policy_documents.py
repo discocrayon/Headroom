@@ -30,6 +30,16 @@ __all__ = [
 SOURCE_ACCOUNT_CONDITION_KEY = "aws:sourceaccount"
 SOURCE_ARN_CONDITION_KEY = "aws:sourcearn"
 SOURCE_ORG_ID_CONDITION_KEY = "aws:sourceorgid"
+SOURCE_ORG_PATHS_CONDITION_KEY = "aws:sourceorgpaths"
+
+# The two keys that pin a source to an organization rather than to an
+# account. An aws:SourceOrgPaths value carries the organization ID as its
+# first path element and an aws:SourceOrgID value is that element alone, so
+# both reduce to the same comparison against our own.
+ORG_SCOPE_CONDITION_KEYS = frozenset({
+    SOURCE_ORG_ID_CONDITION_KEY,
+    SOURCE_ORG_PATHS_CONDITION_KEY,
+})
 
 # Operators that pin a source to a value. Anything else on a source key is
 # not a guard - a negated operator excludes rather than permits - and
@@ -150,7 +160,11 @@ class ServicePrincipalSource:
     policy gives nothing an allowlist could carry - which is why finding
     those drivers takes CloudTrail rather than this parser.
     `has_wildcard_source` marks a guard no allowlist can express, which is
-    what withholds the statement from the account.
+    what withholds the statement from the account. A guard scoped to
+    another organization is one of those: the allowlist holds account IDs,
+    and another organization's accounts are not knowable from here. A guard
+    scoped to this organization is the opposite - the deployed statement
+    already exempts it, so it needs no allowlist entry at all.
 
     An entry can instead record that the read failed. Such an entry carries
     `read_failure` and no `service_principal`; the other three fields are
@@ -257,29 +271,77 @@ def _service_principals(principal: Any, resource_description: str) -> List[str]:
     return _as_condition_values(services, "Service", resource_description)
 
 
+@dataclass
+class _SourceGuards:
+    """
+    The source keys one Condition block pins.
+
+    Attributes:
+        accounts: The aws:SourceAccount values the block pins
+        arns: The aws:SourceArn values the block pins
+        has_org_scope: True if the block pins aws:SourceOrgID or
+            aws:SourceOrgPaths
+        names_foreign_org: True if any organization scope names an
+            organization other than this one
+    """
+
+    accounts: List[str]
+    arns: List[str]
+    has_org_scope: bool
+    names_foreign_org: bool
+
+
+def _names_this_organization(scope: str, org_id: str) -> bool:
+    """
+    Report whether one organization scope names this organization.
+
+    An `aws:SourceOrgPaths` value carries the organization ID as its first
+    path element and an `aws:SourceOrgID` value is that element alone, so
+    both keys reduce to the same comparison.
+
+    The comparison is exact, with no wildcard expansion. A trailing
+    wildcard on our own ID, `o-example12345*`, matches this organization
+    and every organization whose ID extends that prefix, so reading it as
+    ours would deploy the statement against sources it does not cover.
+    Treating it as foreign withholds the statement instead, which
+    under-blocks rather than breaking a legitimate integration.
+
+    Args:
+        scope: One aws:SourceOrgID or aws:SourceOrgPaths value
+        org_id: This organization's ID
+
+    Returns:
+        True if the scope names this organization
+    """
+    return scope.split("/")[0] == org_id
+
+
 def _read_source_guards(
     condition: Any,
+    org_id: str,
     resource_description: str,
-) -> tuple[List[str], List[str]]:
+) -> _SourceGuards:
     """
-    Return the source accounts and source ARNs a Condition block pins.
+    Return the sources a Condition block pins.
 
     Args:
         condition: The statement's Condition element
+        org_id: This organization's ID
         resource_description: The resource this policy belongs to
 
     Returns:
-        Tuple of (aws:SourceAccount values, aws:SourceArn values)
+        The accounts, ARNs, and organization scopes the block pins
 
     Raises:
-        UnknownSourceConditionError: If aws:SourceOrgID appears, or a source
-            key sits under an operator that does not pin it to a value
+        UnknownSourceConditionError: If a source key sits under an operator
+            that does not pin it to a value
     """
     accounts: List[str] = []
     arns: List[str] = []
+    org_scopes: List[str] = []
 
     if not isinstance(condition, dict):
-        return accounts, arns
+        return _SourceGuards(accounts, arns, False, False)
 
     for operator, entries in condition.items():
         if not isinstance(entries, dict):
@@ -288,19 +350,12 @@ def _read_source_guards(
         for key, value in entries.items():
             normalized = key.lower()
 
-            if normalized == SOURCE_ORG_ID_CONDITION_KEY:
-                raise UnknownSourceConditionError(
-                    f"{resource_description} guards a Service principal with "
-                    f"'{key}'. Deciding whether it names this organization "
-                    "needs the organization ID, which the analyzers do not "
-                    "receive. Guessing would put a foreign organization's "
-                    "sources in the allowlist, or leave this one's out."
-                )
-
             if normalized == SOURCE_ACCOUNT_CONDITION_KEY:
                 target = accounts
             elif normalized == SOURCE_ARN_CONDITION_KEY:
                 target = arns
+            elif normalized in ORG_SCOPE_CONDITION_KEYS:
+                target = org_scopes
             else:
                 continue
 
@@ -314,12 +369,20 @@ def _read_source_guards(
 
             target.extend(_as_condition_values(value, key, resource_description))
 
-    return accounts, arns
+    return _SourceGuards(
+        accounts=accounts,
+        arns=arns,
+        has_org_scope=bool(org_scopes),
+        names_foreign_org=any(
+            not _names_this_organization(scope, org_id) for scope in org_scopes
+        ),
+    )
 
 
 def read_service_principal_sources(
     statement: Mapping[str, Any],
     org_account_ids: Set[str],
+    org_id: str,
     resource_description: str,
 ) -> List[ServicePrincipalSource]:
     """
@@ -342,6 +405,8 @@ def read_service_principal_sources(
     Args:
         statement: One statement from a resource policy or trust policy
         org_account_ids: Every account ID in the organization
+        org_id: This organization's ID, which decides whether an
+            organization scope on the guard names this organization
         resource_description: The resource this policy belongs to, named in
             the recorded failure
 
@@ -351,7 +416,7 @@ def read_service_principal_sources(
     """
     try:
         return _read_service_principal_sources(
-            statement, org_account_ids, resource_description
+            statement, org_account_ids, org_id, resource_description
         )
     except UnknownSourceConditionError as error:
         return [unreadable_service_principal_source(str(error))]
@@ -360,14 +425,30 @@ def read_service_principal_sources(
 def _read_service_principal_sources(
     statement: Mapping[str, Any],
     org_account_ids: Set[str],
+    org_id: str,
     resource_description: str,
 ) -> List[ServicePrincipalSource]:
     """
     Read the source guard on each Service principal a statement names.
 
+    An organization scope naming this organization is a perfect guard: the
+    deployed statement exempts a source carrying this organization's ID, so
+    the resource needs no allowlist entry. A scope naming any other
+    organization is treated as a wildcard, because the allowlist holds
+    account IDs and another organization's accounts are not knowable from
+    here.
+
+    A scope naming this organization suppresses nothing else the guard
+    says. An accountless `aws:SourceArn` alongside it still reads as a
+    wildcard, even though the two conditions AND together and the source
+    must therefore be in this organization. Acting on that reasoning would
+    turn a withheld statement into a deployed one, and this analysis errs
+    toward withholding.
+
     Args:
         statement: One statement from a resource policy or trust policy
         org_account_ids: Every account ID in the organization
+        org_id: This organization's ID
         resource_description: The resource this policy belongs to, named in
             error messages
 
@@ -381,14 +462,14 @@ def _read_service_principal_sources(
     if not services:
         return []
 
-    accounts, arns = _read_source_guards(
-        statement.get("Condition"), resource_description
+    guards = _read_source_guards(
+        statement.get("Condition"), org_id, resource_description
     )
 
     resolved: Set[str] = set()
-    has_wildcard = False
+    has_wildcard = guards.names_foreign_org
 
-    for account in accounts:
+    for account in guards.accounts:
         if "*" in account or "?" in account:
             has_wildcard = True
         elif ACCOUNT_ID_PATTERN.fullmatch(account):
@@ -401,11 +482,11 @@ def _read_service_principal_sources(
                 "account out of the allowlist."
             )
 
-    for arn in arns:
+    for arn in guards.arns:
         match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, arn)
         if match:
             resolved.add(match.group(1))
-        elif not accounts:
+        elif not guards.accounts:
             # A wildcard in the account field, or an S3 ARN, which carries
             # no account at all. Without a companion aws:SourceAccount the
             # source cannot be identified, so no allowlist can express it.
@@ -419,7 +500,9 @@ def _read_service_principal_sources(
         ServicePrincipalSource(
             service_principal=service,
             source_account_ids=third_party,
-            has_source_condition=bool(accounts) or bool(arns),
+            has_source_condition=(
+                bool(guards.accounts) or bool(guards.arns) or guards.has_org_scope
+            ),
             has_wildcard_source=has_wildcard,
         )
         for service in services
@@ -435,6 +518,11 @@ def has_actionable_service_principal_source(
     A source is actionable when it names an out-of-organization account the
     allowlist must carry, when its guard names sources no allowlist can
     express, or when the read failed and the guard is therefore unknown.
+
+    A guard scoped to this organization by `aws:SourceOrgID` or
+    `aws:SourceOrgPaths` is none of those. The deployed statement exempts
+    it, so it needs no allowlist entry and is not a violation - AWS's own
+    recommended service principal guard costs the account nothing.
 
     An unguarded source is not actionable, and the reason is volume, not
     safety. Every log bucket and every service role carries a service trust

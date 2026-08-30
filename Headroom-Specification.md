@@ -78,7 +78,8 @@
 - Narrows the AWS service exemption the other six statements must carry, which nothing previously narrowed back down
 - Out-of-organization source account detection from `aws:SourceAccount` and `aws:SourceArn`, unioned into the statement's source allowlist
 - Wildcard source detection - a source no allowlist can enumerate withholds the statement from that account
-- Fail-fast on a source guard that cannot be read (`aws:SourceOrgID`, an unrecognized operator, a value that is neither an account ID nor a wildcard)
+- Organization-scoped guards resolved against this organization's own ID, so `aws:SourceOrgID` and `aws:SourceOrgPaths` naming this organization cost no allowlist entry and naming another withhold the statement
+- Fail-fast on a source guard that cannot be read (an unrecognized operator, a value that is neither an account ID nor a wildcard)
 - No additional AWS API calls in the existing six checks: they record the sources during the statement walk they already perform
 - The seventh check re-runs those same six analyzers, so the RCP read APIs are issued twice per account per run. Caching is deliberately not implemented; it is a separate optimization if the duplication proves material
 
@@ -891,9 +892,9 @@ form AWS recommends, it restricts rather than grants, and a resource policy's
 `Deny` hands access to nobody.
 
 **Service principal sources.** `read_service_principal_sources` is the one
-place any analyzer reads a `Condition`, and it reads exactly three keys -
-`aws:SourceAccount`, `aws:SourceArn` and `aws:SourceOrgID` - on statements
-naming a `Service` principal. Each of the six analyzers calls it inside the
+place any analyzer reads a `Condition`, and it reads exactly four keys -
+`aws:SourceAccount`, `aws:SourceArn`, `aws:SourceOrgID` and
+`aws:SourceOrgPaths` - on statements naming a `Service` principal. Each of the six analyzers calls it inside the
 `Effect` gate it already applies - and the IAM analyzer inside its
 `_grants_assume_role` gate as well, so a trust statement naming a service under
 some action other than `sts:AssumeRole` is never recorded, which matches the
@@ -2086,7 +2087,9 @@ guard resolves to decides everything:
 | Source names an in-organization account | `[]` | `True` | `False` | Dropped - neither listed nor counted |
 | Source names an out-of-organization account | `["999999999999"]` | `True` | `False` | Allowlist entry, recorded as compliant |
 | Source is `"*"`, or an ARN yielding no account, with no companion `aws:SourceAccount` | `[]` | `True` | `True` | Violation - withholds the statement |
-| `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | `read_failure` set - violation, withholds the statement |
+| Source is scoped to this organization by `aws:SourceOrgID` or `aws:SourceOrgPaths` | `[]` | `True` | `False` | Dropped - the deployed statement already exempts it |
+| Source is scoped to another organization, by either key | `[]` | `True` | `True` | Violation - withholds the statement |
+| A source key under an operator that does not pin it | - | - | - | `read_failure` set - violation, withholds the statement |
 
 **The `Null` gate.** The statement carries
 `Null { "aws:SourceAccount" = "false" }`, which reads as "this key is not
@@ -2155,35 +2158,62 @@ statement contributes an allowlist entry and files a violation. The violation
 governs: `blocks_rcp` is `summary["violations"] > 0`, so the account is
 withheld from the statement regardless of what it contributed.
 
-**Row five: an unreadable guard.** `aws:SourceOrgID` on a service principal
-cannot be classified, because deciding whether it names this organization needs
-the organization ID, which the analyzers do not receive - guessing would put a
-foreign organization's sources in the allowlist, or leave this one's out. A
-source key under an operator outside `StringEquals`, `StringLike`, `ArnEquals`,
-`ArnLike` and their `IfExists` variants is unreadable for the same reason: a
-negated operator excludes rather than permits, and reading one as a guard would
-put the wrong account in the allowlist. So is an `aws:SourceAccount` value that
-is neither a twelve-digit account ID nor a wildcard.
+**Rows five and six: an organization scope.** `aws:SourceOrgID` names an
+organization directly and `aws:SourceOrgPaths` carries it as the first element
+of a path such as `o-example12345/r-ab12/ou-ab12-11111111/`, so both reduce to
+the same comparison against this organization's own ID. That ID comes from
+`get_organization_id`, which calls `organizations:DescribeOrganization` on the
+management account session the run already holds. The deployed statement
+resolves the same value through
+`data.aws_organizations_organization.current.id`, so this is discovery catching
+up to what deployment always knew.
 
-None of these raises out of the parser. `read_service_principal_sources`
-records the reason on a `read_failure` entry, and
-`DenyServiceConfusedDeputyCheck` files that entry as a violation, which
-withholds the statement from the account - so an allowlist we could not compute
-is never deployed as if it were complete. Raising was the earlier disposition
-and it was wrong in one specific way: the parser sits inside six analyzers that
-six pre-existing checks share, none of which reads a source guard, so one
-`aws:SourceOrgID` anywhere in the estate aborted the whole run and took those
-six checks down with it. `aws:SourceOrgID` is AWS's own recommended
-service-principal guard, so that is a first-run failure for exactly the estates
-this tool targets. Recording keeps the fail-loud guarantee where it matters -
-the allowlist is never silently wrong - without the collateral damage.
+A scope naming this organization is a perfect guard. The deployed statement
+exempts a source carrying this organization's ID, so the resource needs no
+allowlist entry and files no violation - AWS's own recommended service
+principal guard costs the account nothing. A scope naming any other
+organization sets `has_wildcard_source`, because the allowlist holds account
+IDs and another organization's accounts are not knowable from here.
 
-Resolving the organization ID is the principled fix and is deliberately not
-implemented here: Headroom makes no `DescribeOrganization` call today, so it
-means a new API call, a new IAM permission, and threading the value into six
-analyzers. It is a recommended follow-up, not part of this check. With it,
-`aws:SourceOrgID` naming our own organization would be a perfect guard needing
-no allowlist entry and no violation.
+The comparison is exact, with no wildcard expansion. A trailing wildcard on our
+own ID, `o-example12345*`, also matches every organization whose ID extends
+that prefix, so reading it as ours would deploy the statement against sources
+it does not cover. It falls to the violation side instead, which withholds
+rather than over-blocks.
+
+A scope naming this organization suppresses nothing else the guard says. An
+accountless `aws:SourceArn` alongside it still reads as a wildcard, even though
+the two conditions AND together and the source must therefore be inside this
+organization. Acting on that reasoning would turn a withheld statement into a
+deployed one, and this analysis errs toward withholding. The same asymmetry
+runs the other way: a foreign `aws:SourceAccount` alongside an in-organization
+scope is a contradiction that grants nothing, yet the account still reaches the
+allowlist. That direction only widens what the statement permits, so it is left
+as noise rather than corrected.
+
+**Row seven: an unreadable guard.** A source key under an operator outside
+`StringEquals`, `StringLike`, `ArnEquals`, `ArnLike` and their `IfExists`
+variants cannot be read as a guard: a negated operator excludes rather than
+permits, and reading one as a guard would put the wrong account in the
+allowlist. So is an `aws:SourceAccount` value that is neither a twelve-digit
+account ID nor a wildcard.
+
+Neither raises out of the parser. `read_service_principal_sources` records the
+reason on a `read_failure` entry, and `DenyServiceConfusedDeputyCheck` files
+that entry as a violation, which withholds the statement from the account - so
+an allowlist we could not compute is never deployed as if it were complete.
+Raising was the earlier disposition and it was wrong in one specific way: the
+parser sits inside six analyzers that six pre-existing checks share, none of
+which reads a source guard, so one unreadable construct anywhere in the estate
+aborted the whole run and took those six checks down with it. Recording keeps
+the fail-loud guarantee where it matters - the allowlist is never silently
+wrong - without the collateral damage.
+
+Reading the organization ID is the one place this check does fail loud. A
+`DescribeOrganization` response carrying no ID aborts the run, because every
+organization-scoped guard in the estate is classified against that value and
+continuing would put a foreign organization's sources in an allowlist, or leave
+this one's out, while looking like a healthy run.
 
 **Case-insensitive keys.** IAM matches condition key names without regard to
 case, so the analyzer lowercases before comparing: a policy written
@@ -3412,6 +3442,9 @@ per-account checks. It deliberately does **not** apply to:
   until AWS removes it, and organization-based RCP conditions still match it, so
   filtering here would reclassify a recently-closed sibling account as a third
   party and produce false positive findings.
+- `get_organization_id()`, which reads this organization's own ID from
+  `organizations:DescribeOrganization` on the management account session. It
+  names the organization, not its members, so no account filtering applies.
 - `analyze_organization_structure()`, which resolves account names read back
   from result files on disk. A result file written before an account closed must
   still resolve, and placement is driven by the results that exist, which leaves
@@ -3656,6 +3689,8 @@ def run_checks(
 
     Algorithm:
     1. Get all organization account IDs via get_all_organization_account_ids()
+    1b. Get this organization's ID via get_organization_id(), which classifies
+        aws:SourceOrgID and aws:SourceOrgPaths guards on service principals
     2. For each account:
        a. Check if all SCP results exist via all_check_results_exist("scps", ...)
        b. Check if all RCP results exist via all_check_results_exist("rcps", ...)
@@ -4160,11 +4195,16 @@ variable "base_email" {
 Role in management account that Headroom uses to query AWS Organizations API.
 
 **Permissions:**
-- `organizations:ListAccounts`
-- `organizations:ListTagsForResource`
+- `organizations:DescribeAccount`
 - `organizations:DescribeOrganization`
-- `organizations:ListOrganizationalUnitsForParent`
+- `organizations:DescribeOrganizationalUnit`
+- `organizations:ListAccounts`
 - `organizations:ListAccountsForParent`
+- `organizations:ListChildren`
+- `organizations:ListOrganizationalUnitsForParent`
+- `organizations:ListParents`
+- `organizations:ListRoots`
+- `organizations:ListTagsForResource`
 
 **Trust Policy:** Trusts security-tooling account (111111111111).
 
@@ -5207,11 +5247,16 @@ The test environment serves as executable documentation:
 - **Required:** Always
 - **Trusted By:** Security analysis account
 - **Permissions:**
-  - `organizations:ListAccounts`
-  - `organizations:ListTagsForResource`
+  - `organizations:DescribeAccount`
   - `organizations:DescribeOrganization`
-  - `organizations:ListOrganizationalUnitsForParent`
+  - `organizations:DescribeOrganizationalUnit`
+  - `organizations:ListAccounts`
   - `organizations:ListAccountsForParent`
+  - `organizations:ListChildren`
+  - `organizations:ListOrganizationalUnitsForParent`
+  - `organizations:ListParents`
+  - `organizations:ListRoots`
+  - `organizations:ListTagsForResource`
 - **Purpose:** Query Organizations API for account discovery and hierarchy analysis
 - **Reference Implementation:** See `test_environment/org_and_account_info_reader.tf`
 

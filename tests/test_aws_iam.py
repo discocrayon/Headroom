@@ -27,6 +27,8 @@ from headroom.aws.iam.roles import (
 )
 from headroom.aws.policy_documents import MalformedPolicyError
 
+ORG_ID = "o-example12345"
+
 
 class TestExtractAccountIdsFromPrincipal:
     """Test _extract_account_ids_from_principal function."""
@@ -156,7 +158,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111", "222222222222"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].role_name == "ThirdPartyRole"
@@ -193,7 +195,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111", "222222222222"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].role_name == "PublicRole"
@@ -229,7 +231,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111", "222222222222"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -263,7 +265,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -313,7 +315,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111", "222222222222"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].role_name == "ThirdPartyRole"
@@ -349,7 +351,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -385,7 +387,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(UnknownPrincipalTypeError) as exc_info:
-            analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+            analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert "UnknownType" in str(exc_info.value)
 
@@ -421,7 +423,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(InvalidFederatedPrincipalError) as exc_info:
-            analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+            analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert "BadFederatedRole" in str(exc_info.value)
         assert "AssumeRoleWithSAML" in str(exc_info.value) or "AssumeRoleWithWebIdentity" in str(exc_info.value)
@@ -458,7 +460,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         org_account_ids = {"111111111111"}
 
         # Should not raise any exception
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         # No third-party accounts, no wildcards, so results should be empty
         assert len(results) == 0
@@ -492,7 +494,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         # Statement without principal should be skipped
         assert len(results) == 0
@@ -533,7 +535,7 @@ class TestAnalyzeIamRolesTrustPolicies:
 
         org_account_ids = {"111111111111"}
         with pytest.raises(json.JSONDecodeError):
-            analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+            analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_role_listing_client_error_raises(self) -> None:
         """Test that AWS API errors during role listing are raised."""
@@ -548,7 +550,7 @@ class TestAnalyzeIamRolesTrustPolicies:
 
         org_account_ids = {"111111111111"}
         with pytest.raises(ClientError):
-            analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+            analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_role_with_dict_trust_policy(self) -> None:
         """Test handling of role with trust policy already as dict (not URL-encoded)."""
@@ -580,7 +582,7 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids)
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].role_name == "MyRole"
@@ -764,7 +766,7 @@ class TestTrustPolicyActionMatching:
             }
         ]
         found: Set[str] = set()
-        for result in analyze_iam_roles_trust_policies(mock_session, self.ORG):
+        for result in analyze_iam_roles_trust_policies(mock_session, self.ORG, ORG_ID):
             found.update(result.third_party_account_ids)
         return found
 
@@ -912,7 +914,7 @@ class TestTrustPolicyGrammar:
             }
         ]
 
-        return analyze_iam_roles_trust_policies(mock_session, {"111111111111"})
+        return analyze_iam_roles_trust_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""

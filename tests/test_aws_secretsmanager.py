@@ -20,6 +20,8 @@ from headroom.aws.secretsmanager import (
 )
 from headroom.types import JsonDict
 
+ORG_ID = "o-example12345"
+
 
 class TestExtractAccountIdsFromPrincipal:
     """Test account ID extraction from principals."""
@@ -148,7 +150,8 @@ class TestAnalyzeSecretPolicy:
             "test-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:test-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -174,7 +177,8 @@ class TestAnalyzeSecretPolicy:
             "public-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:public-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -202,7 +206,8 @@ class TestAnalyzeSecretPolicy:
             "shared-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret",
             policy,  # type: ignore[arg-type]
-            {"111111111111"}
+            {"111111111111"},
+            ORG_ID
         )
 
         assert result is not None
@@ -230,7 +235,8 @@ class TestAnalyzeSecretPolicy:
             "shared-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret",
             policy,  # type: ignore[arg-type]
-            {"111111111111"}
+            {"111111111111"},
+            ORG_ID
         )
 
         assert result is None
@@ -253,7 +259,8 @@ class TestAnalyzeSecretPolicy:
                 "federated-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:federated-secret",
                 policy,  # type: ignore[arg-type]
-                org_account_ids
+                org_account_ids,
+                ORG_ID,
             )
 
     def test_org_account_only_returns_none(self) -> None:
@@ -273,7 +280,8 @@ class TestAnalyzeSecretPolicy:
             "org-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:org-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is None
@@ -295,7 +303,8 @@ class TestAnalyzeSecretPolicy:
             "deny-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:deny-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is None
@@ -317,7 +326,8 @@ class TestAnalyzeSecretPolicy:
             "multi-action-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:multi-action-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -341,7 +351,8 @@ class TestAnalyzeSecretPolicy:
             "no-principal-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:no-principal-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is None
@@ -364,7 +375,8 @@ class TestAnalyzeSecretPolicy:
                 "dict-action-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:dict-action-secret",
                 policy,  # type: ignore[arg-type]
-                org_account_ids
+                org_account_ids,
+                ORG_ID,
             )
 
     def test_lone_statement_object_is_analyzed(self) -> None:
@@ -392,7 +404,8 @@ class TestAnalyzeSecretPolicy:
             "vendor-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:vendor-secret",
             policy,
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -418,7 +431,8 @@ class TestAnalyzeSecretPolicy:
                 "invalid-statement-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:invalid-statement-secret",
                 policy,  # type: ignore[arg-type]
-                org_account_ids
+                org_account_ids,
+                ORG_ID,
             )
 
     def test_guarded_service_principal_is_recorded(self) -> None:
@@ -446,7 +460,8 @@ class TestAnalyzeSecretPolicy:
             "guarded-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:guarded-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -482,7 +497,8 @@ class TestAnalyzeSecretPolicy:
             "wildcard-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:wildcard-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -508,7 +524,8 @@ class TestAnalyzeSecretPolicy:
             "unguarded-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:unguarded-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -560,7 +577,7 @@ class TestAnalyzeSecretsManagerPolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_secrets_manager_policies(mock_session, org_account_ids)
+        results = analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].secret_name == "test-secret"
@@ -596,7 +613,7 @@ class TestAnalyzeSecretsManagerPolicies:
         mock_sm_client.get_resource_policy.return_value = {"ResourcePolicy": None}
 
         org_account_ids = {"111111111111"}
-        results = analyze_secrets_manager_policies(mock_session, org_account_ids)
+        results = analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -632,7 +649,7 @@ class TestAnalyzeSecretsManagerPolicies:
         mock_sm_client.get_resource_policy.side_effect = ClientError(error_response, "GetResourcePolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"111111111111"}
-        results = analyze_secrets_manager_policies(mock_session, org_account_ids)
+        results = analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -670,4 +687,4 @@ class TestAnalyzeSecretsManagerPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError):
-            analyze_secrets_manager_policies(mock_session, org_account_ids)
+            analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)

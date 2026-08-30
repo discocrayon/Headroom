@@ -130,6 +130,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         account_id: str,
         results_dir: str,
         org_account_ids: Set[str],
+        org_id: str,
         exclude_account_ids: bool = False,
         **kwargs: Any,
     ) -> None:
@@ -142,6 +143,8 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
             account_id: Account ID
             results_dir: Base directory for results
             org_account_ids: Set of all account IDs in the organization
+            org_id: This organization's ID, deciding whether an
+                organization scope on a source guard names this organization
             exclude_account_ids: If True, exclude account ID from results
             **kwargs: Additional parameters (ignored)
         """
@@ -154,6 +157,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
             **kwargs,
         )
         self.org_account_ids = org_account_ids
+        self.org_id = org_id
         self.all_third_party_accounts: Set[str] = set()
 
     def analyze(self, session: Session) -> List[ServicePrincipalSourceFinding]:
@@ -190,7 +194,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         """
         findings: List[ServicePrincipalSourceFinding] = []
 
-        for ecr_result in analyze_ecr_policies(session, self.org_account_ids):
+        for ecr_result in analyze_ecr_policies(session, self.org_account_ids, self.org_id):
             findings.extend(_findings_for_resource(
                 ecr_result.service_principal_sources,
                 "ecr",
@@ -198,7 +202,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
                 ecr_result.region,
             ))
 
-        for kms_result in analyze_kms_key_policies(session, self.org_account_ids):
+        for kms_result in analyze_kms_key_policies(session, self.org_account_ids, self.org_id):
             findings.extend(_findings_for_resource(
                 kms_result.service_principal_sources,
                 "kms",
@@ -206,7 +210,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
                 kms_result.region,
             ))
 
-        for s3_result in analyze_s3_bucket_policies(session, self.org_account_ids):
+        for s3_result in analyze_s3_bucket_policies(session, self.org_account_ids, self.org_id):
             findings.extend(_findings_for_resource(
                 s3_result.service_principal_sources,
                 "s3",
@@ -214,7 +218,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
                 None,
             ))
 
-        for secret_result in analyze_secrets_manager_policies(session, self.org_account_ids):
+        for secret_result in analyze_secrets_manager_policies(session, self.org_account_ids, self.org_id):
             findings.extend(_findings_for_resource(
                 secret_result.service_principal_sources,
                 "secretsmanager",
@@ -222,7 +226,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
                 None,
             ))
 
-        for sqs_result in analyze_sqs_queue_policies(session, self.org_account_ids):
+        for sqs_result in analyze_sqs_queue_policies(session, self.org_account_ids, self.org_id):
             findings.extend(_findings_for_resource(
                 sqs_result.service_principal_sources,
                 "sqs",
@@ -230,7 +234,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
                 sqs_result.region,
             ))
 
-        for role_result in analyze_iam_roles_trust_policies(session, self.org_account_ids):
+        for role_result in analyze_iam_roles_trust_policies(session, self.org_account_ids, self.org_id):
             findings.extend(_findings_for_resource(
                 role_result.service_principal_sources,
                 "iam",

@@ -27,6 +27,9 @@ ANALYZERS = [
 ]
 
 
+ORG_ID = "o-example12345"
+
+
 @pytest.fixture
 def temp_results_dir() -> Iterator[str]:
     """Provide a throwaway results directory."""
@@ -71,6 +74,7 @@ def _run(temp_results_dir: str, sqs_sources: List[ServicePrincipalSource]) -> Di
         account_id="111111111111",
         results_dir=temp_results_dir,
         org_account_ids=ORG_ACCOUNTS,
+        org_id=ORG_ID,
     )
 
     with patch(f"{module}.analyze_sqs_queue_policies") as mock_sqs:
@@ -107,6 +111,7 @@ def _analysis(**fields: Any) -> MagicMock:
 def _run_single_analyzer(
     temp_results_dir: str, analyzer_name: str, analysis: MagicMock
 ) -> Dict[str, Any]:
+
     """
     Execute the check with only the named analyzer returning a finding.
 
@@ -122,6 +127,7 @@ def _run_single_analyzer(
         account_id="111111111111",
         results_dir=temp_results_dir,
         org_account_ids=ORG_ACCOUNTS,
+        org_id=ORG_ID,
     )
 
     patches = [
@@ -246,14 +252,14 @@ class TestServiceConfusedDeputyCheck:
         from deploying against an allowlist that could not be computed.
         """
         data = _run(temp_results_dir, [
-            unreadable_service_principal_source("aws:SourceOrgID needs the organization ID")
+            unreadable_service_principal_source("aws:SourceAccount under StringNotEquals does not pin the source")
         ])
 
         assert data["summary"]["violations"] == 1
         assert data["summary"]["unique_third_party_accounts"] == []
 
         violation = data["violations"][0]
-        assert violation["read_failure"] == "aws:SourceOrgID needs the organization ID"
+        assert violation["read_failure"] == "aws:SourceAccount under StringNotEquals does not pin the source"
         assert violation["service_principal"] is None
 
     def test_a_readable_finding_records_no_read_failure(

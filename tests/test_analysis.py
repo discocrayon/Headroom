@@ -18,6 +18,9 @@ from headroom.analysis import (
 from headroom.config import HeadroomConfig, AccountTagLayout
 
 
+ORG_ID = "o-example12345"
+
+
 class TestSecurityAnalysisSession:
     def test_get_security_analysis_session_success(self) -> None:
         config = HeadroomConfig(
@@ -83,6 +86,7 @@ class TestPerformAnalysis:
         with (
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
             patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
+            patch("headroom.analysis.get_organization_id", return_value=ORG_ID) as mock_get_org_id,
             patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
             patch("headroom.analysis.run_checks"),
             patch("headroom.analysis.logger") as mock_logger,
@@ -90,12 +94,14 @@ class TestPerformAnalysis:
             perform_analysis(config)
             mock_get_session.assert_called_once_with(config)
             mock_get_org_ids.assert_called_once_with(config, mock_session)
+            mock_get_org_id.assert_called_once_with(config, mock_session)
             mock_get_subs.assert_called_once_with(config, mock_session)
-            assert mock_logger.info.call_count == 7
+            assert mock_logger.info.call_count == 8
             mock_logger.info.assert_any_call("Starting security analysis")
             mock_logger.info.assert_any_call("Successfully obtained security analysis session")
             mock_logger.info.assert_any_call("Fetched subaccount information: []")
             mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
+            mock_logger.info.assert_any_call(f"Organization ID: {ORG_ID}")
             mock_logger.info.assert_any_call("Security analysis completed")
 
     def test_perform_analysis_without_account_id(self) -> None:
@@ -109,6 +115,7 @@ class TestPerformAnalysis:
         with (
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
             patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
+            patch("headroom.analysis.get_organization_id", return_value=ORG_ID) as mock_get_org_id,
             patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
             patch("headroom.analysis.run_checks"),
             patch("headroom.analysis.logger") as mock_logger,
@@ -116,8 +123,9 @@ class TestPerformAnalysis:
             perform_analysis(config)
             mock_get_session.assert_called_once_with(config)
             mock_get_org_ids.assert_called_once_with(config, mock_session)
+            mock_get_org_id.assert_called_once_with(config, mock_session)
             mock_get_subs.assert_called_once_with(config, mock_session)
-            assert mock_logger.info.call_count == 7
+            assert mock_logger.info.call_count == 8
             mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
 
 

@@ -15,6 +15,8 @@ from headroom.checks.rcps.deny_secrets_manager_third_party_access import (
 )
 from headroom.constants import DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS
 
+ORG_ID = "o-example12345"
+
 
 class TestDenySecretsManagerThirdPartyAccessCheck:
     """Test deny_secrets_manager_third_party_access check with various scenarios."""
@@ -79,6 +81,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
                 account_id=account_id,
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -132,6 +135,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -174,6 +178,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -205,6 +210,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -227,6 +233,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = SecretsPolicyAnalysis(
@@ -255,6 +262,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = SecretsPolicyAnalysis(
@@ -318,6 +326,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -372,6 +381,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 

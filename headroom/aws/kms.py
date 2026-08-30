@@ -391,7 +391,8 @@ def _analyze_key_in_region(
     kms_client: KMSClient,
     key: KeyListEntryTypeDef,
     region: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> KMSKeyPolicyAnalysis:
     """
     Analyze a single KMS key's policy and grants.
@@ -404,6 +405,8 @@ def _analyze_key_in_region(
         key: Key dict from list_keys
         region: AWS region
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         KMSKeyPolicyAnalysis result for this key
@@ -444,7 +447,7 @@ def _analyze_key_in_region(
             continue
 
         sources.extend(
-            read_service_principal_sources(statement, org_account_ids, f"Key '{key_id}' in {region}")
+            read_service_principal_sources(statement, org_account_ids, org_id, f"Key '{key_id}' in {region}")
         )
 
         if _has_wildcard_principal(principal):
@@ -493,7 +496,8 @@ def _analyze_key_in_region(
 
 def analyze_kms_key_policies(
     session: Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[KMSKeyPolicyAnalysis]:
     """
     Analyze all KMS keys in an account for third-party access.
@@ -520,6 +524,8 @@ def analyze_kms_key_policies(
     Args:
         session: boto3 Session for the target account
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of KMSKeyPolicyAnalysis for keys with third-party
@@ -547,7 +553,8 @@ def analyze_kms_key_policies(
                         kms_client,
                         key,
                         region,
-                        org_account_ids
+                        org_account_ids,
+                        org_id
                     )
 
                     has_service_source = has_actionable_service_principal_source(analysis.service_principal_sources)

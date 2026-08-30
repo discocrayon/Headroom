@@ -22,6 +22,8 @@ from headroom.aws.s3 import (
 )
 from headroom.aws.policy_documents import MalformedPolicyError
 
+ORG_ID = "o-example12345"
+
 
 class TestExtractAccountIdsFromPrincipal:
     """Test _extract_account_ids_from_principal function."""
@@ -199,7 +201,7 @@ class TestAnalyzeS3BucketPolicies:
         mock_s3_client.get_bucket_policy.side_effect = lambda Bucket: policies[Bucket]
 
         org_account_ids = {"333333333333", "444444444444"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 2
         assert results[0].bucket_name == "test-bucket-1"
@@ -233,7 +235,7 @@ class TestAnalyzeS3BucketPolicies:
         }
 
         org_account_ids = {"333333333333"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].has_wildcard_principal is True
@@ -253,7 +255,7 @@ class TestAnalyzeS3BucketPolicies:
         mock_s3_client.get_bucket_policy.side_effect = ClientError(error_response, "GetBucketPolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"333333333333"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -282,7 +284,7 @@ class TestAnalyzeS3BucketPolicies:
         }
 
         org_account_ids = {"333333333333"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -295,7 +297,7 @@ class TestAnalyzeS3BucketPolicies:
         mock_s3_client.list_buckets.return_value = {"Buckets": []}
 
         org_account_ids = {"333333333333"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -310,7 +312,7 @@ class TestAnalyzeS3BucketPolicies:
 
         org_account_ids = {"333333333333"}
         with pytest.raises(ClientError):
-            analyze_s3_bucket_policies(mock_session, org_account_ids)
+            analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_analyze_bucket_policy_get_error(self) -> None:
         """Test handling of GetBucketPolicy API errors other than NoSuchBucketPolicy."""
@@ -327,7 +329,7 @@ class TestAnalyzeS3BucketPolicies:
 
         org_account_ids = {"999999999999"}
         with pytest.raises(ClientError):
-            analyze_s3_bucket_policies(mock_session, org_account_ids)
+            analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_analyze_bucket_with_deny_statement(self) -> None:
         """Test bucket with Deny statement (should be ignored)."""
@@ -353,7 +355,7 @@ class TestAnalyzeS3BucketPolicies:
         }
 
         org_account_ids = {"999999999999"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
         assert len(results) == 0
 
     def test_analyze_bucket_with_no_principal(self) -> None:
@@ -379,7 +381,7 @@ class TestAnalyzeS3BucketPolicies:
         }
 
         org_account_ids = {"999999999999"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
         assert len(results) == 0
 
     def test_analyze_bucket_with_federated_principal(self) -> None:
@@ -408,7 +410,7 @@ class TestAnalyzeS3BucketPolicies:
         }
 
         org_account_ids = {"999999999999"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids)
+        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
         assert len(results) == 1
         assert results[0].has_non_account_principals is True
         assert results[0].bucket_name == "federated-bucket"
@@ -432,7 +434,7 @@ class TestPolicyGrammar:
         mock_s3_client.list_buckets.return_value = {"Buckets": [{"Name": "test-bucket"}]}
         mock_s3_client.get_bucket_policy.return_value = {"Policy": json.dumps(policy)}
 
-        return analyze_s3_bucket_policies(mock_session, {"111111111111"})
+        return analyze_s3_bucket_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -579,7 +581,7 @@ class TestBucketAcl:
         else:
             mock_s3_client.get_bucket_policy.return_value = {"Policy": json.dumps(policy)}
 
-        return analyze_s3_bucket_policies(mock_session, {"111111111111"})
+        return analyze_s3_bucket_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_owner_only_acl_finds_nothing(self) -> None:
         """
@@ -726,4 +728,4 @@ class TestBucketAcl:
         )
 
         with pytest.raises(ClientError):
-            analyze_s3_bucket_policies(mock_session, {"111111111111"})
+            analyze_s3_bucket_policies(mock_session, {"111111111111"}, ORG_ID)

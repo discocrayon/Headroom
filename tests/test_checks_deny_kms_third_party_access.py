@@ -13,6 +13,8 @@ from headroom.constants import DENY_KMS_THIRD_PARTY_ACCESS
 from headroom.config import DEFAULT_RESULTS_DIR
 from headroom.aws.kms import KMSGrantFinding, KMSKeyPolicyAnalysis
 
+ORG_ID = "o-example12345"
+
 
 class TestCheckDenyKMSThirdPartyAccess:
     """Test deny_kms_third_party_access check with various scenarios."""
@@ -77,6 +79,7 @@ class TestCheckDenyKMSThirdPartyAccess:
                 account_id=account_id,
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -131,6 +134,7 @@ class TestCheckDenyKMSThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -183,6 +187,7 @@ class TestCheckDenyKMSThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -214,6 +219,7 @@ class TestCheckDenyKMSThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -237,6 +243,7 @@ class TestCheckDenyKMSThirdPartyAccess:
             account_id="111111111111",
             results_dir=DEFAULT_RESULTS_DIR,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = KMSKeyPolicyAnalysis(
@@ -264,6 +271,7 @@ class TestCheckDenyKMSThirdPartyAccess:
             account_id="111111111111",
             results_dir=DEFAULT_RESULTS_DIR,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = KMSKeyPolicyAnalysis(
@@ -327,6 +335,7 @@ class TestCheckDenyKMSThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -374,6 +383,7 @@ class TestCheckDenyKMSThirdPartyAccess:
                 account_id="111111111111",
                 results_dir=DEFAULT_RESULTS_DIR,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -454,6 +464,7 @@ class TestGrantSourcedResults:
                 account_id=TestGrantSourcedResults.ORG_ACCOUNT,
                 results_dir=temp_results_dir,
                 org_account_ids={TestGrantSourcedResults.ORG_ACCOUNT},
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 

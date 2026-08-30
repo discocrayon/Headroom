@@ -37,6 +37,7 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
         account_id: str,
         results_dir: str,
         org_account_ids: Set[str],
+        org_id: str,
         exclude_account_ids: bool = False,
     ) -> None:
         """
@@ -48,6 +49,8 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
             account_id: Account ID
             results_dir: Base directory for results
             org_account_ids: Set of all account IDs in the organization
+            org_id: This organization's ID, deciding whether an
+                organization scope on a source guard names this organization
             exclude_account_ids: If True, exclude account ID from results
         """
         super().__init__(
@@ -58,6 +61,7 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
             exclude_account_ids=exclude_account_ids,
         )
         self.org_account_ids = org_account_ids
+        self.org_id = org_id
         self.all_third_party_accounts: Set[str] = set()
         self.actions_by_account: Dict[str, Set[str]] = {}
         self.secrets_by_account: Dict[str, Set[str]] = {}
@@ -75,7 +79,7 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
         Returns:
             List of SecretsPolicyAnalysis results with findings
         """
-        all_results = analyze_secrets_manager_policies(session, self.org_account_ids)
+        all_results = analyze_secrets_manager_policies(session, self.org_account_ids, self.org_id)
         return [
             result for result in all_results
             if result.has_wildcard_principal or result.has_non_account_principals or result.third_party_account_ids

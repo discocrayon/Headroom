@@ -17,6 +17,8 @@ from headroom.aws.kms import (
 )
 from headroom.aws.policy_documents import MalformedPolicyError
 
+ORG_ID = "o-example12345"
+
 
 class TestExtractAccountIdsFromPrincipal:
     """Test _extract_account_ids_from_principal function."""
@@ -166,7 +168,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111", "222222222222"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].key_id == "key-123"
@@ -209,7 +211,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].has_wildcard_principal is True
@@ -247,7 +249,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.side_effect = ClientError(error_response, "GetKeyPolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -286,7 +288,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -325,7 +327,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert len(results[0].actions_by_account["999999999999"]) == 3
@@ -368,7 +370,7 @@ class TestAnalyzeKmsKeyPolicies:
         mock_kms_client.get_key_policy.return_value = policy_response
 
         org_account_ids = {"111111111111"}
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].third_party_account_ids == {"999999999999", "888888888888"}
@@ -412,7 +414,7 @@ class TestAnalyzeKmsKeyPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            analyze_kms_key_policies(mock_session, org_account_ids)
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
         assert "Federated" in str(exc_info.value)
 
     def test_analyze_kms_policies_unknown_principal_type(self) -> None:
@@ -456,7 +458,7 @@ class TestAnalyzeKmsKeyPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(UnknownPrincipalTypeError) as exc_info:
-            analyze_kms_key_policies(mock_session, org_account_ids)
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
         assert "UnknownType" in str(exc_info.value)
 
     def test_analyze_kms_policies_deny_statement(self) -> None:
@@ -499,7 +501,7 @@ class TestAnalyzeKmsKeyPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         # Keys with only Deny statements don't have third-party access or wildcards, so no result
         assert len(results) == 0
@@ -544,7 +546,7 @@ class TestAnalyzeKmsKeyPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_kms_key_policies(mock_session, org_account_ids)
+        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
         # Keys without Principal don't have third-party access or wildcards, so no result
         assert len(results) == 0
@@ -579,7 +581,7 @@ class TestAnalyzeKmsKeyPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError):
-            analyze_kms_key_policies(mock_session, org_account_ids)
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_analyze_kms_policies_get_policy_error(self) -> None:
         """Test analyze_kms_key_policies with ClientError when getting key policy."""
@@ -621,7 +623,7 @@ class TestAnalyzeKmsKeyPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError) as exc_info:
-            analyze_kms_key_policies(mock_session, org_account_ids)
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
 
@@ -657,7 +659,7 @@ class TestPolicyGrammar:
         mock_kms_client.get_paginator.return_value = keys_paginator
         mock_kms_client.get_key_policy.return_value = {"Policy": json.dumps(policy)}
 
-        return analyze_kms_key_policies(mock_session, {"111111111111"})
+        return analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -851,7 +853,7 @@ class TestKeyGrants:
             }
 
         return analyze_kms_key_policies(
-            mock_session, {TestKeyGrants.ORG_ACCOUNT}
+            mock_session, {TestKeyGrants.ORG_ACCOUNT}, ORG_ID
         )
 
     def test_cross_account_grantee_reaches_the_allowlist(self) -> None:

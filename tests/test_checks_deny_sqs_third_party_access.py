@@ -13,6 +13,8 @@ from headroom.constants import DENY_SQS_THIRD_PARTY_ACCESS
 from headroom.aws.policy_documents import unreadable_service_principal_source
 from headroom.aws.sqs import SQSQueuePolicyAnalysis
 
+ORG_ID = "o-example12345"
+
 
 class TestDenySQSThirdPartyAccessCheck:
     """Test deny_sqs_third_party_access check with various scenarios."""
@@ -77,6 +79,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id=account_id,
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -128,6 +131,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -180,6 +184,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -211,6 +216,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -233,6 +239,7 @@ class TestDenySQSThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = SQSQueuePolicyAnalysis(
@@ -263,6 +270,7 @@ class TestDenySQSThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = SQSQueuePolicyAnalysis(
@@ -293,6 +301,7 @@ class TestDenySQSThirdPartyAccessCheck:
             account_id="111111111111",
             results_dir=temp_results_dir,
             org_account_ids=org_account_ids,
+            org_id=ORG_ID,
         )
 
         result = SQSQueuePolicyAnalysis(
@@ -357,6 +366,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -417,6 +427,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             check.execute(mock_session)
 
@@ -473,6 +484,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
             filtered_results = check.analyze(mock_session)
 
@@ -519,6 +531,7 @@ class TestDenySQSThirdPartyAccessCheck:
                 account_id="111111111111",
                 results_dir=temp_results_dir,
                 org_account_ids=org_account_ids,
+                org_id=ORG_ID,
             )
 
             assert check.analyze(mock_session) == []

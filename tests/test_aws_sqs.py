@@ -20,6 +20,8 @@ from headroom.aws.sqs import (
 )
 from headroom.aws.policy_documents import MalformedPolicyError
 
+ORG_ID = "o-example12345"
+
 
 class TestExtractAccountIdsFromPrincipal:
     """Test _extract_account_ids_from_principal function."""
@@ -183,7 +185,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].queue_url == queue_url
@@ -237,7 +239,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].has_wildcard_principal is True
@@ -286,7 +288,7 @@ class TestAnalyzeSQSQueuePolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            analyze_sqs_queue_policies(mock_session, org_account_ids)
+            analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert "Federated principal" in str(exc_info.value)
         assert queue_arn in str(exc_info.value)
@@ -321,7 +323,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -375,7 +377,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].third_party_account_ids == {"222222222222", "333333333333", "444444444444"}
@@ -445,7 +447,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 2
         assert results[0].region == "us-east-1"
@@ -522,7 +524,7 @@ class TestAnalyzeSQSQueuePolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError) as exc_info:
-            analyze_sqs_queue_policies(mock_session, org_account_ids)
+            analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
         # The failure aborted before us-west-2 was touched at all.
@@ -578,7 +580,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert "222222222222" in results[0].actions_by_account
@@ -626,7 +628,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert "222222222222" in results[0].third_party_account_ids
@@ -661,7 +663,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         with pytest.raises(MalformedPolicyError, match="Statement of type str"):
-            analyze_sqs_queue_policies(mock_session, {"111111111111"})
+            analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_missing_principal(self) -> None:
         """Test that statements without Principal are skipped."""
@@ -703,7 +705,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         # Should still return a result, but with no third-party accounts
         assert len(results) == 1
@@ -745,7 +747,7 @@ class TestAnalyzeSQSQueuePolicies:
         mock_sqs_client.get_paginator.return_value = paginator
 
         with pytest.raises(ClientError) as exc_info:
-            analyze_sqs_queue_policies(mock_session, {"111111111111"})
+            analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
@@ -761,7 +763,7 @@ class TestAnalyzeSQSQueuePolicies:
         mock_sqs_client.get_paginator.return_value = paginator
 
         with pytest.raises(ClientError) as exc_info:
-            analyze_sqs_queue_policies(mock_session, {"111111111111"})
+            analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
         assert exc_info.value.response["Error"]["Code"] == "ServiceUnavailable"
 
@@ -781,7 +783,7 @@ class TestAnalyzeSQSQueuePolicies:
         )
 
         with pytest.raises(ClientError):
-            analyze_sqs_queue_policies(mock_session, {"111111111111"})
+            analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_reading_queue_attributes_raises(self) -> None:
         """
@@ -803,7 +805,7 @@ class TestAnalyzeSQSQueuePolicies:
         )
 
         with pytest.raises(ClientError) as exc_info:
-            analyze_sqs_queue_policies(mock_session, {"111111111111"})
+            analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
@@ -843,7 +845,7 @@ class TestAnalyzeSQSQueuePolicies:
             {"Attributes": {"Policy": json.dumps(policy), "QueueArn": live_arn}},
         ]
 
-        results = analyze_sqs_queue_policies(mock_session, {"111111111111"})
+        results = analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
         assert len(results) == 1
         assert results[0].queue_arn == live_arn
@@ -887,7 +889,7 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids)
+        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].queue_arn == queue_arn
@@ -948,7 +950,7 @@ class TestAnalyzeSQSQueuePolicies:
             "Attributes": {"Policy": json.dumps(policy), "QueueArn": queue_arn}
         }
 
-        results = analyze_sqs_queue_policies(mock_session, {"111111111111"})
+        results = analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
         assert len(results) == 1
         assert results[0].third_party_account_ids == set()
@@ -992,7 +994,7 @@ class TestPolicyGrammar:
             }
         }
 
-        return analyze_sqs_queue_policies(mock_session, {"111111111111"})
+        return analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_not_principal_is_read_as_a_wildcard(self) -> None:
         """

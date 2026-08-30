@@ -321,7 +321,8 @@ def _read_bucket_policy(s3_client: S3Client, bucket_name: str) -> Optional[JsonD
 
 def analyze_s3_bucket_policies(
     session: Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[S3BucketPolicyAnalysis]:
     """
     Analyze all S3 bucket policies and ACLs for third-party access.
@@ -346,6 +347,8 @@ def analyze_s3_bucket_policies(
     Args:
         session: boto3 Session for the target account
         org_account_ids: Set of all account IDs in the organization
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of S3BucketPolicyAnalysis for buckets with third-party accounts or wildcards
@@ -399,7 +402,7 @@ def analyze_s3_bucket_policies(
                     continue
 
                 sources.extend(
-                    read_service_principal_sources(statement, org_account_ids, f"Bucket '{bucket_name}'")
+                    read_service_principal_sources(statement, org_account_ids, org_id, f"Bucket '{bucket_name}'")
                 )
 
                 if _has_wildcard_principal(principal):
