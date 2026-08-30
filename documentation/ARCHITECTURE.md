@@ -159,6 +159,13 @@ keyed on the session object, so entries are released when a worker finishes and 
 accumulates across a long run. Keying on the session rather than on an account ID is what
 keeps one account's data out of another's results.
 
+That premise -- one session per account, on one thread -- is asserted rather than assumed.
+`test_the_real_registry_runs_every_check_per_account_across_workers` runs the whole check
+registry with four workers and reads back, for every check of every account, which session
+it was handed and which thread it ran on. Nothing checks it at runtime, and a
+thread-identity check on the memo would not: the pool reuses its worker threads across
+accounts, so two accounts sharing one session can be two accounts on one thread.
+
 The third cache exists because `deny_service_confused_deputy` re-reads what six other
 checks have already read: ECR, KMS, S3, Secrets Manager, SQS, and IAM role trust policies.
 Four of those six sweep every enabled region, so without the memo each account paid four

@@ -129,6 +129,16 @@ def memoize_per_session(
     rules it out is one session per worker and one worker per account,
     upstream in `run_checks`.
 
+    Nothing here checks that upstream property at runtime either, and a
+    thread-identity check on the memo entry is the obvious thing to reach for
+    -- it would not close it. The pool reuses its worker threads across
+    accounts, so two accounts sharing one session can be two accounts on one
+    thread, and the check passes. What does close it is asserting the thing
+    itself:
+    `TestRunChecksPool.test_the_real_registry_runs_every_check_per_account_across_workers`
+    runs the whole registry with four workers and asserts every check of one
+    account saw one session, and no session reached two accounts.
+
     The lock is released across the analyzer call rather than held, for the
     reason `get_all_regions` gives above: holding it would serialize every
     worker behind one account's policy sweep, and the entry is uncontended.
