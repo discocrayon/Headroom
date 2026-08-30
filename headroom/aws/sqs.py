@@ -289,10 +289,13 @@ def _unreadable_queue(
     Record a queue whose policy could not be read.
 
     The statement walk reads service principal sources before it reaches
-    the principal types that raise, so discarding the queue would drop a
-    source guard that was read successfully. The account behind it would
-    then be missing from the DenyServiceConfusedDeputy allowlist and the
-    deployed RCP would break that integration.
+    the principal types that raise, so a queue can fail partway through with
+    a guard already read. Recording the queue does not preserve that guard -
+    it dies with the raise. What it preserves is the knowledge that the read
+    was incomplete, which is what matters: without it the queue vanished on
+    a logger.warning, its source account never reached the
+    DenyServiceConfusedDeputy allowlist, and the deployed RCP broke that
+    integration. The failure entry withholds the statement instead.
 
     Every field the deny_sqs_third_party_access check reads is left empty,
     so that check's filter drops this queue exactly as the earlier

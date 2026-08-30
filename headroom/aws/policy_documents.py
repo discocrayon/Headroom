@@ -143,10 +143,14 @@ class ServicePrincipalSource:
     One Allow statement's Service principal and the source guard on it.
 
     `source_account_ids` records only out-of-organization accounts, so an
-    entry there is an allowlist requirement and an empty list means the
-    statement asks nothing of the allowlist. `has_wildcard_source` marks a
-    guard no allowlist can express, which is what withholds the statement
-    from the account.
+    entry there is an allowlist requirement. An empty list does not mean the
+    statement is harmless: an unguarded trust names no source at all, yet the
+    driving service still populates `aws:SourceAccount`, so the deny reaches
+    it and an out-of-organization driver is blocked. It means only that the
+    policy gives nothing an allowlist could carry - which is why finding
+    those drivers takes CloudTrail rather than this parser.
+    `has_wildcard_source` marks a guard no allowlist can express, which is
+    what withholds the statement from the account.
 
     An entry can instead record that the read failed. Such an entry carries
     `read_failure` and no `service_principal`; the other three fields are
