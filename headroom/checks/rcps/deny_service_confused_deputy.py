@@ -173,10 +173,12 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         statement deploys. Nothing in a resource policy names that account,
         so only CloudTrail can find it.
 
-        They are not counted either. The six analyzers drop an analysis
-        that found nothing worth reporting, so any count taken here would
-        see only the unguarded sources that happen to sit on a resource
-        kept for some other reason. A plausible-looking undercount is worse
+        They are not counted either. Five of the six analyzers drop an
+        analysis that found nothing worth reporting; SQS keeps every queue
+        that carries a policy. A tally taken here would therefore be
+        exhaustive for queues and incidental for the other five, seeing
+        only the unguarded sources that happen to sit on a resource kept
+        for some other reason. A plausible-looking wrong number is worse
         than no number. See the spec's Non-goals.
 
         A source the shared parser could not read arrives as a finding

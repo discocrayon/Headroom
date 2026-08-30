@@ -2717,11 +2717,14 @@ safeguard rather than the summary count. This is the check's principal
 deployment risk.
 
 An estate-wide count of them was a goal of an earlier draft and was dropped
-during implementation. All six analyzers drop an analysis that found nothing
-worth reporting - `test_role_with_service_principal` in `tests/test_aws_iam.py`
-asserts that a role trusting only a service principal is not returned - so any
-tally taken in this check would see only the unguarded sources that happen to
-sit on a resource kept for some other reason. That undercount would look like a
+during implementation. Five of the six analyzers drop an analysis that found
+nothing worth reporting - `test_role_with_service_principal` in
+`tests/test_aws_iam.py` asserts that a role trusting only a service principal is
+not returned - while SQS keeps every queue that carries a policy, since it runs
+no retention filter of its own. A tally taken in this check would therefore be
+exhaustive for queues and incidental for the other five, seeing only the
+unguarded sources that happen to sit on a resource kept for some other reason. A
+number complete for one service and arbitrary for five would look like a
 measurement. Reversing the contract would flow every service role and every log
 bucket in the estate through six shared analyzers to produce one informational
 number, and a plausible-looking wrong number is worse than no number.

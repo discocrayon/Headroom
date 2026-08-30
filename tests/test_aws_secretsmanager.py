@@ -470,6 +470,12 @@ class TestAnalyzeSecretPolicy:
         assert source.service_principal == "sns.amazonaws.com"
         assert source.source_account_ids == ["999999999999"]
 
+        # The source is inert here: it belongs to deny_service_confused_deputy,
+        # and folding it into these fields would widen this check's allowlist
+        # with an account that drives a service call rather than making one.
+        assert result.third_party_account_ids == set()
+        assert result.has_wildcard_principal is False
+
     def test_wildcard_service_principal_source_is_recorded(self) -> None:
         """
         A secret policy whose only source guard is a wildcard is still surfaced.
