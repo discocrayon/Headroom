@@ -409,6 +409,14 @@ Unlike the filename guard above, both of these fire during Terraform generation 
 than before the scan. Generation walks every account in the organization, while a
 pre-flight check sees only the accounts the scan will analyze -- the management account,
 `skip_account_ids`, and every non-ACTIVE account are already filtered out by then -- so a
-pre-flight version could not be complete and there is none. Nothing is lost to the abort:
-the results are already on disk, and a re-run after the rename resumes from them and goes
-straight to generation.
+pre-flight version could not be complete and there is none.
+
+The scan is not wasted, but the rename is not free either. Resume is keyed on the account
+name, so the renamed account's results are sitting under its old name and that one account
+is scanned again -- 299 of 300 resume, and the 300th does not. Delete its old result files
+before re-running. Left in place they are the stale files
+["Resolving Result Files Back to Accounts"](#resolving-result-files-back-to-accounts)
+warns about: under the default they parse as a second result for the same account, and
+because placement asks whether every result in a group is clean, a stale violation can
+only withhold a policy rather than place one it should not; under `exclude_account_ids:
+true` the old name resolves to no account and the next run fails on it.
