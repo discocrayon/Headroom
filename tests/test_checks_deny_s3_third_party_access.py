@@ -12,8 +12,7 @@ from headroom.checks.rcps.deny_s3_third_party_access import DenyS3ThirdPartyAcce
 from headroom.constants import DENY_S3_THIRD_PARTY_ACCESS
 from headroom.config import DEFAULT_RESULTS_DIR
 from headroom.aws.s3 import S3BucketPolicyAnalysis
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestDenyS3ThirdPartyAccessCheck:

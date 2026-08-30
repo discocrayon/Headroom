@@ -14,8 +14,7 @@ from headroom.checks.rcps.deny_secrets_manager_third_party_access import (
     DenySecretsManagerThirdPartyAccessCheck,
 )
 from headroom.constants import DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestDenySecretsManagerThirdPartyAccessCheck:

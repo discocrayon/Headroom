@@ -16,8 +16,7 @@ from headroom.aws.kms import (
     _has_wildcard_principal,
 )
 from headroom.aws.policy_documents import MalformedPolicyError
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestExtractAccountIdsFromPrincipal:

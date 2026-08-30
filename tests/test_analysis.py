@@ -16,9 +16,7 @@ from headroom.analysis import (
     AccountInfo
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
-
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestSecurityAnalysisSession:

@@ -19,8 +19,7 @@ from headroom.aws.ecr import (
     UnsupportedPrincipalTypeError,
 )
 from headroom.aws.policy_documents import MalformedPolicyError
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 def _no_registry_policy(mock_ecr_client: MagicMock) -> None:

@@ -10,8 +10,7 @@ from headroom.checks.rcps.deny_sts_third_party_assumerole import ThirdPartyAssum
 from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
 from headroom.aws.iam import TrustPolicyAnalysis
 from headroom.config import DEFAULT_RESULTS_DIR
-
-ORG_ID = "o-example12345"
+from tests.constants import ORG_ID
 
 
 class TestCheckThirdPartyAssumeRole:
