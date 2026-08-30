@@ -126,12 +126,13 @@ headroom/
 ├── output.py                # User-facing output
 ├── types.py                 # Shared data models
 ├── enums.py                 # CheckCategory and other shared enums
+├── log_context.py           # Stamps each log record with its thread's account
 ├── utils.py                 # Cross-cutting helpers
 ├── aws/
 │   ├── ec2.py              # EC2 analysis
 │   ├── ecr.py              # ECR repository and registry policy analysis
 │   ├── eks.py              # EKS cluster analysis
-│   ├── helpers.py          # Region enumeration and other shared AWS helpers
+│   ├── helpers.py          # Region enumeration, per-session memoization, pagination
 │   ├── kms.py              # KMS key policy and key grant analysis
 │   ├── lambda_functions.py # Lambda function URL analysis
 │   ├── policy_documents.py # Shared IAM policy grammar - see Shared Policy Grammar
@@ -194,9 +195,26 @@ headroom/
    exactly one thread. The first worker to fail sets an abort `Event` that in-flight workers
    check at each check boundary, then cancels the queued accounts, then re-raises -- setting
    before cancelling, so an account starting in the window between the two finds the Event
-   already set. Every other failure is logged by name once the workers are joined. An
-   operator's Ctrl-C takes the same path, so interrupting is prompt rather than a wait for
-   the whole queue.
+   already set. Every other failure is logged by name once the workers are joined, and a
+   final line reports how many accounts were cancelled before they started, which is the
+   only outcome that otherwise logs nothing. An operator's Ctrl-C takes the same path, so
+   interrupting is prompt rather than a wait for the whole queue.
+
+   Because accounts interleave in the output, `log_context.py` stamps every record with
+   the account its thread is analyzing and the format carries it in brackets:
+   `INFO:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1`.
+   Records emitted outside a worker are stamped `-`. The filter is installed on the root
+   handler, not on a logger, because a logger's filters never see records propagated up
+   from child loggers.
+
+   Two properties of the account names are checked before the pool starts, since both
+   would otherwise surface only at the end of a run that can take a quarter of an hour. A
+   name that cannot be a filename -- containing a path separator, or beginning with a dot
+   -- would put the account's results outside the directory generation reads, without
+   failing. And under `exclude_account_ids` the name alone is the filename, so two
+   accounts sharing one would interleave their JSON; names are compared as a
+   case-insensitive, normalization-folding filesystem compares them. Both aborts name the
+   offending names and never the account IDs.
 5. **Placement:** Parse all result files → analyze org structure → determine policy levels
 6. **Generation:** Generate `grab_org_info.tf` + SCP Terraform files + RCP Terraform files
 
@@ -396,6 +414,11 @@ account_tag_layout:
   name: string                               # Optional tag, used when use_account_name_from_tags=true
   owner: string                              # Optional tag, fallback: "unknown"
 ```
+
+Both models set `extra="forbid"`, so a key outside this schema aborts rather than being
+dropped. Pydantic's default is to ignore unknown fields, which makes a misspelling
+indistinguishable from a key that was never meant to apply: `max_account_worker: 1`
+configured sixteen workers and said nothing about it.
 
 ### Configuration Loading Logic
 
@@ -641,15 +664,15 @@ def get_imds_v1_ec2_analysis(session: boto3.Session) -> List[DenyImdsV1Ec2]:
 
     Algorithm:
     1. Get all enabled regions via get_all_regions()
-    2. For each region, create EC2 client
-    3. Use paginator to describe_instances (handles pagination)
-    4. Filter out terminated instances
-    5. IMDSv1 is allowed when HttpTokens is "optional", whatever HttpEndpoint
+    2. For each region, call get_instances(session, region), which reads
+       describe_instances at most once per session and region and filters
+       out terminated instances
+    3. IMDSv1 is allowed when HttpTokens is "optional", whatever HttpEndpoint
        says, because the SCP tests HttpTokens either way
-    6. Read the instance's ExemptFromIMDSv2 tag, key matched without regard
+    4. Read the instance's ExemptFromIMDSv2 tag, key matched without regard
        to case and value exactly; raise if the key appears twice in cases
        that differ
-    7. Return DenyImdsV1Ec2 for each instance
+    5. Return DenyImdsV1Ec2 for each instance
     """
 ```
 
@@ -4119,6 +4142,26 @@ module builds a `Session` directly. A direct construction silently reinherits th
 `legacy` default, and nothing in a mocked test suite notices; the break surfaces
 only once a scan reaches an opt-in region.
 
+#### Retry Configuration
+
+`new_session()` also sets `retry_mode = standard` and `max_attempts = 5` on the
+botocore session, so every client built from it inherits them without a
+per-call-site `Config`. A client reports the resolved pair as
+`{"total_max_attempts": 5, "mode": "standard"}`.
+
+Five is parity rather than headroom. botocore's default mode is `legacy`, whose
+`__default__` policy already allows five attempts, while `standard` allows three
+-- so setting the mode alone would have lowered the ceiling at the point where
+many accounts started being analyzed at once. What `standard` changes is which
+failures are retried: legacy keyed several rules on HTTP status alone, 429 and
+509 among them, while standard retries 500, 502, 503 and 504 on status and
+otherwise matches the parsed error code, which is how it picks up the throttling
+family.
+
+`adaptive` is deliberately not used. It adds client-side rate limiting that
+throttles unpredictably, and workers are spread across separate accounts, which
+are separate rate-limit buckets.
+
 #### Unreadable Regions
 
 **A region that cannot be read aborts the run.** Every regional analysis raises
@@ -4156,6 +4199,25 @@ Existing Helpers` in `HOW_TO_ADD_A_CHECK.md`, which names duplicated region
 discovery as the anti-pattern. It keeps the enabled-regions guarantee in one
 place instead of restating it at each call site.
 
+**The answer is memoized per session.** Eleven functions call `get_all_regions()`,
+so an account resolved the same list eleven times; the enabled-region set cannot
+change within a run, and the other ten calls were pure latency. The memo is a
+`WeakKeyDictionary` keyed on the session object -- never on an account ID or
+name, which is what keeps one account's region list out of another account's
+results -- so an entry is released as soon as its worker drops the session and a
+300-account run accumulates nothing.
+
+Two further memos follow the same shape and the same reasoning:
+`aws/ec2.get_instances()` for one region's instances, and
+`aws/helpers.memoize_per_session()` for the six resource-policy analyses that
+`deny_service_confused_deputy` re-reads after each resource's own
+third-party-access check has read them. That last one also refuses a second call
+for one session carrying different organization arguments, since the session
+alone is a sufficient key only while those are fixed for the run.
+
+Each holds its lock only around the dictionary, never across the AWS call, so one
+account's sweep cannot serialize every other worker behind it.
+
 ### EC2 Integration
 
 ```python
@@ -4169,21 +4231,31 @@ def get_imds_v1_ec2_analysis(
 
     Algorithm:
     1. Get all enabled regions via get_all_regions()
-    2. For each region:
-       a. Create regional EC2 client
-       b. Use paginator for describe_instances
-       c. For each instance:
-          - Skip if state is "terminated"
-          - IMDSv1 is allowed when MetadataOptions.HttpTokens is "optional",
-            whatever MetadataOptions.HttpEndpoint says
-          - Record the instance profile ARN, if any
-    3. Resolve each distinct instance profile to its role, once per account,
+    2. For each region, call get_instances(session, region)
+    3. For each instance:
+       - IMDSv1 is allowed when MetadataOptions.HttpTokens is "optional",
+         whatever MetadataOptions.HttpEndpoint says
+       - Record the instance profile ARN, if any
+    4. Resolve each distinct instance profile to its role, once per account,
        and exempt on that role's ExemptFromIMDSv2 tag
-    4. Return all results
-
-    Pagination: Handles accounts with many instances
+    5. Return all results
     """
 ```
+
+`get_instances()` is the single reader of `describe_instances`. Four checks --
+IMDSv1, AMI owner, public IP, and IMDS hop limit -- each need every instance in
+every region, and each used to sweep independently: four identical passes per
+region, 51 of the 68 calls a 17-region account made. It paginates, drops
+terminated instances, projects each entry to the fields the checks read, and
+memoizes the result per session and region.
+
+**The instance ARN carries the owning account.** `instance_arn` is built from
+the reservation's `OwnerId`, which lives on the reservation and not on the
+instance entry inside it. Reading it off the instance produced an empty account
+segment on every instance ever scanned. A results directory that spans the
+change therefore holds both shapes, and resuming into one is expected: the
+account segment is not read back by anything, and the fix is not worth
+re-scanning accounts already on disk for.
 
 ### IAM Integration
 
@@ -4315,8 +4387,10 @@ def run_checks(
        report every result already on disk
     3. Submit the remaining accounts to a ThreadPoolExecutor sized by
        config.max_account_workers, one account per worker. Each worker:
-       a. Registers its account with set_account() so its log records name it
-       b. Returns immediately if the abort Event is already set
+       a. Registers its account with set_account() so its log records name it,
+          and clears it in a finally, because the pool reuses the thread and
+          the next records off it would otherwise carry the finished account
+       b. Logs and returns immediately if the abort Event is already set
        c. Gets a Headroom session via get_headroom_session()
        d. Runs SCP checks via run_checks_for_type("scps", ..., org_id, abort)
        e. Runs RCP checks via run_checks_for_type("rcps", ..., org_id, abort)
@@ -4330,6 +4404,11 @@ def run_checks(
        exception can reach main(), and concurrent.futures.Future has no
        __del__, so the others would otherwise be collected without even an
        "exception was never retrieved" warning
+    7. _log_the_accounts_that_never_ran() then reports how many accounts were
+       cancelled before starting. Every other outcome announces itself; a
+       cancelled account never ran and holds no exception, so without this the
+       operator had to reach that number by subtraction -- and it is the number
+       that says how much of the organization the results on disk cover
 
     Error handling is deliberately absent: the first failure aborts the entire
     run rather than being logged and skipped. A partial run is more dangerous

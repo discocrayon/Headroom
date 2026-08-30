@@ -21,7 +21,7 @@ Configuration → organization discovery → checks → result artifacts → pla
 
 ## Routes
 
-Read the branch that matches your change and skip the rest. `Headroom-Specification.md` is 4,334 lines: open it to answer a specific question about intent, or to update the section covering what you changed, never as background reading.
+Read the branch that matches your change and skip the rest. `Headroom-Specification.md` is over 6,000 lines: open it to answer a specific question about intent, or to update the section covering what you changed, never as background reading.
 
 - **Adding or changing a check, or registry discovery** → `HOW_TO_ADD_A_CHECK.md`, `headroom/checks/registry.py`, and `tests/test_checks_registry.py`. Every stage from collection to Terraform is driven by the registry rather than by check name, with one exception: a new RCP check must also be named in `RCP_TERRAFORM_VARIABLES`, which `test_table_covers_every_registered_rcp_check` in `tests/test_generate_rcps.py` enforces.
 - **Principal, action, wildcard, or statement interpretation** → `headroom/aws/policy_documents.py` plus every service adapter that reads policy documents: `headroom/aws/ecr.py`, `kms.py`, `s3.py`, `secretsmanager.py`, `sqs.py`, and `iam/roles.py`. A change to how a statement is read is a change to all of them.
