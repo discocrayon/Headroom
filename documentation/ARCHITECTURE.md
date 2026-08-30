@@ -167,6 +167,11 @@ re-raises. Setting before cancelling is deliberate: an account that starts in th
 between the two finds the Event already set and returns without assuming a role.
 Because Python cannot kill a running thread, the Event is what makes the abort prompt.
 
+The checkpoint a worker polls sits below the results-already-on-disk skip, never above it.
+A check already on disk is work the account does not owe, so an abort that lands with only
+such checks left has stopped nothing; reading the Event first labels a complete account
+aborted and sends the operator to a re-run that answers "All results already exist".
+
 An operator's Ctrl-C takes the same path. `shutdown(wait=True)` defaults to
 `cancel_futures=False` and puts its sentinel at the back of the work queue, so an interrupt
 that only propagated would still wait out every queued account -- hours of it at one worker.

@@ -517,9 +517,11 @@ def run_checks_for_type(
     check_classes = get_all_check_classes(check_type)
 
     for check_class in check_classes:
-        if abort.is_set():
-            return False
-
+        # The skip is tested before the checkpoint, never after. A check
+        # already on disk is work this account does not owe, so an abort that
+        # lands with only such checks left has stopped nothing. Reading the
+        # Event first reports the account aborted anyway, and the re-run that
+        # sends the operator answers "All results already exist".
         if results_exist(
             check_name=check_class.CHECK_NAME,
             account_name=account_info.name,
@@ -528,6 +530,9 @@ def run_checks_for_type(
             exclude_account_ids=config.exclude_account_ids,
         ):
             continue
+
+        if abort.is_set():
+            return False
 
         check = check_class(
             check_name=check_class.CHECK_NAME,

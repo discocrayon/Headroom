@@ -1073,11 +1073,19 @@ class TestRunChecksPool:
         mock_session.assert_not_called()
 
     def test_no_further_checks_run_once_abort_is_set(self) -> None:
-        """`run_checks_for_type` stops before starting the next check."""
+        """
+        `run_checks_for_type` stops before starting the next check.
+
+        The check is missing from disk, so the skip cannot account for its
+        not running: the checkpoint is the only thing that stops it.
+        """
         abort = threading.Event()
         abort.set()
 
-        with patch("headroom.analysis.get_all_check_classes") as mock_classes:
+        with (
+            patch("headroom.analysis.get_all_check_classes") as mock_classes,
+            patch("headroom.analysis.results_exist", return_value=False),
+        ):
             mock_classes.return_value = [MagicMock()]
             completed = run_checks_for_type(
                 "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), ORG_ID, abort
@@ -1145,6 +1153,42 @@ class TestRunChecksPool:
         first.assert_called_once()
         second.assert_not_called()
         assert completed is False
+
+    def test_an_abort_does_not_relabel_checks_already_on_disk(self) -> None:
+        """
+        The checkpoint sits below the skip, so an on-disk check still counts.
+
+        Above the skip it reports the account aborted whenever the Event lands
+        after the last check this account actually had to run, even though
+        every remaining check is already on disk. The operator reads "Checks
+        aborted", re-runs, and gets "All results already exist" -- the same
+        misleading pair `test_an_account_that_ran_every_check_is_not_logged_as_aborted`
+        closes for the last-iteration case, reached instead through the last
+        *missing* check.
+
+        The first check is missing and sets the Event as it finishes; the
+        second is already on disk. Nothing is left to run, so the account ran
+        everything it owned and the loop must say so.
+        """
+        abort = threading.Event()
+        first = MagicMock()
+        second = MagicMock()
+        first.CHECK_NAME = "first_check"
+        second.CHECK_NAME = "second_check"
+        first.return_value.execute.side_effect = lambda session: abort.set()
+
+        with (
+            patch("headroom.analysis.get_all_check_classes", return_value=[first, second]),
+            patch("headroom.analysis.results_exist", side_effect=[False, True]),
+        ):
+            completed = run_checks_for_type(
+                "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), ORG_ID, abort
+            )
+
+        first.assert_called_once()
+        second.assert_not_called()
+        assert abort.is_set()
+        assert completed is True
 
     def test_each_account_builds_its_session_on_its_own_worker_thread(self) -> None:
         """
