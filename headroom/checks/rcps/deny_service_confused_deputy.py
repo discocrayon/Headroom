@@ -42,20 +42,24 @@ class ServicePrincipalSourceFinding:
         resource_identifier: The resource's name or ARN, whichever that
             analyzer records
         region: The region the resource lives in, None for global resources
-        service_principal: The service the policy trusts
+        service_principal: The service the policy trusts, None when the
+            source read failed before any principal was resolved
         source_account_ids: Out-of-organization accounts the guard permits
         has_source_condition: True if any source key guards the statement
         has_wildcard_source: True if the guard names sources no allowlist
             can enumerate
+        read_failure: Why this resource's source read could not be
+            completed, None when it was read in full
     """
 
     resource_type: str
     resource_identifier: str
     region: Optional[str]
-    service_principal: str
+    service_principal: Optional[str]
     source_account_ids: List[str]
     has_source_condition: bool
     has_wildcard_source: bool
+    read_failure: Optional[str] = None
 
 
 def _findings_for_resource(
@@ -85,6 +89,7 @@ def _findings_for_resource(
             source_account_ids=source.source_account_ids,
             has_source_condition=source.has_source_condition,
             has_wildcard_source=source.has_wildcard_source,
+            read_failure=source.read_failure,
         )
         for source in sources
     ]
@@ -100,6 +105,9 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
       organization resources, which the allowlist must carry
     - Source guards naming sources no allowlist can express, which withhold
       the statement from the account
+    - Resources whose source read failed, which withhold the statement for
+      the same reason: an allowlist we could not compute must never be
+      deployed as if it were complete
 
     Service principals trusted with no source guard are dropped rather than
     reported. The statement's Null condition keeps the deny off requests
@@ -157,11 +165,18 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         kept for some other reason. A plausible-looking undercount is worse
         than no number. See the spec's Non-goals.
 
+        A source the shared parser could not read arrives as a finding
+        carrying `read_failure` rather than as a raise. Raising inside the
+        analyzers would abort the estate run and take down the six
+        pre-existing checks that share them, none of which reads a source
+        guard.
+
         Args:
             session: boto3.Session for the target account
 
         Returns:
-            Findings with an out-of-organization source or a wildcard source
+            Findings with an out-of-organization source, a wildcard source,
+            or a failed read
         """
         findings: List[ServicePrincipalSourceFinding] = []
 
@@ -215,7 +230,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
 
         return [
             finding for finding in findings
-            if finding.source_account_ids or finding.has_wildcard_source
+            if finding.source_account_ids or finding.has_wildcard_source or finding.read_failure
         ]
 
     def categorize_result(
@@ -224,6 +239,10 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
     ) -> tuple[CheckCategory, Dict[str, Any]]:
         """
         Categorize a single service principal source finding.
+
+        A failed read is a violation for the same reason a wildcard source
+        is: the account's allowlist cannot be computed, so the statement
+        must be withheld rather than deployed against a guess.
 
         Args:
             result: One finding
@@ -239,11 +258,12 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
             "source_account_ids": result.source_account_ids,
             "has_source_condition": result.has_source_condition,
             "has_wildcard_source": result.has_wildcard_source,
+            "read_failure": result.read_failure,
         }
 
         self.all_third_party_accounts.update(result.source_account_ids)
 
-        if result.has_wildcard_source:
+        if result.has_wildcard_source or result.read_failure is not None:
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 
@@ -255,8 +275,12 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         Build service confused deputy check-specific summary fields.
 
         `violations` withholds the statement from the account, exactly as it
-        does for the other six checks. `unique_third_party_accounts` becomes
-        the statement's aws:SourceAccount allowlist.
+        does for the other six checks - and a resource whose source read
+        failed is one of them, so the statement is never deployed against an
+        allowlist that could not be computed.
+        `unique_third_party_accounts` becomes the statement's
+        aws:SourceAccount allowlist and `third_party_account_count` its
+        length.
 
         Args:
             check_result: Categorized check result

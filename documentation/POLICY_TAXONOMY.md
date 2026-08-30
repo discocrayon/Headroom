@@ -644,7 +644,7 @@ The six RCP statements above all exempt AWS service principals, because a servic
 
 **Key Feature:** Service principals trusted with no source guard are neither listed nor counted. The `Null` gate means the statement never fires on a request carrying no source account, so an unguarded trust needs no allowlist entry and blocks nothing; and because all six analyzers drop an analysis with nothing to report, any estate-wide count taken here would silently undercount. See `documentation/CHECKS.md` for the full disposition table.
 
-**Fail-Fast Validation:** A source guard that cannot be read aborts the run rather than being dropped - `aws:SourceOrgID` on a service principal, a source key under an operator that does not pin it to a value, or an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard. Silently dropping one would leave its account out of the allowlist, and the deployed RCP would then deny access that account depended on.
+**A guard that cannot be read:** A source guard that cannot be read is recorded as a violation rather than dropped - `aws:SourceOrgID` on a service principal, a source key under an operator that does not pin it to a value, or an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard. The violation withholds the statement from that account, so a deployed RCP never denies access on the strength of an allowlist nobody could compute. It is recorded rather than raised because the parser sits inside six analyzers shared with six pre-existing checks that read no source guard, and raising would abort the estate run for all of them.
 
 ---
 

@@ -6,7 +6,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from headroom.aws.policy_documents import ServicePrincipalSource
+from headroom.aws.policy_documents import (
+    ServicePrincipalSource,
+    unreadable_service_principal_source,
+)
 from headroom.checks.rcps.deny_service_confused_deputy import (
     DenyServiceConfusedDeputyCheck,
 )
@@ -185,6 +188,80 @@ class TestServiceConfusedDeputyCheck:
         assert data["summary"]["violations"] == 0
         assert data["summary"]["unique_third_party_accounts"] == []
         assert data["compliant_instances"] == []
+
+    def test_two_findings_union_their_accounts(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        The allowlist is the union across every finding, sorted.
+
+        This value decides whether a production integration keeps working
+        once the Deny is deployed, so the accumulation across findings is
+        pinned rather than left to inspection.
+        """
+        data = _run(temp_results_dir, [
+            _source(accounts=["999999999999", "888888888888"]),
+            _source(service="events.amazonaws.com", accounts=["999999999999", "777777777777"]),
+        ])
+
+        assert data["summary"]["unique_third_party_accounts"] == [
+            "777777777777",
+            "888888888888",
+            "999999999999",
+        ]
+        assert data["summary"]["third_party_account_count"] == 3
+
+    def test_a_mixed_guard_both_allowlists_and_violates(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        One statement can occupy two disposition rows at once.
+
+        `aws:SourceAccount` holding `["*", "999999999999"]` resolves the
+        out-of-organization account and sets the wildcard flag. The account
+        is unioned into the allowlist before the wildcard branch runs, so
+        the finding contributes an allowlist entry and files a violation.
+        The violation governs: the statement is withheld from the account
+        regardless of what it contributed.
+        """
+        data = _run(temp_results_dir, [
+            _source(accounts=[THIRD_PARTY], wildcard=True)
+        ])
+
+        assert data["summary"]["unique_third_party_accounts"] == [THIRD_PARTY]
+        assert data["summary"]["violations"] == 1
+        assert data["violations"][0]["source_account_ids"] == [THIRD_PARTY]
+        assert data["violations"][0]["has_wildcard_source"] is True
+
+    def test_a_read_failure_is_a_violation(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        A guard nobody could read withholds the statement.
+
+        The shared parser records the failure rather than raising, so the
+        six pre-existing checks that share its analyzers keep running. This
+        check turns the record into a violation, which is what stops a Deny
+        from deploying against an allowlist that could not be computed.
+        """
+        data = _run(temp_results_dir, [
+            unreadable_service_principal_source("aws:SourceOrgID needs the organization ID")
+        ])
+
+        assert data["summary"]["violations"] == 1
+        assert data["summary"]["unique_third_party_accounts"] == []
+
+        violation = data["violations"][0]
+        assert violation["read_failure"] == "aws:SourceOrgID needs the organization ID"
+        assert violation["service_principal"] is None
+
+    def test_a_readable_finding_records_no_read_failure(
+        self, temp_results_dir: str
+    ) -> None:
+        """The failure field is null on every finding the parser could read."""
+        data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
+
+        assert data["compliant_instances"][0]["read_failure"] is None
 
     def test_the_finding_names_its_resource(
         self, temp_results_dir: str

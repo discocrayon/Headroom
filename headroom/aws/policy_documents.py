@@ -9,7 +9,7 @@ rules live here once rather than in each of them.
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, List, Set
+from typing import Any, List, Optional, Set
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 
@@ -21,6 +21,7 @@ __all__ = [
     "has_not_principal",
     "normalize_statements",
     "read_service_principal_sources",
+    "unreadable_service_principal_source",
 ]
 
 # The cross-service source keys, lower-cased. IAM matches condition key
@@ -124,6 +125,15 @@ class UnknownSourceConditionError(Exception):
     Dropping it silently would leave its account out of the allowlist, and
     the RCP would then deny access the account depended on. That is the
     failure this analysis exists to prevent.
+
+    This is an internal signal rather than a contract on the six analyzers
+    that read sources. `read_service_principal_sources` catches it and
+    returns the message as `ServicePrincipalSource.read_failure`, because a
+    raise there would abort the whole estate run and take down the six
+    pre-existing checks that share those analyzers but never read a source
+    guard. The `deny_service_confused_deputy` check turns a recorded
+    failure into a violation, which withholds the statement from that
+    account - so an allowlist we could not compute is still never deployed.
     """
 
 
@@ -138,20 +148,51 @@ class ServicePrincipalSource:
     guard no allowlist can express, which is what withholds the statement
     from the account.
 
+    An entry can instead record that the read failed. Such an entry carries
+    `read_failure` and no `service_principal`; the other three fields are
+    empty and mean nothing, because nothing about the guard was readable.
+
     Attributes:
         service_principal: The service the statement names, such as
-            `sns.amazonaws.com`
+            `sns.amazonaws.com`, None on a failed read
         source_account_ids: Out-of-organization accounts the guard permits,
             sorted
         has_source_condition: True if any source key guards the statement
         has_wildcard_source: True if the guard names sources no allowlist
             can enumerate
+        read_failure: Why this resource's source read could not be
+            completed, None when it was read in full
     """
 
-    service_principal: str
+    service_principal: Optional[str]
     source_account_ids: List[str]
     has_source_condition: bool
     has_wildcard_source: bool
+    read_failure: Optional[str] = None
+
+
+def unreadable_service_principal_source(reason: str) -> ServicePrincipalSource:
+    """
+    Record that a resource's service principal sources could not be read.
+
+    The `deny_service_confused_deputy` check turns this into a violation,
+    which withholds the statement from the account. Analyzers use it in
+    place of dropping the resource, so a source the parser could not reach
+    never becomes a silently empty allowlist.
+
+    Args:
+        reason: What could not be read, named in the check's results
+
+    Returns:
+        A source entry carrying only the failure
+    """
+    return ServicePrincipalSource(
+        service_principal=None,
+        source_account_ids=[],
+        has_source_condition=False,
+        has_wildcard_source=False,
+        read_failure=reason,
+    )
 
 
 def _as_condition_values(value: Any, key: str, resource_description: str) -> List[str]:
@@ -286,6 +327,40 @@ def read_service_principal_sources(
     Callers must apply their own Effect gate first. A Deny statement's
     Service principal grants nothing.
 
+    A guard this parser cannot read comes back as a single entry carrying
+    `read_failure` rather than as a raise. The six analyzers that call this
+    all serve six pre-existing checks that never read a source guard, and a
+    raise here would abort the estate run for all of them. The
+    `deny_service_confused_deputy` check files the recorded failure as a
+    violation instead, which withholds the statement from that account -
+    the same protection the raise gave, without the blast radius.
+
+    Args:
+        statement: One statement from a resource policy or trust policy
+        org_account_ids: Every account ID in the organization
+        resource_description: The resource this policy belongs to, named in
+            the recorded failure
+
+    Returns:
+        One entry per service principal, empty if the statement names none,
+        or one entry carrying `read_failure` if a guard could not be read
+    """
+    try:
+        return _read_service_principal_sources(
+            statement, org_account_ids, resource_description
+        )
+    except UnknownSourceConditionError as error:
+        return [unreadable_service_principal_source(str(error))]
+
+
+def _read_service_principal_sources(
+    statement: Mapping[str, Any],
+    org_account_ids: Set[str],
+    resource_description: str,
+) -> List[ServicePrincipalSource]:
+    """
+    Read the source guard on each Service principal a statement names.
+
     Args:
         statement: One statement from a resource policy or trust policy
         org_account_ids: Every account ID in the organization
@@ -354,23 +429,23 @@ def has_actionable_service_principal_source(
     Report whether any service principal source is worth keeping.
 
     A source is actionable when it names an out-of-organization account the
-    allowlist must carry, or when its guard names sources no allowlist can
-    express. An unguarded source is not actionable: the confused deputy
-    statement's Null condition keeps the deny off any request that carries
-    no source account at all, so an unguarded trust neither needs
-    permitting nor blocks anything. Treating it as actionable would return
-    every ordinary service integration in the account and bury the sources
-    that matter.
+    allowlist must carry, when its guard names sources no allowlist can
+    express, or when the read failed and the guard is therefore unknown. An
+    unguarded source is not actionable: the confused deputy statement's
+    Null condition keeps the deny off any request that carries no source
+    account at all, so an unguarded trust neither needs permitting nor
+    blocks anything. Treating it as actionable would return every ordinary
+    service integration in the account and bury the sources that matter.
 
     Args:
         sources: The service principal sources one resource's statements
             recorded
 
     Returns:
-        True if a source names an out-of-organization account or a guard
-        no allowlist can express
+        True if a source names an out-of-organization account, a guard no
+        allowlist can express, or a failed read
     """
     return any(
-        source.source_account_ids or source.has_wildcard_source
+        source.source_account_ids or source.has_wildcard_source or source.read_failure
         for source in sources
     )
