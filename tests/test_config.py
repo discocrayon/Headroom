@@ -364,8 +364,12 @@ class TestHeadroomConfig:
 
     def test_max_account_workers_rejects_above_the_cap(self) -> None:
         """
-        Past the cap resident memory exceeds 1.5 GB, and the STS connection
-        pool is sized to the cap, so a larger value would churn connections.
+        Past the cap resident memory exceeds 1.5 GB.
+
+        Memory is the only constraint here. `sessions.py` sizes the STS
+        client's connection pool to this same value, but that ceiling binds
+        nothing today -- `assume_role` builds a fresh client per call, so no
+        pool is shared -- and it is not a second reason the cap holds.
         """
         with pytest.raises(ValidationError):
             HeadroomConfig(
