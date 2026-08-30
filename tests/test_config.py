@@ -65,7 +65,6 @@ class TestAccountTagLayout:
         assert layout.name == "Name@#$%"
         assert layout.owner == "Owner & Co."
 
-
     def test_an_unrecognized_tag_key_aborts(self) -> None:
         """
         A fourth tag key must abort rather than be quietly dropped.

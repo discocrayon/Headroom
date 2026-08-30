@@ -110,7 +110,6 @@ class TestParseCliArgs:
             with pytest.raises(SystemExit):
                 parse_cli_args()
 
-
     def test_the_worker_help_states_the_default_and_the_cap(self) -> None:
         """
         An operator reading --help should not have to open config.py.
