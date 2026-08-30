@@ -262,6 +262,20 @@ abort a run whose names would not in fact have collided. A loud abort an operato
 by renaming an account beats two accounts' JSON interleaved into one file that policy
 generation then reads as one account's evidence.
 
+**Both run before the resume filter, and have to.** They see every account the run
+selected, not the subset still needing a scan: `run_checks` drops accounts whose results
+already exist, and that filter runs after these. Deferring the duplicate-name check until
+after it looks like it would spare a re-run whose colliding accounts had both already
+been scanned. It cannot. Under `exclude_account_ids` that pair shares one result file, so
+"already scanned" is not a state the results directory can express for either account
+separately -- one `prod.json` exists, and nothing in it records which account wrote it or
+whether both interleaved into it. The resume filter reads that single file and reports
+both accounts complete. A check placed after it would therefore skip the collision
+silently and let generation attribute one account's evidence to the other; where only one
+of the pair is complete, it would let the other overwrite it. The information that would
+make the deferred check safe is the account ID that `exclude_account_ids` removed from
+the filename in the first place.
+
 ## Data Models
 
 ### Core Configuration Models
