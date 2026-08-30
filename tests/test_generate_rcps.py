@@ -6,6 +6,7 @@ Tests for RCP Terraform generation functions.
 
 import json
 import os
+import re
 import tempfile
 import shutil
 import pytest
@@ -1914,6 +1915,9 @@ module "rcps_test" {
   sts_third_party_assumerole_account_ids_allowlist = [
     "555555555555",
   ]
+
+  # Service confused deputy
+  deny_service_confused_deputy = false
 }
 '''
         assert result == expected
@@ -2051,6 +2055,35 @@ module "rcps_test" {
         assert "sts_third_party_assumerole_account_ids_allowlist" in result
         assert '"999999999999"' in result
         assert "deny_sts_third_party_assumerole = true" in result
+
+    def test_confused_deputy_recommendation_renders_both_variables(self) -> None:
+        """
+        A confused deputy recommendation must reach the module call.
+
+        A check whose variables never render is collected on every run and
+        then dropped, which surfaces as a Terraform plan failure rather
+        than here.
+        """
+        recommendation = RCPPlacementRecommendations(
+            check_name="deny_service_confused_deputy",
+            recommended_level="root",
+            target_ou_id=None,
+            affected_accounts=["111111111111"],
+            third_party_account_ids=["999999999999"],
+            reasoning="test",
+        )
+
+        rendered = _build_rcp_terraform_module(
+            "rcps_root", "local.root_ou_id", [recommendation], "Organization Root"
+        )
+
+        assert "deny_service_confused_deputy" in rendered
+        assert "service_confused_deputy_source_account_ids_allowlist" in rendered
+        assert "999999999999" in rendered
+        # The enable flag must render true, not merely appear. Alignment
+        # padding varies, so collapse runs of spaces before matching.
+        collapsed = re.sub(r"[ \t]+", " ", rendered)
+        assert "deny_service_confused_deputy = true" in collapsed
 
 
 class TestRenderAccountRcpTerraform:

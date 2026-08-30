@@ -67,6 +67,7 @@ DENY_KMS_THIRD_PARTY_ACCESS = "deny_kms_third_party_access"
 DENY_S3_THIRD_PARTY_ACCESS = "deny_s3_third_party_access"
 # Secrets Manager
 DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS = "deny_secrets_manager_third_party_access"
+DENY_SERVICE_CONFUSED_DEPUTY = "deny_service_confused_deputy"
 # SQS
 DENY_SQS_THIRD_PARTY_ACCESS = "deny_sqs_third_party_access"
 # STS
