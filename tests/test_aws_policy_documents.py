@@ -9,11 +9,11 @@ import pytest
 from headroom.aws.policy_documents import (
     MalformedPolicyError,
     ServicePrincipalSource,
-    UnknownSourceConditionError,
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
     read_service_principal_sources,
+    unreadable_service_principal_source,
 )
 from headroom.types import JsonDict
 
@@ -301,58 +301,87 @@ class TestServicePrincipalSources:
         assert len(sources) == 1
         assert sources[0].service_principal == "sns.amazonaws.com"
 
-    def test_source_org_id_raises(self) -> None:
+    def test_source_org_id_is_recorded_as_a_read_failure(self) -> None:
         """
         Classifying an organization ID needs our own, which we do not have.
 
         Guessing would put a foreign organization's sources in the
-        allowlist, or leave this organization's out.
+        allowlist, or leave this organization's out. Raising would abort
+        the estate run for the six checks that share these analyzers and
+        never read a source guard, so the failure is recorded instead and
+        the confused deputy check withholds the statement over it.
         """
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringEquals": {"aws:SourceOrgID": "o-notours"}},
         )
 
-        with pytest.raises(UnknownSourceConditionError, match="organization ID"):
-            read_service_principal_sources(
-                statement, self.ORG_ACCOUNTS, self.WHERE
-            )
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
 
-    def test_negated_operator_on_a_source_key_raises(self) -> None:
+        assert len(sources) == 1
+        assert sources[0].read_failure is not None
+        assert "organization ID" in sources[0].read_failure
+        assert sources[0].service_principal is None
+        assert sources[0].source_account_ids == []
+        assert sources[0].has_source_condition is False
+        assert sources[0].has_wildcard_source is False
+
+    def test_negated_operator_on_a_source_key_is_recorded(self) -> None:
         """A negated operator excludes rather than permits; it is no guard."""
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringNotEquals": {"aws:SourceAccount": "999999999999"}},
         )
 
-        with pytest.raises(UnknownSourceConditionError, match="StringNotEquals"):
-            read_service_principal_sources(
-                statement, self.ORG_ACCOUNTS, self.WHERE
-            )
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
 
-    def test_malformed_source_account_raises(self) -> None:
+        assert sources[0].read_failure is not None
+        assert "StringNotEquals" in sources[0].read_failure
+
+    def test_malformed_source_account_is_recorded(self) -> None:
         """A source account that is neither an ID nor a wildcard is unreadable."""
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringEquals": {"aws:SourceAccount": "not-an-account"}},
         )
 
-        with pytest.raises(UnknownSourceConditionError, match="not-an-account"):
-            read_service_principal_sources(
-                statement, self.ORG_ACCOUNTS, self.WHERE
-            )
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
 
-    def test_non_string_source_condition_value_raises(self) -> None:
+        assert sources[0].read_failure is not None
+        assert "not-an-account" in sources[0].read_failure
+
+    def test_non_string_source_condition_value_is_recorded(self) -> None:
         """A source key holding neither a string nor a list is unreadable."""
         statement = self._statement(
             {"Service": "sns.amazonaws.com"},
             {"StringEquals": {"aws:SourceAccount": 123}},
         )
 
-        with pytest.raises(UnknownSourceConditionError, match="int"):
-            read_service_principal_sources(
-                statement, self.ORG_ACCOUNTS, self.WHERE
-            )
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].read_failure is not None
+        assert "int" in sources[0].read_failure
+
+    def test_a_readable_statement_records_no_failure(self) -> None:
+        """The failure field stays None on every guard the parser can read."""
+        statement = self._statement(
+            {"Service": "sns.amazonaws.com"},
+            {"StringEquals": {"aws:SourceAccount": "999999999999"}},
+        )
+
+        sources = read_service_principal_sources(
+            statement, self.ORG_ACCOUNTS, self.WHERE
+        )
+
+        assert sources[0].read_failure is None
 
     def test_unrelated_conditions_are_ignored(self) -> None:
         """Only the three source keys are read; everything else passes by."""
@@ -403,6 +432,30 @@ class TestHasActionableServicePrincipalSource:
             has_source_condition=True,
             has_wildcard_source=has_wildcard_source,
         )
+
+    def test_a_failed_read_is_actionable(self) -> None:
+        """
+        A resource whose guard could not be read must reach the check.
+
+        Dropping it would leave the confused deputy statement to deploy
+        against an allowlist nobody could compute.
+        """
+        sources = [unreadable_service_principal_source("could not be read")]
+
+        assert has_actionable_service_principal_source(sources) is True
+
+    def test_an_unguarded_source_is_not_actionable(self) -> None:
+        """An unguarded trust would bury the sources that matter."""
+        sources = [
+            ServicePrincipalSource(
+                service_principal="sns.amazonaws.com",
+                source_account_ids=[],
+                has_source_condition=False,
+                has_wildcard_source=False,
+            )
+        ]
+
+        assert has_actionable_service_principal_source(sources) is False
 
     def test_an_out_of_org_account_id_is_actionable(self) -> None:
         """A source naming an out-of-organization account is worth keeping."""

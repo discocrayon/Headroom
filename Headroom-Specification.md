@@ -842,10 +842,15 @@ class UnknownSourceConditionError(Exception): ...
 
 @dataclass
 class ServicePrincipalSource:
-    service_principal: str            # e.g. "sns.amazonaws.com"
+    service_principal: Optional[str]  # e.g. "sns.amazonaws.com", None on a failed read
     source_account_ids: List[str]     # Out-of-org accounts only, sorted
     has_source_condition: bool        # Any source key guards the statement
     has_wildcard_source: bool         # A source no allowlist can enumerate
+    read_failure: Optional[str] = None  # Why the read could not be completed
+
+def unreadable_service_principal_source(
+    reason: str,
+) -> ServicePrincipalSource: ...
 
 def normalize_statements(
     policy: Mapping[str, Any],
@@ -903,8 +908,12 @@ statement names carries the same guard and gets its own entry.
 `has_actionable_service_principal_source` is the predicate each analyzer uses
 to decide whether a source alone is reason to keep an analysis it would
 otherwise drop; an unguarded source is not, for the reasons in Service
-Confused Deputy below. See that section for the full disposition table and the
-cases that raise `UnknownSourceConditionError`.
+Confused Deputy below. A guard the parser cannot read is, and it comes back as
+a `read_failure` entry rather than as a raise: these six analyzers serve six
+pre-existing checks that never read a source guard, and raising here would
+abort the estate run for all of them over a construct none of them consume.
+See that section for the full disposition table and for what the recorded
+failure does downstream.
 
 **Not read.** `Resource` and `NotResource` are never consulted. A statement
 scoped away from the resource being scanned still contributes its principals,
@@ -1964,15 +1973,22 @@ def analyze(self, session: Session) -> List[ServicePrincipalSourceFinding]:
     1. Call each of the six analyzer functions in turn
     2. Pass each analysis's service_principal_sources through
        _findings_for_resource with that resource's type, identifier and region
-    3. Return only the findings with an out-of-organization source account or
-       a wildcard source. An unguarded source is dropped - see Source Guards
+    3. Return only the findings with an out-of-organization source account,
+       a wildcard source, or a recorded read failure. An unguarded source is
+       dropped - see Source Guards
     """
 ```
 
 **Custom Exceptions:**
 ```python
 class UnknownSourceConditionError(Exception):
-    """Raised when a source guard on a Service principal cannot be read."""
+    """
+    Raised when a source guard on a Service principal cannot be read.
+
+    Internal to policy_documents. read_service_principal_sources catches it
+    and returns the message as ServicePrincipalSource.read_failure, so the
+    six analyzers that share this parser never propagate it.
+    """
 ```
 
 **Check Implementation:**
@@ -1983,14 +1999,19 @@ class UnknownSourceConditionError(Exception):
 class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
     def analyze(self, session):
         # Six analyzers, flattened; unguarded and in-org-only sources dropped
-        return [f for f in findings if f.source_account_ids or f.has_wildcard_source]
+        return [
+            f for f in findings
+            if f.source_account_ids or f.has_wildcard_source or f.read_failure
+        ]
 
     def categorize_result(self, result):
         # A source no allowlist can express is a "violation" - it withholds
         # the statement from this account, exactly as a wildcard principal does
+        # A guard that could not be read is a violation for the same reason:
+        # the allowlist cannot be computed, so the statement must be withheld
         # A resolved out-of-org source is "compliant" - it is an allowlist entry
         self.all_third_party_accounts.update(result.source_account_ids)
-        if result.has_wildcard_source:
+        if result.has_wildcard_source or result.read_failure is not None:
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 
@@ -2024,7 +2045,8 @@ Guards below.
       "service_principal": "logging.s3.amazonaws.com",
       "source_account_ids": [],
       "has_source_condition": true,
-      "has_wildcard_source": true
+      "has_wildcard_source": true,
+      "read_failure": null
     }
   ],
   "exemptions": [],
@@ -2036,11 +2058,15 @@ Guards below.
       "service_principal": "sns.amazonaws.com",
       "source_account_ids": ["999999999999"],
       "has_source_condition": true,
-      "has_wildcard_source": false
+      "has_wildcard_source": false,
+      "read_failure": null
     }
   ]
 }
 ```
+
+A finding whose source read failed carries the reason in `read_failure`, a
+null `service_principal`, and is written to `violations`.
 
 `unique_third_party_accounts` becomes the statement's `aws:SourceAccount`
 allowlist, and `violations` withholds the statement from the account, exactly
@@ -2060,7 +2086,7 @@ guard resolves to decides everything:
 | Source names an in-organization account | `[]` | `True` | `False` | Dropped - neither listed nor counted |
 | Source names an out-of-organization account | `["999999999999"]` | `True` | `False` | Allowlist entry, recorded as compliant |
 | Source is `"*"`, or an ARN yielding no account, with no companion `aws:SourceAccount` | `[]` | `True` | `True` | Violation - withholds the statement |
-| `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | Raises `UnknownSourceConditionError` |
+| `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | `read_failure` set - violation, withholds the statement |
 
 **The `Null` gate.** The statement carries
 `Null { "aws:SourceAccount" = "false" }`, which reads as "this key is not
@@ -2114,23 +2140,49 @@ statement contributes an allowlist entry and files a violation. The violation
 governs: `blocks_rcp` is `summary["violations"] > 0`, so the account is
 withheld from the statement regardless of what it contributed.
 
-**Row five: fail fast.** `aws:SourceOrgID` on a service principal raises,
-because deciding whether it names this organization needs the organization ID,
-which the analyzers do not receive - guessing would put a foreign
-organization's sources in the allowlist, or leave this one's out. A source key
-under an operator outside `StringEquals`, `StringLike`, `ArnEquals`, `ArnLike`
-and their `IfExists` variants raises for the same reason: a negated operator
-excludes rather than permits, and reading one as a guard would put the wrong
-account in the allowlist. So does an `aws:SourceAccount` value that is neither
-a twelve-digit account ID nor a wildcard. This follows the
-`UnknownGranteePrincipalError` precedent from the KMS grant work - silently
-dropping a guard we cannot read would leave its account out of the allowlist,
-and the deployed RCP would then deny access that account depended on, which is
-the failure this analysis exists to prevent.
+**Row five: an unreadable guard.** `aws:SourceOrgID` on a service principal
+cannot be classified, because deciding whether it names this organization needs
+the organization ID, which the analyzers do not receive - guessing would put a
+foreign organization's sources in the allowlist, or leave this one's out. A
+source key under an operator outside `StringEquals`, `StringLike`, `ArnEquals`,
+`ArnLike` and their `IfExists` variants is unreadable for the same reason: a
+negated operator excludes rather than permits, and reading one as a guard would
+put the wrong account in the allowlist. So is an `aws:SourceAccount` value that
+is neither a twelve-digit account ID nor a wildcard.
+
+None of these raises out of the parser. `read_service_principal_sources`
+records the reason on a `read_failure` entry, and
+`DenyServiceConfusedDeputyCheck` files that entry as a violation, which
+withholds the statement from the account - so an allowlist we could not compute
+is never deployed as if it were complete. Raising was the earlier disposition
+and it was wrong in one specific way: the parser sits inside six analyzers that
+six pre-existing checks share, none of which reads a source guard, so one
+`aws:SourceOrgID` anywhere in the estate aborted the whole run and took those
+six checks down with it. `aws:SourceOrgID` is AWS's own recommended
+service-principal guard, so that is a first-run failure for exactly the estates
+this tool targets. Recording keeps the fail-loud guarantee where it matters -
+the allowlist is never silently wrong - without the collateral damage.
+
+Resolving the organization ID is the principled fix and is deliberately not
+implemented here: Headroom makes no `DescribeOrganization` call today, so it
+means a new API call, a new IAM permission, and threading the value into six
+analyzers. It is a recommended follow-up, not part of this check. With it,
+`aws:SourceOrgID` naming our own organization would be a perfect guard needing
+no allowlist entry and no violation.
 
 **Case-insensitive keys.** IAM matches condition key names without regard to
 case, so the analyzer lowercases before comparing: a policy written
 `aws:sourceaccount` names the same key as one written `aws:SourceAccount`.
+
+**A resource the analyzer could not read.** An SQS queue whose policy is
+unparseable, or names a principal type the analyzer does not recognize, is
+recorded as a `read_failure` rather than skipped. The statement walk reads
+service principal sources before it reaches the principal types that raise, so
+discarding the queue would drop a guard that was read successfully and leave
+its account out of the allowlist. The recorded failure withholds the statement
+from the account instead. `deny_sqs_third_party_access` is unaffected: the
+recorded queue carries no third-party account and no wildcard, so that check's
+filter drops it exactly as the earlier warn-and-skip did.
 
 **Residual risk.** A source guard that lives outside the resource policy is not
 discoverable this way, so discovery covers the guards visible in resource and

@@ -21,6 +21,7 @@ from .policy_documents import (
     has_not_principal,
     normalize_statements,
     read_service_principal_sources,
+    unreadable_service_principal_source,
 )
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
@@ -74,9 +75,12 @@ class SQSQueuePolicyAnalysis:
         has_non_account_principals: True if policy has Federated principals
         actions_by_account: Dict mapping account IDs to sets of allowed actions
         service_principal_sources: Service principals this policy trusts,
-            with the cross-service source guard on each. Read by the
-            deny_service_confused_deputy check; contributes nothing to this
-            analysis's own third-party accounts or wildcard flag.
+            with the cross-service source guard on each, or a single entry
+            recording that the queue's policy could not be read at all.
+            Read by the deny_service_confused_deputy check; contributes
+            nothing to this analysis's own third-party accounts or wildcard
+            flag, so a queue kept only for one of these entries stays
+            invisible to the deny_sqs_third_party_access check.
     """
     queue_url: str
     queue_arn: str
@@ -275,6 +279,50 @@ def _analyze_queue_policy(
     )
 
 
+def _unreadable_queue(
+    queue_url: str,
+    queue_arn: str,
+    region: str,
+    error: Exception,
+) -> SQSQueuePolicyAnalysis:
+    """
+    Record a queue whose policy could not be read.
+
+    The statement walk reads service principal sources before it reaches
+    the principal types that raise, so discarding the queue would drop a
+    source guard that was read successfully. The account behind it would
+    then be missing from the DenyServiceConfusedDeputy allowlist and the
+    deployed RCP would break that integration.
+
+    Every field the deny_sqs_third_party_access check reads is left empty,
+    so that check's filter drops this queue exactly as the earlier
+    warn-and-skip did. Only deny_service_confused_deputy sees the entry,
+    and it files it as a violation, which withholds the statement from the
+    account.
+
+    Args:
+        queue_url: URL of the queue that could not be read
+        queue_arn: ARN of the queue, empty if the attributes never arrived
+        region: AWS region the queue lives in
+        error: Why the policy could not be read
+
+    Returns:
+        An analysis carrying only the read failure
+    """
+    return SQSQueuePolicyAnalysis(
+        queue_url=queue_url,
+        queue_arn=queue_arn,
+        region=region,
+        third_party_account_ids=set(),
+        has_wildcard_principal=False,
+        has_non_account_principals=False,
+        actions_by_account={},
+        service_principal_sources=[unreadable_service_principal_source(
+            f"Queue {queue_url} in {region} could not be analyzed: {error}"
+        )],
+    )
+
+
 def _analyze_queues_in_region(
     session: Session,
     region: str,
@@ -293,6 +341,10 @@ def _analyze_queues_in_region(
     This assumes the `Headroom` role is exempt from region-allowlist SCPs, which
     makes an `AccessDenied` here a genuine permissions gap rather than an
     expected regional block. See documentation/SETUP.md.
+
+    A queue whose policy is unparseable, or names a principal type the
+    analyzer does not recognize, is recorded rather than discarded - see
+    `_unreadable_queue`.
 
     Args:
         session: boto3.Session for the target account
@@ -352,7 +404,7 @@ def _analyze_queues_in_region(
                     raise
                 except (json.JSONDecodeError, UnknownPrincipalTypeError) as e:
                     logger.warning(f"Failed to analyze queue {queue_url} in {region}: {e}")
-                    continue
+                    results.append(_unreadable_queue(queue_url, queue_arn, region, e))
 
     except ClientError as e:
         logger.error(f"Failed to analyze SQS queues in region {region}: {e}")

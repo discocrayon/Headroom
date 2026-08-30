@@ -850,7 +850,14 @@ class TestAnalyzeSQSQueuePolicies:
         assert results[0].third_party_account_ids == {"222222222222"}
 
     def test_json_decode_error(self) -> None:
-        """Test that JSON decode errors are handled gracefully."""
+        """
+        An unparseable queue policy is recorded rather than discarded.
+
+        The queue carries no third-party account and no wildcard, so the
+        deny_sqs_third_party_access check still filters it out; only the
+        confused deputy check sees the read failure, and it withholds the
+        statement from the account over it.
+        """
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_sqs_client = MagicMock()
@@ -882,7 +889,75 @@ class TestAnalyzeSQSQueuePolicies:
         org_account_ids = {"111111111111"}
         results = analyze_sqs_queue_policies(mock_session, org_account_ids)
 
-        assert len(results) == 0
+        assert len(results) == 1
+        assert results[0].queue_arn == queue_arn
+        assert results[0].third_party_account_ids == set()
+        assert results[0].has_wildcard_principal is False
+        assert results[0].has_non_account_principals is False
+        assert results[0].actions_by_account == {}
+
+        sources = results[0].service_principal_sources
+        assert len(sources) == 1
+        assert sources[0].read_failure is not None
+        assert "could not be analyzed" in sources[0].read_failure
+        assert sources[0].service_principal is None
+
+    def test_unknown_principal_type_keeps_the_queue_as_a_read_failure(self) -> None:
+        """
+        A queue whose source guard was read but whose principal was not.
+
+        The statement walk reads service principal sources before it
+        reaches the principal types that raise, so discarding the queue
+        would drop a guarded out-of-organization source. It never reaches
+        the allowlist either way - the whole policy is unreadable - but the
+        recorded failure makes the confused deputy check withhold the
+        statement instead of deploying a Deny that would break the
+        integration.
+        """
+        mock_session, mock_sqs_client = self._single_region_session()
+
+        queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/mixed"
+        queue_arn = "arn:aws:sqs:us-east-1:111111111111:mixed"
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "sqs:SendMessage",
+                    "Resource": queue_arn,
+                    "Condition": {
+                        "StringEquals": {"aws:SourceAccount": "999999999999"}
+                    },
+                },
+                {
+                    "Effect": "Allow",
+                    "Principal": {"NotAThing": "whoever"},
+                    "Action": "sqs:SendMessage",
+                    "Resource": queue_arn,
+                },
+            ],
+        }
+
+        mock_sqs_client.get_queue_attributes.return_value = {
+            "Attributes": {"Policy": json.dumps(policy), "QueueArn": queue_arn}
+        }
+
+        results = analyze_sqs_queue_policies(mock_session, {"111111111111"})
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == set()
+        assert results[0].has_wildcard_principal is False
+
+        sources = results[0].service_principal_sources
+        assert len(sources) == 1
+        assert sources[0].read_failure is not None
+        assert "NotAThing" in sources[0].read_failure
 
 
 class TestPolicyGrammar:

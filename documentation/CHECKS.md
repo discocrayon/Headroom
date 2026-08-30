@@ -984,7 +984,7 @@ Trust policies matter here as much as resource policies. A role that trusts a se
 | Source names an in-organization account | `[]` | `true` | `false` | Dropped - neither listed nor counted |
 | Source names an out-of-organization account | `["999999999999"]` | `true` | `false` | Allowlist entry, recorded as compliant |
 | Source is `*`, or an ARN yielding no account, with no companion `aws:SourceAccount` | `[]` | `true` | `true` | Violation - withholds the statement from the account |
-| `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | Raises `UnknownSourceConditionError` |
+| `aws:SourceOrgID` present, or a source key under an operator that does not pin it | - | - | - | `read_failure` set - violation, withholds the statement from the account |
 
 Row four is `has_wildcard_principal` in a different costume: an unbounded set of sources that no allowlist can enumerate, handled the same way - withhold the statement from that account and follow up in CloudTrail. An S3 bucket ARN reaches that row honestly rather than by accident. S3 ARNs carry no account field, so `aws:SourceArn` alone never identifies whose bucket drove the call, which is exactly why AWS pairs `aws:SourceArn` with `aws:SourceAccount`. When the companion key is present the pair resolves normally; when it is absent the source is genuinely unidentifiable.
 
@@ -997,7 +997,11 @@ One statement can occupy two rows at once. `aws:SourceAccount` holding `["*", "9
 1. The `Null` gate means the statement never fires on a request carrying no source account. An unguarded trust asks nothing of the allowlist and blocks nothing, so reporting it would not change what gets deployed. It is still a real confused-deputy hole - anyone can point their topic at the queue - but it is one this statement does not address, and making it a violation would withhold the statement over a problem the statement does not solve.
 2. A count would be wrong rather than merely uninteresting. All six analyzers drop an analysis that found nothing worth reporting, so a tally taken here would see only the unguarded sources that happen to sit on a resource kept for some other reason. That undercount would look like a measurement. A plausible wrong number is worse than no number.
 
-**Fail-Fast Validation**: A source guard that cannot be read aborts the run rather than being dropped. `aws:SourceOrgID` on a service principal raises, because deciding whether it names this organization needs the organization ID, which the analyzers do not receive - guessing would put a foreign organization's sources in the allowlist or leave this one's out. A source key under an unrecognized operator raises for the same reason, as does an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard. Dropping any of them silently would leave an account out of the allowlist, and the deployed RCP would then deny access that account depended on - the exact failure this analysis exists to prevent.
+**A guard that cannot be read**: A source guard the parser cannot read is recorded as a violation rather than dropped, so the statement is withheld from that account and an allowlist nobody could compute is never deployed as if it were complete. Three constructs reach this: `aws:SourceOrgID` on a service principal, because deciding whether it names this organization needs the organization ID, which the analyzers do not receive - guessing would put a foreign organization's sources in the allowlist or leave this one's out; a source key under an unrecognized operator, because a negated operator excludes rather than permits; and an `aws:SourceAccount` value that is neither a twelve-digit account ID nor a wildcard.
+
+The failure is recorded rather than raised. The parser runs inside six analyzers that six pre-existing checks share, and none of those checks reads a source guard, so raising would abort the estate run and take all six down over a construct they never consume. `aws:SourceOrgID` is AWS's own recommended service-principal guard, so raising made that a first-run failure for exactly the estates this tool targets. Resolving the organization ID would remove the ambiguity entirely and is a recommended follow-up: it needs a `DescribeOrganization` call, a new IAM permission, and the value threaded into all six analyzers.
+
+A resource whose policy could not be read at all reaches the same disposition. An SQS queue with an unparseable policy, or one naming a principal type the analyzer does not recognize, is recorded as a read failure instead of being skipped - the statement walk reads service principal sources before it reaches the principal types that raise, so discarding the queue would drop a guard that was read successfully. `deny_sqs_third_party_access` is unaffected: the recorded queue carries no third-party account and no wildcard, so that check's filter drops it exactly as the earlier warn-and-skip did.
 
 **Output**:
 - Per-finding resource identity: which analyzer found it, the resource, and the region
@@ -1014,11 +1018,12 @@ One statement can occupy two rows at once. `aws:SourceAccount` holding `["*", "9
   "service_principal": "sns.amazonaws.com",
   "source_account_ids": ["999999999999"],
   "has_source_condition": true,
-  "has_wildcard_source": false
+  "has_wildcard_source": false,
+  "read_failure": null
 }
 ```
 
-A wildcard finding has the same shape with `source_account_ids` empty and `has_wildcard_source` true, and is written to `violations` rather than `compliant_instances`. `resource_identifier` is `registry` for a finding from a per-region ECR registry policy rather than a repository policy.
+A wildcard finding has the same shape with `source_account_ids` empty and `has_wildcard_source` true, and is written to `violations` rather than `compliant_instances`. A finding whose source read failed carries the reason in `read_failure` and a null `service_principal`, and is also written to `violations`. `resource_identifier` is `registry` for a finding from a per-region ECR registry policy rather than a repository policy.
 
 `region` is null for three resource types, for two different reasons. S3 buckets and IAM roles are global names, so there is no region to record. Secrets Manager secrets are regional - the analyzer iterates every region, and each secret's ARN encodes its own - but `SecretsPolicyAnalysis` carries no `region` field for the check to read, so the null is a gap in that dataclass rather than a property of the resource. Since the finding identifies a secret by name rather than by ARN, two secrets sharing a name in different regions produce identical findings and an operator cannot tell which region to look in.
 
