@@ -1204,6 +1204,44 @@ class TestGetEc2AmiOwnerAnalysis:
         assert len(results) == 0
         assert results == []
 
+    def test_a_region_with_no_instances_builds_no_client_for_the_sweep(self) -> None:
+        """
+        An empty region is skipped before the AMI sweep builds its client.
+
+        `get_instances` builds one regional client to read the region. The
+        early `continue` is what stops the sweep building a second one to walk
+        an empty instance list. The results are identical either way -- an
+        empty region contributes nothing -- so the test above cannot see the
+        difference, and the cost is one wasted client per empty region across
+        every enabled region of every account.
+        """
+        mock_session = MagicMock()
+
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{"Reservations": []}]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            if region_name is None:
+                return mock_ec2
+            return mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+
+        get_ec2_ami_owner_analysis(mock_session)
+
+        regional_clients = [
+            call for call in mock_session.client.call_args_list
+            if call.kwargs.get("region_name") == "us-east-1"
+        ]
+        assert len(regional_clients) == 1
+
     def test_get_ec2_ami_owner_analysis_regional_client_error(self) -> None:
         """
         A describe_instances failure still aborts the run with the region named.
@@ -1890,9 +1928,9 @@ class TestGetInstances:
         `get_instances` returns the cached list, not a copy, so one check
         writing to a field would change what the next three read for the same
         account and region -- a cross-check data dependency with no call site
-        connecting the two. Freezing the dataclass is what makes the memo's
-        "callers must not mutate what this returns" invariant enforced rather
-        than merely documented, and it is cheaper than copying on every read.
+        connecting the two. Freezing closes rebinding, and it is cheaper than
+        copying on every read; the read-only `tags` mapping, pinned below,
+        closes the one field whose contents freezing cannot reach.
         """
         session = self._session([{
             "Reservations": [{
@@ -1905,6 +1943,32 @@ class TestGetInstances:
 
         with pytest.raises(FrozenInstanceError):
             instance.http_tokens = "required"  # type: ignore[misc]
+
+    def test_a_projected_instances_tags_cannot_be_mutated(self) -> None:
+        """
+        Freezing the dataclass does not reach inside the tags dict.
+
+        `frozen=True` stops a field being rebound; it says nothing about what
+        a field points at. `tags` is the one mutable object on the instance,
+        and all four EC2 checks read the same one out of the memo, so a check
+        popping a key from it would change what the other three see for that
+        account and region.
+        """
+        session = self._session([{
+            "Reservations": [{
+                "OwnerId": "111111111111",
+                "Instances": [{
+                    "InstanceId": "i-11111111111111111",
+                    "State": {"Name": "running"},
+                    "Tags": [{"Key": "Name", "Value": "web"}],
+                }],
+            }]
+        }])
+
+        instance = get_instances(session, "us-east-1")[0]
+
+        with pytest.raises(TypeError):
+            instance.tags["Name"] = "database"  # type: ignore[index]
 
     def test_a_projected_instance_can_be_hashed(self) -> None:
         """

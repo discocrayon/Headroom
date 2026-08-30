@@ -92,7 +92,7 @@
 - Organization-scoped guards resolved against this organization's own ID, so `aws:SourceOrgID` and `aws:SourceOrgPaths` naming this organization cost no allowlist entry and naming another withhold the statement
 - Fail-fast on a source guard that cannot be read (an unrecognized operator, a value that is neither an account ID nor a wildcard)
 - No additional AWS API calls in the existing six checks: they record the sources during the statement walk they already perform
-- The seventh check re-runs those same six analyzers, so the RCP read APIs are issued twice per account per run. Caching is deliberately not implemented; it is a separate optimization if the duplication proves material
+- The seventh check calls those same six analyzers, but `memoize_per_session` serves whichever of a pair runs second from memory, so the RCP read APIs are issued once per account per run
 
 ### 5. Policy Placement Intelligence
 - Organization structure analysis for optimal policy deployment levels
@@ -1084,9 +1084,10 @@ some action other than `sts:AssumeRole` is never recorded, which matches the
 reach of the statement's action list - then stores the result on its analysis
 dataclass as `service_principal_sources`. Populating that field costs those six
 checks nothing; it happens during the statement walk they already perform. The
-seventh check does not reuse their analyses, though: it calls the same six
-analyzer functions again and reads only the new field, which is what makes the
-read APIs run twice per account. See Service Confused Deputy below. One
+seventh check calls the same six analyzer functions again and reads only the
+new field. `memoize_per_session` keys their results on the session, so the
+second call of each pair costs no API traffic. See Service Confused Deputy
+below. One
 `Condition` block guards every principal in its statement, so each service the
 statement names carries the same guard and gets its own entry.
 `has_actionable_service_principal_source` is the predicate each analyzer uses
@@ -2664,18 +2665,27 @@ service principal with no source guard is the canonical confused-deputy
 vulnerability, and `sts:AssumeRole` is in the statement's action list.
 
 **API cost.** Recording `service_principal_sources` costs the existing six
-checks nothing. This check is not free, however. Nothing caches an analysis
-between checks - `run_checks_for_type` instantiates and executes each check
-independently, and the only cache in `headroom/aws/` is the per-region AMI
-cache - so registering this check issues every RCP read API twice per account
-per run: `ListRepositories` / `GetRepositoryPolicy` / `GetRegistryPolicy`,
-`ListKeys` / `GetKeyPolicy` / `ListGrants`, `ListBuckets` / `GetBucketPolicy`,
-`ListSecrets` / `GetResourcePolicy`, `ListQueues` / `GetQueueAttributes`, and
-`ListRoles`. Registration alone triggers the second pass; the
-`deny_service_confused_deputy` Terraform flag gates the rendered statement, not
-the scan. Caching is deliberately not implemented and is a separate
-optimization if the duplication proves material, so quota and runtime for the
-RCP pass should be budgeted at double.
+checks nothing, and registering this check does not double the RCP pass.
+`memoize_per_session` in `headroom/aws/helpers.py` caches exactly the six
+analyses the pair shares, keyed on the session, so whichever of a pair runs
+second is served from memory: `ListRepositories` / `GetRepositoryPolicy` /
+`GetRegistryPolicy`, `ListKeys` / `GetKeyPolicy` / `ListGrants`, `ListBuckets`
+/ `GetBucketPolicy`, `ListSecrets` / `GetResourcePolicy`, `ListQueues` /
+`GetQueueAttributes`, and `ListRoles` each run once per account per run.
+
+Registry order decides which check of a pair pays. This one runs fourteenth of
+sixteen, so ECR, KMS, S3 and Secrets Manager are already cached when it asks,
+while it reads SQS and IAM role trust policies first and
+`deny_sqs_third_party_access` and `deny_sts_third_party_assumerole` are then
+served from memory. Measured across the whole registry, one account issues 35
+API operations with no `(service, region, operation)` triple repeated;
+`TestNoCheckRepeatsAnother` in `tests/performance/test_call_counts.py` pins
+that. The `deny_service_confused_deputy` Terraform flag gates the rendered
+statement, not the scan.
+
+`headroom/aws/` holds three per-session memos, not one: the enabled-region
+list and these six analyses in `helpers.py`, and the EC2 instance list in
+`ec2.py`. The per-region AMI cache is a fourth, local to one sweep.
 
 **Region.** S3 buckets and IAM roles are global names, so there is no region to
 record. A Secrets Manager secret is regional:

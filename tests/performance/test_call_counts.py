@@ -25,7 +25,7 @@ against the same twelfth check: it fails with
 """
 
 from collections import Counter, defaultdict
-from typing import Any, Callable, DefaultDict, Dict, List, Set, Tuple
+from typing import Any, Callable, DefaultDict, Dict, List, Sequence, Set, Tuple
 from unittest.mock import MagicMock
 
 from botocore.exceptions import ClientError
@@ -54,7 +54,7 @@ Operation = Tuple[str, str, str]
 
 # The analyzers `deny_service_confused_deputy` shares with a third-party-access
 # check, each therefore invoked twice per account.
-SHARED_ANALYZERS: List[Callable[[MagicMock, Set[str], str], List[Any]]] = [
+SHARED_ANALYZERS: List[Callable[[MagicMock, Set[str], str], Sequence[Any]]] = [
     analyze_ecr_policies,
     analyze_iam_roles_trust_policies,
     analyze_kms_key_policies,
@@ -129,12 +129,16 @@ class TestCallCounts:
         """
         Six analyzers have two callers each and still cost one read.
 
-        `deny_service_confused_deputy` re-reads ECR, KMS, S3, Secrets Manager,
-        SQS, and IAM role trust policies after each of those resources' own
-        third-party-access check has already read them. Four of the six sweep
-        every enabled region, so before the memo an account paid four extra
-        region sweeps -- the same waste as the four identical EC2 sweeps
-        above, reintroduced by a check added later.
+        `deny_service_confused_deputy` shares six analyzers with the
+        resource-specific third-party-access checks, and which of a pair pays
+        is registry order rather than design. It runs fourteenth of sixteen,
+        so ECR, KMS, S3 and Secrets Manager are already in the memo by the
+        time it asks; SQS and IAM role trust policies it reads first, and
+        `deny_sqs_third_party_access` and `deny_sts_third_party_assumerole`
+        are the ones served from memory. Four of the six sweep every enabled
+        region, so before the memo an account paid four extra region sweeps --
+        the same waste as the four identical EC2 sweeps above, reintroduced by
+        a check added later.
 
         Clients are the unit because they are what a sweep builds: one per
         region per sweeping analyzer, plus one global client each for S3 and
@@ -175,9 +179,15 @@ class _RecordingClient:
     """
     A stand-in boto3 client that logs the operation names asked of it.
 
-    Every listing comes back empty, which is what keeps the log to entry
-    points: a per-resource follow-up like `get_bucket_policy` needs a bucket
-    to exist, and those are not what the memos deduplicate.
+    Every listing comes back empty, which keeps the log to entry points. That
+    is the boundary rather than a shortcut. A per-resource follow-up like
+    `get_bucket_policy` is issued from inside one analyzer, and the memo
+    already guarantees that analyzer runs at most once per account, so the
+    only way one could repeat is two analyzers reading the same resource --
+    and that requires repeating the listing that found it, which is an entry
+    point this does log. Filling the listings would make the stand-in
+    service-aware, hand-enumerating a response shape per service, which is
+    the property this class exists to avoid.
     """
 
     def __init__(self, service: str, region: str, log: List[Operation]) -> None:
@@ -239,12 +249,15 @@ class TestNoCheckRepeatsAnother:
         triple, not a repeat. It fires exactly when one check re-reads what
         another already read.
 
-        Measured on the registry as it stands: 35 operations, 35 distinct.
-        Two of those checks issue nothing at all -- once
-        `deny_service_confused_deputy` has swept SQS and IAM role trust
-        policies, `deny_sqs_third_party_access` and
-        `deny_sts_third_party_assumerole` are served entirely from the memo.
-        Which check pays is registry order; that no triple repeats is not.
+        Measured on the registry as it stands: 35 operations, 35 distinct,
+        and five of the sixteen checks issue nothing at all. Three are EC2:
+        `deny_ec2_ami_owner` sweeps first and fills the instance memo, so
+        `deny_ec2_imds_hop_limit`, `deny_ec2_imds_v1` and
+        `deny_ec2_public_ip` reach AWS not at all. The other two are
+        `deny_sqs_third_party_access` and `deny_sts_third_party_assumerole`,
+        served from the analyzer memo once `deny_service_confused_deputy` has
+        swept SQS and IAM role trust policies. Which check pays is registry
+        order; that no triple repeats is not.
         """
         operations: List[Operation] = []
 

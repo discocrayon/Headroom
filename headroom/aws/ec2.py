@@ -3,7 +3,8 @@
 import logging
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Dict, List, Optional
+from types import MappingProxyType
+from typing import Dict, List, Mapping, Optional, Sequence
 from weakref import WeakKeyDictionary
 
 from boto3.session import Session
@@ -147,7 +148,10 @@ class Ec2Instance:
         http_tokens: MetadataOptions HttpTokens; AWS defaults to 'optional'
         http_endpoint: MetadataOptions HttpEndpoint; AWS defaults to 'enabled'
         hop_limit: MetadataOptions HttpPutResponseHopLimit; AWS defaults to 1
-        tags: Instance tags as a key to value mapping, excluded from the hash
+        tags: Instance tags as a read-only key to value mapping, excluded
+            from the hash. Read-only because `frozen=True` stops a field
+            being rebound but says nothing about what it points at, and all
+            four EC2 checks read the same instance out of the memo
     """
     instance_id: str
     image_id: Optional[str]
@@ -156,7 +160,7 @@ class Ec2Instance:
     http_tokens: str
     http_endpoint: str
     hop_limit: int
-    tags: Dict[str, str] = field(hash=False)
+    tags: Mapping[str, str] = field(hash=False)
 
 
 _INSTANCE_MEMO: WeakKeyDictionary[Session, Dict[str, List[Ec2Instance]]] = WeakKeyDictionary()
@@ -190,7 +194,9 @@ def _project_instance(
         http_tokens=metadata_options.get('HttpTokens', 'optional'),
         http_endpoint=metadata_options.get('HttpEndpoint', 'enabled'),
         hop_limit=metadata_options.get('HttpPutResponseHopLimit', 1),
-        tags={tag['Key']: tag['Value'] for tag in instance.get('Tags', [])},
+        tags=MappingProxyType(
+            {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+        ),
     )
 
 
@@ -241,7 +247,7 @@ def _describe_instances(session: Session, region: str) -> List[Ec2Instance]:
     return instances
 
 
-def get_instances(session: Session, region: str) -> List[Ec2Instance]:
+def get_instances(session: Session, region: str) -> Sequence[Ec2Instance]:
     """
     Return one region's non-terminated instances, reading AWS at most once.
 
@@ -271,10 +277,12 @@ def get_instances(session: Session, region: str) -> List[Ec2Instance]:
     session true, and the write would land in an orphaned dictionary and be
     silently dropped.
 
-    Callers must not mutate what this returns. It is the cached list itself,
-    not a copy, so appending to it or removing from it changes what the next
-    check for this account and region sees. `Ec2Instance` is frozen; the list
-    is not, and no check has any reason to write to either.
+    Callers cannot mutate what this returns. It is the cached list itself,
+    not a copy, so appending to it or removing from it would change what the
+    next check for this account and region sees. Three things close that:
+    `Ec2Instance` is frozen, its `tags` are a read-only mapping -- the one
+    field freezing cannot reach into -- and the return type is `Sequence`,
+    which strict mypy will not let a caller append to.
 
     Args:
         session: boto3.Session for the target account
@@ -305,7 +313,7 @@ def get_instances(session: Session, region: str) -> List[Ec2Instance]:
 
 
 def _find_exemption_tag_value(
-    tags: Dict[str, str],
+    tags: Mapping[str, str],
     instance_id: str,
 ) -> Optional[str]:
     """
