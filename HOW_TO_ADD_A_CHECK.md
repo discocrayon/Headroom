@@ -769,6 +769,16 @@ from .helpers import get_all_regions
 regions = get_all_regions(session)
 ```
 
+If your check reads a resource type another check already reads, call that
+check's analyzer rather than writing a second sweep, and decorate the analyzer
+with `memoize_per_session` from `aws/helpers.py` if it does not carry it yet.
+An account's session belongs to one worker, so the second caller is served
+from memory and pays nothing. Without it a shared analyzer that sweeps regions
+costs the account a full extra sweep -- the mistake `deny_service_confused_deputy`
+made for six analyzers, and the one
+`tests/performance/test_call_counts.py::TestCallCounts::test_the_shared_analyzers_read_an_account_once_for_both_callers`
+now pins.
+
 ### AP-007: Hardcoded Patterns
 
 ```python

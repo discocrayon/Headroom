@@ -151,11 +151,20 @@ at 50-300 accounts the account pool already saturates the available network capa
 second axis would multiply in-flight requests and throttling risk without going faster.
 
 Within an account everything stays serial, which means each account's boto3 session is
-touched by exactly one thread. Two caches rely on that: the region list and the projected
-EC2 instance list are memoized in `WeakKeyDictionary` instances keyed on the session
-object, so entries are released when a worker finishes and nothing accumulates across a
-long run. Keying on the session rather than on an account ID is what keeps one account's
-data out of another's results.
+touched by exactly one thread. Three caches rely on that: the region list, the projected
+EC2 instance list, and the six resource-policy analyses shared between a third-party-access
+check and `deny_service_confused_deputy`. All are memoized in `WeakKeyDictionary` instances
+keyed on the session object, so entries are released when a worker finishes and nothing
+accumulates across a long run. Keying on the session rather than on an account ID is what
+keeps one account's data out of another's results.
+
+The third cache exists because `deny_service_confused_deputy` re-reads what six other
+checks have already read: ECR, KMS, S3, Secrets Manager, SQS, and IAM role trust policies.
+Four of those six sweep every enabled region, so without the memo each account paid four
+extra region sweeps -- the same waste as the four identical EC2 sweeps, arriving by a
+different route. `memoize_per_session` in `aws/helpers.py` carries it, and refuses a second
+call for one session that passes different organization arguments rather than serving the
+first call's answer to a different question.
 
 The one genuinely shared object is the security-analysis session, which every worker uses
 to assume its target role. Client construction on that session is serialized by a lock in

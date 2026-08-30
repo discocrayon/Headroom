@@ -18,6 +18,7 @@ from mypy_boto3_s3.client import S3Client
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
+from .helpers import memoize_per_session
 from .policy_documents import (
     ServicePrincipalSource,
     has_actionable_service_principal_source,
@@ -319,6 +320,7 @@ def _read_bucket_policy(s3_client: S3Client, bucket_name: str) -> Optional[JsonD
     return policy
 
 
+@memoize_per_session
 def analyze_s3_bucket_policies(
     session: Session,
     org_account_ids: Set[str],

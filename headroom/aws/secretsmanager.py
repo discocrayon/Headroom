@@ -17,7 +17,7 @@ from mypy_boto3_secretsmanager.client import SecretsManagerClient
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
-from .helpers import get_all_regions
+from .helpers import get_all_regions, memoize_per_session
 from .policy_documents import (
     ServicePrincipalSource,
     has_actionable_service_principal_source,
@@ -181,6 +181,7 @@ def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
     raise TypeError(f"Unexpected action type: {type(action).__name__}. Expected str or list.")
 
 
+@memoize_per_session
 def analyze_secrets_manager_policies(
     session: Session,
     org_account_ids: Set[str],

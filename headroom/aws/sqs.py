@@ -15,7 +15,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_sqs.client import SQSClient
 
-from .helpers import get_all_regions
+from .helpers import get_all_regions, memoize_per_session
 from .policy_documents import (
     ServicePrincipalSource,
     has_not_principal,
@@ -423,6 +423,7 @@ def _analyze_queues_in_region(
     return results
 
 
+@memoize_per_session
 def analyze_sqs_queue_policies(
     session: Session,
     org_account_ids: Set[str],

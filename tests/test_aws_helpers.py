@@ -3,10 +3,25 @@ Tests for headroom.aws.helpers module.
 """
 
 import gc
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Set
 from unittest.mock import MagicMock
 
-from headroom.aws.helpers import _REGION_MEMO, get_all_regions, paginate
+from boto3.session import Session
+
+import pytest
+
+from headroom.aws.ecr import analyze_ecr_policies
+from headroom.aws.helpers import (
+    _REGION_MEMO,
+    get_all_regions,
+    memoize_per_session,
+    paginate,
+)
+from headroom.aws.iam.roles import analyze_iam_roles_trust_policies
+from headroom.aws.kms import analyze_kms_key_policies
+from headroom.aws.s3 import analyze_s3_bucket_policies
+from headroom.aws.secretsmanager import analyze_secrets_manager_policies
+from headroom.aws.sqs import analyze_sqs_queue_policies
 
 
 class TestGetAllRegions:
@@ -68,10 +83,10 @@ class TestGetAllRegions:
 
     def test_region_list_is_fetched_once_per_session(self) -> None:
         """
-        Eleven checks ask for the region list; only the first reaches AWS.
+        Eleven calls reach this per account; only the first reaches AWS.
 
-        The other ten calls are pure latency, and the answer cannot change
-        within a run.
+        The other ten are pure latency, and the answer cannot change within
+        a run.
         """
         mock_session = MagicMock()
         mock_ec2 = MagicMock()
@@ -143,6 +158,123 @@ class TestGetAllRegions:
         gc.collect()
 
         assert len(_REGION_MEMO) == before
+
+
+class TestMemoizePerSession:
+    """
+    Test the shared per-session memo the resource-policy analyzers carry.
+
+    Six analyzers each have two callers: their own third-party-access check,
+    and `deny_service_confused_deputy`, which re-reads the same policies for
+    the source guards on them. Four of the six sweep every enabled region, so
+    without the memo each account pays 4 x 17 region probes it has already
+    paid once.
+    """
+
+    @staticmethod
+    def _counting_analyzer() -> Any:
+        """Build a memoized analyzer that records the calls that reach it."""
+        calls: List[Any] = []
+
+        @memoize_per_session
+        def analyzer(session: Session, org_account_ids: Set[str], org_id: str) -> List[str]:
+            calls.append((org_account_ids, org_id))
+            return [f"result-{len(calls)}"]
+
+        setattr(analyzer, "calls", calls)
+        return analyzer
+
+    def test_the_analyzer_body_runs_once_per_session(self) -> None:
+        """The second caller is served from the memo, not from AWS."""
+        analyzer = self._counting_analyzer()
+        session = MagicMock()
+
+        first = analyzer(session, {"111111111111"}, "o-11111111")
+        second = analyzer(session, {"111111111111"}, "o-11111111")
+
+        assert first == second == ["result-1"]
+        assert len(analyzer.calls) == 1
+
+    def test_each_session_runs_the_analyzer_again(self) -> None:
+        """
+        Two sessions never share a memo entry.
+
+        A memo keyed wrongly does not crash. It serves one account's
+        resource policies to another account, and the generated allowlist
+        looks entirely plausible, so this is the failure mode worth pinning.
+        """
+        analyzer = self._counting_analyzer()
+        session_a, session_b = MagicMock(), MagicMock()
+
+        assert analyzer(session_a, {"111111111111"}, "o-11111111") == ["result-1"]
+        assert analyzer(session_b, {"111111111111"}, "o-11111111") == ["result-2"]
+        assert analyzer(session_a, {"111111111111"}, "o-11111111") == ["result-1"]
+
+    def test_differing_organization_arguments_are_rejected(self) -> None:
+        """
+        The memo is keyed on the session alone, so mismatched args must raise.
+
+        Both arguments are fixed for a whole run today, which is what makes
+        the session a sufficient key. Serving the first call's results to a
+        second call that asked a different question would be silent and
+        plausible; refusing is neither.
+        """
+        analyzer = self._counting_analyzer()
+        session = MagicMock()
+
+        analyzer(session, {"111111111111"}, "o-11111111")
+
+        with pytest.raises(RuntimeError, match="different organization arguments"):
+            analyzer(session, {"111111111111", "222222222222"}, "o-11111111")
+
+        with pytest.raises(RuntimeError, match="different organization arguments"):
+            analyzer(session, {"111111111111"}, "o-22222222")
+
+    def test_memo_entry_is_released_when_the_session_is_dropped(self) -> None:
+        """
+        An account's entry dies with its session, so a 300-account run does
+        not accumulate 300 accounts' worth of resource policies.
+
+        These entries are far larger than the region list: every bucket
+        policy, key policy, and role trust policy the account holds. Retaining
+        them past the worker would put the pool's memory ceiling somewhere
+        other than where `config.MAX_ACCOUNT_WORKERS` says it is.
+        """
+        analyzer = self._counting_analyzer()
+        gc.collect()
+
+        session = MagicMock()
+        analyzer(session, {"111111111111"}, "o-11111111")
+        assert len(analyzer.session_memo) == 1
+
+        del session
+        gc.collect()
+
+        assert len(analyzer.session_memo) == 0
+
+    def test_every_doubly_called_analyzer_is_memoized(self) -> None:
+        """
+        All six analyzers `deny_service_confused_deputy` shares carry the memo.
+
+        The check re-invokes each of them after their own check already has,
+        so an analyzer that loses the decorator silently doubles that
+        account's API calls without failing anything.
+        """
+        shared = [
+            analyze_ecr_policies,
+            analyze_iam_roles_trust_policies,
+            analyze_kms_key_policies,
+            analyze_s3_bucket_policies,
+            analyze_secrets_manager_policies,
+            analyze_sqs_queue_policies,
+        ]
+
+        unmemoized = [
+            analyzer.__name__ for analyzer in shared
+            if not hasattr(analyzer, "session_memo")
+        ]
+
+        assert unmemoized == []
 
 
 class TestPaginate:
