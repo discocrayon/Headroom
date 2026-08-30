@@ -438,7 +438,7 @@ fact about the account.
 {
   "instance_id": "i-22222222222222222",
   "region": "us-west-2",
-  "public_ip_address": "54.123.45.67",
+  "public_ip_address": "111.111.111.111",
   "has_public_ip": true,
   "instance_arn": "arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
 }

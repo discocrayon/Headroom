@@ -1289,14 +1289,14 @@ class TestDenyEc2PublicIp:
         result = DenyEc2PublicIp(
             instance_id="i-11111111111111111",
             region="us-east-1",
-            public_ip_address="54.123.45.67",
+            public_ip_address="111.111.111.111",
             has_public_ip=True,
             instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
 
         assert result.instance_id == "i-11111111111111111"
         assert result.region == "us-east-1"
-        assert result.public_ip_address == "54.123.45.67"
+        assert result.public_ip_address == "111.111.111.111"
         assert result.has_public_ip is True
         assert result.instance_arn == "arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
 
@@ -1320,7 +1320,7 @@ class TestDenyEc2PublicIp:
         result1 = DenyEc2PublicIp(
             instance_id="i-11111111111111111",
             region="us-east-1",
-            public_ip_address="54.123.45.67",
+            public_ip_address="111.111.111.111",
             has_public_ip=True,
             instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
@@ -1328,7 +1328,7 @@ class TestDenyEc2PublicIp:
         result2 = DenyEc2PublicIp(
             instance_id="i-11111111111111111",
             region="us-east-1",
-            public_ip_address="54.123.45.67",
+            public_ip_address="111.111.111.111",
             has_public_ip=True,
             instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
@@ -1390,7 +1390,7 @@ class TestGetEc2PublicIpAnalysis:
                     "Instances": [
                         self.create_mock_instance_with_ip(
                             "i-11111111111111111",
-                            public_ip="54.123.45.67"
+                            public_ip="111.111.111.111"
                         ),
                         self.create_mock_instance_with_ip(
                             "i-22222222222222222",
@@ -1408,7 +1408,7 @@ class TestGetEc2PublicIpAnalysis:
                     "Instances": [
                         self.create_mock_instance_with_ip(
                             "i-33333333333333333",
-                            public_ip="52.98.76.54"
+                            public_ip="222.222.222.222"
                         )
                     ]
                 }
@@ -1436,7 +1436,7 @@ class TestGetEc2PublicIpAnalysis:
 
         assert results[0].instance_id == "i-11111111111111111"
         assert results[0].region == "us-east-1"
-        assert results[0].public_ip_address == "54.123.45.67"
+        assert results[0].public_ip_address == "111.111.111.111"
         assert results[0].has_public_ip is True
 
         assert results[1].instance_id == "i-22222222222222222"
@@ -1446,7 +1446,7 @@ class TestGetEc2PublicIpAnalysis:
 
         assert results[2].instance_id == "i-33333333333333333"
         assert results[2].region == "us-west-2"
-        assert results[2].public_ip_address == "52.98.76.54"
+        assert results[2].public_ip_address == "222.222.222.222"
         assert results[2].has_public_ip is True
 
     def test_get_ec2_public_ip_analysis_skips_terminated_instances(self) -> None:
@@ -1469,12 +1469,12 @@ class TestGetEc2PublicIpAnalysis:
                         self.create_mock_instance_with_ip(
                             "i-running",
                             state="running",
-                            public_ip="54.123.45.67"
+                            public_ip="111.111.111.111"
                         ),
                         self.create_mock_instance_with_ip(
                             "i-terminated",
                             state="terminated",
-                            public_ip="52.98.76.54"
+                            public_ip="222.222.222.222"
                         ),
                         self.create_mock_instance_with_ip(
                             "i-stopped",
@@ -1551,7 +1551,7 @@ class TestGetEc2PublicIpAnalysis:
             "Reservations": [
                 {
                     "OwnerId": "111111111111",
-                    "Instances": [self.create_mock_instance_with_ip("i-success", public_ip="54.123.45.67")],
+                    "Instances": [self.create_mock_instance_with_ip("i-success", public_ip="111.111.111.111")],
                 }
             ]
         }
@@ -1597,7 +1597,7 @@ class TestGetEc2PublicIpAnalysis:
                     "Instances": [
                         self.create_mock_instance_with_ip(
                             "i-test123456789",
-                            public_ip="54.123.45.67"
+                            public_ip="111.111.111.111"
                         )
                     ]
                 }
@@ -1789,7 +1789,7 @@ class TestGetInstances:
                 "Instances": [{
                     "InstanceId": "i-11111111111111111",
                     "ImageId": "ami-11111111111111111",
-                    "PublicIpAddress": "203.0.113.10",
+                    "PublicIpAddress": "111.111.111.111",
                     "State": {"Name": "running"},
                     "MetadataOptions": {
                         "HttpTokens": "required",
@@ -1808,7 +1808,7 @@ class TestGetInstances:
             instance_id="i-11111111111111111",
             image_id="ami-11111111111111111",
             owner_id="111111111111",
-            public_ip_address="203.0.113.10",
+            public_ip_address="111.111.111.111",
             http_tokens="required",
             http_endpoint="enabled",
             hop_limit=2,

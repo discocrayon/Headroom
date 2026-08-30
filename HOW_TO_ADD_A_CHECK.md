@@ -1461,7 +1461,10 @@ test_data_standards:
     organizations_ou: "ou-1111-11111111"                     # ou-<root>-<suffix>
     organizations_org: "o-11111111111"
     iam_access_key: "AKIAIOSFODNN7EXAMPLE"                   # AWS's own example key
+    ipv4_address: "111.111.111.111"                          # every octet one repeated digit
+    ipv4_second: "222.222.222.222"                           # when a test needs a second host
     never_use: "AWS doc-style bodies such as i-1234567890abcdef0 or ami-0abcdef1234567890"
+    never_use_ip: "52.x and 54.x above all, which are live AWS EC2 ranges and read as a real instance's public IP"
     reason: "A plausible-looking body cannot be told from a real one on review"
 
   resource_naming:

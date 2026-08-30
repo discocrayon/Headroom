@@ -30,7 +30,7 @@ class TestCheckDenyEc2PublicIp:
             DenyEc2PublicIp(
                 instance_id="i-11111111111111111",
                 region="us-east-1",
-                public_ip_address="54.123.45.67",
+                public_ip_address="111.111.111.111",
                 has_public_ip=True,
                 instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
             ),
@@ -44,7 +44,7 @@ class TestCheckDenyEc2PublicIp:
             DenyEc2PublicIp(
                 instance_id="i-33333333333333333",
                 region="eu-west-1",
-                public_ip_address="52.98.76.54",
+                public_ip_address="222.222.222.222",
                 has_public_ip=True,
                 instance_arn="arn:aws:ec2:eu-west-1:111111111111:instance/i-33333333333333333"
             ),
@@ -145,14 +145,14 @@ class TestCheckDenyEc2PublicIp:
             DenyEc2PublicIp(
                 instance_id="i-11111111111111111",
                 region="us-east-1",
-                public_ip_address="54.123.45.67",
+                public_ip_address="111.111.111.111",
                 has_public_ip=True,
                 instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
             ),
             DenyEc2PublicIp(
                 instance_id="i-22222222222222222",
                 region="us-west-2",
-                public_ip_address="52.98.76.54",
+                public_ip_address="222.222.222.222",
                 has_public_ip=True,
                 instance_arn="arn:aws:ec2:us-west-2:111111111111:instance/i-22222222222222222"
             ),
@@ -225,7 +225,7 @@ class TestCheckDenyEc2PublicIp:
         result = DenyEc2PublicIp(
             instance_id="i-11111111111111111",
             region="us-east-1",
-            public_ip_address="54.123.45.67",
+            public_ip_address="111.111.111.111",
             has_public_ip=True,
             instance_arn="arn:aws:ec2:us-east-1:111111111111:instance/i-11111111111111111"
         )
@@ -234,7 +234,7 @@ class TestCheckDenyEc2PublicIp:
 
         assert category == "violation"
         assert result_dict["has_public_ip"] is True
-        assert result_dict["public_ip_address"] == "54.123.45.67"
+        assert result_dict["public_ip_address"] == "111.111.111.111"
 
     def test_categorize_result_compliant(
         self,
