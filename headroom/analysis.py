@@ -893,6 +893,11 @@ def run_checks(
                     outstanding.cancel()
                 raise
     except BaseException:
+        # Broad for the same reason the inner handler is, and pinned by
+        # `test_a_keyboard_interrupt_still_reports_the_failures_already_collected`:
+        # an operator's Ctrl-C is the case where the report matters most, and
+        # `except Exception` would skip it, leaving a traceback that names one
+        # account out of however many failed.
         _log_every_failure(accounts_by_future)
         _log_the_accounts_that_never_ran(accounts_by_future)
         raise

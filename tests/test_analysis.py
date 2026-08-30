@@ -1,7 +1,7 @@
 import logging
 import re
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 
 import pytest
 from typing import Any, Dict, Iterable, Iterator, List, Tuple, cast, get_args
@@ -1641,6 +1641,65 @@ class TestRunChecksPool:
             run_checks(MagicMock(), self._accounts(1), self._config(1), set(), ORG_ID)
 
         assert "never analyzed" not in caplog.text
+
+    def test_a_keyboard_interrupt_still_reports_the_failures_already_collected(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        Ctrl-C must not throw away the failure report the run had earned.
+
+        The outer handler is the only thing that calls `_log_every_failure`,
+        and it catches `BaseException` for the same reason the inner one
+        does: `KeyboardInterrupt` is not an `Exception`. Narrowing it to
+        `except Exception` leaves every other test in this file green, and
+        turns three accounts failing on a missing role into a bare traceback
+        naming none of them -- the exact report this handler exists to print.
+
+        `as_completed` is replaced with a stand-in that waits for the pool to
+        finish before raising, which is what makes the count deterministic:
+        every account has failed and none is cancellable by the time the
+        interrupt lands, so all three failures are there to be reported or
+        lost.
+        """
+        accounts = self._accounts(3)
+
+        def fail(
+            account_info: AccountInfo,
+            security_session: object,
+            config: HeadroomConfig,
+            org_account_ids: object,
+            org_id: str,
+            abort: threading.Event,
+        ) -> None:
+            raise RuntimeError("role assumption failed")
+
+        def interrupt_once_every_worker_has_finished(
+            futures: Iterable[Future[None]]
+        ) -> Iterator[Future[None]]:
+            """
+            Stand in for `as_completed` and raise where a SIGINT would land.
+
+            `yield from ()` makes this a generator, so the whole body runs on
+            the loop's first `next()` -- inside the `for` statement, where the
+            signal handler would raise -- rather than at the call.
+            """
+            wait(list(futures))
+            yield from ()
+            raise KeyboardInterrupt
+
+        with (
+            caplog.at_level(logging.ERROR, logger="headroom.analysis"),
+            patch("headroom.analysis.as_completed", interrupt_once_every_worker_has_finished),
+            patch("headroom.analysis._all_checks_complete", return_value=False),
+            patch("headroom.analysis._run_checks_for_account", side_effect=fail),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            run_checks(MagicMock(), accounts, self._config(1), set(), ORG_ID)
+
+        for account_info in accounts:
+            identifier = f"{account_info.name}_{account_info.account_id}"
+            assert f"Checks failed for account {identifier}" in caplog.text
 
     def test_a_keyboard_interrupt_aborts_the_run_rather_than_draining_the_queue(self) -> None:
         """
