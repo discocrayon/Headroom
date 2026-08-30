@@ -268,13 +268,15 @@ already exist, and that filter runs after these. Deferring the duplicate-name ch
 after it looks like it would spare a re-run whose colliding accounts had both already
 been scanned. It cannot. Under `exclude_account_ids` that pair shares one result file, so
 "already scanned" is not a state the results directory can express for either account
-separately -- one `prod.json` exists, and nothing in it records which account wrote it or
-whether both interleaved into it. The resume filter reads that single file and reports
+separately. One `prod.json` exists, and it cannot name its writer: under this setting the
+writer also strips `account_id` from the summary before the file is written, so neither
+the filename nor the contents record which account produced it, or whether both
+interleaved into it. The resume filter reads that single file and reports
 both accounts complete. A check placed after it would therefore skip the collision
 silently and let generation attribute one account's evidence to the other; where only one
 of the pair is complete, it would let the other overwrite it. The information that would
 make the deferred check safe is the account ID that `exclude_account_ids` removed from
-the filename in the first place.
+the filename and the summary alike.
 
 ## Data Models
 
