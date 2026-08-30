@@ -523,6 +523,12 @@ class TestPolicyGrammar:
         assert source.service_principal == "sns.amazonaws.com"
         assert source.source_account_ids == ["999999999999"]
 
+        # The source is inert here: it belongs to deny_service_confused_deputy,
+        # and folding it into these fields would widen this check's allowlist
+        # with an account that drives a service call rather than making one.
+        assert results[0].third_party_account_ids == set()
+        assert results[0].has_wildcard_principal is False
+
     def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
         """The field stays empty when no statement names a service."""
         results = self._analyze({
