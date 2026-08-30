@@ -203,9 +203,14 @@ headroom/
    Because accounts interleave in the output, `log_context.py` stamps every record with
    the account its thread is analyzing and the format carries it in brackets:
    `DEBUG:headroom.aws.sqs:[payments_111111111111] Analyzing SQS queues in eu-west-1`.
-   Records emitted outside a worker are stamped `-`. The filter is installed on the root
-   handler, not on a logger, because a logger's filters never see records propagated up
-   from child loggers.
+   Records emitted outside a worker are stamped `-`, and a record that already carries an
+   account -- one passed as `extra={"account": ...}` -- keeps it, because the caller has
+   named the account the message is about rather than the one whose worker emitted it.
+   The filter is installed on the root handler, not on a logger, because a logger's
+   filters never see records propagated up from child loggers. `configure_logging`
+   installs it only on handlers it installed itself: a root handler that was already
+   there belongs to whoever put it there, and reformatting it would change output
+   Headroom does not own.
 
    Two properties of the account names are checked before the pool starts, since both
    would otherwise surface only at the end of a run that takes roughly sixteen minutes at

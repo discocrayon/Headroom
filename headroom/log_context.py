@@ -45,13 +45,19 @@ class AccountContextFilter(logging.Filter):
         """
         Add the calling thread's account to the record.
 
+        A record that already carries an account keeps it. `extra={"account":
+        ...}` on a log call says something the thread-local cannot know -- the
+        account a message is about, rather than the one whose worker emitted
+        it -- so overwriting it would silently relabel the record.
+
         Args:
             record: Record about to be formatted
 
         Returns:
             True, always: this filter annotates records, it never drops them
         """
-        record.account = getattr(_CONTEXT, "account", NO_ACCOUNT)
+        if not hasattr(record, "account"):
+            record.account = getattr(_CONTEXT, "account", NO_ACCOUNT)
         return True
 
 
@@ -81,13 +87,27 @@ def configure_logging() -> None:
     Headroom reports progress at INFO, so the run would go quiet while still
     printing errors.
 
+    Only handlers this function is responsible for are configured: the one
+    its own `basicConfig` just installed, and any it has configured before.
+    A root handler that was already there when this ran belongs to whoever
+    put it there -- an embedding application, or a library that called
+    `basicConfig` on import -- and rewriting its formatter would change
+    output Headroom does not own. On that path `basicConfig` returns early,
+    installs nothing, and the `[account]` field does not appear.
+
     `main` calls this once, but nothing about the function requires that.
     Repeat calls are harmless: `_ACCOUNT_FILTER` is a module-level singleton,
-    and `Handler.addFilter` dedups by identity, so passing the same instance
-    on a later call is a no-op rather than a second filter.
+    so a handler carrying it is recognised as one of ours and refreshed, and
+    `Handler.addFilter` dedups by identity rather than adding a second.
     """
+    root = logging.getLogger()
+    preexisting = {id(handler) for handler in root.handlers}
+
     logging.basicConfig(level=logging.INFO)
 
-    for handler in logging.getLogger().handlers:
+    for handler in root.handlers:
+        ours = _ACCOUNT_FILTER in handler.filters
+        if id(handler) in preexisting and not ours:
+            continue
         handler.addFilter(_ACCOUNT_FILTER)
         handler.setFormatter(logging.Formatter(LOG_FORMAT))
