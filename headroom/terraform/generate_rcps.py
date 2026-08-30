@@ -516,7 +516,6 @@ class RcpTerraformVars:
         enable_var: Boolean variable that includes or omits the RCP statement
         allowlist_var: List variable naming permitted third-party accounts
     """
-
     comment: str
     enable_var: str
     allowlist_var: str

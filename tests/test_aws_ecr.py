@@ -921,7 +921,6 @@ class TestRegistryPolicy:
     whole registry, so a third party named in one reaches every repository the
     region holds - and reaches them without any repository policy saying so.
     """
-
     ORG_ACCOUNT = "111111111111"
     THIRD_PARTY = "999999999999"
 

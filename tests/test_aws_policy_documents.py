@@ -105,7 +105,6 @@ class TestHasNotPrincipal:
 
 class TestServicePrincipalSources:
     """Test read_service_principal_sources against every disposition."""
-
     ORG_ACCOUNTS = {"111111111111"}
     ORG_ID = "o-example12345"
     WHERE = "Bucket 'a-bucket'"

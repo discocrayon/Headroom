@@ -781,7 +781,6 @@ class TestKeyGrants:
     so a key whose policy names nobody outside the organization can still
     hand Decrypt to a vendor.
     """
-
     ORG_ACCOUNT = "111111111111"
     THIRD_PARTY = "999999999999"
 

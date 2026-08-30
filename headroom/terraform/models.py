@@ -29,7 +29,6 @@ class TerraformParameter:
         key: Parameter name
         value: Parameter value (bool, str, list, or other type)
     """
-
     key: str
     value: TerraformValue
 
@@ -63,7 +62,6 @@ class TerraformComment:
     Attributes:
         text: Comment text (without the # prefix). Empty string creates blank line.
     """
-
     text: str
 
     def render(self) -> str:
@@ -94,7 +92,6 @@ class TerraformModule:
         comment: Optional comment describing the module
         policy_type: Type of policy (SCP or RCP) for comment generation
     """
-
     name: str
     source: str
     target_id: str

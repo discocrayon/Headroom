@@ -711,7 +711,6 @@ class TestMainIntegration:
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """Covers the ClientError exception handler branch (prints failure and exits)."""
-
         mocks = mock_dependencies
         mocks['parse'].return_value = mock_cli_args
         mocks['load'].return_value = valid_yaml_config

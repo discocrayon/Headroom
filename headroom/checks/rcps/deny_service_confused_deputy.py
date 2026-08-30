@@ -51,7 +51,6 @@ class ServicePrincipalSourceFinding:
         read_failure: Why this resource's source read could not be
             completed, None when it was read in full
     """
-
     resource_type: str
     resource_identifier: str
     region: Optional[str]
