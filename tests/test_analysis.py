@@ -26,6 +26,7 @@ from headroom.analysis import (
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
 from headroom.log_context import AccountContextFilter
+from tests.constants import ORG_ID
 
 
 class TestSecurityAnalysisSession:
@@ -93,6 +94,7 @@ class TestPerformAnalysis:
         with (
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
             patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
+            patch("headroom.analysis.get_organization_id", return_value=ORG_ID) as mock_get_org_id,
             patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
             patch("headroom.analysis.run_checks"),
             patch("headroom.analysis.logger") as mock_logger,
@@ -100,12 +102,14 @@ class TestPerformAnalysis:
             perform_analysis(config)
             mock_get_session.assert_called_once_with(config)
             mock_get_org_ids.assert_called_once_with(config, mock_session)
+            mock_get_org_id.assert_called_once_with(config, mock_session)
             mock_get_subs.assert_called_once_with(config, mock_session)
-            assert mock_logger.info.call_count == 7
+            assert mock_logger.info.call_count == 8
             mock_logger.info.assert_any_call("Starting security analysis")
             mock_logger.info.assert_any_call("Successfully obtained security analysis session")
             mock_logger.info.assert_any_call("Fetched subaccount information: []")
             mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
+            mock_logger.info.assert_any_call(f"Organization ID: {ORG_ID}")
             mock_logger.info.assert_any_call("Security analysis completed")
 
     def test_perform_analysis_without_account_id(self) -> None:
@@ -119,6 +123,7 @@ class TestPerformAnalysis:
         with (
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
             patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
+            patch("headroom.analysis.get_organization_id", return_value=ORG_ID) as mock_get_org_id,
             patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
             patch("headroom.analysis.run_checks"),
             patch("headroom.analysis.logger") as mock_logger,
@@ -126,8 +131,9 @@ class TestPerformAnalysis:
             perform_analysis(config)
             mock_get_session.assert_called_once_with(config)
             mock_get_org_ids.assert_called_once_with(config, mock_session)
+            mock_get_org_id.assert_called_once_with(config, mock_session)
             mock_get_subs.assert_called_once_with(config, mock_session)
-            assert mock_logger.info.call_count == 7
+            assert mock_logger.info.call_count == 8
             mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
 
     def test_perform_analysis_aborts_before_run_checks_on_duplicate_names(self) -> None:
@@ -154,6 +160,7 @@ class TestPerformAnalysis:
         with (
             patch("headroom.analysis.get_security_analysis_session", return_value=mock_session),
             patch("headroom.analysis.get_all_organization_account_ids", return_value=set()),
+            patch("headroom.analysis.get_organization_id", return_value=ORG_ID),
             patch("headroom.analysis.get_subaccount_information", return_value=colliding_account_infos),
             patch("headroom.analysis.run_checks") as mock_run_checks,
         ):
@@ -961,7 +968,7 @@ class TestRunChecksPool:
             patch("headroom.analysis._all_checks_complete", return_value=False),
             patch("headroom.analysis._run_checks_for_account", side_effect=record),
         ):
-            run_checks(MagicMock(), self._accounts(5), self._config(4), set())
+            run_checks(MagicMock(), self._accounts(5), self._config(4), set(), ORG_ID)
 
         assert sorted(seen) == sorted(a.account_id for a in self._accounts(5))
 
@@ -978,7 +985,7 @@ class TestRunChecksPool:
             patch("headroom.analysis._all_checks_complete", return_value=True),
             patch("headroom.analysis._run_checks_for_account", worker),
         ):
-            run_checks(MagicMock(), self._accounts(3), self._config(4), set())
+            run_checks(MagicMock(), self._accounts(3), self._config(4), set(), ORG_ID)
 
         worker.assert_not_called()
 
@@ -999,7 +1006,7 @@ class TestRunChecksPool:
             patch("headroom.analysis._all_checks_complete", return_value=False),
             patch("headroom.analysis._run_checks_for_account", side_effect=wait_for_the_others),
         ):
-            run_checks(MagicMock(), self._accounts(4), self._config(4), set())
+            run_checks(MagicMock(), self._accounts(4), self._config(4), set(), ORG_ID)
 
     def test_a_worker_failure_propagates_unchanged(self) -> None:
         """
@@ -1016,7 +1023,7 @@ class TestRunChecksPool:
             patch("headroom.analysis._run_checks_for_account", side_effect=failure),
             pytest.raises(RuntimeError, match="role assumption failed"),
         ):
-            run_checks(MagicMock(), self._accounts(3), self._config(1), set())
+            run_checks(MagicMock(), self._accounts(3), self._config(1), set(), ORG_ID)
 
     def test_a_worker_returns_immediately_when_abort_is_set(self) -> None:
         """
@@ -1031,7 +1038,7 @@ class TestRunChecksPool:
 
         with patch("headroom.analysis.get_headroom_session") as mock_session:
             _run_checks_for_account(
-                self._accounts(1)[0], MagicMock(), self._config(1), set(), abort
+                self._accounts(1)[0], MagicMock(), self._config(1), set(), ORG_ID, abort
             )
 
         mock_session.assert_not_called()
@@ -1044,7 +1051,7 @@ class TestRunChecksPool:
         with patch("headroom.analysis.get_all_check_classes") as mock_classes:
             mock_classes.return_value = [MagicMock()]
             completed = run_checks_for_type(
-                "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), abort
+                "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), ORG_ID, abort
             )
 
         mock_classes.return_value[0].assert_not_called()
@@ -1067,6 +1074,7 @@ class TestRunChecksPool:
             security_session: object,
             config: HeadroomConfig,
             org_account_ids: object,
+            org_id: str,
             abort: threading.Event,
         ) -> None:
             with lock:
@@ -1078,7 +1086,7 @@ class TestRunChecksPool:
             patch("headroom.analysis._run_checks_for_account", side_effect=fail),
             pytest.raises(RuntimeError, match="role assumption failed"),
         ):
-            run_checks(MagicMock(), self._accounts(3), self._config(1), set())
+            run_checks(MagicMock(), self._accounts(3), self._config(1), set(), ORG_ID)
 
         assert events
         assert events[0].is_set()
@@ -1102,7 +1110,7 @@ class TestRunChecksPool:
             patch("headroom.analysis.results_exist", return_value=False),
         ):
             completed = run_checks_for_type(
-                "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), abort
+                "scps", MagicMock(), self._accounts(1)[0], self._config(1), set(), ORG_ID, abort
             )
 
         first.assert_called_once()
@@ -1140,7 +1148,7 @@ class TestRunChecksPool:
             patch("headroom.analysis.all_check_results_exist", return_value=True),
             patch("headroom.analysis.get_headroom_session", side_effect=record_building_thread),
         ):
-            run_checks(MagicMock(), self._accounts(4), self._config(4), set())
+            run_checks(MagicMock(), self._accounts(4), self._config(4), set(), ORG_ID)
 
         assert len(building_threads) == 4
         assert threading.get_ident() not in building_threads
@@ -1179,7 +1187,7 @@ class TestRunChecksPool:
                 patch("headroom.analysis.get_headroom_session", side_effect=stamp_a_record),
             ):
                 _run_checks_for_account(
-                    self._accounts(1)[0], MagicMock(), self._config(1), set(), threading.Event()
+                    self._accounts(1)[0], MagicMock(), self._config(1), set(), ORG_ID, threading.Event()
                 )
 
         thread = threading.Thread(target=run_the_worker)
@@ -1228,6 +1236,7 @@ class TestRunChecksPool:
             security_session: object,
             config: HeadroomConfig,
             org_account_ids: object,
+            org_id: str,
             abort: threading.Event,
         ) -> None:
             if account_info.account_id == failing_account_id:
@@ -1239,7 +1248,7 @@ class TestRunChecksPool:
             patch("headroom.analysis._run_checks_for_account", side_effect=fail_the_first_account),
             pytest.raises(RuntimeError, match="role assumption failed"),
         ):
-            run_checks(MagicMock(), accounts, self._config(1), set())
+            run_checks(MagicMock(), accounts, self._config(1), set(), ORG_ID)
 
         assert len(captured) == len(accounts)
         assert sum(1 for future in captured if future.cancelled()) >= 1
@@ -1280,7 +1289,7 @@ class TestRunChecksPool:
         ) -> Future[None]:
             future: Future[None] = real_submit(executor, fn, *args, **kwargs)  # type: ignore[arg-type]
             captured.append(future)
-            aborts.append(cast(threading.Event, args[4]))
+            aborts.append(cast(threading.Event, args[5]))
             return future
 
         def park_the_first_account(
@@ -1288,6 +1297,7 @@ class TestRunChecksPool:
             security_session: object,
             config: HeadroomConfig,
             org_account_ids: object,
+            org_id: str,
             abort: threading.Event,
         ) -> None:
             with lock:
@@ -1316,7 +1326,7 @@ class TestRunChecksPool:
             patch("headroom.analysis._run_checks_for_account", side_effect=park_the_first_account),
             pytest.raises(KeyboardInterrupt),
         ):
-            run_checks(MagicMock(), accounts, self._config(1), set())
+            run_checks(MagicMock(), accounts, self._config(1), set(), ORG_ID)
 
         assert len(captured) == len(accounts)
         assert aborts[0].is_set()
@@ -1364,7 +1374,7 @@ class TestRunChecksPool:
                 raise RuntimeError("can't start new thread")
             future: Future[None] = real_submit(executor, fn, *args, **kwargs)  # type: ignore[arg-type]
             submitted.append(future)
-            aborts.append(cast(threading.Event, args[4]))
+            aborts.append(cast(threading.Event, args[5]))
             return future
 
         def park_the_first_account(
@@ -1372,6 +1382,7 @@ class TestRunChecksPool:
             security_session: object,
             config: HeadroomConfig,
             org_account_ids: object,
+            org_id: str,
             abort: threading.Event,
         ) -> None:
             if account_info.account_id == blocking_account_id:
@@ -1383,7 +1394,7 @@ class TestRunChecksPool:
             patch("headroom.analysis._run_checks_for_account", side_effect=park_the_first_account),
             pytest.raises(RuntimeError, match="can.t start new thread"),
         ):
-            run_checks(MagicMock(), accounts, self._config(1), set())
+            run_checks(MagicMock(), accounts, self._config(1), set(), ORG_ID)
 
         assert len(submitted) == 100
         assert aborts[0].is_set()
@@ -1418,7 +1429,7 @@ class TestRunChecksPool:
             patch("headroom.analysis.logger") as mock_logger,
         ):
             _run_checks_for_account(
-                self._accounts(1)[0], MagicMock(), self._config(1), set(), abort
+                self._accounts(1)[0], MagicMock(), self._config(1), set(), ORG_ID, abort
             )
 
         check_class.return_value.execute.assert_called_once()
@@ -1458,7 +1469,7 @@ class TestRunChecksPool:
             patch("headroom.analysis.logger") as mock_logger,
         ):
             _run_checks_for_account(
-                self._accounts(1)[0], MagicMock(), self._config(1), set(), abort
+                self._accounts(1)[0], MagicMock(), self._config(1), set(), ORG_ID, abort
             )
 
         logged = [call.args[0] for call in mock_logger.info.call_args_list]

@@ -69,8 +69,7 @@ classDiagram
     +str account_name
     +str check_name
     +List~str~ third_party_account_ids
-    +bool has_wildcard
-    +int? total_roles_analyzed
+    +bool blocks_rcp
   }
 
   class SCPPlacementRecommendations {
@@ -91,9 +90,10 @@ classDiagram
     +str reasoning
   }
 
-  class RCPParseResult {
+  class RCPCheckParseResult {
+    +str check_name
     +AccountThirdPartyMap account_third_party_map
-    +Set~str~ accounts_with_wildcards
+    +Set~str~ accounts_with_blockers
   }
 
   class BaseCheck~T~ {

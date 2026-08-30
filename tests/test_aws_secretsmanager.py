@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from botocore.exceptions import ClientError
 
+from headroom.aws.policy_documents import MalformedPolicyError
 from headroom.aws.secretsmanager import (
     UnsupportedPrincipalTypeError,
     UnknownPrincipalTypeError,
@@ -17,6 +18,8 @@ from headroom.aws.secretsmanager import (
     _has_wildcard_principal,
     analyze_secrets_manager_policies,
 )
+from headroom.types import JsonDict
+from tests.constants import ORG_ID
 
 
 class TestExtractAccountIdsFromPrincipal:
@@ -146,7 +149,8 @@ class TestAnalyzeSecretPolicy:
             "test-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:test-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -172,11 +176,69 @@ class TestAnalyzeSecretPolicy:
             "public-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:public-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
         assert result.has_wildcard_principal is True
+
+    def test_not_principal_is_read_as_a_wildcard(self) -> None:
+        """
+        An Allow with NotPrincipal grants to everyone it does not name.
+
+        Skipping the statement for want of a Principal reported the secret
+        clean, so the account kept its RCP and the grant's real audience -
+        every account outside the exclusion list - lost access on apply.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Action": "secretsmanager:GetSecretValue"
+                }
+            ]
+        }
+
+        result = _analyze_secret_policy(
+            "shared-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret",
+            policy,  # type: ignore[arg-type]
+            {"111111111111"},
+            ORG_ID
+        )
+
+        assert result is not None
+        assert result.has_wildcard_principal is True
+        assert result.third_party_account_ids == set()
+
+    def test_deny_with_not_principal_is_not_a_wildcard(self) -> None:
+        """
+        Deny with NotPrincipal restricts rather than grants.
+
+        It is the form AWS recommends, and a resource policy's Deny cannot
+        hand access to anyone, so it must not block the RCP.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Deny",
+                    "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Action": "secretsmanager:GetSecretValue"
+                }
+            ]
+        }
+
+        result = _analyze_secret_policy(
+            "shared-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret",
+            policy,  # type: ignore[arg-type]
+            {"111111111111"},
+            ORG_ID
+        )
+
+        assert result is None
 
     def test_federated_principal_raises(self) -> None:
         """Test that Federated principal raises exception."""
@@ -196,7 +258,8 @@ class TestAnalyzeSecretPolicy:
                 "federated-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:federated-secret",
                 policy,  # type: ignore[arg-type]
-                org_account_ids
+                org_account_ids,
+                ORG_ID,
             )
 
     def test_org_account_only_returns_none(self) -> None:
@@ -216,7 +279,8 @@ class TestAnalyzeSecretPolicy:
             "org-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:org-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is None
@@ -238,7 +302,8 @@ class TestAnalyzeSecretPolicy:
             "deny-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:deny-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is None
@@ -260,7 +325,8 @@ class TestAnalyzeSecretPolicy:
             "multi-action-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:multi-action-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is not None
@@ -284,7 +350,8 @@ class TestAnalyzeSecretPolicy:
             "no-principal-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:no-principal-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
         assert result is None
@@ -307,24 +374,167 @@ class TestAnalyzeSecretPolicy:
                 "dict-action-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:dict-action-secret",
                 policy,  # type: ignore[arg-type]
-                org_account_ids
+                org_account_ids,
+                ORG_ID,
             )
 
-    def test_statement_not_a_list(self) -> None:
-        """Test that policy with Statement as non-list is handled."""
+    def test_lone_statement_object_is_analyzed(self) -> None:
+        """
+        Test that a policy whose Statement is one object, not a list, is read.
+
+        IAM accepts a lone statement object in place of a one-element list,
+        and Secrets Manager hands the policy back the way it was stored. A
+        secret shared this way must not be reported as having no third-party
+        access.
+        """
+        policy: JsonDict = {
+            "Version": "2012-10-17",
+            "Statement": {
+                "Sid": "ShareWithVendor",
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": "*",
+            },
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "vendor-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:vendor-secret",
+            policy,
+            org_account_ids,
+            ORG_ID
+        )
+
+        assert result is not None
+        assert result.third_party_account_ids == {"999999999999"}
+        assert result.actions_by_account == {
+            "999999999999": {"secretsmanager:GetSecretValue"}
+        }
+
+    def test_statement_neither_object_nor_list_raises(self) -> None:
+        """
+        Test that a Statement that is neither an object nor a list aborts.
+
+        Skipping it would report the secret as having no third-party access,
+        which is the one answer that must never be guessed.
+        """
         policy = {
             "Statement": "invalid"
         }
         org_account_ids = {"111111111111"}
 
+        with pytest.raises(MalformedPolicyError, match="Statement of type str"):
+            _analyze_secret_policy(
+                "invalid-statement-secret",
+                "arn:aws:secretsmanager:us-east-1:111111111111:secret:invalid-statement-secret",
+                policy,  # type: ignore[arg-type]
+                org_account_ids,
+                ORG_ID,
+            )
+
+    def test_guarded_service_principal_is_recorded(self) -> None:
+        """
+        A secret policy pinning a third-party source records it.
+
+        The account reaches the allowlist through the confused deputy
+        check, not through this analysis's third_party_account_ids.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "secretsmanager:GetSecretValue",
+                    "Condition": {
+                        "StringEquals": {"aws:SourceAccount": "999999999999"}
+                    },
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
         result = _analyze_secret_policy(
-            "invalid-statement-secret",
-            "arn:aws:secretsmanager:us-east-1:111111111111:secret:invalid-statement-secret",
+            "guarded-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:guarded-secret",
             policy,  # type: ignore[arg-type]
-            org_account_ids
+            org_account_ids,
+            ORG_ID
         )
 
-        assert result is None
+        assert result is not None
+        assert len(result.service_principal_sources) == 1
+        source = result.service_principal_sources[0]
+        assert source.service_principal == "sns.amazonaws.com"
+        assert source.source_account_ids == ["999999999999"]
+
+        # The source is inert here: it belongs to deny_service_confused_deputy,
+        # and folding it into these fields would widen this check's allowlist
+        # with an account that drives a service call rather than making one.
+        assert result.third_party_account_ids == set()
+        assert result.has_wildcard_principal is False
+
+    def test_wildcard_service_principal_source_is_recorded(self) -> None:
+        """
+        A secret policy whose only source guard is a wildcard is still surfaced.
+
+        aws:SourceAccount: "*" pins no single account, so no allowlist can
+        express it. That is the case has_actionable_service_principal_source's
+        wildcard arm exists to catch, distinct from the concrete-account arm
+        the guarded test above already covers.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "secretsmanager:GetSecretValue",
+                    "Condition": {
+                        "StringLike": {"aws:SourceAccount": "*"}
+                    },
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "wildcard-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:wildcard-secret",
+            policy,  # type: ignore[arg-type]
+            org_account_ids,
+            ORG_ID
+        )
+
+        assert result is not None
+        assert len(result.service_principal_sources) == 1
+        source = result.service_principal_sources[0]
+        assert source.has_wildcard_source is True
+        assert source.source_account_ids == []
+
+    def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
+        """The field stays empty when no statement names a service."""
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                    "Action": "secretsmanager:GetSecretValue"
+                }
+            ]
+        }
+        org_account_ids = {"111111111111"}
+
+        result = _analyze_secret_policy(
+            "unguarded-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:unguarded-secret",
+            policy,  # type: ignore[arg-type]
+            org_account_ids,
+            ORG_ID
+        )
+
+        assert result is not None
+        assert result.service_principal_sources == []
 
 
 class TestAnalyzeSecretsManagerPolicies:
@@ -372,7 +582,7 @@ class TestAnalyzeSecretsManagerPolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_secrets_manager_policies(mock_session, org_account_ids)
+        results = analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 1
         assert results[0].secret_name == "test-secret"
@@ -408,7 +618,7 @@ class TestAnalyzeSecretsManagerPolicies:
         mock_sm_client.get_resource_policy.return_value = {"ResourcePolicy": None}
 
         org_account_ids = {"111111111111"}
-        results = analyze_secrets_manager_policies(mock_session, org_account_ids)
+        results = analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -444,7 +654,7 @@ class TestAnalyzeSecretsManagerPolicies:
         mock_sm_client.get_resource_policy.side_effect = ClientError(error_response, "GetResourcePolicy")  # type: ignore[arg-type]
 
         org_account_ids = {"111111111111"}
-        results = analyze_secrets_manager_policies(mock_session, org_account_ids)
+        results = analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)
 
         assert len(results) == 0
 
@@ -482,4 +692,4 @@ class TestAnalyzeSecretsManagerPolicies:
         org_account_ids = {"111111111111"}
 
         with pytest.raises(ClientError):
-            analyze_secrets_manager_policies(mock_session, org_account_ids)
+            analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)

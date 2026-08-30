@@ -7,30 +7,46 @@ Generates Terraform files for RCP deployment based on third-party account analys
 import logging
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from .models import TerraformModule, TerraformParameter, TerraformComment, TerraformElement
-from .utils import make_safe_variable_name, write_terraform_file
+from .models import (
+    TerraformComment,
+    TerraformElement,
+    TerraformModule,
+    TerraformParameter,
+    TerraformPlan,
+)
+from .utils import (
+    make_ou_base_names,
+    make_safe_variable_name,
+    ou_id_local_name,
+    ou_path_names,
+    write_terraform_plan,
+)
+from ..checks.registry import get_check_names
 from ..types import (
     AccountThirdPartyMap,
     OrganizationHierarchy,
+    RCPCheckParseResult,
     RCPCheckResult,
-    RCPParseResult,
     RCPPlacementRecommendations,
 )
 from ..constants import (
+    ORG_INFO_FILENAME,
     DENY_STS_THIRD_PARTY_ASSUMEROLE,
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
     DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
+    DENY_SERVICE_CONFUSED_DEPUTY,
     DENY_SQS_THIRD_PARTY_ACCESS,
 )
 from ..write_results import get_results_dir
 from ..parse_results import _load_result_file_json, _extract_account_id_from_result
 from ..placement import HierarchyPlacementAnalyzer
-from ..placement.hierarchy import PlacementCandidate
+from ..placement.hierarchy import PlacementCandidate, accounts_under_ou
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -38,20 +54,24 @@ logger = logging.getLogger(__name__)
 
 def _parse_single_rcp_result_file(
     result_file: Path,
+    check_name: str,
     organization_hierarchy: OrganizationHierarchy
 ) -> RCPCheckResult:
     """
-    Parse single RCP result file into RCPCheckResult object.
+    Parse a single RCP result file into an RCPCheckResult.
 
     Args:
         result_file: Path to the JSON result file
+        check_name: Check the parent directory names
         organization_hierarchy: Organization structure for account lookups
 
     Returns:
-        RCPCheckResult object with third-party access data
+        RCPCheckResult with this account's third-party access data
 
     Raises:
-        RuntimeError: If JSON parsing fails or required fields are missing
+        RuntimeError: If the file is unparseable, names no check, names a
+            different check than its directory, or omits the violations
+            count or the third-party account list
     """
     data = _load_result_file_json(result_file)
     summary = data.get("summary", {})
@@ -62,108 +82,159 @@ def _parse_single_rcp_result_file(
         result_file
     )
 
-    third_party_accounts = summary.get("unique_third_party_accounts", [])
-    roles_with_wildcards = summary.get("roles_with_wildcards", 0)
-    has_wildcards = roles_with_wildcards > 0
+    if "check" not in summary:
+        raise RuntimeError(
+            f"Result file {result_file} names no check in its summary, so it "
+            "cannot be confirmed to belong to the directory it was found in. "
+            "Re-run the analysis to regenerate it."
+        )
 
-    if has_wildcards:
+    reported_check = summary["check"]
+    if reported_check != check_name:
+        raise RuntimeError(
+            f"Result file {result_file} reports check '{reported_check}', which "
+            f"does not match its directory '{check_name}'. A result filed under "
+            "the wrong check would be attributed to the wrong policy."
+        )
+
+    if "violations" not in summary:
+        raise RuntimeError(
+            f"Result file {result_file} has no 'violations' count in its summary, "
+            "so whether this account can take the RCP cannot be determined. "
+            "Re-run the analysis to regenerate it."
+        )
+
+    if "unique_third_party_accounts" not in summary:
+        raise RuntimeError(
+            f"Result file {result_file} has no 'unique_third_party_accounts' "
+            "list in its summary, so the third parties this account must keep "
+            "reaching cannot be determined. An empty allowlist is not the same "
+            "answer: it denies every third party. Re-run the analysis to "
+            "regenerate it."
+        )
+
+    blocks_rcp = summary["violations"] > 0
+
+    if blocks_rcp:
         account_name = summary.get("account_name", account_id)
         logger.info(
-            f"Account {account_name} ({account_id}) has {roles_with_wildcards} "
-            f"roles with wildcard principals - cannot deploy RCP"
+            f"Account {account_name} ({account_id}) has {summary['violations']} "
+            f"resource(s) whose principals no allowlist can express - cannot "
+            f"deploy the {check_name} RCP"
         )
 
     return RCPCheckResult(
         account_id=account_id,
         account_name=summary.get("account_name", ""),
-        check_name=summary.get("check", DENY_STS_THIRD_PARTY_ASSUMEROLE),
-        third_party_account_ids=third_party_accounts,
-        has_wildcard=has_wildcards,
-        total_roles_analyzed=summary.get("total_roles_analyzed")
+        check_name=check_name,
+        third_party_account_ids=summary["unique_third_party_accounts"],
+        blocks_rcp=blocks_rcp,
     )
 
 
 def parse_rcp_result_files(
     results_dir: str,
     organization_hierarchy: OrganizationHierarchy
-) -> RCPParseResult:
+) -> List[RCPCheckParseResult]:
     """
-    Parse deny_sts_third_party_assumerole check result files.
+    Parse result files for every registered RCP check.
 
-    Results are organized as: {results_dir}/rcps/deny_sts_third_party_assumerole/*.json
+    Results are organized as: {results_dir}/rcps/{check_name}/*.json
 
     Args:
         results_dir: Directory containing check result files
-        organization_hierarchy: Organization structure for account name -> ID lookups
+        organization_hierarchy: Organization structure for account lookups
 
     Returns:
-        RCPParseResult containing:
-        - account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
-          (only accounts without wildcards)
-        - accounts_with_wildcards: Set of account IDs that have wildcard principals
-          (cannot have RCPs deployed)
+        One RCPCheckParseResult per registered RCP check, ordered by check
+        name
+
+    Raises:
+        RuntimeError: If any registered RCP check has no results directory,
+            or if a result file cannot be parsed
     """
-    # Use centralized function to get check directory path
-    check_dir_str = get_results_dir(DENY_STS_THIRD_PARTY_ASSUMEROLE, results_dir)
-    check_dir = Path(check_dir_str)
+    parse_results: List[RCPCheckParseResult] = []
+    missing_check_dirs: List[str] = []
 
-    account_third_party_map: AccountThirdPartyMap = {}
-    accounts_with_wildcards: Set[str] = set()
+    for check_name in sorted(get_check_names("rcps")):
+        check_dir = Path(get_results_dir(check_name, results_dir))
 
-    if not check_dir.exists():
-        raise RuntimeError(f"STS third-party AssumeRole check directory does not exist: {check_dir}")
+        if not check_dir.exists():
+            missing_check_dirs.append(check_name)
+            continue
 
-    for result_file in check_dir.glob("*.json"):
-        rcp_result = _parse_single_rcp_result_file(
-            result_file,
-            organization_hierarchy
+        account_third_party_map: AccountThirdPartyMap = {}
+        accounts_with_blockers: Set[str] = set()
+
+        for result_file in sorted(check_dir.glob("*.json")):
+            rcp_result = _parse_single_rcp_result_file(
+                result_file,
+                check_name,
+                organization_hierarchy
+            )
+
+            if rcp_result.blocks_rcp:
+                accounts_with_blockers.add(rcp_result.account_id)
+            else:
+                account_third_party_map[rcp_result.account_id] = set(
+                    rcp_result.third_party_account_ids
+                )
+
+        parse_results.append(RCPCheckParseResult(
+            check_name=check_name,
+            account_third_party_map=account_third_party_map,
+            accounts_with_blockers=accounts_with_blockers,
+        ))
+
+    if missing_check_dirs:
+        raise RuntimeError(
+            f"{len(missing_check_dirs)} registered RCP check(s) have no results "
+            f"directory under {results_dir}/rcps: {', '.join(missing_check_dirs)}. "
+            "A check absent from the results is indistinguishable from one that "
+            "found nothing, and this output gates RCP deployment. Re-run the "
+            "analysis."
         )
 
-        if rcp_result.has_wildcard:
-            accounts_with_wildcards.add(rcp_result.account_id)
-        else:
-            account_third_party_map[rcp_result.account_id] = set(rcp_result.third_party_account_ids)
-
-    return RCPParseResult(
-        account_third_party_map=account_third_party_map,
-        accounts_with_wildcards=accounts_with_wildcards
-    )
+    return parse_results
 
 
 def _should_skip_ou_for_rcp(
     ou_id: str,
     organization_hierarchy: OrganizationHierarchy,
-    accounts_with_wildcards: Set[str]
+    accounts_with_blockers: Set[str]
 ) -> bool:
     """
-    Determine if an OU should be skipped for RCP deployment due to wildcard accounts.
+    Determine whether an OU cannot take an OU-level RCP.
 
-    OU-level RCPs apply to ALL accounts in the OU, so we cannot deploy if any
-    account in that OU has wildcard principals.
+    One account whose policies name a principal no allowlist can express
+    makes the OU-level policy unsafe for every account beneath it. That is the
+    whole subtree, not the accounts sharing a level with it: an RCP attached
+    to an OU reaches the accounts in its child OUs just the same.
 
     Args:
-        ou_id: Organizational Unit ID to check
+        ou_id: Organizational Unit to evaluate
         organization_hierarchy: Organization structure information
-        accounts_with_wildcards: Set of account IDs that have wildcard principals
+        accounts_with_blockers: Accounts that cannot take this RCP
 
     Returns:
-        True if the OU should be skipped, False otherwise
+        True if the OU should be skipped for this check
     """
-    ou_accounts_in_org = [
-        acc_id for acc_id, acc_info in organization_hierarchy.accounts.items()
-        if acc_info.parent_ou_id == ou_id
-    ]
+    ou_accounts_in_org = accounts_under_ou(ou_id, organization_hierarchy)
 
-    if any(acc_id in accounts_with_wildcards for acc_id in ou_accounts_in_org):
+    if any(acc_id in accounts_with_blockers for acc_id in ou_accounts_in_org):
         ou_info = organization_hierarchy.organizational_units.get(ou_id)
         ou_name = ou_info.name if ou_info else ou_id
-        logger.info(f"Skipping OU-level RCP for '{ou_name}' - one or more accounts have wildcard principals")
+        logger.info(
+            f"Skipping OU-level RCP for '{ou_name}' - one or more accounts "
+            "have principals no allowlist can express"
+        )
         return True
 
     return False
 
 
 def _create_root_level_rcp_recommendation(
+    check_name: str,
     account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy
 ) -> RCPPlacementRecommendations:
@@ -171,6 +242,7 @@ def _create_root_level_rcp_recommendation(
     Create root-level RCP recommendation by unioning all third-party accounts.
 
     Args:
+        check_name: Name of the RCP check this recommendation is for
         account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
         organization_hierarchy: Organization structure information
 
@@ -185,7 +257,7 @@ def _create_root_level_rcp_recommendation(
     all_account_ids = list(organization_hierarchy.accounts.keys())
 
     return RCPPlacementRecommendations(
-        check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+        check_name=check_name,
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=all_account_ids,
@@ -195,6 +267,7 @@ def _create_root_level_rcp_recommendation(
 
 
 def _create_ou_level_rcp_recommendations(
+    check_name: str,
     candidates: List[PlacementCandidate],
     account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy
@@ -203,6 +276,7 @@ def _create_ou_level_rcp_recommendations(
     Create OU-level RCP recommendations from placement candidates.
 
     Args:
+        check_name: Name of the RCP check these recommendations are for
         candidates: Placement candidates from analyzer
         account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
         organization_hierarchy: Organization structure information
@@ -227,7 +301,7 @@ def _create_ou_level_rcp_recommendations(
 
         unioned_third_party = sorted(list(ou_third_party_accounts))
         recommendations.append(RCPPlacementRecommendations(
-            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            check_name=check_name,
             recommended_level="ou",
             target_ou_id=candidate.target_id,
             affected_accounts=candidate.affected_accounts,
@@ -240,6 +314,7 @@ def _create_ou_level_rcp_recommendations(
 
 
 def _create_account_level_rcp_recommendations(
+    check_name: str,
     account_third_party_map: AccountThirdPartyMap,
     covered_accounts: Set[str]
 ) -> List[RCPPlacementRecommendations]:
@@ -247,6 +322,7 @@ def _create_account_level_rcp_recommendations(
     Create account-level RCP recommendations for uncovered accounts.
 
     Args:
+        check_name: Name of the RCP check these recommendations are for
         account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
         covered_accounts: Accounts already covered by OU-level policies
 
@@ -260,7 +336,7 @@ def _create_account_level_rcp_recommendations(
             continue
 
         recommendations.append(RCPPlacementRecommendations(
-            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            check_name=check_name,
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=[account_id],
@@ -290,30 +366,33 @@ def _prepare_account_data_for_placement(
 
 
 def _is_safe_for_root_rcp(
-    accounts_with_wildcards: Set[str]
+    accounts_with_blockers: Set[str]
 ) -> bool:
     """
     Determine if root-level RCP deployment is safe.
 
-    Root-level RCP is only safe if no accounts have wildcard principals.
+    Root-level RCP is only safe if no accounts have principals no allowlist
+    can express.
     """
-    return len(accounts_with_wildcards) == 0
+    return len(accounts_with_blockers) == 0
 
 
 def _is_safe_for_ou_rcp(
     ou_id: str,
     organization_hierarchy: OrganizationHierarchy,
-    accounts_with_wildcards: Set[str]
+    accounts_with_blockers: Set[str]
 ) -> bool:
     """
     Determine if OU-level RCP deployment is safe.
 
-    OU-level RCP is only safe if no accounts in the OU have wildcard principals.
+    OU-level RCP is only safe if no accounts in the OU have principals no
+    allowlist can express.
     """
-    return not _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_wildcards)
+    return not _should_skip_ou_for_rcp(ou_id, organization_hierarchy, accounts_with_blockers)
 
 
 def _process_rcp_placement_candidates(
+    check_name: str,
     candidates: List[Any],
     account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy
@@ -324,6 +403,7 @@ def _process_rcp_placement_candidates(
     Handles root, OU, and account level recommendations based on candidates.
 
     Args:
+        check_name: Name of the RCP check these candidates belong to
         candidates: List of placement candidates from analyzer
         account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
         organization_hierarchy: Organization structure information
@@ -334,18 +414,21 @@ def _process_rcp_placement_candidates(
     for candidate in candidates:
         if candidate.level == "root":
             root_recommendation = _create_root_level_rcp_recommendation(
+                check_name,
                 account_third_party_map,
                 organization_hierarchy
             )
             return [root_recommendation]
 
     ou_recommendations, ou_covered_accounts = _create_ou_level_rcp_recommendations(
+        check_name,
         candidates,
         account_third_party_map,
         organization_hierarchy
     )
 
     account_recommendations = _create_account_level_rcp_recommendations(
+        check_name,
         account_third_party_map,
         ou_covered_accounts
     )
@@ -353,46 +436,137 @@ def _process_rcp_placement_candidates(
     return ou_recommendations + account_recommendations
 
 
-def determine_rcp_placement(
-    account_third_party_map: AccountThirdPartyMap,
-    organization_hierarchy: OrganizationHierarchy,
-    accounts_with_wildcards: Set[str]
+def _determine_check_rcp_placement(
+    parsed: RCPCheckParseResult,
+    organization_hierarchy: OrganizationHierarchy
 ) -> List[RCPPlacementRecommendations]:
     """
-    Analyze third-party account results to determine optimal RCP placement level.
-
-    Strategy:
-    - Root level: If no accounts have wildcards, union all third-party account IDs for root-level RCP
-    - OU level: If any account in OU has wildcards, skip OU-level. Otherwise union third-party IDs for OU
-    - Account level: Deploy individual RCPs for remaining accounts
+    Determine RCP placement for a single check.
 
     Args:
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        parsed: Findings for one RCP check across all accounts
         organization_hierarchy: Organization structure information
-        accounts_with_wildcards: Set of account IDs that have wildcard principals
 
     Returns:
-        List of RCP placement recommendations
+        Placement recommendations for this check, empty if no account has
+        findings that can be expressed as an allowlist
     """
-    if not account_third_party_map:
-        logger.info("No third-party accounts found in any account (excluding accounts with wildcards)")
+    if not parsed.account_third_party_map:
+        logger.info(
+            f"No deployable third-party findings for {parsed.check_name}"
+        )
         return []
 
     analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
-    account_data = _prepare_account_data_for_placement(account_third_party_map)
+    account_data = _prepare_account_data_for_placement(parsed.account_third_party_map)
 
     candidates = analyzer.determine_placement(
         check_results=account_data,
-        is_safe_for_root=lambda results: _is_safe_for_root_rcp(accounts_with_wildcards),
-        is_safe_for_ou=lambda ou_id, results: _is_safe_for_ou_rcp(ou_id, organization_hierarchy, accounts_with_wildcards),
+        is_safe_for_root=lambda results: _is_safe_for_root_rcp(parsed.accounts_with_blockers),
+        is_safe_for_ou=lambda ou_id, results: _is_safe_for_ou_rcp(
+            ou_id, organization_hierarchy, parsed.accounts_with_blockers
+        ),
         get_account_id=lambda r: r["account_id"]
     )
 
     return _process_rcp_placement_candidates(
+        parsed.check_name,
         candidates,
-        account_third_party_map,
+        parsed.account_third_party_map,
         organization_hierarchy
     )
+
+
+def determine_rcp_placement(
+    parse_results: List[RCPCheckParseResult],
+    organization_hierarchy: OrganizationHierarchy
+) -> List[RCPPlacementRecommendations]:
+    """
+    Determine optimal RCP placement for every parsed check.
+
+    Each check is placed independently against its own set of blocked
+    accounts: a resource policy that blocks the S3 RCP in one account says
+    nothing about that account's IAM trust policies, so it must not suppress
+    the STS RCP.
+
+    Args:
+        parse_results: Findings per RCP check, from parse_rcp_result_files
+        organization_hierarchy: Organization structure information
+
+    Returns:
+        Placement recommendations across all checks
+    """
+    recommendations: List[RCPPlacementRecommendations] = []
+
+    for parsed in parse_results:
+        recommendations.extend(
+            _determine_check_rcp_placement(parsed, organization_hierarchy)
+        )
+
+    return recommendations
+
+
+@dataclass(frozen=True)
+class RcpTerraformVars:
+    """
+    Terraform variables the RCP module exposes for one check.
+
+    Attributes:
+        comment: Section header rendered above the check's parameters
+        enable_var: Boolean variable that includes or omits the RCP statement
+        allowlist_var: List variable naming permitted third-party accounts
+    """
+    comment: str
+    enable_var: str
+    allowlist_var: str
+
+
+# Ordered alphabetically by service, which fixes the order parameters are
+# rendered in. A registered RCP check absent from this table is parsed and
+# then silently dropped at render time, so
+# test_table_covers_every_registered_rcp_check holds it in sync with the
+# registry.
+RCP_TERRAFORM_VARIABLES: Dict[str, RcpTerraformVars] = {
+    DENY_ECR_THIRD_PARTY_ACCESS: RcpTerraformVars(
+        comment="ECR",
+        enable_var="deny_ecr_third_party_access",
+        allowlist_var="ecr_third_party_access_account_ids_allowlist",
+    ),
+    DENY_KMS_THIRD_PARTY_ACCESS: RcpTerraformVars(
+        comment="KMS",
+        enable_var="deny_kms_third_party_access",
+        allowlist_var="kms_third_party_access_account_ids_allowlist",
+    ),
+    DENY_S3_THIRD_PARTY_ACCESS: RcpTerraformVars(
+        comment="S3",
+        enable_var="deny_s3_third_party_access",
+        allowlist_var="s3_third_party_access_account_ids_allowlist",
+    ),
+    DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS: RcpTerraformVars(
+        comment="Secrets Manager",
+        # No `_access_` segment, unlike its five siblings. The Terraform
+        # module defines the variable this way; do not "fix" it here.
+        enable_var="deny_secrets_manager_third_party_access",
+        allowlist_var="secrets_manager_third_party_account_ids_allowlist",
+    ),
+    DENY_SQS_THIRD_PARTY_ACCESS: RcpTerraformVars(
+        comment="SQS",
+        enable_var="deny_sqs_third_party_access",
+        allowlist_var="sqs_third_party_access_account_ids_allowlist",
+    ),
+    DENY_STS_THIRD_PARTY_ASSUMEROLE: RcpTerraformVars(
+        comment="STS",
+        enable_var="deny_sts_third_party_assumerole",
+        allowlist_var="sts_third_party_assumerole_account_ids_allowlist",
+    ),
+    DENY_SERVICE_CONFUSED_DEPUTY: RcpTerraformVars(
+        # Not a service, so it sits after the alphabetical run rather than
+        # inside it. One statement covers every service the other six do.
+        comment="Service confused deputy",
+        enable_var="deny_service_confused_deputy",
+        allowlist_var="service_confused_deputy_source_account_ids_allowlist",
+    ),
+}
 
 
 def _build_rcp_terraform_module(
@@ -413,68 +587,26 @@ def _build_rcp_terraform_module(
     Returns:
         Complete Terraform module block as a string
     """
-    recs_by_check: Dict[str, RCPPlacementRecommendations] = {}
-    for rec in recommendations:
-        recs_by_check[rec.check_name] = rec
-
-    assume_role_rec = recs_by_check.get(DENY_STS_THIRD_PARTY_ASSUMEROLE)
-    ecr_rec = recs_by_check.get(DENY_ECR_THIRD_PARTY_ACCESS)
-    kms_rec = recs_by_check.get(DENY_KMS_THIRD_PARTY_ACCESS)
-    s3_rec = recs_by_check.get(DENY_S3_THIRD_PARTY_ACCESS)
-    secrets_manager_rec = recs_by_check.get(DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS)
-    sqs_rec = recs_by_check.get(DENY_SQS_THIRD_PARTY_ACCESS)
+    recs_by_check: Dict[str, RCPPlacementRecommendations] = {
+        rec.check_name: rec for rec in recommendations
+    }
 
     parameters: List[TerraformElement] = []
 
-    parameters.append(TerraformComment("ECR"))
-    if ecr_rec:
-        parameters.append(TerraformParameter("deny_ecr_third_party_access", True))
-        parameters.append(TerraformParameter("ecr_third_party_access_account_ids_allowlist", ecr_rec.third_party_account_ids))
-    else:
-        parameters.append(TerraformParameter("deny_ecr_third_party_access", False))
+    for index, (check_name, tf_vars) in enumerate(RCP_TERRAFORM_VARIABLES.items()):
+        if index:
+            parameters.append(TerraformComment(""))
+        parameters.append(TerraformComment(tf_vars.comment))
 
-    parameters.append(TerraformComment(""))
-    parameters.append(TerraformComment("KMS"))
-    if kms_rec:
-        parameters.append(TerraformParameter("deny_kms_third_party_access", True))
-        parameters.append(TerraformParameter("kms_third_party_access_account_ids_allowlist", kms_rec.third_party_account_ids))
-    else:
-        parameters.append(TerraformParameter("deny_kms_third_party_access", False))
+        rec = recs_by_check.get(check_name)
+        if rec is None:
+            parameters.append(TerraformParameter(tf_vars.enable_var, False))
+            continue
 
-    parameters.append(TerraformComment(""))
-    parameters.append(TerraformComment("S3"))
-    if s3_rec:
-        parameters.append(TerraformParameter("deny_s3_third_party_access", True))
-        parameters.append(TerraformParameter("s3_third_party_access_account_ids_allowlist", s3_rec.third_party_account_ids))
-    else:
-        parameters.append(TerraformParameter("deny_s3_third_party_access", False))
-
-    parameters.append(TerraformComment(""))
-    parameters.append(TerraformComment("Secrets Manager"))
-    if secrets_manager_rec:
-        parameters.append(TerraformParameter("deny_secrets_manager_third_party_access", True))
-        parameters.append(TerraformParameter("secrets_manager_third_party_account_ids_allowlist", secrets_manager_rec.third_party_account_ids))
-    else:
-        parameters.append(TerraformParameter("deny_secrets_manager_third_party_access", False))
-
-    parameters.append(TerraformComment(""))
-    parameters.append(TerraformComment("SQS"))
-    if sqs_rec:
-        parameters.append(TerraformParameter("deny_sqs_third_party_access", True))
-        parameters.append(TerraformParameter("sqs_third_party_access_account_ids_allowlist", sqs_rec.third_party_account_ids))
-    else:
-        parameters.append(TerraformParameter("deny_sqs_third_party_access", False))
-
-    parameters.append(TerraformComment(""))
-    parameters.append(TerraformComment("STS"))
-    if assume_role_rec:
-        has_wildcard = "*" in assume_role_rec.third_party_account_ids
-        deny_sts_third_party_assumerole = not has_wildcard
-        parameters.append(TerraformParameter("deny_sts_third_party_assumerole", deny_sts_third_party_assumerole))
-        if deny_sts_third_party_assumerole:
-            parameters.append(TerraformParameter("sts_third_party_assumerole_account_ids_allowlist", assume_role_rec.third_party_account_ids))
-    else:
-        parameters.append(TerraformParameter("deny_sts_third_party_assumerole", False))
+        parameters.append(TerraformParameter(tf_vars.enable_var, True))
+        parameters.append(
+            TerraformParameter(tf_vars.allowlist_var, rec.third_party_account_ids)
+        )
 
     module = TerraformModule(
         name=module_name,
@@ -488,31 +620,33 @@ def _build_rcp_terraform_module(
     return module.render()
 
 
-def _generate_account_rcp_terraform(
+def _render_account_rcp_terraform(
     account_id: str,
     recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate and write Terraform file for account-level RCP.
+    Render the Terraform file for one account's RCPs.
 
     Args:
         account_id: AWS account ID
         recs: List of RCP recommendations for this account
         organization_hierarchy: Organization structure information
-        output_path: Directory to write Terraform files to
+        output_path: Directory the file belongs in
+
+    Returns:
+        Tuple of (destination path, rendered content)
+
+    Raises:
+        RuntimeError: If the account is missing from the organization hierarchy
     """
     account_info = organization_hierarchy.accounts.get(account_id)
     if not account_info:
         raise RuntimeError(f"Account ({account_id}) not found in organization hierarchy")
 
     account_name = make_safe_variable_name(account_info.account_name)
-    filename = f"{account_name}_rcps.tf"
-    filepath = output_path / filename
-
-    if not recs:
-        return
+    filepath = output_path / f"{account_name}_rcps.tf"
 
     terraform_content = _build_rcp_terraform_module(
         module_name=f"rcps_{account_name}",
@@ -520,60 +654,71 @@ def _generate_account_rcp_terraform(
         recommendations=recs,
         comment=account_info.account_name
     )
-    write_terraform_file(filepath, terraform_content, "RCP")
+
+    return filepath, terraform_content
 
 
-def _generate_ou_rcp_terraform(
+def _render_ou_rcp_terraform(
     ou_id: str,
     recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate and write Terraform file for OU-level RCP.
+    Render the Terraform file for one OU's RCPs.
 
     Args:
         ou_id: Organizational Unit ID
         recs: List of RCP recommendations for this OU
         organization_hierarchy: Organization structure information
-        output_path: Directory to write Terraform files to
+        output_path: Directory the file belongs in
+
+    Returns:
+        Tuple of (destination path, rendered content)
+
+    Raises:
+        RuntimeError: If the OU is missing from the organization hierarchy
     """
     ou_info = organization_hierarchy.organizational_units.get(ou_id)
     if not ou_info:
         raise RuntimeError(f"OU {ou_id} not found in organization hierarchy")
 
-    ou_name = make_safe_variable_name(ou_info.name)
-    filename = f"{ou_name}_ou_rcps.tf"
-    filepath = output_path / filename
-
-    if not recs:
-        return
+    # An OU is named for its path from the root, so a nested OU targets the
+    # local grab_org_info.tf declares for it and two OUs sharing a name in
+    # different branches cannot write to the same file.
+    base_name = make_ou_base_names(
+        organization_hierarchy.organizational_units
+    )[ou_id]
+    path_label = " / ".join(
+        ou_path_names(ou_id, organization_hierarchy.organizational_units)
+    )
+    filepath = output_path / f"{base_name}_ou_rcps.tf"
 
     terraform_content = _build_rcp_terraform_module(
-        module_name=f"rcps_{ou_name}_ou",
-        target_id_reference=f"local.top_level_{ou_name}_ou_id",
+        module_name=f"rcps_{base_name}_ou",
+        target_id_reference=f"local.{ou_id_local_name(base_name)}",
         recommendations=recs,
-        comment=f"OU {ou_info.name}"
+        comment=f"OU {path_label}"
     )
-    write_terraform_file(filepath, terraform_content, "RCP")
+
+    return filepath, terraform_content
 
 
-def _generate_root_rcp_terraform(
+def _render_root_rcp_terraform(
     recs: List[RCPPlacementRecommendations],
     output_path: Path
-) -> None:
+) -> tuple[Path, str]:
     """
-    Generate and write Terraform file for root-level RCP.
+    Render the Terraform file for root-level RCPs.
 
     Args:
         recs: List of RCP recommendations for root level
-        output_path: Directory to write Terraform files to
-    """
-    filename = "root_rcps.tf"
-    filepath = output_path / filename
+        output_path: Directory the file belongs in
 
-    if not recs:
-        return
+    Returns:
+        Tuple of (destination path, rendered content)
+    """
+    filepath = output_path / "root_rcps.tf"
 
     terraform_content = _build_rcp_terraform_module(
         module_name="rcps_root",
@@ -581,7 +726,8 @@ def _generate_root_rcp_terraform(
         recommendations=recs,
         comment="Organization Root"
     )
-    write_terraform_file(filepath, terraform_content, "RCP")
+
+    return filepath, terraform_content
 
 
 def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
@@ -596,10 +742,10 @@ def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
         rcps_output_path: RCP output directory where symlink should be created
         scps_dir: SCP directory path (used to compute relative path to grab_org_info.tf)
     """
-    symlink_path = rcps_output_path / "grab_org_info.tf"
+    symlink_path = rcps_output_path / ORG_INFO_FILENAME
 
     # Compute relative path from RCP directory to SCP grab_org_info.tf
-    scps_grab_org_info = Path(scps_dir) / "grab_org_info.tf"
+    scps_grab_org_info = Path(scps_dir) / ORG_INFO_FILENAME
     target_path = os.path.relpath(scps_grab_org_info, rcps_output_path)
 
     # Remove existing file or symlink if present
@@ -612,27 +758,26 @@ def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
     logger.info(f"Created symlink: {symlink_path} -> {target_path}")
 
 
-def generate_rcp_terraform(
+def _render_rcp_terraform_plan(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_dir: str = "test_environment/rcps"
-) -> None:
+    output_path: Path
+) -> TerraformPlan:
     """
-    Generate Terraform files for RCP deployment based on recommendations.
+    Render every RCP file this run's recommendations call for.
+
+    Nothing is written here. A target absent from the returned plan is a target
+    this run does not want a file for, which is what lets reconciliation delete
+    the file a previous run left behind.
 
     Args:
         recommendations: List of RCP placement recommendations
         organization_hierarchy: Organization structure information
-        output_dir: Directory to write Terraform files to
+        output_path: Directory the files belong in
+
+    Returns:
+        Rendered file contents, keyed by destination path
     """
-    if not recommendations:
-        logger.info("No RCP recommendations to generate Terraform for")
-        return
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Group recommendations by level and target
     account_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     ou_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     root_recommendations: List[RCPPlacementRecommendations] = []
@@ -650,27 +795,59 @@ def generate_rcp_terraform(
         if rec.recommended_level == "root":
             root_recommendations.append(rec)
 
-    # Generate Terraform file for root level
+    plan: TerraformPlan = {}
+
     if root_recommendations:
-        _generate_root_rcp_terraform(
-            root_recommendations,
-            output_path
-        )
+        filepath, content = _render_root_rcp_terraform(root_recommendations, output_path)
+        plan[filepath] = content
 
-    # Generate Terraform files for each account
     for account_id, recs in account_recommendations.items():
-        _generate_account_rcp_terraform(
-            account_id,
-            recs,
-            organization_hierarchy,
-            output_path
+        filepath, content = _render_account_rcp_terraform(
+            account_id, recs, organization_hierarchy, output_path
         )
+        plan[filepath] = content
 
-    # Generate Terraform files for each OU
     for ou_id, recs in ou_recommendations.items():
-        _generate_ou_rcp_terraform(
-            ou_id,
-            recs,
-            organization_hierarchy,
-            output_path
+        filepath, content = _render_ou_rcp_terraform(
+            ou_id, recs, organization_hierarchy, output_path
         )
+        plan[filepath] = content
+
+    return plan
+
+
+def generate_rcp_terraform(
+    recommendations: List[RCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy,
+    output_dir: str = "test_environment/rcps"
+) -> TerraformPlan:
+    """
+    Generate Terraform files for RCP deployment based on recommendations.
+
+    An empty recommendation list is a plan for an empty directory, not a
+    no-op. The caller reconciles against the returned plan, so a policy that no
+    longer has a placement loses the file that deploys it.
+
+    Args:
+        recommendations: List of RCP placement recommendations
+        organization_hierarchy: Organization structure information
+        output_dir: Directory to write Terraform files to
+
+    Returns:
+        The files this run wants the directory to hold, keyed by path
+
+    Raises:
+        RuntimeError: If a recommendation names a target the organization
+            hierarchy does not have
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Rendered in full first: a raise here has written nothing, leaving the
+    # previous run's output complete rather than half replaced.
+    plan = _render_rcp_terraform_plan(
+        recommendations, organization_hierarchy, output_path
+    )
+    write_terraform_plan(plan, "RCP")
+
+    return plan

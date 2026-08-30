@@ -37,8 +37,8 @@ sequenceDiagram
 
   Note over CLI: RCP Workflow
   CLI->>ParseRCP: parse_rcp_result_files(results_dir, hierarchy)
-  ParseRCP-->>CLI: RCPParseResult
-  CLI->>ParseRCP: determine_rcp_placement(map, hierarchy, wildcards)
+  ParseRCP-->>CLI: List[RCPCheckParseResult]
+  CLI->>ParseRCP: determine_rcp_placement(parse_results, hierarchy)
   ParseRCP-->>CLI: List[RCPPlacementRecommendations]
   CLI->>TFRCP: generate_rcp_terraform(recommendations, hierarchy)
   TFRCP-->>CLI: RCP Terraform files written
@@ -137,19 +137,19 @@ sequenceDiagram
   participant Org as headroom.aws.organization
 
   Note over GenRCP: Parse RCP results from disk
-  GenRCP->>FS: scan results_dir/rcps/deny_sts_third_party_assumerole/*.json
+  GenRCP->>FS: scan results_dir/rcps/{check_name}/*.json for each registered check
   FS-->>GenRCP: raw JSON files
   GenRCP->>GenRCP: parse_rcp_result_files(results_dir, org_hierarchy)
   GenRCP->>GenRCP: _parse_single_rcp_result_file()
-  GenRCP-->>GenRCP: RCPParseResult (map + wildcards set)
+  GenRCP-->>GenRCP: List[RCPCheckParseResult] (one per registered check)
 
-  Note over GenRCP: Determine placement using hierarchy
-  GenRCP->>GenRCP: determine_rcp_placement(map, org_hierarchy, wildcards)
-  loop for each unique third-party account
-    GenRCP->>GenRCP: Find all accounts that trust this third-party
+  Note over GenRCP: Determine placement using hierarchy, once per check
+  GenRCP->>GenRCP: determine_rcp_placement(parse_results, org_hierarchy)
+  loop for each registered RCP check
+    GenRCP->>GenRCP: _determine_check_rcp_placement(parse_result, org_hierarchy)
     GenRCP->>Hierarchy: determine_placement(accounts, safety_predicates)
-    Hierarchy->>Hierarchy: Check if safe for root (all accounts trust)
-    Hierarchy->>Hierarchy: Skip OUs with wildcard accounts
+    Hierarchy->>Hierarchy: Check if safe for root (no account blocks this check)
+    Hierarchy->>Hierarchy: Skip OUs holding an account blocked for this check
     Hierarchy->>Hierarchy: Check if safe for each OU
     Hierarchy-->>GenRCP: List[PlacementCandidate]
     GenRCP->>GenRCP: Convert to RCPPlacementRecommendations

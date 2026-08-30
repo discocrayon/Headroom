@@ -37,27 +37,12 @@ class TestDenyEc2ImdsV1:
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
-            exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         assert result.region == "us-east-1"
         assert result.instance_id == "i-1234567890abcdef0"
         assert result.imdsv1_allowed is True
-        assert result.exemption_tag_present is False
-
-    def test_deny_ec2_imds_v1_with_exemption(self) -> None:
-        """Test DenyEc2ImdsV1 with exemption tag present."""
-        result = DenyEc2ImdsV1(
-            region="us-west-2",
-            instance_id="i-0987654321fedcba0",
-            imdsv1_allowed=True,
-            exemption_tag_present=True
-        )
-
-        assert result.region == "us-west-2"
-        assert result.instance_id == "i-0987654321fedcba0"
-        assert result.imdsv1_allowed is True
-        assert result.exemption_tag_present is True
 
     def test_deny_ec2_imds_v1_imdsv2_enforced(self) -> None:
         """Test DenyEc2ImdsV1 with IMDSv2 enforced."""
@@ -65,13 +50,28 @@ class TestDenyEc2ImdsV1:
             region="eu-west-1",
             instance_id="i-abcdef1234567890",
             imdsv1_allowed=False,
-            exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         assert result.region == "eu-west-1"
         assert result.instance_id == "i-abcdef1234567890"
         assert result.imdsv1_allowed is False
-        assert result.exemption_tag_present is False
+
+    def test_deny_ec2_imds_v1_carries_nothing_about_roles(self) -> None:
+        """
+        The model holds what the surviving statement reads, and no more.
+
+        The exemption is the INSTANCE's tag, standing in for the launch
+        request's. `aws:PrincipalTag` belonged to `DenyRoleDeliveryLessThan2`,
+        which this module no longer generates, so a role field here would
+        invite an exemption branch enforcement does not honour.
+        """
+        assert set(DenyEc2ImdsV1.__dataclass_fields__) == {
+            "region",
+            "instance_id",
+            "imdsv1_allowed",
+            "exemption_tag_present",
+        }
 
     def test_deny_ec2_imds_v1_equality(self) -> None:
         """Test DenyEc2ImdsV1 equality comparison."""
@@ -79,21 +79,21 @@ class TestDenyEc2ImdsV1:
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
-            exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         result2 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
-            exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         result3 = DenyEc2ImdsV1(
             region="us-east-1",
             instance_id="i-different",
             imdsv1_allowed=True,
-            exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         assert result1 == result2
@@ -105,7 +105,7 @@ class TestDenyEc2ImdsV1:
             region="us-east-1",
             instance_id="i-1234567890abcdef0",
             imdsv1_allowed=True,
-            exemption_tag_present=False
+            exemption_tag_present=False,
         )
 
         repr_str = repr(result)
@@ -245,25 +245,22 @@ class TestGetImdsV1Ec2Analysis:
         assert results[0].region == "us-east-1"
         assert results[0].instance_id == "i-1234567890abcdef0"
         assert results[0].imdsv1_allowed is True
-        assert results[0].exemption_tag_present is False
 
-        # Check second instance (IMDSv2 required, but has exemption tag)
+        # Check second instance (IMDSv2 required)
         assert results[1].region == "us-east-1"
         assert results[1].instance_id == "i-0987654321fedcba0"
         assert results[1].imdsv1_allowed is False
-        assert results[1].exemption_tag_present is True
 
-        # Check third instance (IMDS disabled)
+        # Check third instance (endpoint disabled, but tokens still optional,
+        # which the SCP counts and so does this check)
         assert results[2].region == "us-west-2"
         assert results[2].instance_id == "i-abcdef1234567890"
-        assert results[2].imdsv1_allowed is False
-        assert results[2].exemption_tag_present is False
+        assert results[2].imdsv1_allowed is True
 
         # Check fourth instance (fallback region, IMDSv2 required)
         assert results[3].region == "eu-west-1"
         assert results[3].instance_id == "i-fallback123456789"
         assert results[3].imdsv1_allowed is False
-        assert results[3].exemption_tag_present is False
 
     def test_get_ec2_imds_v1_analysis_no_regions_raises_error(self) -> None:
         """Test that describe_regions failure raises ClientError."""
@@ -378,8 +375,18 @@ class TestGetImdsV1Ec2Analysis:
         with pytest.raises(RuntimeError, match="Failed to analyze EC2 instances in region us-west-2"):
             get_ec2_imds_v1_analysis(mock_session)
 
-    def test_get_ec2_imds_v1_analysis_exemption_tag_case_insensitive(self) -> None:
-        """Test that exemption tag value is case insensitive."""
+    def test_no_tag_of_any_kind_spares_an_imdsv1_instance(self) -> None:
+        """
+        Nothing observable exempts, so an ExemptFromIMDSv2 tag changes nothing.
+
+        The surviving statement,
+        `DenyRunInstancesMetadataHttpTokensOptional`, exempts a launch through
+        `aws:RequestTag/ExemptFromIMDSv2` - a property of a request in flight.
+        No tag on any instance, and no tag on any role, is that key. This test
+        guards the path back: two earlier revisions honoured a tag here, first
+        the instance's and then the role behind it, and each cleared accounts
+        whose next launch this statement denies.
+        """
         mock_session = MagicMock()
 
         mock_ec2 = MagicMock()
@@ -396,21 +403,10 @@ class TestGetImdsV1Ec2Analysis:
                     "OwnerId": "111111111111",
                     "Instances": [
                         self.create_mock_instance(
-                            "i-true-lower",
-                            tags=[{"Key": "ExemptFromIMDSv2", "Value": "true"}]
-                        ),
-                        self.create_mock_instance(
-                            "i-true-upper",
-                            tags=[{"Key": "ExemptFromIMDSv2", "Value": "TRUE"}]
-                        ),
-                        self.create_mock_instance(
-                            "i-true-mixed",
-                            tags=[{"Key": "ExemptFromIMDSv2", "Value": "True"}]
-                        ),
-                        self.create_mock_instance(
-                            "i-false",
-                            tags=[{"Key": "ExemptFromIMDSv2", "Value": "false"}]
+                            f"i-{value.lower()}",
+                            tags=[{"Key": "ExemptFromIMDSv2", "Value": value}]
                         )
+                        for value in ("true", "TRUE", "True", "false")
                     ]
                 }
             ]
@@ -427,17 +423,11 @@ class TestGetImdsV1Ec2Analysis:
         mock_session.client.side_effect = client_side_effect
         mock_session.region_name = "us-east-1"
 
-        # Execute function
         results = get_ec2_imds_v1_analysis(mock_session)
 
-        # Verify case insensitive matching
+        # Every one of them answers IMDSv1, tag or no tag.
         assert len(results) == 4
-
-        exemptions = {r.instance_id: r.exemption_tag_present for r in results}
-        assert exemptions["i-true-lower"] is True
-        assert exemptions["i-true-upper"] is True
-        assert exemptions["i-true-mixed"] is True
-        assert exemptions["i-false"] is False
+        assert all(r.imdsv1_allowed for r in results)
 
     def test_get_ec2_imds_v1_analysis_no_instances(self) -> None:
         """Test function with no instances in any region."""
@@ -657,7 +647,9 @@ class TestGetEc2AmiOwnerAnalysis:
             [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
         )
         mock_regional_ec2.describe_images.return_value = {
-            "Images": [{"OwnerId": "amazon", "Name": "old-al2"}]
+            "Images": [
+                {"OwnerId": "444444444444", "ImageOwnerAlias": "amazon", "Name": "old-al2"}
+            ]
         }
 
         get_ec2_ami_owner_analysis(mock_session)
@@ -723,7 +715,8 @@ class TestGetEc2AmiOwnerAnalysis:
         """A deprecated AMI resolves to its owner and is not worth a warning."""
         results, log = self.resolve_single_ami(
             {
-                "OwnerId": "amazon",
+                "OwnerId": "444444444444",
+                "ImageOwnerAlias": "amazon",
                 "Name": "old-al2",
                 "State": "available",
                 "DeprecationTime": "2024-01-01T00:00:00.000Z",
@@ -731,9 +724,68 @@ class TestGetEc2AmiOwnerAnalysis:
             caplog,
         )
 
-        assert results[0].ami_owner == "amazon"
+        assert results[0].ami_owner == "444444444444"
         assert results[0].owner_unknown_reason is None
         assert log == ""
+
+    def test_get_ec2_ami_owner_analysis_records_amazon_owner_alias(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An Amazon-published AMI carries a numeric owner and the amazon alias."""
+        results, _ = self.resolve_single_ami(
+            {
+                "OwnerId": "111111111111",
+                "ImageOwnerAlias": "amazon",
+                "Name": "al2023-ami-kernel-default-x86_64",
+            },
+            caplog,
+        )
+
+        assert results[0].ami_owner == "111111111111"
+        assert results[0].ami_owner_alias == "amazon"
+
+    def test_get_ec2_ami_owner_analysis_records_marketplace_owner_alias(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A Marketplace AMI aliases to aws-marketplace, whichever account published it."""
+        results, _ = self.resolve_single_ami(
+            {
+                "OwnerId": "222222222222",
+                "ImageOwnerAlias": "aws-marketplace",
+                "Name": "ubuntu-24.04-x86_64",
+            },
+            caplog,
+        )
+
+        assert results[0].ami_owner == "222222222222"
+        assert results[0].ami_owner_alias == "aws-marketplace"
+
+    def test_get_ec2_ami_owner_analysis_leaves_alias_unset_when_absent(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A self-built or directly published AMI has no alias, and none is invented."""
+        results, _ = self.resolve_single_ami(
+            {"OwnerId": "333333333333", "Name": "golden-base"},
+            caplog,
+        )
+
+        assert results[0].ami_owner == "333333333333"
+        assert results[0].ami_owner_alias is None
+
+    def test_get_ec2_ami_owner_analysis_rejects_unrecognised_owner_alias(self) -> None:
+        """An alias outside the two AWS documents cannot be mapped onto ec2:Owner."""
+        mock_session, mock_regional_ec2 = self.build_single_region_session(
+            [self.create_mock_instance("i-11111111111111111", "ami-11111111111111111")]
+        )
+        mock_regional_ec2.describe_images.return_value = {
+            "Images": [{"OwnerId": "333333333333", "ImageOwnerAlias": "self"}]
+        }
+
+        with pytest.raises(RuntimeError, match="unrecognised owner alias"):
+            get_ec2_ami_owner_analysis(mock_session)
 
     def test_get_ec2_ami_owner_analysis_records_ami_hidden_from_this_account(self) -> None:
         """An AMI the include flags do not surface is recorded, not raised."""
@@ -845,8 +897,16 @@ class TestGetEc2AmiOwnerAnalysis:
         mock_regional_ec2_2.get_paginator.return_value = mock_paginator_2
 
         mock_regional_ec2_1.describe_images.side_effect = [
-            {"Images": [{"OwnerId": "amazon", "Name": "Amazon Linux 2"}]},
-            {"Images": [{"OwnerId": "aws-marketplace", "Name": "Marketplace AMI"}]}
+            {"Images": [{
+                "OwnerId": "444444444444",
+                "ImageOwnerAlias": "amazon",
+                "Name": "Amazon Linux 2",
+            }]},
+            {"Images": [{
+                "OwnerId": "555555555555",
+                "ImageOwnerAlias": "aws-marketplace",
+                "Name": "Marketplace AMI",
+            }]}
         ]
 
         mock_regional_ec2_2.describe_images.return_value = {
@@ -868,18 +928,21 @@ class TestGetEc2AmiOwnerAnalysis:
 
         assert results[0].instance_id == "i-amazon"
         assert results[0].ami_id == "ami-12345678"
-        assert results[0].ami_owner == "amazon"
+        assert results[0].ami_owner == "444444444444"
+        assert results[0].ami_owner_alias == "amazon"
         assert results[0].ami_name == "Amazon Linux 2"
         assert results[0].region == "us-east-1"
 
         assert results[1].instance_id == "i-marketplace"
         assert results[1].ami_id == "ami-87654321"
-        assert results[1].ami_owner == "aws-marketplace"
+        assert results[1].ami_owner == "555555555555"
+        assert results[1].ami_owner_alias == "aws-marketplace"
         assert results[1].region == "us-east-1"
 
         assert results[2].instance_id == "i-custom"
         assert results[2].ami_id == "ami-custom123"
         assert results[2].ami_owner == "222222222222"
+        assert results[2].ami_owner_alias is None
         assert results[2].region == "us-west-2"
 
     def test_get_ec2_ami_owner_analysis_ami_access_denied(self) -> None:
@@ -962,7 +1025,9 @@ class TestGetEc2AmiOwnerAnalysis:
         mock_regional_ec2.get_paginator.return_value = mock_paginator
 
         mock_regional_ec2.describe_images.return_value = {
-            "Images": [{"OwnerId": "amazon", "Name": "Amazon Linux"}]
+            "Images": [
+                {"OwnerId": "444444444444", "ImageOwnerAlias": "amazon", "Name": "Amazon Linux"}
+            ]
         }
 
         def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
@@ -1006,7 +1071,9 @@ class TestGetEc2AmiOwnerAnalysis:
         mock_regional_ec2.get_paginator.return_value = mock_paginator
 
         mock_regional_ec2.describe_images.return_value = {
-            "Images": [{"OwnerId": "amazon", "Name": "AL2"}]
+            "Images": [
+                {"OwnerId": "444444444444", "ImageOwnerAlias": "amazon", "Name": "AL2"}
+            ]
         }
 
         def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
@@ -1903,3 +1970,224 @@ class TestGetInstances:
 
         with pytest.raises(RuntimeError, match="us-east-1"):
             get_instances(session, "us-east-1")
+
+
+class TestImdsV1EndpointIsNotAnExcuse:
+    """
+    HttpTokens is counted whether or not the metadata endpoint is enabled.
+
+    The check used to require both - endpoint enabled AND tokens optional -
+    which read the running instance correctly, since nothing can reach a
+    disabled endpoint. The SCP does not read the instance. It tests
+    ec2:MetadataHttpTokens on the launch request, where a request that turns
+    the endpoint off carries no HttpTokens at all, leaving the key absent and
+    StringNotEquals true. Dry runs against a live account confirm that launch
+    is denied.
+
+    So an endpoint-disabled instance whose tokens are optional is a violation.
+    Remedying it costs nothing: AWS accepts HttpTokens=required alongside a
+    disabled endpoint - also confirmed by dry run, contradicting the EC2 guide -
+    and setting it changes no behaviour, because nothing is listening.
+    """
+
+    def _one_instance(self, metadata_options: Dict[str, Any]) -> DenyEc2ImdsV1:
+        """Run the collector over a single instance with these options."""
+        session = MagicMock()
+
+        global_ec2 = MagicMock()
+        global_ec2.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        regional = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{
+            "Reservations": [{"OwnerId": "111111111111", "Instances": [{
+                "InstanceId": "i-aaa",
+                "State": {"Name": "running"},
+                "MetadataOptions": metadata_options,
+                "Tags": [],
+            }]}]
+        }]
+        regional.get_paginator.return_value = paginator
+
+        def client_side_effect(
+            service: str, region_name: Optional[str] = None
+        ) -> MagicMock:
+            return global_ec2 if region_name is None else regional
+
+        session.client.side_effect = client_side_effect
+        return get_ec2_imds_v1_analysis(session)[0]
+
+    def test_endpoint_disabled_with_optional_tokens_is_a_violation(self) -> None:
+        """The endpoint being off does not excuse optional tokens."""
+        result = self._one_instance(
+            {"HttpTokens": "optional", "HttpEndpoint": "disabled"}
+        )
+
+        assert result.imdsv1_allowed is True
+
+    def test_endpoint_disabled_with_required_tokens_is_compliant(self) -> None:
+        """Setting tokens required is the free remedy, and the check honours it."""
+        result = self._one_instance(
+            {"HttpTokens": "required", "HttpEndpoint": "disabled"}
+        )
+
+        assert result.imdsv1_allowed is False
+
+    def test_endpoint_enabled_still_decided_by_tokens_alone(self) -> None:
+        """The enabled case is unchanged."""
+        assert self._one_instance(
+            {"HttpTokens": "optional", "HttpEndpoint": "enabled"}
+        ).imdsv1_allowed is True
+        assert self._one_instance(
+            {"HttpTokens": "required", "HttpEndpoint": "enabled"}
+        ).imdsv1_allowed is False
+
+
+class TestImdsV1InstanceTagExemption:
+    """
+    The instance's own tag exempts, as a proxy for aws:RequestTag.
+
+    `DenyRunInstancesMetadataHttpTokensOptional` exempts a launch carrying
+    `ExemptFromIMDSv2=true` in its TagSpecifications, which is also what puts
+    the tag on the instance. So an instance wearing the tag today is evidence
+    that its relaunch will carry the same tag and be exempt. Measured against
+    a live account: the tagged launch is allowed, `True` is not.
+
+    The tag is read off the INSTANCE. No role is resolved and no IAM call is
+    made - `aws:PrincipalTag` belongs to a statement this module no longer
+    generates.
+    """
+
+    def _analysis(self, tags: Optional[List[dict]], http_tokens: str = "optional") -> List[DenyEc2ImdsV1]:
+        mock_session = MagicMock()
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {"Regions": [{"RegionName": "us-east-1"}]}
+
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{
+            "Reservations": [{"OwnerId": "111111111111", "Instances": [{
+                "InstanceId": "i-fake0",
+                "State": {"Name": "running"},
+                "MetadataOptions": {"HttpTokens": http_tokens, "HttpEndpoint": "enabled"},
+                "Tags": tags if tags is not None else [],
+            }]}]
+        }]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            return mock_ec2 if region_name is None else mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+        mock_session.region_name = "us-east-1"
+        return get_ec2_imds_v1_analysis(mock_session)
+
+    def test_exact_tag_exempts(self) -> None:
+        """The measured case: ExemptFromIMDSv2=true allows the relaunch."""
+        results = self._analysis([{"Key": "ExemptFromIMDSv2", "Value": "true"}])
+
+        assert results[0].imdsv1_allowed is True
+        assert results[0].exemption_tag_present is True
+
+    @pytest.mark.parametrize("key", ["exemptfromimdsv2", "EXEMPTFROMIMDSV2", "ExemptFromIMDSV2"])
+    def test_tag_key_is_matched_without_regard_to_case(self, key: str) -> None:
+        """
+        IAM matches condition key names case-insensitively.
+
+        The tag key after the slash in `aws:RequestTag/ExemptFromIMDSv2` is
+        part of the key name, so a launch tagged `exemptfromimdsv2` is exempt
+        and reporting it as a violation would name a launch enforcement allows.
+        """
+        results = self._analysis([{"Key": key, "Value": "true"}])
+
+        assert results[0].exemption_tag_present is True
+
+    @pytest.mark.parametrize("value", ["True", "TRUE", "tRuE"])
+    def test_tag_value_is_matched_exactly(self, value: str) -> None:
+        """
+        StringNotEquals is case-sensitive, measured: "True" does not exempt.
+
+        Lowercasing here would report an instance as exempt whose relaunch
+        enforcement denies.
+        """
+        results = self._analysis([{"Key": "ExemptFromIMDSv2", "Value": value}])
+
+        assert results[0].exemption_tag_present is False
+
+    def test_untagged_imdsv1_instance_is_not_exempt(self) -> None:
+        """Nothing to exempt on, so the instance counts."""
+        results = self._analysis(None)
+
+        assert results[0].exemption_tag_present is False
+
+    def test_unrelated_tags_do_not_exempt(self) -> None:
+        """A tag that is not the exemption tag exempts nothing."""
+        results = self._analysis([
+            {"Key": "Name", "Value": "legacy-app"},
+            {"Key": "ExemptFromIMDSv3", "Value": "true"},
+        ])
+
+        assert results[0].exemption_tag_present is False
+
+    def test_tag_is_read_even_when_imdsv2_is_required(self) -> None:
+        """
+        A compliant instance still reports its tag.
+
+        The check decides what an exemption means; this layer only reports
+        what it saw, matching how the AMI owner and hop limit scans behave.
+        """
+        results = self._analysis(
+            [{"Key": "ExemptFromIMDSv2", "Value": "true"}], http_tokens="required"
+        )
+
+        assert results[0].imdsv1_allowed is False
+        assert results[0].exemption_tag_present is True
+
+    def test_key_twice_in_differing_cases_aborts(self) -> None:
+        """
+        Two spellings both match the condition key; at most one value can.
+
+        AWS calls that an unexpected condition failure rather than a match on
+        one of them, so this instance's exemption status has no determinate
+        answer and guessing would invent it.
+        """
+        with pytest.raises(RuntimeError, match=r"more than once in cases that differ"):
+            self._analysis([
+                {"Key": "ExemptFromIMDSv2", "Value": "true"},
+                {"Key": "exemptfromimdsv2", "Value": "false"},
+            ])
+
+    def test_no_iam_client_is_ever_created(self) -> None:
+        """
+        Role resolution is gone and must not creep back.
+
+        The exemption is read off the instance. An IAM call here would mean
+        someone reintroduced aws:PrincipalTag, whose statement no longer
+        exists, and would need permissions this check no longer asks for.
+        """
+        mock_session = MagicMock()
+        mock_ec2 = MagicMock()
+        mock_ec2.describe_regions.return_value = {"Regions": [{"RegionName": "us-east-1"}]}
+        mock_regional_ec2 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{
+            "Reservations": [{"OwnerId": "111111111111", "Instances": [{
+                "InstanceId": "i-fake0",
+                "State": {"Name": "running"},
+                "MetadataOptions": {"HttpTokens": "optional", "HttpEndpoint": "enabled"},
+                "IamInstanceProfile": {"Arn": "arn:aws:iam::111111111111:instance-profile/fake"},
+                "Tags": [],
+            }]}]
+        }]
+        mock_regional_ec2.get_paginator.return_value = mock_paginator
+
+        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
+            assert service != "iam", "the IMDS scan must not reach IAM"
+            return mock_ec2 if region_name is None else mock_regional_ec2
+
+        mock_session.client.side_effect = client_side_effect
+        mock_session.region_name = "us-east-1"
+
+        assert get_ec2_imds_v1_analysis(mock_session)[0].exemption_tag_present is False

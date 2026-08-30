@@ -14,6 +14,8 @@ from .parse_results import analyze_scp_compliance, print_policy_recommendations
 from .terraform.generate_scps import generate_scp_terraform
 from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform, _create_org_info_symlink
 from .terraform.generate_org_info import generate_terraform_org_info
+from .terraform.models import TerraformPlan
+from .terraform.reconcile import reconcile_generated_terraform
 from .aws.organization import analyze_organization_structure
 from .types import OrganizationHierarchy
 from .constants import ORG_INFO_FILENAME
@@ -51,11 +53,15 @@ def process_policy_recommendations(
     recommendations: Union[Dict[Any, Any], List[Any]],
     org_hierarchy: OrganizationHierarchy,
     title: str,
-    terraform_generator: Callable[..., None],
+    terraform_generator: Callable[..., TerraformPlan],
     *generator_args: str
-) -> None:
+) -> TerraformPlan:
     """
     Process policy recommendations by printing and generating Terraform.
+
+    Empty recommendations still reach the generator. Its plan is what the
+    directory is reconciled against, and an empty plan is the instruction to
+    remove every policy file a previous run left there.
 
     Args:
         recommendations: Policy recommendations dictionary or list
@@ -63,12 +69,12 @@ def process_policy_recommendations(
         title: Title to display for the recommendations
         terraform_generator: Function to call to generate Terraform files
         *generator_args: Additional arguments to pass to terraform_generator
-    """
-    if not recommendations:
-        return
 
+    Returns:
+        The files the generator wants the output directory to hold
+    """
     print_policy_recommendations(recommendations, org_hierarchy, title)  # type: ignore[arg-type]
-    terraform_generator(recommendations, org_hierarchy, *generator_args)
+    return terraform_generator(recommendations, org_hierarchy, *generator_args)
 
 
 def setup_organization_context(
@@ -112,20 +118,26 @@ def ensure_org_info_symlink(rcps_dir: str, scps_dir: str) -> None:
     _create_org_info_symlink(rcps_path, scps_dir)
 
 
-def handle_scp_workflow(final_config: HeadroomConfig, org_hierarchy: OrganizationHierarchy) -> None:
+def handle_scp_workflow(
+    final_config: HeadroomConfig,
+    org_hierarchy: OrganizationHierarchy
+) -> TerraformPlan:
     """
     Parse SCP results and generate SCP Terraform files.
 
     Args:
         final_config: Validated Headroom configuration
         org_hierarchy: Organization hierarchy structure
+
+    Returns:
+        The files this run wants the SCP directory to hold
+
+    Raises:
+        RuntimeError: If no SCP result files were parsed
     """
     scp_recommendations = analyze_scp_compliance(final_config, org_hierarchy)
 
-    if not scp_recommendations:
-        return
-
-    process_policy_recommendations(
+    return process_policy_recommendations(
         scp_recommendations,
         org_hierarchy,
         "SCP PLACEMENT RECOMMENDATIONS",
@@ -134,29 +146,46 @@ def handle_scp_workflow(final_config: HeadroomConfig, org_hierarchy: Organizatio
     )
 
 
-def handle_rcp_workflow(final_config: HeadroomConfig, org_hierarchy: OrganizationHierarchy) -> None:
+def handle_rcp_workflow(
+    final_config: HeadroomConfig,
+    org_hierarchy: OrganizationHierarchy
+) -> TerraformPlan:
     """
     Parse RCP results and generate RCP Terraform files.
 
     Args:
         final_config: Validated Headroom configuration
         org_hierarchy: Organization hierarchy structure
+
+    Returns:
+        The files this run wants the RCP directory to hold
+
+    Raises:
+        RuntimeError: If no RCP result files were parsed
     """
-    rcp_parse_result = parse_rcp_result_files(final_config.results_dir, org_hierarchy)
+    parse_results = parse_rcp_result_files(final_config.results_dir, org_hierarchy)
 
-    if not rcp_parse_result.account_third_party_map:
-        return
+    # A check whose directory is missing is already rejected during parsing.
+    # What is left is directories that exist and hold nothing: no account
+    # cleared for the policy and none blocked from it, which means no file was
+    # read. That is the absence of evidence, and it must not be reconciled into
+    # deleting every RCP the organization currently deploys. An account that
+    # blocks a check is evidence, and it leaves accounts_with_blockers non-empty.
+    if not any(
+        parsed.account_third_party_map or parsed.accounts_with_blockers
+        for parsed in parse_results
+    ):
+        raise RuntimeError(
+            f"No RCP result files were parsed from {final_config.results_dir}/rcps. "
+            "Every generated policy file is deleted when a run places nothing, so "
+            "a run that read nothing cannot be told apart from an organization "
+            "that needs no policies. Check that the analysis wrote results to "
+            "this directory before generating Terraform."
+        )
 
-    rcp_recommendations = determine_rcp_placement(
-        rcp_parse_result.account_third_party_map,
-        org_hierarchy,
-        rcp_parse_result.accounts_with_wildcards
-    )
+    rcp_recommendations = determine_rcp_placement(parse_results, org_hierarchy)
 
-    if not rcp_recommendations:
-        return
-
-    process_policy_recommendations(
+    return process_policy_recommendations(
         rcp_recommendations,
         org_hierarchy,
         "RCP PLACEMENT RECOMMENDATIONS",
@@ -181,13 +210,23 @@ def main() -> None:
         mgmt_session, org_hierarchy = setup_organization_context(final_config, security_session)
 
         # Generate Terraform organization info file (needed by both SCP and RCP workflows)
-        generate_terraform_org_info(mgmt_session, f"{final_config.scps_dir}/{ORG_INFO_FILENAME}")
+        org_info_path = Path(final_config.scps_dir) / ORG_INFO_FILENAME
+        generate_terraform_org_info(mgmt_session, str(org_info_path))
 
         # Create symlink from RCP directory to SCP grab_org_info.tf (needed for RCP Terraform)
         ensure_org_info_symlink(final_config.rcps_dir, final_config.scps_dir)
 
-        handle_scp_workflow(final_config, org_hierarchy)
-        handle_rcp_workflow(final_config, org_hierarchy)
+        expected = {org_info_path}
+        expected |= set(handle_scp_workflow(final_config, org_hierarchy))
+        expected |= set(handle_rcp_workflow(final_config, org_hierarchy))
+
+        # Both workflows have succeeded, so this run's plan is complete and
+        # anything generated but unaccounted for belongs to a previous one. A
+        # raise above skips this and leaves the previous output whole.
+        reconcile_generated_terraform(
+            [Path(final_config.scps_dir), Path(final_config.rcps_dir)],
+            expected,
+        )
 
     except ValueError as e:
         OutputHandler.error("Configuration Error", e)

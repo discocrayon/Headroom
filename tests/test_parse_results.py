@@ -7,6 +7,7 @@ Tests SCP/RCP compliance results analysis and placement recommendations.
 import json
 import tempfile
 from pathlib import Path
+from typing import Dict, List
 from unittest.mock import Mock, patch
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from headroom.parse_results import (
+    _build_ou_recommendation,
     parse_scp_result_files,
     determine_scp_placement,
     analyze_scp_compliance,
@@ -278,6 +280,117 @@ class TestOrganizationStructureAnalysis:
         # Should raise exception on error
         with pytest.raises(RuntimeError, match="Failed to list OUs for parent None"):
             analyze_organization_structure(mock_session)
+
+
+class TestLookupAccountIdByName:
+    """Test resolution of an account name to an account ID."""
+
+    @staticmethod
+    def _hierarchy(names: Dict[str, str]) -> OrganizationHierarchy:
+        """Build a flat hierarchy from a mapping of account ID to account name."""
+        return OrganizationHierarchy(
+            root_id="r-test",
+            organizational_units={},
+            accounts={
+                account_id: AccountOrgPlacement(
+                    account_id=account_id,
+                    account_name=account_name,
+                    parent_ou_id="r-test",
+                    ou_path=["Root"],
+                )
+                for account_id, account_name in names.items()
+            },
+        )
+
+    def test_matches_name_differing_only_by_case_and_separators(self) -> None:
+        """
+        A slug-style name resolves to the Organizations account name.
+
+        Organizations names the account "Management Account" while the Name tag
+        that result files are written under reads "management-account". Both
+        canonicalize to the same form and only one account matches, so the
+        lookup resolves rather than failing.
+        """
+        hierarchy = self._hierarchy({
+            "111111111111": "Management Account",
+            "222222222222": "Production",
+        })
+
+        assert lookup_account_id_by_name("management-account", hierarchy) == "111111111111"
+
+    def test_raises_when_canonical_match_is_ambiguous(self) -> None:
+        """
+        Two accounts that canonicalize alike are never silently chosen between.
+
+        AWS Organizations does not require account names to be unique, so a
+        canonical match can hit more than one account. The error names every
+        candidate, leaving the operator to correct the name rather than having
+        the lookup pick one arbitrarily.
+        """
+        hierarchy = self._hierarchy({
+            "111111111111": "Management Account",
+            "222222222222": "management-account",
+        })
+
+        with pytest.raises(RuntimeError) as exc_info:
+            lookup_account_id_by_name("Management_Account", hierarchy)
+
+        message = str(exc_info.value)
+        assert "matches multiple accounts" in message
+        assert "111111111111 ('Management Account')" in message
+        assert "222222222222 ('management-account')" in message
+
+    def test_raises_when_exact_name_matches_multiple_accounts(self) -> None:
+        """
+        Duplicate account names abort instead of resolving to the first found.
+
+        Organizations enforces uniqueness on account email, not on account name,
+        so two accounts can carry one name exactly. Returning whichever came
+        first in iteration order would attribute a result file to an arbitrary
+        account.
+        """
+        hierarchy = self._hierarchy({
+            "111111111111": "Management Account",
+            "222222222222": "Management Account",
+        })
+
+        with pytest.raises(RuntimeError) as exc_info:
+            lookup_account_id_by_name("Management Account", hierarchy)
+
+        message = str(exc_info.value)
+        assert "matches multiple accounts in the organization hierarchy: " in message
+        assert "111111111111 ('Management Account')" in message
+        assert "222222222222 ('Management Account')" in message
+
+    def test_does_not_canonically_match_names_that_canonicalize_to_nothing(self) -> None:
+        """
+        Names made only of separators share no canonical form worth matching.
+
+        Canonicalization strips every non-alphanumeric character, so unrelated
+        punctuation-only names all reduce to the empty string. Treating that as
+        a match would attribute a result file to an account that shares nothing
+        with it.
+        """
+        hierarchy = self._hierarchy({"111111111111": "---"})
+
+        with pytest.raises(RuntimeError, match="not found in organization hierarchy"):
+            lookup_account_id_by_name("***", hierarchy)
+
+    def test_exact_match_wins_over_a_canonical_match_on_another_account(self) -> None:
+        """
+        An exact name resolves to its own account, never to a canonical rival.
+
+        Two accounts whose names differ only by case and separators both
+        canonicalize alike, so ordering matters: matching exactly first keeps
+        each name pointing at its own account instead of raising ambiguity.
+        """
+        hierarchy = self._hierarchy({
+            "111111111111": "management-account",
+            "222222222222": "Management Account",
+        })
+
+        assert lookup_account_id_by_name("management-account", hierarchy) == "111111111111"
+        assert lookup_account_id_by_name("Management Account", hierarchy) == "222222222222"
 
 
 class TestResultFileParsing:
@@ -549,7 +662,8 @@ class TestSCPPlacementDetermination:
         assert result[0].recommended_level == "ou"
         assert result[0].target_ou_id == "ou-1234"
         assert result[0].compliance_percentage == 100.0
-        assert "All accounts in OU 'Production' have zero violations" in result[0].reasoning
+        assert "under OU 'Production'" in result[0].reasoning
+        assert "including those in its child OUs" in result[0].reasoning
 
     def test_determine_scp_placement_account_level(self) -> None:
         """Test recommendation for account level deployment."""
@@ -577,7 +691,10 @@ class TestSCPPlacementDetermination:
         assert len(result) == 1
         assert result[0].recommended_level == "account"
         assert result[0].target_ou_id is None
-        assert result[0].compliance_percentage == pytest.approx(33.3, rel=1e-1)
+        # Every account this recommendation targets has zero violations, the
+        # same thing root and OU recommendations report. The 1-of-3 coverage
+        # is org-wide reach, and lives in the reasoning.
+        assert result[0].compliance_percentage == 100.0
         assert "Only 1 out of 3 accounts have zero violations" in result[0].reasoning
         assert "222222222222" in result[0].affected_accounts
 
@@ -759,9 +876,23 @@ class TestParseResultsIntegration:
             }
         )
 
-        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            # Should not raise any exceptions
-            analyze_scp_compliance(config, mock_hierarchy)
+        parsed = [
+            SCPCheckResult(
+                account_id="111111111111",
+                account_name="test-account",
+                check_name="deny_ec2_imds_v1",
+                violations=0,
+                exemptions=0,
+                compliant=3,
+                total_instances=3,
+                compliance_percentage=100.0,
+            )
+        ]
+
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=parsed):
+            recommendations = analyze_scp_compliance(config, mock_hierarchy)
+
+        assert [rec.check_name for rec in recommendations] == ["deny_ec2_imds_v1"]
 
     def test_parse_scp_results_missing_management_account_id(self) -> None:
         """Test that analyze_scp_compliance works with minimal organization hierarchy."""
@@ -783,11 +914,24 @@ class TestParseResultsIntegration:
             accounts={}
         )
 
-        with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            analyze_scp_compliance(config, mock_hierarchy)
+        parsed = [
+            SCPCheckResult(
+                account_id="111111111111",
+                account_name="test-account",
+                check_name="deny_ec2_imds_v1",
+                violations=0,
+                exemptions=0,
+                compliant=1,
+                total_instances=1,
+                compliance_percentage=100.0,
+            )
+        ]
+
+        with patch('headroom.parse_results.parse_scp_result_files', return_value=parsed):
+            assert analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_no_result_files(self) -> None:
-        """Test handling when no result files are found."""
+        """Test that no result files stops the run rather than emptying the directory."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -818,11 +962,11 @@ class TestParseResultsIntegration:
         )
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            # Should return early without error
-            analyze_scp_compliance(config, mock_hierarchy)
+            with pytest.raises(RuntimeError, match="No SCP result files"):
+                analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_assume_role_failure(self) -> None:
-        """Test that analyze_scp_compliance handles empty results gracefully."""
+        """Test that analyze_scp_compliance refuses to proceed on no evidence."""
         config = HeadroomConfig(
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(
@@ -841,10 +985,12 @@ class TestParseResultsIntegration:
             accounts={}
         )
 
+        # Zero parsed results is the absence of evidence, not the evidence of
+        # absence. Returning [] would reconcile the SCP directory to empty and
+        # detach every policy in the organization on the next apply.
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            # Should handle gracefully
-            result = analyze_scp_compliance(config, mock_hierarchy)
-            assert result == []
+            with pytest.raises(RuntimeError, match="No SCP result files"):
+                analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_organization_analysis_failure(self) -> None:
         """Test that analyze_scp_compliance works with minimal hierarchy data."""
@@ -867,8 +1013,8 @@ class TestParseResultsIntegration:
         )
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=[]):
-            result = analyze_scp_compliance(config, mock_hierarchy)
-            assert result == []
+            with pytest.raises(RuntimeError, match="No SCP result files"):
+                analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_with_recommendations_output(self) -> None:
         """Test analyze_scp_compliance returns recommendations without printing."""
@@ -1016,10 +1162,17 @@ class TestGenerateSCPTerraform:
                 assert "deny_ec2_imds_v1 = true" in content
                 assert "local.fort_knox_account_id" in content
 
-    def test_generate_scp_terraform_non_compliant_accounts_skipped(self) -> None:
-        """Test that non-compliant accounts are skipped in Terraform generation."""
+    def test_generate_scp_terraform_account_level_enables_the_policy(self) -> None:
+        """
+        Each safe account's file enables the policy the recommendation names.
+
+        An account-level recommendation exists only for accounts with zero
+        violations, and only when some other account has some - so the tier's
+        org-wide coverage never reaches 100%. Generation used to gate on that
+        fraction, so every per-account file it wrote had every policy false
+        and protected nothing.
+        """
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Create mock organization hierarchy
             hierarchy = OrganizationHierarchy(
                 root_id="r-1234",
                 organizational_units={},
@@ -1029,32 +1182,30 @@ class TestGenerateSCPTerraform:
                 }
             )
 
-            # Create mock recommendations with mixed compliance
             recommendations = [
                 SCPPlacementRecommendations(
                     check_name="deny_ec2_imds_v1",
                     recommended_level="account",
                     target_ou_id=None,
                     affected_accounts=["222222222222", "111111111111"],
-                    compliance_percentage=50.0,  # Not 100% compliant
-                    reasoning="Mixed compliance"
+                    compliance_percentage=100.0,
+                    reasoning="Only 2 out of 5 accounts have zero violations - deploy at individual account level"
                 )
             ]
 
-            # Generate Terraform files
             generate_scp_terraform(recommendations, hierarchy, temp_dir)
 
-            # Check that files were created but without the SCP flag
             output_path = Path(temp_dir)
             fort_knox_file = output_path / "fort_knox_scps.tf"
 
             assert fort_knox_file.exists()
 
-            # Check content - should not have the SCP flag set to true
             with open(fort_knox_file, 'r') as f:
                 content = f.read()
                 assert "fort-knox" in content
-                assert "deny_ec2_imds_v1 = true" not in content
+                assert "deny_ec2_imds_v1 = true" in content
+                # A check with no recommendation for this account stays off.
+                assert "deny_rds_unencrypted = false" in content
 
     def test_generate_scp_terraform_ou_level(self) -> None:
         """Test generating Terraform files for OU-level SCP recommendations."""
@@ -1097,7 +1248,7 @@ class TestGenerateSCPTerraform:
                 assert "Production" in content
                 assert "deny_ec2_imds_v1" in content
                 assert "deny_ec2_imds_v1 = true" in content
-                assert "local.top_level_production_ou_id" in content
+                assert "local.production_ou_id" in content
 
     def test_generate_scp_terraform_root_level(self) -> None:
         """Test generating Terraform files for root-level SCP recommendations."""
@@ -1263,7 +1414,7 @@ class TestPrintPolicyRecommendations:
         assert any("SCP RECOMMENDATIONS" in str(call) for call in printed_calls)
         assert any("deny_ec2_imds_v1" in str(call) for call in printed_calls)
         assert any("75.5%" in str(call) for call in printed_calls)
-        assert any("Compliance:" in str(call) for call in printed_calls)
+        assert any("Compliance (affected accounts):" in str(call) for call in printed_calls)
 
     def test_print_policy_recommendations_with_rcp_recommendations(self) -> None:
         """Test printing RCP recommendations shows third-party accounts."""
@@ -1299,3 +1450,489 @@ class TestPrintPolicyRecommendations:
         assert any("RCP RECOMMENDATIONS" in str(call) for call in printed_calls)
         assert any("deny_sts_third_party_assumerole" in str(call) for call in printed_calls)
         assert any("Third-Party Accounts: 2" in str(call) for call in printed_calls)
+
+
+class TestRootParentedAccountPlacement:
+    """
+    Tests for accounts attached directly to the organization root.
+
+    Such an account has no parent OU, so it can only be targeted by an SCP
+    attached to the account itself. Treating the root ID as an OU used to
+    raise "OU r-... not found in organization hierarchy" during Terraform
+    generation.
+    """
+    ROOT_ID = "r-aabb"
+    WORKLOADS_OU_ID = "ou-aabb-workloads"
+    LEGACY_OU_ID = "ou-aabb-legacy"
+
+    def make_hierarchy(self) -> OrganizationHierarchy:
+        """
+        Build an org with a safe OU, an unsafe OU, and a root-parented account.
+
+        This is the shape that reaches OU grouping: the org is not safe at root,
+        one OU is fully compliant, and one account hangs off the root.
+        """
+        return OrganizationHierarchy(
+            root_id=self.ROOT_ID,
+            organizational_units={
+                self.WORKLOADS_OU_ID: OrganizationalUnit(
+                    ou_id=self.WORKLOADS_OU_ID,
+                    name="Workloads",
+                    parent_ou_id=None,
+                    child_ous=[],
+                    accounts=["222222222222"]
+                ),
+                self.LEGACY_OU_ID: OrganizationalUnit(
+                    ou_id=self.LEGACY_OU_ID,
+                    name="Legacy",
+                    parent_ou_id=None,
+                    child_ous=[],
+                    accounts=["333333333333"]
+                ),
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="sandbox",
+                    parent_ou_id=None,
+                    ou_path=["Root"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    account_id="222222222222",
+                    account_name="prod",
+                    parent_ou_id=self.WORKLOADS_OU_ID,
+                    ou_path=["Workloads"]
+                ),
+                "333333333333": AccountOrgPlacement(
+                    account_id="333333333333",
+                    account_name="legacy-app",
+                    parent_ou_id=self.LEGACY_OU_ID,
+                    ou_path=["Legacy"]
+                ),
+            }
+        )
+
+    def make_results(self) -> list[SCPCheckResult]:
+        """Build check results where only the Legacy OU account has violations."""
+        return [
+            SCPCheckResult(
+                account_id="111111111111",
+                account_name="sandbox",
+                check_name="deny_ec2_imds_v1",
+                violations=0,
+                exemptions=0,
+                compliant=3,
+                compliance_percentage=100.0
+            ),
+            SCPCheckResult(
+                account_id="222222222222",
+                account_name="prod",
+                check_name="deny_ec2_imds_v1",
+                violations=0,
+                exemptions=0,
+                compliant=5,
+                compliance_percentage=100.0
+            ),
+            SCPCheckResult(
+                account_id="333333333333",
+                account_name="legacy-app",
+                check_name="deny_ec2_imds_v1",
+                violations=7,
+                exemptions=0,
+                compliant=1,
+                compliance_percentage=12.5
+            ),
+        ]
+
+    def test_root_parented_account_is_placed_at_account_level(self) -> None:
+        """The root-parented account gets its own account-level recommendation."""
+        recommendations = determine_scp_placement(
+            self.make_results(),
+            self.make_hierarchy()
+        )
+
+        account_recs = [
+            r for r in recommendations if r.recommended_level == "account"
+        ]
+        assert len(account_recs) == 1
+        assert account_recs[0].affected_accounts == ["111111111111"]
+
+    def test_safe_ou_still_gets_an_ou_recommendation(self) -> None:
+        """Adding account-level coverage does not displace the OU recommendation."""
+        recommendations = determine_scp_placement(
+            self.make_results(),
+            self.make_hierarchy()
+        )
+
+        ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
+        assert len(ou_recs) == 1
+        assert ou_recs[0].target_ou_id == self.WORKLOADS_OU_ID
+
+    def test_no_recommendation_targets_the_root_id_as_an_ou(self) -> None:
+        """Regression: the root ID must never appear as target_ou_id."""
+        recommendations = determine_scp_placement(
+            self.make_results(),
+            self.make_hierarchy()
+        )
+
+        assert all(r.target_ou_id != self.ROOT_ID for r in recommendations)
+
+    def test_generate_scp_terraform_does_not_raise_for_root_parented_account(
+        self
+    ) -> None:
+        """
+        Regression: generating Terraform used to raise RuntimeError.
+
+        The root ID reached _generate_ou_scp_terraform, which looked it up in
+        organizational_units and failed.
+        """
+        hierarchy = self.make_hierarchy()
+        recommendations = determine_scp_placement(self.make_results(), hierarchy)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            generate_scp_terraform(recommendations, hierarchy, output_dir=tmp_dir)
+
+            generated = {path.name for path in Path(tmp_dir).iterdir()}
+            assert generated == {"workloads_ou_scps.tf", "sandbox_scps.tf"}
+
+
+class TestOURecommendationValidation:
+    """Tests that a missing OU is reported rather than silently defaulted."""
+
+    def test_build_ou_recommendation_raises_for_unknown_ou(self) -> None:
+        """An OU absent from the hierarchy is an invariant violation."""
+        hierarchy = OrganizationHierarchy(
+            root_id="r-aabb",
+            organizational_units={},
+            accounts={}
+        )
+
+        with pytest.raises(RuntimeError, match=r"OU ou-aabb-missing not found"):
+            _build_ou_recommendation(
+                check_name="deny_ec2_imds_v1",
+                target_ou_id="ou-aabb-missing",
+                affected_accounts=["111111111111"],
+                check_results=[],
+                organization_hierarchy=hierarchy
+            )
+
+
+class TestCoverageIsIndependentOfOtherOUs:
+    """
+    Tests that placement for one account does not depend on unrelated OUs.
+
+    Placement used to return OU-level candidates exclusively, so a compliant
+    account sharing an OU with a violating one was recommended only while no
+    other OU qualified. Remediating an unrelated OU silently withdrew it.
+    """
+    WORKLOADS_OU_ID = "ou-aabb-workloads"
+    LEGACY_OU_ID = "ou-aabb-legacy"
+    CLEAN_SIBLING = "333333333333"
+
+    def make_hierarchy(self) -> OrganizationHierarchy:
+        """Build two OUs of two accounts each."""
+        return OrganizationHierarchy(
+            root_id="r-aabb",
+            organizational_units={
+                self.WORKLOADS_OU_ID: OrganizationalUnit(
+                    self.WORKLOADS_OU_ID, "Workloads", None, [],
+                    ["111111111111", "222222222222"]
+                ),
+                self.LEGACY_OU_ID: OrganizationalUnit(
+                    self.LEGACY_OU_ID, "Legacy", None, [],
+                    [self.CLEAN_SIBLING, "444444444444"]
+                ),
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    "111111111111", "prod", self.WORKLOADS_OU_ID, ["Workloads"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    "222222222222", "staging", self.WORKLOADS_OU_ID, ["Workloads"]
+                ),
+                self.CLEAN_SIBLING: AccountOrgPlacement(
+                    self.CLEAN_SIBLING, "legacy-a", self.LEGACY_OU_ID, ["Legacy"]
+                ),
+                "444444444444": AccountOrgPlacement(
+                    "444444444444", "legacy-b", self.LEGACY_OU_ID, ["Legacy"]
+                ),
+            }
+        )
+
+    def make_results(self, staging_violations: int) -> list[SCPCheckResult]:
+        """
+        Build results where legacy-a is always compliant and legacy-b never is.
+
+        staging_violations controls whether the unrelated Workloads OU qualifies.
+        """
+        counts = {
+            "111111111111": ("prod", 0),
+            "222222222222": ("staging", staging_violations),
+            self.CLEAN_SIBLING: ("legacy-a", 0),
+            "444444444444": ("legacy-b", 9),
+        }
+        return [
+            SCPCheckResult(
+                account_id=account_id,
+                account_name=name,
+                check_name="deny_ec2_imds_v1",
+                violations=violations,
+                exemptions=0,
+                compliant=5,
+                compliance_percentage=100.0
+            )
+            for account_id, (name, violations) in counts.items()
+        ]
+
+    def covered_accounts(self, staging_violations: int) -> set[str]:
+        """Return every account named by any recommendation."""
+        recommendations = determine_scp_placement(
+            self.make_results(staging_violations),
+            self.make_hierarchy()
+        )
+        return {
+            account
+            for rec in recommendations
+            for account in rec.affected_accounts
+        }
+
+    def test_clean_account_covered_when_another_ou_qualifies(self) -> None:
+        """A compliant account is recommended even though its own OU cannot be."""
+        assert self.CLEAN_SIBLING in self.covered_accounts(staging_violations=0)
+
+    def test_clean_account_covered_when_no_other_ou_qualifies(self) -> None:
+        """The same account is recommended when no OU qualifies at all."""
+        assert self.CLEAN_SIBLING in self.covered_accounts(staging_violations=4)
+
+    def test_remediating_an_unrelated_ou_never_reduces_coverage(self) -> None:
+        """
+        Coverage is monotonic: fixing one OU cannot drop accounts elsewhere.
+
+        The only difference between these runs is whether staging violates.
+        """
+        before_remediation = self.covered_accounts(staging_violations=4)
+        after_remediation = self.covered_accounts(staging_violations=0)
+
+        assert before_remediation <= after_remediation
+
+    def test_violating_account_is_never_recommended(self) -> None:
+        """Widening coverage must not recommend an account that has violations."""
+        assert "444444444444" not in self.covered_accounts(staging_violations=0)
+
+
+class TestAmiOwnerAllowlistWiring:
+    """
+    Tests that observed AMI owners reach the placement recommendation.
+
+    The check has always reported `unique_ami_owners`, and the SCP module has
+    always taken an `ec2_allowed_ami_owners` list, but nothing joined the two:
+    `SCPCheckResult` had no field for the owners, so every recommendation
+    carried `ec2_allowed_ami_owners=None` and Terraform enabled the policy with
+    an empty allowlist. An empty allowlist denies every `ec2:RunInstances`
+    call, so the generated SCP was an EC2 outage wherever it landed.
+    """
+    OWNERS_ACCOUNT_1 = ["amazon", "aws-marketplace"]
+    OWNERS_ACCOUNT_2 = ["222222222222", "amazon"]
+    UNIONED_OWNERS = ["222222222222", "amazon", "aws-marketplace"]
+
+    def make_result(
+        self,
+        account_id: str,
+        account_name: str,
+        violations: int,
+        ami_owners: List[str]
+    ) -> SCPCheckResult:
+        """Build one account's AMI owner check result."""
+        return SCPCheckResult(
+            account_id=account_id,
+            account_name=account_name,
+            check_name="deny_ec2_ami_owner",
+            violations=violations,
+            exemptions=0,
+            compliant=2,
+            compliance_percentage=100.0 if violations == 0 else 50.0,
+            total_instances=2,
+            ami_owners=ami_owners
+        )
+
+    def test_parse_carries_unique_ami_owners_from_summary(self) -> None:
+        """The summary's unique_ami_owners survives into the check result."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_ami_owner"
+            check_dir.mkdir(parents=True)
+
+            test_data = {
+                "summary": {
+                    "account_name": "test-account-1",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_ami_owner",
+                    "total_instances": 2,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 2,
+                    "compliance_percentage": 100.0,
+                    "unique_ami_owners": self.OWNERS_ACCOUNT_1,
+                    "unknown_ami_owners": {}
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+
+            with open(check_dir / "test-account-1_111111111111.json", 'w') as f:
+                json.dump(test_data, f)
+
+            result = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+            assert len(result) == 1
+            assert result[0].ami_owners == self.OWNERS_ACCOUNT_1
+
+    def test_parse_rejects_a_result_file_predating_ami_owner_collection(self) -> None:
+        """
+        A deny_ec2_ami_owner result with no unique_ami_owners key aborts.
+
+        Once parsed, a file written before the check collected owners is
+        indistinguishable from an account that ran no instances - both yield
+        an empty allowlist. They need opposite handling, so the distinction is
+        drawn while the file is still in hand: a missing key is a stale
+        artifact to re-run, an empty list is a fact about the account.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_ami_owner"
+            check_dir.mkdir(parents=True)
+
+            stale = {
+                "summary": {
+                    "account_name": "test-account-1",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_ami_owner",
+                    "total_instances": 2,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 2,
+                    "compliance_percentage": 100.0,
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+
+            with open(check_dir / "test-account-1_111111111111.json", 'w') as f:
+                json.dump(stale, f)
+
+            with pytest.raises(RuntimeError, match="predates AMI owner collection"):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+    def test_parse_accepts_an_account_that_observed_no_ami_owners(self) -> None:
+        """
+        An account with no instances reports an empty list, and that parses.
+
+        This is the case the missing-key rejection has to be told apart from:
+        the check ran, found nothing to look at, and said so.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_ami_owner"
+            check_dir.mkdir(parents=True)
+
+            empty = {
+                "summary": {
+                    "account_name": "test-account-1",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_ami_owner",
+                    "total_instances": 0,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 0,
+                    "compliance_percentage": 100.0,
+                    "unique_ami_owners": [],
+                    "unknown_ami_owners": {}
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+
+            with open(check_dir / "test-account-1_111111111111.json", 'w') as f:
+                json.dump(empty, f)
+
+            result = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+            assert len(result) == 1
+            assert result[0].ami_owners == []
+
+    def test_root_recommendation_unions_ami_owners(self) -> None:
+        """Root placement allowlists every owner seen in any affected account."""
+        results_data = [
+            self.make_result("111111111111", "account-1", 0, self.OWNERS_ACCOUNT_1),
+            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
+        ]
+
+        result = determine_scp_placement(results_data, make_test_org_hierarchy())
+
+        assert len(result) == 1
+        assert result[0].recommended_level == "root"
+        assert result[0].ec2_allowed_ami_owners == self.UNIONED_OWNERS
+
+    def test_ou_recommendation_carries_ami_owners(self) -> None:
+        """OU placement allowlists the owners seen in that OU's accounts."""
+        results_data = [
+            self.make_result("111111111111", "account-1", 2, self.OWNERS_ACCOUNT_1),
+            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
+        ]
+
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"])
+            }
+        )
+
+        result = determine_scp_placement(results_data, hierarchy)
+
+        assert len(result) == 1
+        assert result[0].recommended_level == "ou"
+        assert result[0].ec2_allowed_ami_owners == self.OWNERS_ACCOUNT_2
+
+    def test_account_recommendation_carries_ami_owners(self) -> None:
+        """Account placement allowlists the owners seen in that account."""
+        results_data = [
+            self.make_result("111111111111", "account-1", 2, self.OWNERS_ACCOUNT_1),
+            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
+            self.make_result("333333333333", "account-3", 1, self.OWNERS_ACCOUNT_1),
+        ]
+
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1234",
+            organizational_units={
+                "ou-1234": OrganizationalUnit(
+                    "ou-1234", "Production", None, [], ["222222222222", "333333333333"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1234", ["Root"]),
+                "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"]),
+                "333333333333": AccountOrgPlacement("333333333333", "account-3", "ou-1234", ["Production"])
+            }
+        )
+
+        result = determine_scp_placement(results_data, hierarchy)
+
+        assert len(result) == 1
+        assert result[0].recommended_level == "account"
+        assert result[0].ec2_allowed_ami_owners == self.OWNERS_ACCOUNT_2
+
+    def test_other_checks_carry_no_ami_owners(self) -> None:
+        """The allowlist belongs to one check and is not attached to others."""
+        results_data = [
+            SCPCheckResult("111111111111", "account-1", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
+            SCPCheckResult("222222222222", "account-2", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
+        ]
+
+        result = determine_scp_placement(results_data, make_test_org_hierarchy())
+
+        assert len(result) == 1
+        assert result[0].ec2_allowed_ami_owners is None

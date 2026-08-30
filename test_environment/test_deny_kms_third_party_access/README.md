@@ -192,4 +192,3 @@ Ensure the Headroom role has:
 - KMS keys cannot be immediately deleted - they are scheduled for deletion with a minimum waiting period of 7 days
 - Key aliases must be deleted before keys can be deleted
 - Test uses real third-party account IDs that are publicly documented (CrowdStrike, Barracuda, Check Point)
-- The `dp:exclude:identity` tag can be used to exclude specific keys from RCP restrictions

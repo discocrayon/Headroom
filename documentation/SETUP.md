@@ -23,6 +23,9 @@ Deploy an `OrgAndAccountInfoReader` role in your [AWS Organizations management a
 - List AWS Organizations accounts
 - Describe organizational units
 - Read account tags
+- Describe the organization, for its ID
+
+The organization ID classifies `aws:SourceOrgID` and `aws:SourceOrgPaths` guards on service principals: a guard naming your organization needs no allowlist entry, and one naming another organization withholds the confused deputy statement from that account. Without `organizations:DescribeOrganization` the run aborts rather than guessing.
 
 **Example Terraform**: See [`test_environment/org_and_account_info_reader.tf`](https://github.com/discocrayon/Headroom/blob/main/test_environment/org_and_account_info_reader.tf)
 
@@ -191,6 +194,24 @@ simple stack trace while debugging.
 A failure in any account aborts the whole run. Queued accounts never start, and accounts
 already in flight stop after their current check. Nothing is lost: each check writes its own
 result file as it completes, and a re-run skips the results already on disk.
+
+**Resolving tag names back to accounts:**
+
+With `exclude_account_ids: true`, result files carry no account ID, so Headroom
+resolves each file back to an account by name. The name in the file comes from
+the `name` tag; the name in the organization hierarchy always comes from AWS
+Organizations. Headroom matches exactly first, then retries ignoring case and
+separators, so a `Name` tag of `management-account` still resolves to an account
+Organizations calls `Management Account`, logging a warning that the two differ.
+
+Resolution fails loudly when the answer is not unique or not present:
+- The name matches two or more accounts (Organizations enforces uniqueness on
+  account email, not on account name). Rename one account, or set
+  `exclude_account_ids: false` so result files carry account IDs.
+- The name matches nothing — most often a `name` tag that is missing (the name
+  then falls back to the account ID, which matches no account name), a tag that
+  is not merely a re-spelling of the account name, or a stale result file left
+  behind after an account was renamed.
 
 ## Test Environment
 

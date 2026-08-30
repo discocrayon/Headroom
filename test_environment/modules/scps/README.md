@@ -36,7 +36,8 @@ module "scps" {
 
 ### Security Policy Variables
 
-- **`deny_ec2_ami_owner`** (bool): Deny EC2 instances from launching with AMIs not from approved owners
+- **`deny_ec2_ami_owner`** (bool): Deny EC2 instances from launching with AMIs not from approved owners.
+  Covers `RunInstances`, `CreateFleet`, `RequestSpotFleet` and `RequestSpotInstances`
 - **`ec2_allowed_ami_owners`** (list(string)): List of allowed AMI owner account IDs or aliases (e.g., "amazon", "self")
 - **`deny_ec2_imds_v1`** (bool): Deny EC2 instances from using IMDSv1 (Instance Metadata Service version 1)
 - **`deny_ec2_public_ip`** (bool): Deny EC2 instances from being launched with public IP addresses
@@ -72,16 +73,69 @@ Policy statements are conditionally included using the pattern in `locals.tf`:
 
 ### IMDSv2 Enforcement (`deny_ec2_imds_v1`)
 
-When enabled, this policy enforces IMDSv2 (Instance Metadata Service version 2) for EC2 instances through two statements:
+When enabled, this policy enforces IMDSv2 (Instance Metadata Service version 2)
+for **new EC2 instances**, through one statement:
 
-1. **DenyRoleDeliveryLessThan2**: Denies all actions when `ec2:RoleDelivery < 2.0`
-2. **DenyRunInstancesMetadataHttpTokensOptional**: Denies `ec2:RunInstances` when `ec2:MetadataHttpTokens != "required"`
+1. **DenyRunInstancesMetadataHttpTokensOptional**: Denies `ec2:RunInstances` unless the request requires IMDSv2
+
+#### Scope: launches only
+
+This policy governs launches. Instances already running with IMDSv1 available
+are outside it and stay reachable over IMDSv1 for as long as they live. That
+is a scope decision: such instances are expected to be migrated, and this
+policy's job is to stop new ones appearing while that happens.
+
+A **DenyRoleDeliveryLessThan2** statement used to accompany this one, on the
+same variable, denying every API call made with credentials fetched over
+IMDSv1 and exempting by `aws:PrincipalTag/ExemptFromIMDSv2` on the calling
+role. It was removed rather than split into its own variable. One variable
+gating two statements meant one scan verdict licensing two different kinds of
+evidence: a role-tagged IMDSv1 instance was reported as a clean exemption
+while the surviving statement - which reads no role tag - would have denied
+that account's next launch.
+
+If you need the running fleet covered, that is a different control and needs
+its own variable and its own verdict. Do not add a statement to this one.
+
+#### Launches that disable IMDS must still say `HttpTokens=required`
+
+This statement does not test `ec2:MetadataHttpEndpoint`, matching `MaxImdsHopLimit`.
+A launch that turns IMDS off usually names no `HttpTokens`, so
+`ec2:MetadataHttpTokens` is absent, `StringNotEquals` on an absent key is true,
+and the deny fires. Such a launch has to name `HttpTokens=required` anyway.
+
+That is accepted, and measured rather than inferred: AWS does *not* reject
+`HttpTokens` alongside a disabled endpoint, despite what the EC2 guide says
+about `ModifyInstanceMetadataOptions`. The extra parameter changes no
+behaviour, because nothing is listening. Requiring it keeps this statement and
+the check that gates it reading one thing, `HttpTokens`, rather than two.
 
 #### Exemptions
 
-Resources can be exempted from IMDSv2 enforcement using the tag `ExemptFromIMDSv2: "true"`:
-- IAM roles: Tag the role with `ExemptFromIMDSv2 = "true"` to exempt all instances using that role
-- EC2 instances: Include `ExemptFromIMDSv2 = "true"` in request tags when launching instances
+**DenyRunInstancesMetadataHttpTokensOptional** exempts on
+`aws:RequestTag/ExemptFromIMDSv2`: include `ExemptFromIMDSv2 = "true"` in the
+launch request's instance tag specifications.
+
+That is the only exemption. Tagging a **role** exempts nothing - that was
+`aws:PrincipalTag`, read by the statement removed above.
+
+Tagging the **instance** is the same act, seen later: the `TagSpecifications`
+entry that supplies the request tag is what puts the tag on the instance the
+launch creates. Headroom reads the instance's tag for exactly that reason, and
+treats a tagged IMDSv1 instance as exempt rather than as a blocker. It is a
+proxy and it can be wrong - a tag added afterwards with `CreateTags`, or an
+instance whose Terraform never declares it, wears the tag while its relaunch
+carries none. That cost is accepted deliberately; see `documentation/CHECKS.md`.
+
+Measured with `RunInstances --dry-run` under this statement: `HttpTokens=optional`
+tagged `true` is allowed, tagged `True` is denied, untagged is denied.
+
+It is matched with `StringNotEquals`, which is case-sensitive: only the exact
+value `"true"` exempts, and `"True"` is denied. The tag *key* is the opposite -
+IAM matches condition key names without regard to case, so `exemptfromimdsv2`
+works as well as `ExemptFromIMDSv2`. Do not rely on that; tag one way and stay
+consistent, because a request carrying both spellings hits what AWS calls an
+unexpected condition failure.
 
 ### EKS Paved Road Enforcement (`deny_eks_create_cluster_without_tag`)
 

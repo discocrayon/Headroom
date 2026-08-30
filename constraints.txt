@@ -34,3 +34,13 @@ mypy-boto3-s3<=1.43.69
 mypy-boto3-secretsmanager<=1.43.69
 mypy-boto3-sqs<=1.43.69
 mypy-boto3-sts<=1.43.69
+
+# Not boto3 packages, but subject to the same index refusal. Each is an
+# unpinned dependency that floats to a release the index will not serve.
+# Raise in step with upstream.
+coverage<=7.15.4
+filelock<=3.32.3
+platformdirs<=4.11.3
+pydantic<=2.13.4
+python-discovery<=1.5.2
+virtualenv<=20.36.1
