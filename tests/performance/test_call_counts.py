@@ -402,10 +402,27 @@ class TestOrganizationsIsReadOnce:
         """
         Every projection and the org-info render come from what was captured.
         A consumer that refreshed would reintroduce the inconsistency.
+
+        The expected value below is a literal, not a copy of
+        `org_client.operations` taken right after discovery. Nothing between
+        that capture and an assertion against it could ever add an
+        operation -- the four projection reads are plain attribute access on
+        a frozen dataclass, and `generate_terraform_org_info` takes no
+        client -- so a captured-copy comparison would hold no matter what
+        discovery read or what a consumer read afterward: it would compare
+        the list to itself. The literal is this fixture's whole call log,
+        hand-traced against `discover_organization`: one
+        `describe_organization`, one paginated `list_accounts`, one
+        `list_roots`, one OU traversal of the fixture's single parent (the
+        root) -- `list_organizational_units_for_parent` then
+        `list_accounts_for_parent`, each once, not the twice a recursive
+        traversal used to cost -- and one `list_tags_for_resource`, because
+        `management` is excluded from analysis and only `payments` is
+        tagged. A regression in discovery's count or order changes this
+        list; a consumer that re-reads Organizations appends to it.
         """
         org_client = _RecordingOrganizationsClient()
         snapshot = discover_organization(_snapshot_config(), org_client)
-        after_discovery = list(org_client.operations)
 
         _ = snapshot.organization_id
         _ = snapshot.member_account_ids
@@ -414,4 +431,11 @@ class TestOrganizationsIsReadOnce:
         with patch("builtins.open", mock_open()), patch.object(Path, "mkdir"):
             generate_terraform_org_info(snapshot.hierarchy, "out/grab_org_info.tf")
 
-        assert org_client.operations == after_discovery
+        assert org_client.operations == [
+            "describe_organization",
+            "list_accounts",
+            "list_roots",
+            "list_organizational_units_for_parent",
+            "list_accounts_for_parent",
+            "list_tags_for_resource",
+        ]
