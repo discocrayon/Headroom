@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List
 
 from .models import (
+    RenderedTerraformFiles,
     TerraformComment,
     TerraformElement,
     TerraformModule,
@@ -423,11 +424,11 @@ def _render_root_scp_terraform(
     return filepath, terraform_content
 
 
-def _render_scp_terraform_plan(
+def render_scp_terraform(
     recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> TerraformPlan:
+) -> RenderedTerraformFiles:
     """
     Render every SCP file this run's recommendations call for.
 
@@ -441,7 +442,8 @@ def _render_scp_terraform_plan(
         output_path: Directory the files belong in
 
     Returns:
-        Rendered file contents, keyed by destination path
+        Rendered file contents, keyed by destination path. Nothing is
+        written; the caller compiles these into the run's plan.
     """
     # Group recommendations by level and target
     account_recommendations: GroupedSCPRecommendations = defaultdict(list)
@@ -513,7 +515,7 @@ def generate_scp_terraform(
 
     # Rendered in full first: a raise here has written nothing, leaving the
     # previous run's output complete rather than half replaced.
-    plan = _render_scp_terraform_plan(
+    plan = render_scp_terraform(
         recommendations, organization_hierarchy, output_path
     )
     write_terraform_plan(plan, "SCP")

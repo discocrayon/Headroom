@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from .models import (
+    RenderedTerraformFiles,
     TerraformComment,
     TerraformElement,
     TerraformModule,
@@ -763,11 +764,11 @@ def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
     logger.info(f"Created symlink: {symlink_path} -> {target_path}")
 
 
-def _render_rcp_terraform_plan(
+def render_rcp_terraform(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> TerraformPlan:
+) -> RenderedTerraformFiles:
     """
     Render every RCP file this run's recommendations call for.
 
@@ -781,7 +782,8 @@ def _render_rcp_terraform_plan(
         output_path: Directory the files belong in
 
     Returns:
-        Rendered file contents, keyed by destination path
+        Rendered file contents, keyed by destination path. Nothing is
+        written; the caller compiles these into the run's plan.
     """
     account_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     ou_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
@@ -850,7 +852,7 @@ def generate_rcp_terraform(
 
     # Rendered in full first: a raise here has written nothing, leaving the
     # previous run's output complete rather than half replaced.
-    plan = _render_rcp_terraform_plan(
+    plan = render_rcp_terraform(
         recommendations, organization_hierarchy, output_path
     )
     write_terraform_plan(plan, "RCP")

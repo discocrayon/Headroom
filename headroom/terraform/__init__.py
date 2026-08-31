@@ -10,12 +10,16 @@ Modules:
 - generate_scp: Generates Terraform configurations for SCP deployment
 """
 
-from .generate_org_info import generate_terraform_org_info
-from .generate_scps import generate_scp_terraform
+from .generate_org_info import generate_terraform_org_info, render_terraform_org_info
+from .generate_rcps import render_rcp_terraform
+from .generate_scps import generate_scp_terraform, render_scp_terraform
 from .utils import make_safe_variable_name
 
 __all__ = [
     "generate_terraform_org_info",
     "generate_scp_terraform",
     "make_safe_variable_name",
+    "render_rcp_terraform",
+    "render_scp_terraform",
+    "render_terraform_org_info",
 ]

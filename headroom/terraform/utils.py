@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from .models import TerraformPlan
+from .models import RenderedTerraformFiles, TerraformPlan
 from ..types import AccountOrgPlacement, OrganizationalUnit
 from ..utils import make_safe_variable_name
 
@@ -220,7 +220,7 @@ def make_account_base_names(
 
 
 def claim_plan_path(
-    plan: TerraformPlan,
+    plan: RenderedTerraformFiles,
     filepath: Path,
     content: str,
     claimed_by: str

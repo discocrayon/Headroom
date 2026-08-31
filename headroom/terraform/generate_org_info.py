@@ -23,6 +23,28 @@ from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlaceme
 logger = logging.getLogger(__name__)
 
 
+def render_terraform_org_info(organization_hierarchy: OrganizationHierarchy) -> str:
+    """
+    Render grab_org_info.tf from an already-captured hierarchy.
+
+    Nothing is written and nothing on disk is read. This renders the hierarchy
+    the run captured, so the data sources describe the same organization
+    placement just used.
+
+    Args:
+        organization_hierarchy: The run's captured organization hierarchy
+
+    Returns:
+        Complete Terraform configuration as a string
+    """
+    logger.info("Generating Terraform organization info file")
+    logger.info(
+        f"Found {len(organization_hierarchy.organizational_units)} OUs and "
+        f"{len(organization_hierarchy.accounts)} accounts"
+    )
+    return _generate_terraform_content(organization_hierarchy)
+
+
 def generate_terraform_org_info(
     organization_hierarchy: OrganizationHierarchy,
     output_path: str
@@ -42,13 +64,7 @@ def generate_terraform_org_info(
     Raises:
         IOError: If the file write fails
     """
-    logger.info("Generating Terraform organization info file")
-    logger.info(
-        f"Found {len(organization_hierarchy.organizational_units)} OUs and "
-        f"{len(organization_hierarchy.accounts)} accounts"
-    )
-
-    terraform_content = _generate_terraform_content(organization_hierarchy)
+    terraform_content = render_terraform_org_info(organization_hierarchy)
 
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)

@@ -19,6 +19,11 @@ TerraformValue: TypeAlias = TerraformScalarValue | TerraformListValue
 # partway through generation from leaving half of the previous output replaced.
 TerraformPlan: TypeAlias = Dict[Path, str]
 
+# Everything one renderer means its output directory to hold, keyed by
+# destination path. Rendered, not yet written, and not yet the whole run's
+# plan -- the compiler merges the three renderers' output into that.
+RenderedTerraformFiles: TypeAlias = Dict[Path, str]
+
 
 @dataclass
 class TerraformParameter:
