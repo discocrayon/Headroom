@@ -34,19 +34,19 @@ from headroom.config import HeadroomConfig, AccountTagLayout
 def make_test_org_hierarchy() -> OrganizationHierarchy:
     """Create a simple test organization hierarchy."""
     return OrganizationHierarchy(
-        root_id="r-test",
+        root_id="r-1111",
         organizational_units={},
         accounts={
             "111111111111": AccountOrgPlacement(
                 account_id="111111111111",
                 account_name="test-account",
-                parent_ou_id="r-test",
+                parent_ou_id="r-1111",
                 ou_path=["Root"]
             ),
             "222222222222": AccountOrgPlacement(
                 account_id="222222222222",
                 account_name="test-account-2",
-                parent_ou_id="r-test",
+                parent_ou_id="r-1111",
                 ou_path=["Root"]
             ),
         }
@@ -1022,7 +1022,7 @@ class TestPrintPolicyRecommendations:
     def test_print_policy_recommendations_with_empty_list(self) -> None:
         """Test that empty recommendations list returns early without printing."""
         org_hierarchy = OrganizationHierarchy(
-            root_id="r-test",
+            root_id="r-1111",
             organizational_units={},
             accounts={}
         )
@@ -1035,12 +1035,12 @@ class TestPrintPolicyRecommendations:
     def test_print_policy_recommendations_with_scp_recommendations(self) -> None:
         """Test printing SCP recommendations shows compliance percentage."""
         org_hierarchy = OrganizationHierarchy(
-            root_id="r-test",
+            root_id="r-1111",
             organizational_units={
                 "ou-123": OrganizationalUnit(
                     ou_id="ou-123",
                     name="Production",
-                    parent_ou_id="r-test",
+                    parent_ou_id="r-1111",
                     child_ous=[],
                     accounts=["111111111111"]
                 )
@@ -1050,7 +1050,7 @@ class TestPrintPolicyRecommendations:
                     account_id="111111111111",
                     account_name="prod-account",
                     parent_ou_id="ou-123",
-                    ou_path=["r-test", "ou-123"]
+                    ou_path=["r-1111", "ou-123"]
                 )
             }
         )
@@ -1079,14 +1079,14 @@ class TestPrintPolicyRecommendations:
     def test_print_policy_recommendations_with_rcp_recommendations(self) -> None:
         """Test printing RCP recommendations shows third-party accounts."""
         org_hierarchy = OrganizationHierarchy(
-            root_id="r-test",
+            root_id="r-1111",
             organizational_units={},
             accounts={
                 "111111111111": AccountOrgPlacement(
                     account_id="111111111111",
                     account_name="test-account",
-                    parent_ou_id="r-test",
-                    ou_path=["r-test"]
+                    parent_ou_id="r-1111",
+                    ou_path=["r-1111"]
                 )
             }
         )

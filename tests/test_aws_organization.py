@@ -373,13 +373,13 @@ class TestLookupAccountIdByName:
     def _hierarchy(names: Dict[str, str]) -> OrganizationHierarchy:
         """Build a flat hierarchy from a mapping of account ID to account name."""
         return OrganizationHierarchy(
-            root_id="r-test",
+            root_id="r-1111",
             organizational_units={},
             accounts={
                 account_id: AccountOrgPlacement(
                     account_id=account_id,
                     account_name=account_name,
-                    parent_ou_id="r-test",
+                    parent_ou_id="r-1111",
                     ou_path=["Root"],
                 )
                 for account_id, account_name in names.items()
