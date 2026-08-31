@@ -125,6 +125,12 @@ def build_organization_hierarchy(
     - A parent reached twice. The same cause one level up, and left alone it
       is unbounded recursion rather than a wrong answer.
 
+    An account this listing does not name aborts for a different reason. The
+    snapshot's `_verify_every_account_is_named` gates the membership listing,
+    which is a separate call returning separate dicts, so it cannot speak for
+    this one; unguarded, a nameless account here raised a bare `KeyError`,
+    the one exception `_failures_reported` does not catch.
+
     Args:
         org_client: AWS Organizations client
         root_id: The organization root, from `find_organization_root`
@@ -170,9 +176,19 @@ def build_organization_hierarchy(
                     f"{accounts[account_id].parent_ou_id or root_id} and {parent_id}. "
                     "The organization was modified during discovery. Re-run Headroom."
                 )
+            account_name = account.get("Name")
+            if not account_name:
+                raise RuntimeError(
+                    f"Account {account_id} under {parent_id} came back from "
+                    "list_accounts_for_parent with no name. The name is how a "
+                    "result file is matched to a placement, and the account ID "
+                    "is not a substitute: it is what the snapshot's cross-check "
+                    "would then compare the two views' names against, so the "
+                    "views would agree on a name neither of them holds."
+                )
             accounts[account_id] = AccountOrgPlacement(
                 account_id=account_id,
-                account_name=account["Name"],
+                account_name=account_name,
                 parent_ou_id=child_parent_ou_id,
                 ou_path=child_ou_path,
             )

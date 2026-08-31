@@ -4154,6 +4154,64 @@ def discover_organization(
     """
 ```
 
+`discover_organization` is assembled from three functions in `aws/organization.py`,
+each one read exactly once per run. They are separate because they are the three
+projections, and collapsing any two of them is the bug this design exists to prevent:
+
+```python
+# aws/organization.py
+
+def find_organization_root(org_client: OrganizationsClient) -> str:
+    """
+    Return the organization's single root ID, reading list_roots to its last
+    page.
+
+    No root aborts. So does more than one: which root came first is page
+    order, and picking one would traverse half the organization while
+    reporting a complete hierarchy, so placement would recommend
+    account-level policies for accounts whose OU it never saw.
+
+    Raises: RuntimeError on a failed listing, on no root, and on several
+    """
+
+def list_organization_accounts(
+    org_client: OrganizationsClient
+) -> List[AccountTypeDef]:
+    """
+    Return every account in the organization, across all pages.
+
+    Deliberately unfiltered. This is the membership and lifecycle oracle, and
+    a closed account is still a member that still matches organization-based
+    RCP conditions -- dropping one here reclassifies a recently closed
+    sibling as a third party.
+
+    Raises: RuntimeError if the listing fails at any page
+    """
+
+def build_organization_hierarchy(
+    org_client: OrganizationsClient,
+    root_id: str
+) -> OrganizationHierarchy:
+    """
+    Walk the organization breadth-first, reading each parent's children
+    exactly once, every listing to its last page.
+
+    Retains every account whatever its lifecycle state and whether or not
+    configuration skips it: placement is driven by the result files on disk,
+    and a result written before an account closed must still resolve to a
+    placement.
+
+    A top-level OU and a root-parented account both record parent_ou_id=None.
+    Neither can be targeted by an OU-level policy, and the root ID is not a
+    substitute for one. ou_path reads root-to-leaf, and is ["Root"] for an
+    account parented directly by the root.
+
+    Raises: RuntimeError on a failed listing, on an account under more than
+            one parent, on an OU reached twice, and on an account this
+            listing does not name
+    """
+```
+
 ```python
 # types.py
 
@@ -4171,6 +4229,14 @@ class OrganizationSnapshot:
     analyzable_accounts: tuple[AccountInfo, ...]  # What the scan runs against
     hierarchy: OrganizationHierarchy              # Every OU and every account
 ```
+
+**The freeze is one level deep, and deliberately so.** No stage can reassign a field
+to a projection it computed itself, which is the failure the type exists to remove.
+Three of the four fields are immutable the whole way down -- a string, a frozenset,
+and a tuple of frozen `AccountInfo` -- so a stage holding a reference cannot edit an
+entry in place either. `hierarchy` is the exception: `OrganizationHierarchy` holds
+ordinary dicts and lists, and deep-freezing it would mean reworking every producer and
+consumer of those collections. Treat it as read-only by convention; nothing enforces it.
 
 #### One captured view, read once
 
@@ -4214,9 +4280,13 @@ contradicts what it was told, or contradicts itself, and none has a safe reading
 | Name unusable as a filename | An analyzable account's name is empty, holds a null byte, reads as a path, or runs past 237 bytes | See "Account name validation": a path separator writes the account's results where generation does not look, without failing |
 | Duplicate names under `exclude_account_ids` | Two analyzable accounts share a name under canonical caseless matching | The account ID is not in the filename, so both accounts resolve to one path and interleave their JSON into it |
 
-The traversal enforces two more of its own, for the same reason: an account appearing
-under more than one parent, and an OU reached twice. `find_organization_root` and
-`_read_organization_id` add the structural aborts -- no root, several roots, no
+The traversal enforces three more of its own. Two are the same concurrent-mutation
+class: an account appearing under more than one parent, and an OU reached twice. The
+third is an account the traversal's own listing does not name -- the membership guard
+above cannot speak for it, because `list_accounts_for_parent` is a separate call
+returning separate dicts, and left unguarded a nameless account there raised a bare
+`KeyError`, the one exception the phase reporter does not catch.
+`find_organization_root` and `_read_organization_id` add the structural aborts -- no root, several roots, no
 organization ID.
 
 **Concurrent organization mutation aborts the run.** This captures a view; it is not
@@ -4901,6 +4971,16 @@ class OutputHandler:
 - **Fail-Loud Philosophy:** Never silence errors; all exceptions logged with context and re-raised
 - **No Generic Catches:** Never `except Exception:` - always specify what can fail
 - **No Silent Fallbacks:** Avoid defensive programming that hides configuration/permission issues
+- **Every failure names its phase:** a run has three, and `main` wraps each in the same
+  reporter so a failure is reported as `... during <phase>` and exits 1. The phases are
+  **organization discovery** (the management assumption and the one Organizations read),
+  **the scan** (per-account role assumption and checks), and **Terraform generation**
+  (result files in, Terraform out, reaching no AWS). The phase has to be supplied by the
+  caller because the exception almost never carries it: a `ClientError` names the API
+  that refused and not the caller, and a denied `AssumeRole` is both discovery's first
+  step and the scan's per-account one. The reporter catches `ValueError`, `RuntimeError`
+  and `ClientError`; anything else is a bug rather than an operating condition and is
+  left to surface as a traceback.
 
 ---
 

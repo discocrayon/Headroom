@@ -142,8 +142,10 @@ class TestBuildOrganizationHierarchy:
         path holds a single name and root-to-leaf and leaf-to-root are the
         same list. Reversing the walk's `path + [child]` to `[child] + path`
         therefore left the whole suite green while every nested account's
-        path pointed the wrong way, and `ou_path` is what Terraform
-        placement is written from.
+        path pointed the wrong way. Nothing under `headroom/` reads
+        `ou_path` -- placement walks `parent_ou_id` instead -- so this
+        assertion is the only thing standing between a documented field and
+        a wrong value in it.
 
         The expected values are read off the fixture rather than recomputed:
         Production holds Payments, Payments holds Ledger, and the one
@@ -151,8 +153,11 @@ class TestBuildOrganizationHierarchy:
         those three OUs in that order. The root itself is not in the path --
         `["Root"]` is what an account parented directly by the root carries,
         and this one is not. `root_id` and the leaf OU's `accounts` are
-        asserted here too: nothing in production reads either, so without a
-        pin the walk can return any root ID and no accounts at all.
+        asserted here too, for opposite reasons.
+        `OrganizationalUnit.accounts` is unread in production, so nothing
+        else would catch the walk returning it empty; `root_id` is read, by
+        the ancestor walk in `placement/hierarchy.py`, which stops climbing
+        when it reaches it.
         """
         org_client = _paginating_org_client(
             ous_by_parent={
@@ -174,6 +179,32 @@ class TestBuildOrganizationHierarchy:
         assert hierarchy.organizational_units["ou-3333-33333333"].accounts == [
             "111111111111"
         ]
+
+    def test_a_top_level_ou_records_no_parent_ou(self) -> None:
+        """
+        A top-level OU's parent is the root, and the root is not an OU.
+
+        `parent_ou_id` names an OU a policy could attach to, and the root ID
+        is no more a substitute for None here than it is on a root-parented
+        account. Substituting it survived the whole suite: every other OU
+        assertion sits one level down, where the parent really is an OU, so
+        the wrong value and the right one agree. Nesting Payments under
+        Production separates the two cases in one fixture.
+        """
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [[{"Id": "ou-1111-11111111", "Name": "Production"}]],
+                "ou-1111-11111111": [[{"Id": "ou-2222-22222222", "Name": "Payments"}]],
+            },
+            accounts_by_parent={},
+        )
+
+        hierarchy = build_organization_hierarchy(org_client, "r-1111")
+
+        production = hierarchy.organizational_units["ou-1111-11111111"]
+        payments = hierarchy.organizational_units["ou-2222-22222222"]
+        assert production.parent_ou_id is None
+        assert payments.parent_ou_id == "ou-1111-11111111"
 
     def test_an_empty_intermediate_page_does_not_truncate(self) -> None:
         """
@@ -344,6 +375,28 @@ class TestBuildOrganizationHierarchy:
         assert hierarchy.accounts["111111111111"].ou_path == ["Root"]
         assert hierarchy.accounts["222222222222"].parent_ou_id is None
         assert hierarchy.accounts["222222222222"].ou_path == ["Root"]
+
+    def test_an_account_the_traversal_cannot_name_aborts(self) -> None:
+        """
+        The traversal reads `Name` off its own listing, not off membership.
+
+        `_verify_every_account_is_named` gates `list_accounts`, and the
+        placement view is a second call that returns its own dicts -- so an
+        account named there and not here reached `account["Name"]`
+        unguarded. A bare `KeyError` is the one failure `_failures_reported`
+        does not catch: the run ends in a traceback naming neither the
+        discovery phase nor the account.
+        """
+        org_client = _paginating_org_client(
+            ous_by_parent={},
+            accounts_by_parent={"r-1111": [[{"Id": "111111111111"}]]},
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            build_organization_hierarchy(org_client, "r-1111")
+
+        assert "111111111111" in str(exc_info.value)
+        assert "r-1111" in str(exc_info.value)
 
     def test_a_parent_reached_twice_aborts(self) -> None:
         """
