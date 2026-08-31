@@ -63,10 +63,11 @@ class AccountInfo:
     """
     An account Headroom will analyze, with its tag-derived metadata.
 
-    `name` is the analysis name: it comes from the configured tag when
-    `use_account_name_from_tags` is set and falls back to the account ID, so
-    it is deliberately distinct from `AccountOrgPlacement.account_name`, which
-    is always the name AWS Organizations reports.
+    `name` is the analysis name, set by `_determine_account_name`: from tags
+    if configured, otherwise from API, otherwise account ID. It diverges from
+    `AccountOrgPlacement.account_name` -- always the name AWS Organizations
+    reports -- only when `use_account_name_from_tags` is configured; by
+    default both fields hold the same Organizations-reported name.
     """
     account_id: str
     environment: str
@@ -83,10 +84,14 @@ class OrganizationSnapshot:
     and by all three Terraform generators. Nothing downstream refreshes
     Organizations data, so every stage reasons about the same organization.
 
-    The outer dataclass is frozen; `hierarchy` still holds dicts and lists.
-    Freezing the projections is what prevents a stage substituting its own,
-    which is the failure this type exists to remove; deep immutability of the
-    hierarchy is a separate concern and not one this change takes on.
+    The outer dataclass is frozen: a stage cannot reassign `organization_id`,
+    `member_account_ids`, `analyzable_accounts`, or `hierarchy` to a
+    projection it computed itself, which is the failure this type exists to
+    remove. It does not make the contents deeply immutable: `hierarchy`
+    still holds ordinary dicts and lists, and `analyzable_accounts` is a
+    tuple of mutable `AccountInfo` objects, so a stage already holding a
+    reference can still edit an entry in place. Deep immutability is
+    deliberately out of scope for this change.
 
     Attributes:
         organization_id: This organization's ID, such as `o-11111111111`
