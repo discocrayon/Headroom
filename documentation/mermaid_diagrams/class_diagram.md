@@ -47,6 +47,13 @@ classDiagram
     +Dict~str, AccountOrgPlacement~ accounts
   }
 
+  class OrganizationSnapshot {
+    +str organization_id
+    +FrozenSet~str~ member_account_ids
+    +Tuple~AccountInfo~ analyzable_accounts
+    +OrganizationHierarchy hierarchy
+  }
+
   class CheckResult {
     +str account_id
     +str account_name
@@ -134,6 +141,8 @@ classDiagram
   HeadroomConfig --> AccountTagLayout
   OrganizationHierarchy --> OrganizationalUnit
   OrganizationHierarchy --> AccountOrgPlacement
+  OrganizationSnapshot --> AccountInfo
+  OrganizationSnapshot --> OrganizationHierarchy
   CheckResult <|-- SCPCheckResult
   CheckResult <|-- RCPCheckResult
   BaseCheck ..> CategorizedCheckResult

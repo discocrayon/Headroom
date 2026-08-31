@@ -10,6 +10,7 @@ sequenceDiagram
   participant ParseSCP as headroom.parse_results
   participant ParseRCP as headroom.terraform.generate_rcps
   participant Org as headroom.aws.organization
+  participant Snapshot as headroom.aws.organization_snapshot
   participant TFSCP as headroom.terraform.generate_scps
   participant TFRCP as headroom.terraform.generate_rcps
   participant TFOrg as headroom.terraform.generate_org_info
@@ -18,13 +19,17 @@ sequenceDiagram
   CLI->>Usage: parse_cli_args()
   CLI->>Usage: load_yaml_config(path)
   CLI->>Usage: merge_configs(yaml, cli)
-  CLI->>Analysis: perform_analysis(config)
+
+  Note over CLI: Organization discovery, once per run
+  CLI->>Snapshot: discover_organization(config, org_client)
+  Snapshot->>Org: list_organization_accounts(), find_organization_root(), build_organization_hierarchy()
+  Org-->>Snapshot: membership and OrganizationHierarchy
+  Snapshot-->>CLI: OrganizationSnapshot
+
+  CLI->>Analysis: perform_analysis(config, security_session, snapshot)
   Analysis-->>CLI: None (writes JSON results)
 
-  Note over CLI: Setup Organization Context
-  CLI->>Org: analyze_organization_structure(session)
-  Org-->>CLI: OrganizationHierarchy
-  CLI->>TFOrg: generate_terraform_org_info(session, path)
+  CLI->>TFOrg: generate_terraform_org_info(snapshot.hierarchy, path)
   TFOrg-->>CLI: grab_org_info.tf written
 
   Note over CLI: SCP Workflow
@@ -50,6 +55,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
+  participant Main as headroom.main
   participant Analysis as headroom.analysis
   participant STS as boto3 STS
   participant Orgs as boto3 Organizations
@@ -60,12 +66,12 @@ sequenceDiagram
   participant WriteResults as headroom.write_results
   participant FS as filesystem
 
-  Analysis->>STS: assume OrgAndAccountInfoReader role
-  STS-->>Analysis: temp credentials
-  Analysis->>Orgs: list_accounts + list_tags_for_resource
-  Orgs-->>Analysis: accounts with tags
-  Analysis->>Analysis: get_relevant_subaccounts()
-  loop for each account (concurrently, max_account_workers at a time)
+  Main->>STS: assume OrgAndAccountInfoReader role
+  STS-->>Main: temp credentials
+  Main->>Orgs: discover_organization(): describe_organization, list_accounts,<br/>list_roots, the OU traversal, then list_tags_for_resource per analyzable account
+  Orgs-->>Main: OrganizationSnapshot
+  Main->>Analysis: perform_analysis(config, security_session, snapshot)
+  loop for each snapshot.analyzable_accounts entry (concurrently, max_account_workers at a time)
     Analysis->>Analysis: all_check_results_exist("scps", account_info)
     Analysis->>Analysis: all_check_results_exist("rcps", account_info)
     opt if any results don't exist

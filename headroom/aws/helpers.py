@@ -123,15 +123,15 @@ def memoize_per_session(
     plausible and wrong.
 
     That guard cannot fire in a real run, and it is not the cross-account
-    check it resembles. `perform_analysis` computes both values once and
-    threads them unchanged into every account, so the comparison is always
-    between two copies of one thing; only a direct caller can trip it. The
-    failure it does not catch is the one that would matter: one session
-    reaching two accounts carries identical organization arguments and would
-    be served the first account's policies in silence. Nothing here can see
-    that, because the analyzer signature carries no account identity. What
-    rules it out is one session per worker and one worker per account,
-    upstream in `run_checks`.
+    check it resembles. `discover_organization` captures both values once,
+    and `run_checks` threads them unchanged into every account, so the
+    comparison is always between two copies of one thing; only a direct
+    caller can trip it. The failure it does not catch is the one that would
+    matter: one session reaching two accounts carries identical organization
+    arguments and would be served the first account's policies in silence.
+    Nothing here can see that, because the analyzer signature carries no
+    account identity. What rules it out is one session per worker and one
+    worker per account, upstream in `run_checks`.
 
     Nothing here checks that upstream property at runtime either, and a
     thread-identity check on the memo entry is the obvious thing to reach for

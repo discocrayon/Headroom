@@ -9,8 +9,6 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from boto3.session import Session
-
 from .utils import (
     account_id_local_name,
     make_account_base_names,
@@ -18,7 +16,6 @@ from .utils import (
     ou_id_local_name,
     ou_path_names,
 )
-from ..aws.organization import analyze_organization_structure
 from ..constants import GENERATED_MARKER
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
 
@@ -26,27 +23,33 @@ from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlaceme
 logger = logging.getLogger(__name__)
 
 
-def generate_terraform_org_info(session: Session, output_path: str) -> None:
+def generate_terraform_org_info(
+    organization_hierarchy: OrganizationHierarchy,
+    output_path: str
+) -> None:
     """
-    Generate grab_org_info.tf file with organization structure data sources.
+    Generate grab_org_info.tf from an already-captured hierarchy.
+
+    This used to run a hierarchy traversal of its own, which was the second
+    of two in a single run. The two were independent reads, so the data
+    sources written here could describe a different organization from the one
+    placement had just used. It now renders the hierarchy the run captured.
 
     Args:
-        session: AWS session with Organizations API access
+        organization_hierarchy: The run's captured organization hierarchy
         output_path: Path to write the Terraform file
 
     Raises:
-        RuntimeError: If organization structure analysis fails
-        IOError: If file write fails
+        IOError: If the file write fails
     """
     logger.info("Generating Terraform organization info file")
+    logger.info(
+        f"Found {len(organization_hierarchy.organizational_units)} OUs and "
+        f"{len(organization_hierarchy.accounts)} accounts"
+    )
 
-    organization_hierarchy = analyze_organization_structure(session)
-    logger.info(f"Found {len(organization_hierarchy.organizational_units)} OUs and {len(organization_hierarchy.accounts)} accounts")
-
-    # Generate Terraform content
     terraform_content = _generate_terraform_content(organization_hierarchy)
 
-    # Write to file
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -386,7 +389,7 @@ def _generate_terraform_content(organization_hierarchy: OrganizationHierarchy) -
     Generate Terraform content with data sources derived from root_ou, no hardcoded IDs.
 
     Args:
-        organization_hierarchy: Organization structure data from analyze_organization_structure()
+        organization_hierarchy: Organization structure data from discover_organization()
 
     Returns:
         Complete Terraform configuration as string

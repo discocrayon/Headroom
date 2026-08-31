@@ -22,11 +22,21 @@ a single invariant -- no `(service, region, operation)` triple is issued twice
 in one account's run -- so it needs no edit when a check is added. Measured
 against the same twelfth check: it fails with
 `eks ap-southeast-2 list_clusters x3` while the three above stay green.
+
+`TestOrganizationsIsReadOnce` is a third contract, not a per-account memo: it
+pins the one-time organization read that replaced four independent ones. One
+test counts the management-role assumptions and discovery calls a run makes;
+the other drives a real discovery against a recording client, hands the
+resulting snapshot to every projection and to the org-info render, and
+asserts the client sees no further call. Together they cover both ways the
+property could regress: an added call site, or a consumer that re-reads
+instead of reusing what discovery captured.
 """
 
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any, Callable, DefaultDict, Dict, List, Sequence, Set, Tuple
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock, mock_open, patch
 
 from botocore.exceptions import ClientError
 
@@ -40,10 +50,15 @@ from headroom.aws.ecr import analyze_ecr_policies
 from headroom.aws.helpers import get_all_regions
 from headroom.aws.iam.roles import analyze_iam_roles_trust_policies
 from headroom.aws.kms import analyze_kms_key_policies
+from headroom.aws.organization_snapshot import discover_organization
 from headroom.aws.s3 import analyze_s3_bucket_policies
 from headroom.aws.secretsmanager import analyze_secrets_manager_policies
 from headroom.aws.sqs import analyze_sqs_queue_policies
 from headroom.checks.registry import get_all_check_classes
+from headroom.config import AccountTagLayout, HeadroomConfig
+from headroom.main import main
+from headroom.terraform.generate_org_info import generate_terraform_org_info
+from headroom.types import OrganizationHierarchy, OrganizationSnapshot
 
 ORG_ACCOUNT_IDS = {"111111111111"}
 ORG_ID = "o-11111111111"
@@ -286,3 +301,141 @@ class TestNoCheckRepeatsAnother:
 
         assert repeated == []
         assert operations, "no check issued an operation; the harness is not exercising them"
+
+
+class _RecordingOrganizationsClient(Mock):
+    """
+    An Organizations client that logs every operation asked of it.
+
+    Subclasses `Mock` rather than standing alone: `discover_organization`
+    types its client parameter as the real boto3-stubs `OrganizationsClient`,
+    a concrete class not a protocol, so an unrelated plain class fails mypy's
+    argument check. A `Mock` subclass is what the two AWS-side call sites of
+    this pattern already use for the same reason -- `_org_client` in
+    `tests/test_aws_organization_snapshot.py` and its similarly-named sibling
+    in `tests/test_aws_organization.py`. `get_paginator` and
+    `describe_organization` are overridden below; every other attribute this
+    client is asked for resolves through Mock's own auto-attribute behavior.
+    """
+
+    ACCOUNTS: List[Dict[str, str]] = [
+        {"Id": "111111111111", "Name": "management", "Status": "ACTIVE"},
+        {"Id": "222222222222", "Name": "payments", "Status": "ACTIVE"},
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.operations: List[str] = []
+
+    def get_paginator(self, operation_name: str) -> Mock:
+        """Log the paginated operation and hand back this fixture's pages."""
+        self.operations.append(operation_name)
+        paginator = Mock()
+
+        def paginate_op(**kwargs: str) -> List[Dict[str, Any]]:
+            if operation_name == "list_accounts":
+                return [{"Accounts": self.ACCOUNTS}]
+            if operation_name == "list_roots":
+                return [{"Roots": [{"Id": "r-1111"}]}]
+            if operation_name == "list_tags_for_resource":
+                return [{"Tags": []}]
+            if operation_name == "list_organizational_units_for_parent":
+                return [{"OrganizationalUnits": []}]
+            return [{"Accounts": self.ACCOUNTS if kwargs["ParentId"] == "r-1111" else []}]
+
+        paginator.paginate.side_effect = paginate_op
+        return paginator
+
+    def describe_organization(self) -> Dict[str, Any]:
+        """Log the call and report the one organization this fixture has."""
+        self.operations.append("describe_organization")
+        return {"Organization": {"Id": ORG_ID}}
+
+
+def _snapshot_config() -> HeadroomConfig:
+    """A configuration whose management account is the first fixture account."""
+    return HeadroomConfig(
+        management_account_id="111111111111",
+        security_analysis_account_id="222222222222",
+        use_account_name_from_tags=False,
+        account_tag_layout=AccountTagLayout(environment="Env", name="Name", owner="Owner"),
+    )
+
+
+class TestOrganizationsIsReadOnce:
+    """One run, one management assumption, one discovery pass."""
+
+    def test_main_assumes_management_and_discovers_exactly_once(self) -> None:
+        """
+        A run used to assume the management role four times and enumerate the
+        organization twice, from four call sites that could each see a
+        different organization.
+        """
+        snapshot = OrganizationSnapshot(
+            organization_id=ORG_ID,
+            member_account_ids=frozenset({"111111111111"}),
+            analyzable_accounts=(),
+            hierarchy=OrganizationHierarchy(
+                root_id="r-1111", organizational_units={}, accounts={}
+            ),
+        )
+
+        with patch("headroom.main.get_security_analysis_session") as security, \
+             patch("headroom.main.get_management_account_session") as management, \
+             patch("headroom.main.discover_organization", return_value=snapshot) as discover, \
+             patch("headroom.main.perform_analysis"), \
+             patch("headroom.main.parse_cli_args"), \
+             patch("headroom.main.load_yaml_config"), \
+             patch("headroom.main.setup_configuration", return_value=_snapshot_config()), \
+             patch("headroom.main.generate_terraform_org_info"), \
+             patch("headroom.main.ensure_org_info_symlink"), \
+             patch("headroom.main.handle_scp_workflow", return_value=[]), \
+             patch("headroom.main.handle_rcp_workflow", return_value=[]), \
+             patch("headroom.main.reconcile_generated_terraform"):
+            main()
+
+        assert security.call_count == 1
+        assert management.call_count == 1
+        assert discover.call_count == 1
+
+    def test_reusing_the_snapshot_reads_no_more_organizations_data(self) -> None:
+        """
+        Every projection and the org-info render come from what was captured.
+        A consumer that refreshed would reintroduce the inconsistency.
+
+        The expected value below is a literal, not a copy of
+        `org_client.operations` taken right after discovery. Nothing between
+        that capture and an assertion against it could ever add an
+        operation -- the four projection reads are plain attribute access on
+        a frozen dataclass, and `generate_terraform_org_info` takes no
+        client -- so a captured-copy comparison would hold no matter what
+        discovery read or what a consumer read afterward: it would compare
+        the list to itself. The literal is this fixture's whole call log,
+        hand-traced against `discover_organization`: one
+        `describe_organization`, one paginated `list_accounts`, one
+        `list_roots`, one OU traversal of the fixture's single parent (the
+        root) -- `list_organizational_units_for_parent` then
+        `list_accounts_for_parent`, each once, not the twice a recursive
+        traversal used to cost -- and one `list_tags_for_resource`, because
+        `management` is excluded from analysis and only `payments` is
+        tagged. A regression in discovery's count or order changes this
+        list; a consumer that re-reads Organizations appends to it.
+        """
+        org_client = _RecordingOrganizationsClient()
+        snapshot = discover_organization(_snapshot_config(), org_client)
+
+        _ = snapshot.organization_id
+        _ = snapshot.member_account_ids
+        _ = snapshot.analyzable_accounts
+        _ = snapshot.hierarchy
+        with patch("builtins.open", mock_open()), patch.object(Path, "mkdir"):
+            generate_terraform_org_info(snapshot.hierarchy, "out/grab_org_info.tf")
+
+        assert org_client.operations == [
+            "describe_organization",
+            "list_accounts",
+            "list_roots",
+            "list_organizational_units_for_parent",
+            "list_accounts_for_parent",
+            "list_tags_for_resource",
+        ]

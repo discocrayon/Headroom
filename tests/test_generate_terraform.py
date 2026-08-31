@@ -93,12 +93,10 @@ class TestTerraformGeneration:
         assert 'data "aws_organizations_organizational_units" "root_ou"' in content
         assert 'locals {' in content
 
-    @patch('headroom.terraform.generate_org_info.analyze_organization_structure')
     @patch('builtins.open', create=True)
     @patch('pathlib.Path.mkdir')
-    def test_generate_terraform_org_info_success(self, mock_mkdir: Mock, mock_open: Mock, mock_analyze: Mock) -> None:
+    def test_generate_terraform_org_info_success(self, mock_mkdir: Mock, mock_open: Mock) -> None:
         """Test successful Terraform file generation."""
-        # Mock organization hierarchy
         hierarchy = OrganizationHierarchy(
             root_id="r-1111",
             organizational_units={
@@ -108,18 +106,15 @@ class TestTerraformGeneration:
                 "acc-1": AccountOrgPlacement("acc-1", "prod-account", "ou-1", ["Production"]),
             }
         )
-        mock_analyze.return_value = hierarchy
 
         # Mock file operations
         mock_file = Mock()
         mock_file.write = Mock()
         mock_open.return_value.__enter__.return_value = mock_file
 
-        mock_session = Mock()
-        generate_terraform_org_info(mock_session, "test_path/grab_org_info.tf")
+        generate_terraform_org_info(hierarchy, "test_path/grab_org_info.tf")
 
         # Verify calls
-        mock_analyze.assert_called_once_with(mock_session)
         mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
         mock_open.assert_called_once()
 
@@ -127,36 +122,20 @@ class TestTerraformGeneration:
         written_content = mock_file.write.call_args[0][0]
         assert 'data "aws_organizations_organization" "org" {}' in written_content
 
-    @patch('headroom.terraform.generate_org_info.analyze_organization_structure')
-    def test_generate_terraform_org_info_analysis_error(self, mock_analyze: Mock) -> None:
-        """Test Terraform generation with analysis error."""
-        mock_analyze.side_effect = RuntimeError("Analysis failed")
-        mock_session = Mock()
-
-        # Should raise exception (fail fast)
-        with pytest.raises(RuntimeError, match="Analysis failed"):
-            generate_terraform_org_info(mock_session, "test_path/grab_org_info.tf")
-
-        mock_analyze.assert_called_once_with(mock_session)
-
-    @patch('headroom.terraform.generate_org_info.analyze_organization_structure')
     @patch('builtins.open', side_effect=IOError("File write error"))
     @patch('pathlib.Path.mkdir')
-    def test_generate_terraform_org_info_file_error(self, mock_mkdir: Mock, mock_open: Mock, mock_analyze: Mock) -> None:
+    def test_generate_terraform_org_info_file_error(self, mock_mkdir: Mock, mock_open: Mock) -> None:
         """Test Terraform generation with file write error."""
         hierarchy = OrganizationHierarchy(
             root_id="r-1111",
             organizational_units={},
             accounts={}
         )
-        mock_analyze.return_value = hierarchy
-        mock_session = Mock()
 
         # Should raise exception (fail fast)
         with pytest.raises(IOError, match="File write error"):
-            generate_terraform_org_info(mock_session, "test_path/grab_org_info.tf")
+            generate_terraform_org_info(hierarchy, "test_path/grab_org_info.tf")
 
-        mock_analyze.assert_called_once_with(mock_session)
         mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
 
 

@@ -9,7 +9,7 @@ graph TD
   headroom.main --> headroom.terraform.generate_scps
   headroom.main --> headroom.terraform.generate_rcps
   headroom.main --> headroom.terraform.generate_org_info
-  headroom.main --> headroom.aws.organization
+  headroom.main --> headroom.aws.organization_snapshot
   headroom.main --> headroom.types
   headroom.main --> headroom.constants
   headroom.main --> headroom.output
@@ -55,8 +55,11 @@ graph TD
   headroom.terraform.generate_rcps --> headroom.parse_results
   headroom.terraform.generate_rcps --> headroom.placement.hierarchy
 
-  headroom.terraform.generate_org_info --> headroom.aws.organization
   headroom.terraform.generate_org_info --> headroom.types
+
+  headroom.aws.organization_snapshot --> headroom.aws.organization
+  headroom.aws.organization_snapshot --> headroom.config
+  headroom.aws.organization_snapshot --> headroom.types
 
   headroom.aws.organization --> headroom.types
   headroom.aws.ec2 --> headroom.types

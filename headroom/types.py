@@ -58,6 +58,67 @@ class OrganizationHierarchy:
     accounts: Dict[str, AccountOrgPlacement]
 
 
+@dataclass(frozen=True)
+class AccountInfo:
+    """
+    An account Headroom will analyze, with its tag-derived metadata.
+
+    `name` is the analysis name, set by `_determine_account_name`.
+    `use_account_name_from_tags` picks which source it comes from, and the two
+    paths never fall through to each other: with the flag set it is the
+    configured name tag, or the account ID when that tag is absent; with the
+    flag unset it is the name AWS Organizations reports, which needs no
+    fallback of its own because discovery has already aborted on an account
+    that came back without one. A missing name tag therefore yields the
+    account ID, not the Organizations name.
+
+    It diverges from `AccountOrgPlacement.account_name` -- always the name
+    Organizations reports -- only when `use_account_name_from_tags` is
+    configured; by default both fields hold the same Organizations name.
+    """
+    account_id: str
+    environment: str
+    name: str
+    owner: str
+
+
+@dataclass(frozen=True)
+class OrganizationSnapshot:
+    """
+    One run's captured view of the organization.
+
+    Built once, by `discover_organization`, and consumed unchanged by the scan
+    and by all three Terraform generators. Nothing downstream refreshes
+    Organizations data, so every stage reasons about the same organization.
+
+    The outer dataclass is frozen: a stage cannot reassign `organization_id`,
+    `member_account_ids`, `analyzable_accounts`, or `hierarchy` to a
+    projection it computed itself, which is the failure this type exists to
+    remove. Three of the four fields are immutable the whole way down --
+    `organization_id` is a string, `member_account_ids` a frozenset, and
+    `analyzable_accounts` a tuple of frozen `AccountInfo` -- so a stage that
+    holds a reference cannot edit an entry in place either.
+
+    `hierarchy` is the one exception: `OrganizationHierarchy` holds ordinary
+    dicts and lists, so its contents stay mutable. Deep-freezing it would mean
+    reworking every producer and consumer of those collections, and that is
+    deliberately out of scope here.
+
+    Attributes:
+        organization_id: This organization's ID, such as `o-11111111111`
+        member_account_ids: Every organization member, including the
+            management account, accounts skipped by configuration, and
+            accounts in every non-ACTIVE lifecycle state
+        analyzable_accounts: The accounts the scan will run against, in the
+            order Organizations reported them
+        hierarchy: The complete OU tree, retaining every account
+    """
+    organization_id: str
+    member_account_ids: frozenset[str]
+    analyzable_accounts: tuple[AccountInfo, ...]
+    hierarchy: OrganizationHierarchy
+
+
 @dataclass
 class CheckResult:
     """
