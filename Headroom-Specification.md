@@ -3534,18 +3534,22 @@ account under that OU started violating it: without reconciliation the OU-wide
 attachment survives and keeps denying the very account whose violation forced
 the move.
 
-`main()` reconciles once, after both workflows return, over the union of:
+`main()` reconciles once, after every writer has run, over the union of:
 
 | Source | Contributes |
 |---|---|
-| `handle_scp_workflow` | Every path in the SCP plan |
-| `handle_rcp_workflow` | Every path in the RCP plan |
+| `generate_scp_terraform` | Every path in the SCP plan |
+| `generate_rcp_terraform` | Every path in the RCP plan |
 | `generate_terraform_org_info` | `{scps_dir}/grab_org_info.tf` |
 
 Every generated `.tf` in either directory that the union omits is deleted.
-Reconciling after both workflows - rather than inside each - is what keeps a
-raise anywhere in generation from deleting anything: the previous output stays
-whole, complete, and deployable.
+`handle_scp_workflow` and `handle_rcp_workflow` parse, place, and print, but
+write nothing - `main()` calls both, in full, before any of the three writers
+above runs, so a parse or placement failure in either policy type has written
+nothing when it raises. Reconciling once, after both workflows and all three
+writers - rather than inside each - is what keeps a raise anywhere in
+generation from deleting anything: the previous output stays whole, complete,
+and deployable.
 
 **What counts as Headroom's file:** the first line, matched exactly:
 
