@@ -6,14 +6,16 @@ using the AWS Organizations API.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, cast
 
 from boto3.session import Session
 from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
+from mypy_boto3_organizations.type_defs import RootTypeDef
 
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
 from ..utils import make_safe_variable_name
+from .helpers import paginate
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -98,6 +100,52 @@ def _build_ou_hierarchy(
         raise RuntimeError(f"Failed to list OUs for parent {parent_ou_id}: {e}")
 
 
+def find_organization_root(org_client: OrganizationsClient) -> str:
+    """
+    Return the organization's single root ID.
+
+    `list_roots` paginates. An organization has one root today, but the
+    paginator is free to split any listing, so reading page one alone
+    reported "No roots found" for a root that arrived on page two.
+
+    Two roots abort rather than resolving to the first. Which root came first
+    is page order, and picking one would traverse half the organization while
+    reporting a complete hierarchy -- placement would then recommend
+    account-level policies for accounts whose OU it never saw.
+
+    Args:
+        org_client: AWS Organizations client
+
+    Returns:
+        The organization root ID, such as `r-1111`
+
+    Raises:
+        RuntimeError: If the listing fails, or reports no root or several
+    """
+    roots: List[RootTypeDef] = []
+
+    try:
+        for page in paginate(org_client, "list_roots"):
+            roots.extend(cast(Sequence[RootTypeDef], page.get("Roots", [])))
+    except (ClientError, BotoCoreError) as e:
+        raise RuntimeError(f"Failed to get organization root: {e}")
+
+    if not roots:
+        raise RuntimeError("No roots found in organization")
+
+    if len(roots) > 1:
+        listed = ", ".join(sorted(root["Id"] for root in roots))
+        raise RuntimeError(
+            f"Organizations reported {len(roots)} roots: {listed}. Headroom "
+            "traverses one root, and choosing among them by page order would "
+            "report a complete hierarchy after seeing part of the organization."
+        )
+
+    root_id = roots[0]["Id"]
+    logger.info(f"Found organization root: {root_id}")
+    return root_id
+
+
 def analyze_organization_structure(session: Session) -> OrganizationHierarchy:
     """
     Analyze AWS Organizations structure including root, OUs, and account relationships.
@@ -106,15 +154,7 @@ def analyze_organization_structure(session: Session) -> OrganizationHierarchy:
     """
     org_client: OrganizationsClient = session.client("organizations")
 
-    # Get root information
-    try:
-        roots_response = org_client.list_roots()
-        if not roots_response.get("Roots"):
-            raise RuntimeError("No roots found in organization")
-        root_id = roots_response["Roots"][0]["Id"]
-        logger.info(f"Found organization root: {root_id}")
-    except (ClientError, BotoCoreError) as e:
-        raise RuntimeError(f"Failed to get organization root: {e}")
+    root_id = find_organization_root(org_client)
 
     # Build OU hierarchy recursively
     organizational_units: Dict[str, OrganizationalUnit] = {}

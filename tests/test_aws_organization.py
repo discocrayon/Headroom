@@ -1,6 +1,6 @@
 """Tests for headroom/aws/organization.py."""
 
-from typing import Dict
+from typing import Any, Dict, Iterator
 from unittest.mock import Mock, patch
 
 import pytest
@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from headroom.aws.organization import (
     analyze_organization_structure,
     create_account_ou_mapping,
+    find_organization_root,
     lookup_account_id_by_name,
 )
 from headroom.types import (
@@ -28,9 +29,9 @@ class TestOrganizationStructureAnalysis:
         mock_session.client.return_value = mock_org_client
 
         # Mock root response
-        mock_org_client.list_roots.return_value = {
-            "Roots": [{"Id": "r-1111"}]
-        }
+        roots_paginator = Mock()
+        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
+        mock_org_client.get_paginator.return_value = roots_paginator
 
         # Mock OU responses
         mock_org_client.list_organizational_units_for_parent.side_effect = [
@@ -79,7 +80,9 @@ class TestOrganizationStructureAnalysis:
         mock_org_client = Mock()
         mock_session.client.return_value = mock_org_client
 
-        mock_org_client.list_roots.return_value = {"Roots": [{"Id": "r-1111"}]}
+        roots_paginator = Mock()
+        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
+        mock_org_client.get_paginator.return_value = roots_paginator
         mock_org_client.list_organizational_units_for_parent.side_effect = [
             {"OrganizationalUnits": [{"Id": "ou-1234", "Name": "Production"}]},
             {"OrganizationalUnits": []},
@@ -107,7 +110,9 @@ class TestOrganizationStructureAnalysis:
         mock_org_client = Mock()
         mock_session.client.return_value = mock_org_client
 
-        mock_org_client.list_roots.return_value = {"Roots": []}
+        roots_paginator = Mock()
+        roots_paginator.paginate.return_value = [{"Roots": []}]
+        mock_org_client.get_paginator.return_value = roots_paginator
 
         with pytest.raises(RuntimeError, match="No roots found in organization"):
             analyze_organization_structure(mock_session)
@@ -118,10 +123,12 @@ class TestOrganizationStructureAnalysis:
         mock_org_client = Mock()
         mock_session.client.return_value = mock_org_client
 
-        mock_org_client.list_roots.side_effect = ClientError(
+        roots_paginator = Mock()
+        roots_paginator.paginate.side_effect = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "AWS Error"}},
             "ListRoots"
         )
+        mock_org_client.get_paginator.return_value = roots_paginator
 
         with pytest.raises(RuntimeError, match="Failed to get organization root"):
             analyze_organization_structure(mock_session)
@@ -155,9 +162,9 @@ class TestOrganizationStructureAnalysis:
         mock_session.client.return_value = mock_org_client
 
         # Mock root response
-        mock_org_client.list_roots.return_value = {
-            "Roots": [{"Id": "r-1111"}]
-        }
+        roots_paginator = Mock()
+        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
+        mock_org_client.get_paginator.return_value = roots_paginator
 
         # Mock OU responses with errors
         mock_org_client.list_organizational_units_for_parent.side_effect = [
@@ -191,9 +198,9 @@ class TestOrganizationStructureAnalysis:
         mock_session.client.return_value = mock_org_client
 
         # Mock root response
-        mock_org_client.list_roots.return_value = {
-            "Roots": [{"Id": "r-1111"}]
-        }
+        roots_paginator = Mock()
+        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
+        mock_org_client.get_paginator.return_value = roots_paginator
 
         # Mock OU responses (empty)
         mock_org_client.list_organizational_units_for_parent.return_value = {
@@ -220,9 +227,9 @@ class TestOrganizationStructureAnalysis:
         mock_session.client.return_value = mock_org_client
 
         # Mock root response
-        mock_org_client.list_roots.return_value = {
-            "Roots": [{"Id": "r-1111"}]
-        }
+        roots_paginator = Mock()
+        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
+        mock_org_client.get_paginator.return_value = roots_paginator
 
         # Mock OU listing failure
         mock_org_client.list_organizational_units_for_parent.side_effect = ClientError(
@@ -349,3 +356,66 @@ class TestLookupAccountIdByName:
 
         assert lookup_account_id_by_name("management-account", hierarchy) == "111111111111"
         assert lookup_account_id_by_name("Management Account", hierarchy) == "222222222222"
+
+
+class TestFindOrganizationRoot:
+    """Test find_organization_root."""
+
+    def test_a_root_on_the_second_page_is_found(self) -> None:
+        """
+        list_roots paginates, so page one is not the whole answer.
+
+        An organization reports one root, but the paginator is free to split
+        any listing. Reading only page one turned an organization with a
+        root on page two into "No roots found".
+        """
+        org_client = Mock()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Roots": []},
+            {"Roots": [{"Id": "r-1111"}]},
+        ]
+        org_client.get_paginator.return_value = paginator
+
+        assert find_organization_root(org_client) == "r-1111"
+
+    def test_no_roots_aborts(self) -> None:
+        """An organization with no root cannot be traversed."""
+        org_client = Mock()
+        paginator = Mock()
+        paginator.paginate.return_value = [{"Roots": []}]
+        org_client.get_paginator.return_value = paginator
+
+        with pytest.raises(RuntimeError, match="No roots found in organization"):
+            find_organization_root(org_client)
+
+    def test_more_than_one_root_aborts(self) -> None:
+        """
+        Picking roots[0] from two roots would silently traverse half the
+        organization, and which half would depend on page order.
+        """
+        org_client = Mock()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Roots": [{"Id": "r-1111"}, {"Id": "r-2222"}]},
+        ]
+        org_client.get_paginator.return_value = paginator
+
+        with pytest.raises(RuntimeError, match="r-1111, r-2222"):
+            find_organization_root(org_client)
+
+    def test_a_later_page_error_aborts(self) -> None:
+        """A failure partway through must not return page one's roots."""
+        org_client = Mock()
+        paginator = Mock()
+        error: object = {"Error": {"Code": "AccessDenied"}}
+
+        def pages() -> Iterator[Dict[str, Any]]:
+            yield {"Roots": [{"Id": "r-1111"}]}
+            raise ClientError(error, "ListRoots")  # type: ignore[arg-type]
+
+        paginator.paginate.return_value = pages()
+        org_client.get_paginator.return_value = paginator
+
+        with pytest.raises(RuntimeError, match="Failed to get organization root"):
+            find_organization_root(org_client)
