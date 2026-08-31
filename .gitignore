@@ -31,9 +31,3 @@ design-docs/
 *.swp
 *.swo
 *~
-
-# Terraform output directories from the main integration tests, which point
-# generation at these relative paths and so create them in whatever directory
-# the suite is run from -- normally the repository root.
-test_scps/
-test_rcps/
