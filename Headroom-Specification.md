@@ -4599,9 +4599,9 @@ def run_checks_for_type(
 
 def run_checks(
     security_session: boto3.Session,
-    relevant_account_infos: List[AccountInfo],
+    relevant_account_infos: Sequence[AccountInfo],
     config: HeadroomConfig,
-    org_account_ids: Set[str],
+    org_account_ids: AbstractSet[str],
     org_id: str
 ) -> None:
     """

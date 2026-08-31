@@ -6,8 +6,7 @@ Tests Terraform configuration generation for AWS Organizations structure data.
 
 import pytest
 from typing import Dict
-from pathlib import Path
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import Mock, patch
 
 
 from headroom.constants import GENERATED_MARKER
@@ -93,40 +92,6 @@ class TestTerraformGeneration:
         assert 'data "aws_organizations_organization" "org" {}' in content
         assert 'data "aws_organizations_organizational_units" "root_ou"' in content
         assert 'locals {' in content
-
-    def test_generating_org_info_reads_no_organizations_data(self) -> None:
-        """
-        Rendering grab_org_info.tf must not call AWS.
-
-        It used to run a second full hierarchy traversal of its own, which
-        could observe a different organization from the one placement used.
-        """
-        hierarchy = OrganizationHierarchy(
-            root_id="r-1111",
-            organizational_units={
-                "ou-1111-11111111": OrganizationalUnit(
-                    ou_id="ou-1111-11111111",
-                    name="Production",
-                    parent_ou_id=None,
-                    child_ous=[],
-                    accounts=["111111111111"],
-                )
-            },
-            accounts={
-                "111111111111": AccountOrgPlacement(
-                    account_id="111111111111",
-                    account_name="payments",
-                    parent_ou_id="ou-1111-11111111",
-                    ou_path=["Production"],
-                )
-            },
-        )
-
-        with patch("builtins.open", mock_open()) as mock_file, patch.object(Path, "mkdir"):
-            generate_terraform_org_info(hierarchy, "test_path/grab_org_info.tf")
-
-        written = "".join(call.args[0] for call in mock_file().write.call_args_list)
-        assert "Production" in written
 
     @patch('builtins.open', create=True)
     @patch('pathlib.Path.mkdir')

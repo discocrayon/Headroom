@@ -134,6 +134,47 @@ class TestBuildOrganizationHierarchy:
         assert sandbox.parent_ou_id is None
         assert sandbox.ou_path == ["Root"]
 
+    def test_a_nested_account_records_the_path_from_the_root_down(self) -> None:
+        """
+        `ou_path` reads root-to-leaf, and three levels make the order visible.
+
+        Every other placement assertion here sits one level down, where a
+        path holds a single name and root-to-leaf and leaf-to-root are the
+        same list. Reversing the walk's `path + [child]` to `[child] + path`
+        therefore left the whole suite green while every nested account's
+        path pointed the wrong way, and `ou_path` is what Terraform
+        placement is written from.
+
+        The expected values are read off the fixture rather than recomputed:
+        Production holds Payments, Payments holds Ledger, and the one
+        account sits in Ledger, so the path from the root down to it names
+        those three OUs in that order. The root itself is not in the path --
+        `["Root"]` is what an account parented directly by the root carries,
+        and this one is not. `root_id` and the leaf OU's `accounts` are
+        asserted here too: nothing in production reads either, so without a
+        pin the walk can return any root ID and no accounts at all.
+        """
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [[{"Id": "ou-1111-11111111", "Name": "Production"}]],
+                "ou-1111-11111111": [[{"Id": "ou-2222-22222222", "Name": "Payments"}]],
+                "ou-2222-22222222": [[{"Id": "ou-3333-33333333", "Name": "Ledger"}]],
+            },
+            accounts_by_parent={
+                "ou-3333-33333333": [[{"Id": "111111111111", "Name": "ledger"}]],
+            },
+        )
+
+        hierarchy = build_organization_hierarchy(org_client, "r-1111")
+
+        assert hierarchy.root_id == "r-1111"
+        ledger = hierarchy.accounts["111111111111"]
+        assert ledger.parent_ou_id == "ou-3333-33333333"
+        assert ledger.ou_path == ["Production", "Payments", "Ledger"]
+        assert hierarchy.organizational_units["ou-3333-33333333"].accounts == [
+            "111111111111"
+        ]
+
     def test_an_empty_intermediate_page_does_not_truncate(self) -> None:
         """
         An empty page mid-listing is not the end of the listing.
