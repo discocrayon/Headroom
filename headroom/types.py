@@ -63,11 +63,17 @@ class AccountInfo:
     """
     An account Headroom will analyze, with its tag-derived metadata.
 
-    `name` is the analysis name, set by `_determine_account_name`: from tags
-    if configured, otherwise from API, otherwise account ID. It diverges from
-    `AccountOrgPlacement.account_name` -- always the name AWS Organizations
-    reports -- only when `use_account_name_from_tags` is configured; by
-    default both fields hold the same Organizations-reported name.
+    `name` is the analysis name, set by `_determine_account_name`.
+    `use_account_name_from_tags` picks which source it comes from, and the two
+    paths never fall through to each other: with the flag set it is the
+    configured name tag, or the account ID when that tag is absent; with the
+    flag unset it is the name AWS Organizations reports, or the account ID
+    when that is empty. A missing name tag therefore yields the account ID,
+    not the Organizations name.
+
+    It diverges from `AccountOrgPlacement.account_name` -- always the name
+    Organizations reports -- only when `use_account_name_from_tags` is
+    configured; by default both fields hold the same Organizations name.
     """
     account_id: str
     environment: str

@@ -100,7 +100,10 @@ def _determine_account_name(account: AccountTypeDef, tags: Dict[str, str], confi
         config: Headroom configuration
 
     Returns:
-        Account name (from tags if configured, otherwise from API, otherwise account ID)
+        The configured name tag when use_account_name_from_tags is set,
+        otherwise the name Organizations reports. Each path falls back to the
+        account ID, and never to the other: a missing name tag yields the
+        account ID rather than the Organizations name.
     """
     account_id: str = account["Id"]
     if config.use_account_name_from_tags:
