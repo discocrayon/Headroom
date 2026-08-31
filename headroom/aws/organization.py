@@ -247,6 +247,32 @@ def find_organization_root(org_client: OrganizationsClient) -> str:
     return root_id
 
 
+def list_organization_accounts(
+    org_client: OrganizationsClient
+) -> List[AccountTypeDef]:
+    """
+    Return every account in the organization, across all pages.
+
+    This is the membership and lifecycle oracle, and it is deliberately
+    unfiltered: a closed account is still an organization member and still
+    matches organization-based RCP conditions, so dropping one here would
+    reclassify a recently closed sibling as a third party.
+
+    Args:
+        org_client: AWS Organizations client
+
+    Returns:
+        Every account, in every lifecycle state, including the management
+        account
+    """
+    accounts: List[AccountTypeDef] = []
+
+    for page in paginate(org_client, "list_accounts"):
+        accounts.extend(cast(Sequence[AccountTypeDef], page.get("Accounts", [])))
+
+    return accounts
+
+
 def _format_account_candidates(candidates: List[Tuple[str, str]]) -> str:
     """
     Render account candidates as a readable list for error messages.

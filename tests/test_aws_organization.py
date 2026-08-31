@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from headroom.aws.organization import (
     build_organization_hierarchy,
     find_organization_root,
+    list_organization_accounts,
     lookup_account_id_by_name,
 )
 from headroom.types import (
@@ -493,3 +494,28 @@ class TestFindOrganizationRoot:
 
         with pytest.raises(RuntimeError, match="Failed to get organization root"):
             find_organization_root(org_client)
+
+
+class TestListOrganizationAccounts:
+    """Test list_organization_accounts."""
+
+    def test_every_page_of_accounts_is_returned(self) -> None:
+        """
+        The global listing is the membership and lifecycle oracle, so a
+        dropped page reclassifies a sibling account as a third party.
+        """
+        org_client = Mock()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Accounts": [{"Id": "111111111111", "Name": "payments", "Status": "ACTIVE"}]},
+            {"Accounts": []},
+            {"Accounts": [{"Id": "222222222222", "Name": "billing", "Status": "SUSPENDED"}]},
+        ]
+        org_client.get_paginator.return_value = paginator
+
+        accounts = list_organization_accounts(org_client)
+
+        assert [account["Id"] for account in accounts] == [
+            "111111111111",
+            "222222222222",
+        ]
