@@ -176,13 +176,18 @@ def _failures_reported(phase: str) -> Iterator[None]:
     """
     Report the wrapped phase's failure to the operator, then exit.
 
-    Organization discovery, the scan, and Terraform generation all talk to AWS
-    and all fail the same three ways, so they share one reporter rather than
-    each growing its own copy of these handlers. The phase names itself in
-    every line, because a ClientError says which API refused and never says
-    which phase called it -- and the three phases fail over the same calls:
-    a denied AssumeRole is discovery's first step and the scan's per-account
-    one.
+    Organization discovery, the scan, and Terraform generation each end a run
+    the same way, so they share one reporter rather than each growing its own
+    copy of these handlers: one format, whichever phase failed. The phase
+    names itself in every line, because the exception rarely does -- a
+    ClientError says which API refused and never says which phase called it,
+    and a denied AssumeRole is both discovery's first step and the scan's
+    per-account one.
+
+    Only the first two phases reach AWS, so only they can raise the
+    ClientError arm; generation reads result files and writes Terraform. The
+    handler stays shared anyway, because a phase's set of failure modes is
+    not what decides how its failure is reported.
 
     Only the scan reaches an account; a failure there has already printed one
     ERROR line per failed account, and what this adds is the summary that

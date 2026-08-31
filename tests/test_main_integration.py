@@ -710,7 +710,10 @@ class TestMainIntegration:
 
         mock_get_sess.assert_called_once()
         printed = [c.args[0] for c in mocks['print'].call_args_list]
-        assert any("Configuration Error" in msg for msg in printed)
+        assert any(
+            "Configuration Error during organization discovery" in msg
+            for msg in printed
+        )
 
     def test_main_client_error_during_discovery_is_handled(
         self,
@@ -747,8 +750,18 @@ class TestMainIntegration:
                 main()
             assert exc_info.value.code == 1
 
+        # The phase, not just the shape. `_failures_reported` labels every
+        # line with the phase it wraps, and the label is the only thing that
+        # tells an operator a denied AssumeRole was the management-account one
+        # rather than a per-account one from the scan -- the two raise the
+        # identical ClientError. Asserting "AWS API Error" alone leaves the
+        # discovery block free to be relabelled "the scan" with nothing
+        # noticing.
         printed = [c.args[0] for c in mocks['print'].call_args_list]
-        assert any("AWS API Error" in msg for msg in printed)
+        assert any(
+            "AWS API Error (AccessDenied) during organization discovery" in msg
+            for msg in printed
+        )
 
     def test_main_runtime_error_in_generation_is_handled(
         self,
