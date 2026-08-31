@@ -149,6 +149,37 @@ class TestProjections:
             PAYMENTS
         ]
 
+    def test_analyzable_accounts_keep_the_order_organizations_reported(self) -> None:
+        """
+        `OrganizationSnapshot.analyzable_accounts` promises Organizations'
+        order, and nothing downstream re-sorts it: the worker pool consumes
+        the tuple as it stands, so this order is the order accounts are
+        scanned and result files appear in.
+
+        The fixture is deliberately neither ascending nor descending by
+        account ID, so a `sorted()` and a `[::-1]` both fail it -- reversing
+        the list survived the entire suite. The two excluded accounts are
+        interleaved rather than appended, which is what shows their removal
+        does not disturb the accounts either side of them.
+        """
+        accounts = [
+            {"Id": BILLING, "Name": "billing", "Status": "ACTIVE"},
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+            {"Id": SKIPPED, "Name": "sandbox", "Status": "ACTIVE"},
+            {"Id": RETIRED, "Name": "retired", "Status": "ACTIVE"},
+        ]
+
+        snapshot = discover_organization(
+            _config(skip_account_ids=[SKIPPED]), _org_client(accounts)
+        )
+
+        assert [account.account_id for account in snapshot.analyzable_accounts] == [
+            BILLING,
+            PAYMENTS,
+            RETIRED,
+        ]
+
     def test_no_tags_are_fetched_for_excluded_accounts(self) -> None:
         """
         A tag lookup is a call per account. The management account and a
@@ -649,11 +680,22 @@ class TestSkippingTheManagementAccountIsAllowed:
         ]
         org_client = _org_client(accounts)
 
-        snapshot = discover_organization(
-            _config(skip_account_ids=[MANAGEMENT]), org_client
-        )
+        with patch("headroom.aws.organization_snapshot.logger") as mock_logger:
+            snapshot = discover_organization(
+                _config(skip_account_ids=[MANAGEMENT]), org_client
+            )
 
         assert [account.account_id for account in snapshot.analyzable_accounts] == [PAYMENTS]
+        # "Excluded before the skip list is consulted" is the claim above, and
+        # the analyzable set alone cannot see it: both orders exclude the
+        # management account. The log line is where the two differ, and
+        # consulting the skip list first would report an account as skipped by
+        # a configuration entry that never did any work.
+        skip_lines = [
+            call.args[0] for call in mock_logger.info.call_args_list
+            if "named in skip_account_ids" in call.args[0]
+        ]
+        assert skip_lines == []
 
 
 class TestTheTwoViewsMustAgree:
