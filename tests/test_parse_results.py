@@ -7,12 +7,10 @@ Tests SCP/RCP compliance results analysis and placement recommendations.
 import json
 import tempfile
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 from unittest.mock import Mock, patch
 
 import pytest
-
-from botocore.exceptions import ClientError
 
 from headroom.parse_results import (
     _build_ou_recommendation,
