@@ -3,19 +3,20 @@ import threading
 import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Sequence, Set, cast
 from dataclasses import dataclass
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
-from mypy_boto3_organizations.type_defs import AccountTypeDef
+from mypy_boto3_organizations.type_defs import AccountTypeDef, TagTypeDef
 
 from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
 from .log_context import NO_ACCOUNT, set_account
 from .write_results import results_exist
 from .aws.sessions import assume_role, new_session
+from .aws.helpers import paginate
 from .utils import format_account_identifier
 
 logger = logging.getLogger(__name__)
@@ -73,9 +74,13 @@ def _fetch_account_tags(org_client: OrganizationsClient, account_id: str, accoun
     Returns:
         Dictionary of tag key-value pairs (empty dict if fetching fails)
     """
+    tags: Dict[str, str] = {}
+
     try:
-        tags_resp = org_client.list_tags_for_resource(ResourceId=account_id)
-        return {tag["Key"]: tag["Value"] for tag in tags_resp.get("Tags", [])}
+        pages = paginate(org_client, "list_tags_for_resource", ResourceId=account_id)
+        for page in pages:
+            for tag in cast(Sequence[TagTypeDef], page.get("Tags", [])):
+                tags[tag["Key"]] = tag["Value"]
     except ClientError as e:
         error_code = e.response.get('Error', {}).get('Code', 'Unknown')
         if error_code == 'AccessDenied':
@@ -89,6 +94,8 @@ def _fetch_account_tags(org_client: OrganizationsClient, account_id: str, accoun
                 exc_info=True
             )
         return {}
+
+    return tags
 
 
 def _determine_account_name(account: AccountTypeDef, tags: Dict[str, str], config: HeadroomConfig) -> str:

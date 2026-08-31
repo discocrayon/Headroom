@@ -19,6 +19,7 @@ from headroom.analysis import (
     run_checks,
     run_checks_for_type,
     _build_account_info_from_account_dict,
+    _fetch_account_tags,
     _run_checks_for_account,
     _verify_account_names_are_filename_safe,
     _verify_no_duplicate_account_names,
@@ -76,6 +77,39 @@ def _account_infos(*names: str) -> List[AccountInfo]:
         )
         for index, name in enumerate(names)
     ]
+
+
+def _org_client_for_account_listing(accounts_pages: List[Dict[str, Any]]) -> Tuple[MagicMock, MagicMock]:
+    """
+    Build an Organizations client whose get_paginator routes by operation name.
+
+    get_subaccount_information calls get_paginator twice on the same client --
+    once for list_accounts, then once per account for list_tags_for_resource --
+    and a plain MagicMock returns the identical sub-mock for both calls
+    regardless of the operation name passed, so configuring one paginator's
+    `paginate` would silently answer the other's calls too. list_accounts
+    always yields accounts_pages here; the tags paginator is returned
+    separately so a caller configures its `paginate` however the test needs --
+    a fixed return_value, a per-ResourceId side_effect, or a ClientError -- and
+    can inspect the calls recorded on it afterward.
+
+    Args:
+        accounts_pages: Pages list_accounts' paginator yields
+
+    Returns:
+        The Organizations client, and the paginator list_tags_for_resource
+        routes to
+    """
+    accounts_paginator = MagicMock()
+    accounts_paginator.paginate.return_value = accounts_pages
+    tags_paginator = MagicMock()
+
+    def get_paginator(operation_name: str) -> MagicMock:
+        return accounts_paginator if operation_name == "list_accounts" else tags_paginator
+
+    org_client = MagicMock()
+    org_client.get_paginator.side_effect = get_paginator
+    return org_client, tags_paginator
 
 
 class TestSecurityAnalysisSession:
@@ -263,21 +297,20 @@ class TestGetSubaccountInformation:
             use_account_name_from_tags=True,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        mock_org_client = MagicMock()
-        mock_org_client.get_paginator.return_value.paginate.return_value = [
+        tag_map = {
+            "333333333333": {"Tags": [{"Key": "Env", "Value": "prod"}, {"Key": "NameTag", "Value": "TagName1"}, {"Key": "OwnerTag", "Value": "Alice"}]},
+            "444444444444": {"Tags": [{"Key": "Env", "Value": "dev"}, {"Key": "NameTag", "Value": "TagName2"}, {"Key": "OwnerTag", "Value": "Bob"}]},
+            # "555555555555" intentionally missing to test default
+        }
+        mock_org_client, tags_paginator = _org_client_for_account_listing([
             {"Accounts": [
                 {"Id": "222222222222", "Name": "MgmtAccount", "State": "ACTIVE"},  # Should be skipped
                 {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"},
                 {"Id": "444444444444", "Name": "SubAccount2", "State": "ACTIVE"},
                 {"Id": "555555555555", "Name": "SubAccount3", "State": "ACTIVE"},  # No tags
             ]}
-        ]
-        tag_map = {
-            "333333333333": {"Tags": [{"Key": "Env", "Value": "prod"}, {"Key": "NameTag", "Value": "TagName1"}, {"Key": "OwnerTag", "Value": "Alice"}]},
-            "444444444444": {"Tags": [{"Key": "Env", "Value": "dev"}, {"Key": "NameTag", "Value": "TagName2"}, {"Key": "OwnerTag", "Value": "Bob"}]},
-            # "555555555555" intentionally missing to test default
-        }
-        mock_org_client.list_tags_for_resource.side_effect = lambda ResourceId: tag_map.get(ResourceId, {"Tags": []})
+        ])
+        tags_paginator.paginate.side_effect = lambda ResourceId: [tag_map.get(ResourceId, {"Tags": []})]
         mgmt_session = MagicMock()
         mgmt_session.client.return_value = mock_org_client
         mock_get_mgmt_session.return_value = mgmt_session
@@ -297,14 +330,13 @@ class TestGetSubaccountInformation:
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        mock_org_client = MagicMock()
-        mock_org_client.get_paginator.return_value.paginate.return_value = [
+        mock_org_client, tags_paginator = _org_client_for_account_listing([
             {"Accounts": [
                 {"Id": "222222222222", "Name": "MgmtAccount", "State": "ACTIVE"},
                 {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"}
             ]}
-        ]
-        mock_org_client.list_tags_for_resource.return_value = {"Tags": [{"Key": "Env", "Value": "prod"}, {"Key": "OwnerTag", "Value": "Alice"}]}
+        ])
+        tags_paginator.paginate.return_value = [{"Tags": [{"Key": "Env", "Value": "prod"}, {"Key": "OwnerTag", "Value": "Alice"}]}]
         mgmt_session = MagicMock()
         mgmt_session.client.return_value = mock_org_client
         mock_get_mgmt_session.return_value = mgmt_session
@@ -333,13 +365,12 @@ class TestGetSubaccountInformation:
             use_account_name_from_tags=True,
             account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
-        mock_org_client = MagicMock()
-        mock_org_client.get_paginator.return_value.paginate.return_value = [
+        mock_org_client, tags_paginator = _org_client_for_account_listing([
             {"Accounts": [
                 {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"}
             ]}
-        ]
-        mock_org_client.list_tags_for_resource.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "ListTagsForResource")
+        ])
+        tags_paginator.paginate.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "ListTagsForResource")
         mgmt_session = MagicMock()
         mgmt_session.client.return_value = mock_org_client
         mock_get_mgmt_session.return_value = mgmt_session
@@ -393,9 +424,8 @@ class TestAccountStateFiltering:
         accounts: List[Dict[str, Any]]
     ) -> Tuple[List[AccountInfo], MagicMock, MagicMock]:
         """Run get_subaccount_information over raw Organizations account dicts."""
-        mock_org_client = MagicMock()
-        mock_org_client.get_paginator.return_value.paginate.return_value = [{"Accounts": accounts}]
-        mock_org_client.list_tags_for_resource.return_value = {"Tags": []}
+        mock_org_client, tags_paginator = _org_client_for_account_listing([{"Accounts": accounts}])
+        tags_paginator.paginate.return_value = [{"Tags": []}]
         mgmt_session = MagicMock()
         mgmt_session.client.return_value = mock_org_client
 
@@ -541,9 +571,17 @@ class TestAccountStateFiltering:
             {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
         ])
 
+        # list_tags_for_resource is never called directly now -- tags are read
+        # through get_paginator("list_tags_for_resource").paginate(...), so the
+        # calls a tag lookup makes are recorded on that paginator's `paginate`
+        # instead. get_paginator's side_effect (set up by
+        # _org_client_for_account_listing) returns the same tags paginator
+        # every time it is asked for this operation, so asking for it again
+        # here retrieves the one the real run already called.
+        tags_paginator = mock_org_client.get_paginator("list_tags_for_resource")
         tagged_ids = [
             call.kwargs["ResourceId"]
-            for call in mock_org_client.list_tags_for_resource.call_args_list
+            for call in tags_paginator.paginate.call_args_list
         ]
         assert tagged_ids == ["444444444444"]
 
@@ -570,6 +608,55 @@ class TestAccountStateFiltering:
         assert "1 SUSPENDED" in logged
 
 
+class TestFetchAccountTags:
+    """Test _fetch_account_tags directly, below the get_subaccount_information layer."""
+
+    def test_a_tag_on_the_second_page_is_read(self) -> None:
+        """
+        list_tags_for_resource paginates, and page one is not the answer.
+
+        With use_account_name_from_tags set, a Name tag on page two left the
+        account named by its ID, which then named its result files.
+        """
+        org_client = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {"Tags": [{"Key": "Owner", "Value": "payments-team"}]},
+            {"Tags": [{"Key": "Name", "Value": "payments"}]},
+        ]
+        org_client.get_paginator.return_value = paginator
+
+        tags = _fetch_account_tags(org_client, "111111111111", "payments")
+
+        assert tags == {"Owner": "payments-team", "Name": "payments"}
+
+    def test_a_client_error_on_the_second_page_discards_the_first(self) -> None:
+        """
+        A failure partway through pagination returns {}, not the pages already read.
+
+        A half-read tag set is precisely the case where a missing Name tag
+        silently renames an account, so a page-two failure must not leave
+        page one's Owner tag in the result.
+        """
+        def _pages() -> Iterator[Dict[str, Any]]:
+            yield {"Tags": [{"Key": "Owner", "Value": "payments-team"}]}
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
+                "ListTagsForResource"
+            )
+
+        org_client = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = _pages()
+        org_client.get_paginator.return_value = paginator
+
+        with patch("headroom.analysis.logger") as mock_logger:
+            tags = _fetch_account_tags(org_client, "111111111111", "payments")
+
+        assert tags == {}
+        mock_logger.warning.assert_called_once()
+
+
 class TestBuildAccountInfoFromAccountDict:
     """Test _build_account_info_from_account_dict helper function."""
 
@@ -581,13 +668,13 @@ class TestBuildAccountInfoFromAccountDict:
         )
         account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
-        mock_org_client.list_tags_for_resource.return_value = {
+        mock_org_client.get_paginator.return_value.paginate.return_value = [{
             "Tags": [
                 {"Key": "Env", "Value": "production"},
                 {"Key": "NameTag", "Value": "TagAccountName"},
                 {"Key": "OwnerTag", "Value": "TeamA"}
             ]
-        }
+        }]
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
@@ -604,13 +691,13 @@ class TestBuildAccountInfoFromAccountDict:
         )
         account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
-        mock_org_client.list_tags_for_resource.return_value = {
+        mock_org_client.get_paginator.return_value.paginate.return_value = [{
             "Tags": [
                 {"Key": "Env", "Value": "staging"},
                 {"Key": "NameTag", "Value": "TagAccountName"},
                 {"Key": "OwnerTag", "Value": "TeamB"}
             ]
-        }
+        }]
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
@@ -627,7 +714,7 @@ class TestBuildAccountInfoFromAccountDict:
         )
         account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
-        mock_org_client.list_tags_for_resource.return_value = {"Tags": []}
+        mock_org_client.get_paginator.return_value.paginate.return_value = [{"Tags": []}]
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
@@ -644,11 +731,11 @@ class TestBuildAccountInfoFromAccountDict:
         )
         account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
-        mock_org_client.list_tags_for_resource.return_value = {
+        mock_org_client.get_paginator.return_value.paginate.return_value = [{
             "Tags": [
                 {"Key": "Env", "Value": "dev"}
             ]
-        }
+        }]
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
@@ -666,7 +753,7 @@ class TestBuildAccountInfoFromAccountDict:
         )
         account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
-        mock_org_client.list_tags_for_resource.side_effect = ClientError(
+        mock_org_client.get_paginator.return_value.paginate.side_effect = ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
             "ListTagsForResource"
         )
@@ -688,7 +775,7 @@ class TestBuildAccountInfoFromAccountDict:
         )
         account = cast(AccountTypeDef, {"Id": "777777777777", "Name": "ApiAccountName"})
         mock_org_client = MagicMock()
-        mock_org_client.list_tags_for_resource.side_effect = ClientError(
+        mock_org_client.get_paginator.return_value.paginate.side_effect = ClientError(
             {"Error": {"Code": "InternalError", "Message": "Service Error"}},
             "ListTagsForResource"
         )
@@ -709,12 +796,12 @@ class TestBuildAccountInfoFromAccountDict:
         )
         account = cast(AccountTypeDef, {"Id": "777777777777"})
         mock_org_client = MagicMock()
-        mock_org_client.list_tags_for_resource.return_value = {
+        mock_org_client.get_paginator.return_value.paginate.return_value = [{
             "Tags": [
                 {"Key": "Env", "Value": "production"},
                 {"Key": "OwnerTag", "Value": "TeamC"}
             ]
-        }
+        }]
 
         result = _build_account_info_from_account_dict(account, mock_org_client, config)
 
@@ -752,9 +839,8 @@ class TestSkipAccountIds:
         skip_account_ids: List[str]
     ) -> Tuple[List[AccountInfo], MagicMock, MagicMock]:
         """Run get_subaccount_information over raw Organizations account dicts."""
-        mock_org_client = MagicMock()
-        mock_org_client.get_paginator.return_value.paginate.return_value = [{"Accounts": accounts}]
-        mock_org_client.list_tags_for_resource.return_value = {"Tags": []}
+        mock_org_client, tags_paginator = _org_client_for_account_listing([{"Accounts": accounts}])
+        tags_paginator.paginate.return_value = [{"Tags": []}]
         mgmt_session = MagicMock()
         mgmt_session.client.return_value = mock_org_client
 
@@ -805,7 +891,11 @@ class TestSkipAccountIds:
             skip_account_ids=["333333333333"],
         )
 
-        mock_org_client.list_tags_for_resource.assert_called_once_with(ResourceId="444444444444")
+        # As in TestAccountStateFiltering above: the direct method is never
+        # called now, so the call is recorded on the tags paginator instead,
+        # which get_paginator's side_effect hands back again on request.
+        tags_paginator = mock_org_client.get_paginator("list_tags_for_resource")
+        tags_paginator.paginate.assert_called_once_with(ResourceId="444444444444")
 
     def test_skipped_accounts_are_logged(self) -> None:
         """The operator can see which accounts the config excluded."""
