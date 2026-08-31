@@ -122,12 +122,13 @@ sequenceDiagram
     Mgmt-->>Tool: Session Credentials
     Tool->>Mgmt: describe_organization()
     Mgmt-->>Tool: Organization ID
-    Tool->>Mgmt: list_accounts() [all pages]
+    Tool->>Mgmt: list_accounts()
     Mgmt-->>Tool: Every member account, in every lifecycle state
     Tool->>Mgmt: list_roots(), then list_organizational_units_for_parent()<br/>and list_accounts_for_parent() once per parent
     Mgmt-->>Tool: OU Hierarchy
     Tool->>Mgmt: list_tags_for_resource() per analyzable account
     Mgmt-->>Tool: Account Tags
+    Note over Tool,Mgmt: Every listing above is read to its last page.<br/>Stopping at page one truncated the OU tree and dropped tags.
     Note over Tool: OrganizationSnapshot: organization ID, membership,<br/>analyzable accounts, hierarchy
     Note over Tool: Accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)<br/>and accounts in skip_account_ids stay in membership and in the<br/>hierarchy, and drop out of the analyzable set only
 
