@@ -1,26 +1,17 @@
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from typing import Dict, List, Set
+from typing import AbstractSet, Dict, Sequence, Set
 
 from boto3.session import Session
-from mypy_boto3_organizations.client import OrganizationsClient
 
 from .config import HeadroomConfig
 from .checks.registry import get_check_names, get_all_check_classes
 from .log_context import NO_ACCOUNT, set_account
 from .write_results import results_exist
 from .aws.sessions import assume_role, new_session
-from .aws.organization_snapshot import (
-    _build_account_info_from_account_dict,
-    _get_account_state,
-    _should_skip_account,
-    _verify_account_names_are_filename_safe,
-    _verify_no_duplicate_account_names,
-    _verify_skip_account_ids_matched,
-)
 from .utils import format_account_identifier
-from .types import AccountInfo
+from .types import AccountInfo, OrganizationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -55,175 +46,6 @@ def get_management_account_session(config: HeadroomConfig, security_session: Ses
 
     role_arn = f"arn:aws:iam::{config.management_account_id}:role/OrgAndAccountInfoReader"
     return assume_role(role_arn, "HeadroomOrgAndAccountInfoReaderSession", security_session)
-
-
-def get_subaccount_information(config: HeadroomConfig, session: Session) -> List[AccountInfo]:
-    """
-    Get subaccount information from the management account.
-
-    Uses the provided session to assume the OrgAndAccountInfoReader role in the
-    management account, then retrieves account information with tags.
-
-    Excludes the management account, which SCPs and RCPs do not affect, any
-    account named in `config.skip_account_ids`, and any account that is not in
-    the ACTIVE lifecycle state.
-
-    An excluded account writes no result files, and policy placement only ever
-    sees accounts that have results, so exclusion here removes the account from
-    the compliance picture entirely rather than holding back a policy. An
-    org-wide policy can therefore deny actions a skipped account relies on.
-
-    Args:
-        config: Headroom configuration
-        session: boto3 Session with access to security analysis account
-
-    Returns:
-        List of AccountInfo objects for the ACTIVE accounts, excluding the
-        management account and any account in `config.skip_account_ids`
-
-    Raises:
-        ValueError: If management_account_id is not set in config
-        RuntimeError: If role assumption or API calls fail, if an account's
-            lifecycle state cannot be determined, or if a `skip_account_ids`
-            entry matches no account in the organization
-    """
-    mgmt_session = get_management_account_session(config, session)
-    org_client = mgmt_session.client("organizations")
-    paginator = org_client.get_paginator("list_accounts")
-    accounts = []
-    skipped_states: Dict[str, int] = {}
-    skip_account_ids = set(config.skip_account_ids)
-    skipped_by_config = []
-    seen_account_ids: Set[str] = set()
-
-    for page in paginator.paginate():
-        for acct in page.get("Accounts", []):
-            account_id = acct["Id"]
-            seen_account_ids.add(account_id)
-
-            if account_id == config.management_account_id:
-                continue
-
-            # Consulted before the lifecycle check so that an account whose state
-            # `_should_skip_account` cannot classify can be skipped by config
-            # instead of aborting every other account's analysis.
-            if account_id in skip_account_ids:
-                skipped_by_config.append(account_id)
-                continue
-
-            if _should_skip_account(acct, account_id):
-                # An account is only skipped for a state in INACTIVE_ACCOUNT_STATES,
-                # so the state is always a known string here.
-                skipped_state = str(_get_account_state(acct))
-                skipped_states[skipped_state] = skipped_states.get(skipped_state, 0) + 1
-                continue
-
-            account_info = _build_account_info_from_account_dict(acct, org_client, config)
-            accounts.append(account_info)
-
-    if skipped_by_config:
-        logger.info(
-            f"Skipped {len(skipped_by_config)} account(s) named in skip_account_ids: "
-            f"{', '.join(sorted(skipped_by_config))}"
-        )
-
-    if skipped_states:
-        breakdown = ", ".join(f"{count} {state}" for state, count in sorted(skipped_states.items()))
-        logger.info(f"Skipped {sum(skipped_states.values())} non-active account(s): {breakdown}")
-
-    _verify_skip_account_ids_matched(config, seen_account_ids)
-
-    return accounts
-
-
-def get_organization_id(config: HeadroomConfig, session: Session) -> str:
-    """
-    Get this organization's ID from the management account.
-
-    Every source guard scoped to an organization - `aws:SourceOrgID` and
-    `aws:SourceOrgPaths` - is classified against this value: a guard naming
-    this organization needs no allowlist entry, and one naming any other
-    organization names accounts no allowlist can carry. The deployed RCP
-    already resolves the same value through
-    `data.aws_organizations_organization.current.id`, so this is discovery
-    catching up to deployment.
-
-    A response without an ID aborts the run rather than falling back. The
-    fallback would put a foreign organization's sources in an allowlist, or
-    leave this organization's out, and would look like a healthy run while
-    doing it.
-
-    Args:
-        config: Headroom configuration
-        session: boto3 Session with access to security analysis account
-
-    Returns:
-        This organization's ID, such as `o-11111111111`
-
-    Raises:
-        ValueError: If management_account_id is not set in config
-        RuntimeError: If role assumption fails, or if the response carries
-            no organization ID
-        ClientError: If the OrgAndAccountInfoReader role lacks
-            `organizations:DescribeOrganization`
-    """
-    mgmt_session = get_management_account_session(config, session)
-    org_client: OrganizationsClient = mgmt_session.client("organizations")
-
-    organization = org_client.describe_organization().get("Organization", {})
-    org_id = organization.get("Id")
-    if not org_id:
-        raise RuntimeError(
-            "DescribeOrganization returned no organization ID. Every source "
-            "guard scoped to an organization is classified against it, so "
-            "continuing would put a foreign organization's sources in an "
-            "allowlist, or leave this organization's out."
-        )
-
-    return org_id
-
-
-def get_all_organization_account_ids(config: HeadroomConfig, session: Session) -> Set[str]:
-    """
-    Get all account IDs in the organization (including management account).
-
-    Args:
-        config: Headroom configuration
-        session: boto3 Session with access to security analysis account
-
-    Returns:
-        Set of all account IDs in the organization
-
-    Raises:
-        ValueError: If management_account_id is not set in config
-        RuntimeError: If role assumption or API calls fail
-    """
-    mgmt_session = get_management_account_session(config, session)
-    org_client = mgmt_session.client("organizations")
-    paginator = org_client.get_paginator("list_accounts")
-
-    account_ids: Set[str] = set()
-    for page in paginator.paginate():
-        for acct in page.get("Accounts", []):
-            account_ids.add(acct["Id"])
-
-    return account_ids
-
-
-def get_relevant_subaccounts(account_infos: List[AccountInfo]) -> List[AccountInfo]:
-    """
-    Filter account_infos based on CLI and configuration arguments.
-
-    For now, returns all accounts. Future implementation will support filtering by:
-    - All accounts
-    - Specific OU
-    - Specific owner
-    - Specific environment
-
-    Filtering by explicit account ID already happens upstream, in
-    `get_subaccount_information`, where it costs no per-account tag lookup.
-    """
-    return account_infos
 
 
 def get_headroom_session(config: HeadroomConfig, security_session: Session, account_id: str) -> Session:
@@ -538,9 +360,9 @@ def _log_the_accounts_that_never_ran(
 
 def run_checks(
     security_session: Session,
-    relevant_account_infos: List[AccountInfo],
+    relevant_account_infos: Sequence[AccountInfo],
     config: HeadroomConfig,
-    org_account_ids: Set[str],
+    org_account_ids: AbstractSet[str],
     org_id: str
 ) -> None:
     """
@@ -555,9 +377,13 @@ def run_checks(
 
     Args:
         security_session: boto3 Session for security analysis account
-        relevant_account_infos: List of accounts to check
+        relevant_account_infos: The accounts to check
         config: Headroom configuration
-        org_account_ids: Set of all account IDs in the organization
+        org_account_ids: Every account ID in the organization, as the snapshot
+            captured it: the management account, accounts skipped by
+            configuration, and accounts in every non-ACTIVE lifecycle state
+            are all members, because a principal in any of them is not a third
+            party
         org_id: This organization's ID, deciding whether an
             organization scope on a source guard names this organization
 
@@ -571,7 +397,7 @@ def run_checks(
     account skipped for a transient error is indistinguishable in the results
     from an account with zero violations, so swallowing the error could
     green-light a policy that breaks it. Accounts that cannot or should not be
-    analyzed are excluded earlier, in `get_subaccount_information`: by lifecycle
+    analyzed are excluded earlier, in `discover_organization`: by lifecycle
     state, or by being named in `config.skip_account_ids`.
 
     Aborting takes two mechanisms because Python cannot kill a running thread.
@@ -628,6 +454,11 @@ def run_checks(
     outcome by a different route, since `shutdown` joins no threads and
     leaves the queue where it lies.
     """
+    # frozenset reaches here from the snapshot, and every analyzer downstream
+    # is annotated Set[str]. One conversion, at the boundary, rather than a
+    # cast at each of the six analyzer call sites.
+    mutable_org_account_ids = set(org_account_ids)
+
     pending = []
     for account_info in relevant_account_infos:
         if _all_checks_complete(account_info, config):
@@ -666,7 +497,7 @@ def run_checks(
                             account_info,
                             security_session,
                             config,
-                            org_account_ids,
+                            mutable_org_account_ids,
                             org_id,
                             abort,
                         )
@@ -702,36 +533,32 @@ def run_checks(
         raise
 
 
-def perform_analysis(config: HeadroomConfig) -> None:
+def perform_analysis(
+    config: HeadroomConfig,
+    security_session: Session,
+    snapshot: OrganizationSnapshot
+) -> None:
     """
-    Perform security analysis using the security analysis account session.
+    Run every check against the accounts the snapshot names.
 
-    `get_subaccount_information` excludes the management account because it is not
-    affected by SCPs/RCPs.
+    Discovery is `main`'s job and happens once, before this. What used to be
+    three Organizations reads here -- membership, organization ID, and account
+    information -- are three projections of one captured view, so the scan
+    cannot observe a different organization from the one Terraform generation
+    goes on to use.
+
+    Args:
+        config: Headroom configuration
+        security_session: boto3 Session for the security analysis account
+        snapshot: The run's captured organization view
     """
     logger.info("Starting security analysis")
-    security_session = get_security_analysis_session(config)
-    logger.info("Successfully obtained security analysis session")
 
-    # Get all organization account IDs (including management account)
-    # This is needed for RCP checks to identify third-party accounts
-    logger.info("Fetching all organization account IDs")
-    org_account_ids = get_all_organization_account_ids(config, security_session)
-    logger.info(f"Found {len(org_account_ids)} accounts in organization")
-
-    # Classifies aws:SourceOrgID and aws:SourceOrgPaths guards on service
-    # principals: a guard naming this organization needs no allowlist entry
-    org_id = get_organization_id(config, security_session)
-    logger.info(f"Organization ID: {org_id}")
-
-    account_infos = get_subaccount_information(config, security_session)
-    logger.info(f"Fetched subaccount information: {account_infos}")
-
-    relevant_account_infos = get_relevant_subaccounts(account_infos)
-    logger.info(f"Filtered to {len(relevant_account_infos)} relevant accounts for analysis")
-
-    _verify_account_names_are_filename_safe(relevant_account_infos)
-    _verify_no_duplicate_account_names(config, relevant_account_infos)
-
-    run_checks(security_session, relevant_account_infos, config, org_account_ids, org_id)
+    run_checks(
+        security_session,
+        snapshot.analyzable_accounts,
+        config,
+        snapshot.member_account_ids,
+        snapshot.organization_id,
+    )
     logger.info("Security analysis completed")

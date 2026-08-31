@@ -2,22 +2,37 @@ import io
 import pytest
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch, mock_open
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 from pathlib import Path
 from headroom.usage import load_yaml_config, parse_cli_args, merge_configs
 from headroom.main import (
+    main,
     setup_configuration,
     process_policy_recommendations,
-    setup_organization_context,
     handle_scp_workflow,
     handle_rcp_workflow,
     ensure_org_info_symlink,
 )
-from headroom.config import HeadroomConfig
+from headroom.config import AccountTagLayout, HeadroomConfig
 from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
 from headroom.checks.registry import get_check_names
-from headroom.types import OrganizationHierarchy, RCPCheckParseResult
+from headroom.types import (
+    OrganizationHierarchy,
+    OrganizationSnapshot,
+    RCPCheckParseResult,
+)
+from tests.constants import ORG_ID
 from pydantic import ValidationError
+
+
+def _record(
+    seen: List[object], returns: Optional[List[Path]] = None
+) -> Callable[..., Optional[List[Path]]]:
+    """Record the hierarchy a generator was handed, and return `returns`."""
+    def recorder(*args: object) -> Optional[List[Path]]:
+        seen.extend(arg for arg in args if isinstance(arg, OrganizationHierarchy))
+        return returns
+    return recorder
 
 
 class TestLoadYamlConfig:
@@ -463,35 +478,95 @@ class TestProcessPolicyRecommendations:
         terraform_generator.assert_called_once()
 
 
-class TestSetupOrganizationContext:
-    """Test setup_organization_context function."""
+class TestMainDiscoversOnce:
+    """`main` reads the organization once and hands the same view to every stage."""
 
-    def test_setup_organization_context_success(self) -> None:
-        """Test successful organization context setup."""
-        config = MagicMock(spec=HeadroomConfig)
-        config.scps_dir = "/test/scps"
+    def test_discovery_happens_once_and_feeds_every_stage(self) -> None:
+        """
+        One snapshot, one hierarchy object, reaching all three generators.
+
+        Object identity rather than equality: two equal hierarchies read at
+        different moments is exactly the bug this change removes, and equality
+        cannot tell that case from the fixed one.
+        """
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1111", organizational_units={}, accounts={}
+        )
+        snapshot = OrganizationSnapshot(
+            organization_id=ORG_ID,
+            member_account_ids=frozenset({"111111111111"}),
+            analyzable_accounts=(),
+            hierarchy=hierarchy,
+        )
+        seen: List[object] = []
+
+        # A real config, not a MagicMock: main builds Path(config.scps_dir),
+        # and Path of a MagicMock raises.
+        config = HeadroomConfig(
+            management_account_id="111111111111",
+            security_analysis_account_id="222222222222",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner"),
+        )
+
+        with patch("headroom.main.get_security_analysis_session"), \
+             patch("headroom.main.get_management_account_session"), \
+             patch("headroom.main.discover_organization", return_value=snapshot) as discover, \
+             patch("headroom.main.perform_analysis"), \
+             patch("headroom.main.parse_cli_args"), \
+             patch("headroom.main.load_yaml_config"), \
+             patch("headroom.main.setup_configuration", return_value=config), \
+             patch("headroom.main.reconcile_generated_terraform"), \
+             patch("headroom.main.ensure_org_info_symlink"), \
+             patch("headroom.main.generate_terraform_org_info", side_effect=_record(seen)), \
+             patch("headroom.main.handle_scp_workflow", side_effect=_record(seen, returns=[])), \
+             patch("headroom.main.handle_rcp_workflow", side_effect=_record(seen, returns=[])):
+            main()
+
+        discover.assert_called_once()
+        assert len(seen) == 3
+        assert all(observed is hierarchy for observed in seen)
+
+    def test_the_scan_is_handed_the_snapshot_discovery_built(self) -> None:
+        """
+        `perform_analysis` consumes the same capture the generators do.
+
+        Without this, `main` could satisfy the identity assertion above while
+        the scan still read Organizations for itself -- the two stages would
+        then be back to reasoning about two different organizations, which is
+        the failure this whole change removes.
+        """
+        snapshot = OrganizationSnapshot(
+            organization_id=ORG_ID,
+            member_account_ids=frozenset({"111111111111"}),
+            analyzable_accounts=(),
+            hierarchy=OrganizationHierarchy(
+                root_id="r-1111", organizational_units={}, accounts={}
+            ),
+        )
+        config = HeadroomConfig(
+            management_account_id="111111111111",
+            security_analysis_account_id="222222222222",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner"),
+        )
         security_session = MagicMock()
-        mgmt_session = MagicMock()
-        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        with patch('headroom.main.get_management_account_session', return_value=mgmt_session):
-            with patch('headroom.main.find_organization_root'):
-                with patch('headroom.main.build_organization_hierarchy', return_value=org_hierarchy):
-                    result_session, result_hierarchy = setup_organization_context(config, security_session)
+        with patch("headroom.main.get_security_analysis_session", return_value=security_session), \
+             patch("headroom.main.get_management_account_session"), \
+             patch("headroom.main.discover_organization", return_value=snapshot), \
+             patch("headroom.main.perform_analysis") as scan, \
+             patch("headroom.main.parse_cli_args"), \
+             patch("headroom.main.load_yaml_config"), \
+             patch("headroom.main.setup_configuration", return_value=config), \
+             patch("headroom.main.reconcile_generated_terraform"), \
+             patch("headroom.main.ensure_org_info_symlink"), \
+             patch("headroom.main.generate_terraform_org_info"), \
+             patch("headroom.main.handle_scp_workflow", return_value=[]), \
+             patch("headroom.main.handle_rcp_workflow", return_value=[]):
+            main()
 
-        assert result_session == mgmt_session
-        assert result_hierarchy == org_hierarchy
-        # Note: generate_terraform_org_info is no longer called inside setup_organization_context
-        # It's now called separately in main()
-
-    def test_setup_organization_context_raises_value_error(self) -> None:
-        """Test organization context setup with missing management account."""
-        config = MagicMock(spec=HeadroomConfig)
-        security_session = MagicMock()
-
-        with patch('headroom.main.get_management_account_session', side_effect=ValueError("Missing management_account_id")):
-            with pytest.raises(ValueError, match="Missing management_account_id"):
-                setup_organization_context(config, security_session)
+        scan.assert_called_once_with(config, security_session, snapshot)
 
 
 class TestHandleScpWorkflow:

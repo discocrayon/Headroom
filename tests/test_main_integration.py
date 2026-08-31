@@ -16,8 +16,10 @@ from headroom.types import (
     RCPCheckParseResult,
     RCPPlacementRecommendations,
     OrganizationHierarchy,
-    OrganizationalUnit
+    OrganizationalUnit,
+    OrganizationSnapshot
 )
+from tests.constants import ORG_ID
 
 from botocore.exceptions import ClientError
 
@@ -146,8 +148,7 @@ class TestMainIntegration:
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.build_organization_hierarchy'), \
-             patch('headroom.main.find_organization_root'), \
+             patch('headroom.main.discover_organization'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -193,8 +194,7 @@ class TestMainIntegration:
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.build_organization_hierarchy'), \
-             patch('headroom.main.find_organization_root'), \
+             patch('headroom.main.discover_organization'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -245,8 +245,7 @@ class TestMainIntegration:
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.build_organization_hierarchy'), \
-             patch('headroom.main.find_organization_root'), \
+             patch('headroom.main.discover_organization'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -571,8 +570,7 @@ class TestMainIntegration:
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.build_organization_hierarchy'), \
-             patch('headroom.main.find_organization_root'), \
+             patch('headroom.main.discover_organization'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -615,8 +613,7 @@ class TestMainIntegration:
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.build_organization_hierarchy'), \
-             patch('headroom.main.find_organization_root'), \
+             patch('headroom.main.discover_organization'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -674,8 +671,7 @@ class TestMainIntegration:
             patch('headroom.main.get_management_account_session'),
             patch('headroom.main.parse_rcp_result_files', return_value=rcp_evidence()),
             patch('headroom.main.generate_terraform_org_info'),
-            patch('headroom.main.build_organization_hierarchy'),
-            patch('headroom.main.find_organization_root'),
+            patch('headroom.main.discover_organization'),
             patch('headroom.main.ensure_org_info_symlink')
         ):
             main()
@@ -716,13 +712,19 @@ class TestMainIntegration:
         printed = [c.args[0] for c in mocks['print'].call_args_list]
         assert any("Configuration Error" in msg for msg in printed)
 
-    def test_main_client_error_in_generation_is_handled(
+    def test_main_client_error_during_discovery_is_handled(
         self,
         mock_cli_args: MagicMock,
         valid_yaml_config: Dict[str, Any],
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
-        """Covers the ClientError exception handler branch (prints failure and exits)."""
+        """
+        Covers the ClientError exception handler branch (prints failure and exits).
+
+        The refusal is a denied AssumeRole into the management account, which
+        is now the first thing a run does rather than something Terraform
+        generation reached later.
+        """
         mocks = mock_dependencies
         mocks['parse'].return_value = mock_cli_args
         mocks['load'].return_value = valid_yaml_config
@@ -737,12 +739,10 @@ class TestMainIntegration:
 
         with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess, \
-             patch('headroom.main.build_organization_hierarchy') as mock_analyze, \
-             patch('headroom.main.find_organization_root'), \
+             patch('headroom.main.discover_organization'), \
              patch('headroom.main.ensure_org_info_symlink'):
             # cause sts.assume_role to raise
             mock_get_sess.return_value.client.return_value.assume_role.side_effect = err
-            mock_analyze.return_value = None
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
@@ -769,13 +769,10 @@ class TestMainIntegration:
 
         with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
              patch('headroom.main.get_security_analysis_session'), \
-             patch('headroom.main.setup_organization_context') as mock_setup_org, \
+             patch('headroom.main.get_management_account_session'), \
+             patch('headroom.main.discover_organization'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.generate_terraform_org_info') as mock_generate_org:
-            # Set up setup_organization_context to return mocks
-            mock_session = MagicMock()
-            mock_hierarchy = MagicMock()
-            mock_setup_org.return_value = (mock_session, mock_hierarchy)
             # Cause generate_terraform_org_info to raise RuntimeError
             mock_generate_org.side_effect = RuntimeError("Failed to generate Terraform")
             with pytest.raises(SystemExit) as exc_info:
@@ -814,7 +811,14 @@ class TestMainIntegration:
             "Checks failed for 3 account(s)"
         )
 
-        with pytest.raises(SystemExit) as exc_info:
+        # Discovery now runs first, and it is a real AWS conversation. It has
+        # to be stubbed for the scan to be reached at all, and stubbing it is
+        # also what proves the phase label: the only thing that raises here is
+        # perform_analysis.
+        with patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
+             patch('headroom.main.discover_organization'), \
+             pytest.raises(SystemExit) as exc_info:
             main()
 
         assert exc_info.value.code == 1
@@ -871,8 +875,12 @@ class TestMainIntegration:
                 )
             ]),
             patch('headroom.main.generate_terraform_org_info'),
-            patch('headroom.main.build_organization_hierarchy', return_value=mock_org_hierarchy),
-            patch('headroom.main.find_organization_root'),
+            patch('headroom.main.discover_organization', return_value=OrganizationSnapshot(
+                organization_id=ORG_ID,
+                member_account_ids=frozenset({"111111111111", "222222222222"}),
+                analyzable_accounts=(),
+                hierarchy=mock_org_hierarchy,
+            )),
             patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
             patch('headroom.main.generate_rcp_terraform') as mock_gen_rcp,
             patch('headroom.main.generate_scp_terraform'),

@@ -283,7 +283,7 @@ class TestBuildOrganizationHierarchy:
         account's current lifecycle state, so a result written before an
         account closed must still resolve to a placement. Filtering here
         would collapse organization membership into the narrower,
-        already-filtered view that get_subaccount_information deliberately
+        already-filtered view that discover_organization deliberately
         applies for analysis, and CLAUDE.md calls that collapse out by name.
         """
         org_client = _paginating_org_client(

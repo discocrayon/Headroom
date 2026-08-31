@@ -4,7 +4,6 @@ from contextlib import contextmanager
 import logging
 from pathlib import Path
 
-from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 
@@ -18,7 +17,7 @@ from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_place
 from .terraform.generate_org_info import generate_terraform_org_info
 from .terraform.models import TerraformPlan
 from .terraform.reconcile import reconcile_generated_terraform
-from .aws.organization import build_organization_hierarchy, find_organization_root
+from .aws.organization_snapshot import discover_organization
 from .types import OrganizationHierarchy
 from .constants import ORG_INFO_FILENAME
 from .output import OutputHandler
@@ -77,33 +76,6 @@ def process_policy_recommendations(
     """
     print_policy_recommendations(recommendations, org_hierarchy, title)  # type: ignore[arg-type]
     return terraform_generator(recommendations, org_hierarchy, *generator_args)
-
-
-def setup_organization_context(
-    final_config: HeadroomConfig,
-    security_session: Session
-) -> tuple[Session, OrganizationHierarchy]:
-    """
-    Set up organization context for policy analysis.
-
-    Args:
-        final_config: Validated Headroom configuration
-        security_session: boto3 Session with security analysis access
-
-    Returns:
-        Tuple of (management_session, organization_hierarchy)
-
-    Raises:
-        ValueError: If management account configuration is missing
-        RuntimeError: If role assumption or the traversal fails
-        ClientError: If AWS API calls fail
-    """
-    mgmt_session = get_management_account_session(final_config, security_session)
-    org_client: OrganizationsClient = mgmt_session.client("organizations")
-    organization_hierarchy = build_organization_hierarchy(
-        org_client, find_organization_root(org_client)
-    )
-    return mgmt_session, organization_hierarchy
 
 
 def ensure_org_info_symlink(rcps_dir: str, scps_dir: str) -> None:
@@ -204,10 +176,13 @@ def _failures_reported(phase: str) -> Iterator[None]:
     """
     Report the wrapped phase's failure to the operator, then exit.
 
-    The scan and Terraform generation both talk to AWS and both fail the same
-    three ways, so they share one reporter rather than each growing its own
-    copy of these handlers. The phase names itself in every line, because a
-    ClientError says which API refused and never says which phase called it.
+    Organization discovery, the scan, and Terraform generation all talk to AWS
+    and all fail the same three ways, so they share one reporter rather than
+    each growing its own copy of these handlers. The phase names itself in
+    every line, because a ClientError says which API refused and never says
+    which phase called it -- and the three phases fail over the same calls:
+    a denied AssumeRole is discovery's first step and the scan's per-account
+    one.
 
     Only the scan reaches an account; a failure there has already printed one
     ERROR line per failed account, and what this adds is the summary that
@@ -238,23 +213,26 @@ def main() -> None:
 
     final_config = setup_configuration(cli_args, yaml_config)
 
-    with _failures_reported("the scan"):
-        perform_analysis(final_config)
+    with _failures_reported("organization discovery"):
         security_session = get_security_analysis_session(final_config)
+        mgmt_session = get_management_account_session(final_config, security_session)
+        org_client: OrganizationsClient = mgmt_session.client("organizations")
+        snapshot = discover_organization(final_config, org_client)
+
+    with _failures_reported("the scan"):
+        perform_analysis(final_config, security_session, snapshot)
 
     with _failures_reported("Terraform generation"):
-        mgmt_session, org_hierarchy = setup_organization_context(final_config, security_session)
-
         # Generate Terraform organization info file (needed by both SCP and RCP workflows)
         org_info_path = Path(final_config.scps_dir) / ORG_INFO_FILENAME
-        generate_terraform_org_info(org_hierarchy, str(org_info_path))
+        generate_terraform_org_info(snapshot.hierarchy, str(org_info_path))
 
         # Create symlink from RCP directory to SCP grab_org_info.tf (needed for RCP Terraform)
         ensure_org_info_symlink(final_config.rcps_dir, final_config.scps_dir)
 
         expected = {org_info_path}
-        expected |= set(handle_scp_workflow(final_config, org_hierarchy))
-        expected |= set(handle_rcp_workflow(final_config, org_hierarchy))
+        expected |= set(handle_scp_workflow(final_config, snapshot.hierarchy))
+        expected |= set(handle_rcp_workflow(final_config, snapshot.hierarchy))
 
         # Both workflows have succeeded, so this run's plan is complete and
         # anything generated but unaccounted for belongs to a previous one. A

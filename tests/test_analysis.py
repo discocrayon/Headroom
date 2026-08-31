@@ -5,7 +5,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 
 import pytest
-from typing import Any, Dict, Iterable, Iterator, List, Set, Tuple, cast
+from typing import Dict, Iterable, Iterator, List, Set, Tuple, cast
 from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
@@ -14,16 +14,17 @@ from mypy_boto3_organizations.type_defs import AccountTypeDef
 from headroom.analysis import (
     get_security_analysis_session,
     perform_analysis,
-    get_subaccount_information,
     run_checks,
     run_checks_for_type,
-    _build_account_info_from_account_dict,
     _run_checks_for_account,
+)
+from headroom.aws.organization_snapshot import (
+    _build_account_info_from_account_dict,
+    _fetch_account_tags,
     _verify_account_names_are_filename_safe,
     _verify_no_duplicate_account_names,
 )
-from headroom.aws.organization_snapshot import _fetch_account_tags
-from headroom.types import AccountInfo
+from headroom.types import AccountInfo, OrganizationHierarchy, OrganizationSnapshot
 from headroom.checks.base import BaseCheck
 from headroom.checks.registry import get_all_check_classes, get_check_names
 from headroom.config import HeadroomConfig, AccountTagLayout
@@ -74,39 +75,6 @@ def _account_infos(*names: str) -> List[AccountInfo]:
         )
         for index, name in enumerate(names)
     ]
-
-
-def _org_client_for_account_listing(accounts_pages: List[Dict[str, Any]]) -> Tuple[MagicMock, MagicMock]:
-    """
-    Build an Organizations client whose get_paginator routes by operation name.
-
-    get_subaccount_information calls get_paginator twice on the same client --
-    once for list_accounts, then once per account for list_tags_for_resource --
-    and a plain MagicMock returns the identical sub-mock for both calls
-    regardless of the operation name passed, so configuring one paginator's
-    `paginate` would silently answer the other's calls too. list_accounts
-    always yields accounts_pages here; the tags paginator is returned
-    separately so a caller configures its `paginate` however the test needs --
-    a fixed return_value, a per-ResourceId side_effect, or a ClientError -- and
-    can inspect the calls recorded on it afterward.
-
-    Args:
-        accounts_pages: Pages list_accounts' paginator yields
-
-    Returns:
-        The Organizations client, and the paginator list_tags_for_resource
-        routes to
-    """
-    accounts_paginator = MagicMock()
-    accounts_paginator.paginate.return_value = accounts_pages
-    tags_paginator = MagicMock()
-
-    def get_paginator(operation_name: str) -> MagicMock:
-        return accounts_paginator if operation_name == "list_accounts" else tags_paginator
-
-    org_client = MagicMock()
-    org_client.get_paginator.side_effect = get_paginator
-    return org_client, tags_paginator
 
 
 class TestSecurityAnalysisSession:
@@ -163,414 +131,45 @@ class TestSecurityAnalysisSession:
 
 
 class TestPerformAnalysis:
-    def test_perform_analysis_success(self) -> None:
-        config = HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=False,
-            account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
+    def test_perform_analysis_runs_the_checks_the_snapshot_names(self) -> None:
+        """perform_analysis no longer discovers anything; it consumes."""
+        snapshot = OrganizationSnapshot(
+            organization_id=ORG_ID,
+            member_account_ids=frozenset({"111111111111", "222222222222"}),
+            analyzable_accounts=(
+                AccountInfo(
+                    account_id="222222222222",
+                    environment="prod",
+                    name="payments",
+                    owner="payments-team",
+                ),
+            ),
+            hierarchy=OrganizationHierarchy(
+                root_id="r-1111", organizational_units={}, accounts={}
+            ),
         )
-        mock_session = MagicMock()
-        with (
-            patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
-            patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
-            patch("headroom.analysis.get_organization_id", return_value=ORG_ID) as mock_get_org_id,
-            patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
-            patch("headroom.analysis.run_checks"),
-            patch("headroom.analysis.logger") as mock_logger,
-        ):
-            perform_analysis(config)
-            mock_get_session.assert_called_once_with(config)
-            mock_get_org_ids.assert_called_once_with(config, mock_session)
-            mock_get_org_id.assert_called_once_with(config, mock_session)
-            mock_get_subs.assert_called_once_with(config, mock_session)
-            assert mock_logger.info.call_count == 8
-            mock_logger.info.assert_any_call("Starting security analysis")
-            mock_logger.info.assert_any_call("Successfully obtained security analysis session")
-            mock_logger.info.assert_any_call("Fetched subaccount information: []")
-            mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
-            mock_logger.info.assert_any_call(f"Organization ID: {ORG_ID}")
-            mock_logger.info.assert_any_call("Security analysis completed")
-
-    def test_perform_analysis_without_account_id(self) -> None:
+        security_session = MagicMock()
         config = HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id=None,
-            use_account_name_from_tags=False,
-            account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner")
-        )
-        mock_session = MagicMock()
-        with (
-            patch("headroom.analysis.get_security_analysis_session", return_value=mock_session) as mock_get_session,
-            patch("headroom.analysis.get_all_organization_account_ids", return_value=set()) as mock_get_org_ids,
-            patch("headroom.analysis.get_organization_id", return_value=ORG_ID) as mock_get_org_id,
-            patch("headroom.analysis.get_subaccount_information", return_value=[]) as mock_get_subs,
-            patch("headroom.analysis.run_checks"),
-            patch("headroom.analysis.logger") as mock_logger,
-        ):
-            perform_analysis(config)
-            mock_get_session.assert_called_once_with(config)
-            mock_get_org_ids.assert_called_once_with(config, mock_session)
-            mock_get_org_id.assert_called_once_with(config, mock_session)
-            mock_get_subs.assert_called_once_with(config, mock_session)
-            assert mock_logger.info.call_count == 8
-            mock_logger.info.assert_any_call("Filtered to 0 relevant accounts for analysis")
-
-    def test_perform_analysis_aborts_before_run_checks_on_an_unusable_name(self) -> None:
-        """
-        The filename guard must gate run_checks, not merely exist.
-
-        Pins two things the direct-call tests cannot. That the call is there
-        at all: deleting it leaves every test in
-        TestAccountNamesAreFilenameSafe green. And that it is unconditional --
-        exclude_account_ids is false here, because both naming modes put the
-        account name into the filename, unlike the duplicate-name guard next
-        to it.
-        """
-        config = HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
+            management_account_id="111111111111",
+            security_analysis_account_id="222222222222",
             use_account_name_from_tags=False,
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner"),
-            exclude_account_ids=False,
-        )
-        account_infos = [
-            AccountInfo(account_id="333333333333", environment="prod", name="Prod/US", owner="team"),
-        ]
-        mock_session = MagicMock()
-        with (
-            patch("headroom.analysis.get_security_analysis_session", return_value=mock_session),
-            patch("headroom.analysis.get_all_organization_account_ids", return_value=set()),
-            patch("headroom.analysis.get_organization_id", return_value=ORG_ID),
-            patch("headroom.analysis.get_subaccount_information", return_value=account_infos),
-            patch("headroom.analysis.run_checks") as mock_run_checks,
-        ):
-            with pytest.raises(RuntimeError, match="Prod/US"):
-                perform_analysis(config)
-
-            mock_run_checks.assert_not_called()
-
-    def test_perform_analysis_aborts_before_run_checks_on_duplicate_names(self) -> None:
-        """
-        The duplicate-name guard must gate run_checks, not merely exist.
-
-        Pins the ordering rather than just the raising: if the call to
-        _verify_no_duplicate_account_names were deleted, or moved to after
-        run_checks, this test would fail even though the guard itself would
-        still raise correctly when called directly.
-        """
-        config = HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=False,
-            account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner"),
-            exclude_account_ids=True,
-        )
-        colliding_account_infos = [
-            AccountInfo(account_id="333333333333", environment="prod", name="shared-name", owner="team"),
-            AccountInfo(account_id="444444444444", environment="prod", name="shared-name", owner="team"),
-        ]
-        mock_session = MagicMock()
-        with (
-            patch("headroom.analysis.get_security_analysis_session", return_value=mock_session),
-            patch("headroom.analysis.get_all_organization_account_ids", return_value=set()),
-            patch("headroom.analysis.get_organization_id", return_value=ORG_ID),
-            patch("headroom.analysis.get_subaccount_information", return_value=colliding_account_infos),
-            patch("headroom.analysis.run_checks") as mock_run_checks,
-        ):
-            with pytest.raises(RuntimeError, match="shared-name"):
-                perform_analysis(config)
-
-            mock_run_checks.assert_not_called()
-
-
-class TestGetSubaccountInformation:
-    @patch("headroom.analysis.get_management_account_session")
-    @patch("headroom.analysis.logger")
-    def test_get_subaccount_information_name_from_tags(self, mock_logger: MagicMock, mock_get_mgmt_session: MagicMock) -> None:
-        config = HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=True,
-            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
-        )
-        tag_map = {
-            "333333333333": {"Tags": [{"Key": "Env", "Value": "prod"}, {"Key": "NameTag", "Value": "TagName1"}, {"Key": "OwnerTag", "Value": "Alice"}]},
-            "444444444444": {"Tags": [{"Key": "Env", "Value": "dev"}, {"Key": "NameTag", "Value": "TagName2"}, {"Key": "OwnerTag", "Value": "Bob"}]},
-            # "555555555555" intentionally missing to test default
-        }
-        mock_org_client, tags_paginator = _org_client_for_account_listing([
-            {"Accounts": [
-                {"Id": "222222222222", "Name": "MgmtAccount", "State": "ACTIVE"},  # Should be skipped
-                {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"},
-                {"Id": "444444444444", "Name": "SubAccount2", "State": "ACTIVE"},
-                {"Id": "555555555555", "Name": "SubAccount3", "State": "ACTIVE"},  # No tags
-            ]}
-        ])
-        tags_paginator.paginate.side_effect = lambda ResourceId: [tag_map.get(ResourceId, {"Tags": []})]
-        mgmt_session = MagicMock()
-        mgmt_session.client.return_value = mock_org_client
-        mock_get_mgmt_session.return_value = mgmt_session
-        result = get_subaccount_information(config, MagicMock())
-        assert result == [
-            AccountInfo(account_id="333333333333", environment="prod", name="TagName1", owner="Alice"),
-            AccountInfo(account_id="444444444444", environment="dev", name="TagName2", owner="Bob"),
-            AccountInfo(account_id="555555555555", environment="unknown", name="555555555555", owner="unknown"),
-        ]
-
-    @patch("headroom.analysis.get_management_account_session")
-    @patch("headroom.analysis.logger")
-    def test_get_subaccount_information_name_from_api(self, mock_logger: MagicMock, mock_get_mgmt_session: MagicMock) -> None:
-        config = HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=False,
-            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
-        )
-        mock_org_client, tags_paginator = _org_client_for_account_listing([
-            {"Accounts": [
-                {"Id": "222222222222", "Name": "MgmtAccount", "State": "ACTIVE"},
-                {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"}
-            ]}
-        ])
-        tags_paginator.paginate.return_value = [{"Tags": [{"Key": "Env", "Value": "prod"}, {"Key": "OwnerTag", "Value": "Alice"}]}]
-        mgmt_session = MagicMock()
-        mgmt_session.client.return_value = mock_org_client
-        mock_get_mgmt_session.return_value = mgmt_session
-        result = get_subaccount_information(config, MagicMock())
-        assert result == [
-            AccountInfo(account_id="333333333333", environment="prod", name="SubAccount1", owner="Alice")
-        ]
-
-    def test_get_subaccount_information_missing_management_account_id(self) -> None:
-        config = HeadroomConfig(
-            management_account_id=None,
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=True,
-            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
-        )
-        session = MagicMock()
-        with pytest.raises(ValueError, match="management_account_id must be set in config"):
-            get_subaccount_information(config, session)
-
-    def test_get_subaccount_information_assume_role_failure(self) -> None:
-        config = HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=True,
-            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
-        )
-        # Patch session.client("sts").assume_role to raise ClientError
-        mock_sts = MagicMock()
-        mock_sts.assume_role.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "AssumeRole")
-        session = MagicMock()
-        session.client.return_value = mock_sts
-        with pytest.raises(ClientError) as exc_info:
-            get_subaccount_information(config, session)
-
-        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
-
-
-class TestAccountStateFiltering:
-    """
-    Test that only ACTIVE accounts are analyzed.
-
-    AWS Organizations reports an account's lifecycle position through two
-    fields: `State` (PENDING_ACTIVATION, ACTIVE, SUSPENDED, PENDING_CLOSURE,
-    CLOSED) and the older `Status` (ACTIVE, SUSPENDED, PENDING_CLOSURE), which
-    AWS retires on 2026-09-09. Only an ACTIVE account can have the Headroom
-    role assumed in it, so every other state is skipped.
-    """
-
-    @staticmethod
-    def _config() -> HeadroomConfig:
-        """Build a config whose management account is 222222222222."""
-        return HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=False,
-            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
         )
 
-    def _run(
-        self,
-        accounts: List[Dict[str, Any]]
-    ) -> Tuple[List[AccountInfo], MagicMock, MagicMock]:
-        """Run get_subaccount_information over raw Organizations account dicts."""
-        mock_org_client, tags_paginator = _org_client_for_account_listing([{"Accounts": accounts}])
-        tags_paginator.paginate.return_value = [{"Tags": []}]
-        mgmt_session = MagicMock()
-        mgmt_session.client.return_value = mock_org_client
+        with patch("headroom.analysis.run_checks") as run:
+            perform_analysis(config, security_session, snapshot)
 
-        with (
-            patch("headroom.analysis.get_management_account_session", return_value=mgmt_session),
-            patch("headroom.analysis.logger") as mock_logger,
-        ):
-            result = get_subaccount_information(self._config(), MagicMock())
-
-        return result, mock_org_client, mock_logger
-
-    def _analyzed_ids(self, accounts: List[Dict[str, Any]]) -> List[str]:
-        """Return the account IDs that survived state filtering."""
-        result, _, _ = self._run(accounts)
-        return [account.account_id for account in result]
-
-    def test_closed_account_is_skipped(self) -> None:
-        """A CLOSED account is excluded; role assumption there is impossible."""
-        analyzed = self._analyzed_ids([
-            {"Id": "333333333333", "Name": "Closed", "State": "CLOSED", "Status": "SUSPENDED"},
-            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE", "Status": "ACTIVE"},
-        ])
-
-        assert analyzed == ["444444444444"]
-
-    def test_suspended_account_is_skipped(self) -> None:
-        """A SUSPENDED account is excluded; AWS has restricted its access."""
-        analyzed = self._analyzed_ids([
-            {"Id": "333333333333", "Name": "Suspended", "State": "SUSPENDED"},
-            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-        ])
-
-        assert analyzed == ["444444444444"]
-
-    def test_pending_closure_account_is_skipped(self) -> None:
-        """
-        A PENDING_CLOSURE account is excluded.
-
-        Unlike the other skipped states this account is still functional, so the
-        exclusion is deliberate policy: an account on its way out of the
-        organization should not hold back an organization-wide recommendation.
-        """
-        analyzed = self._analyzed_ids([
-            {"Id": "333333333333", "Name": "Closing", "State": "PENDING_CLOSURE"},
-            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-        ])
-
-        assert analyzed == ["444444444444"]
-
-    def test_pending_activation_account_is_skipped(self) -> None:
-        """A PENDING_ACTIVATION account is excluded; sign-up never completed."""
-        analyzed = self._analyzed_ids([
-            {"Id": "333333333333", "Name": "Unactivated", "State": "PENDING_ACTIVATION"},
-            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-        ])
-
-        assert analyzed == ["444444444444"]
-
-    def test_active_account_is_analyzed(self) -> None:
-        """An ACTIVE account is analyzed."""
-        analyzed = self._analyzed_ids([
-            {"Id": "333333333333", "Name": "Live", "State": "ACTIVE", "Status": "ACTIVE"},
-        ])
-
-        assert analyzed == ["333333333333"]
-
-    def test_state_takes_precedence_over_status(self) -> None:
-        """
-        `State` wins when the two fields disagree.
-
-        AWS retires `Status` on 2026-09-09, so `State` is the authoritative field.
-        """
-        analyzed = self._analyzed_ids([
-            {"Id": "333333333333", "Name": "Live", "State": "ACTIVE", "Status": "SUSPENDED"},
-        ])
-
-        assert analyzed == ["333333333333"]
-
-    def test_falls_back_to_status_when_state_absent(self) -> None:
-        """
-        `Status` is used when `State` is missing.
-
-        An SDK released before 2025-09-09 does not model `State`, so botocore
-        drops it from the response and only `Status` is available.
-        """
-        analyzed = self._analyzed_ids([
-            {"Id": "333333333333", "Name": "Suspended", "Status": "SUSPENDED"},
-            {"Id": "444444444444", "Name": "Live", "Status": "ACTIVE"},
-        ])
-
-        assert analyzed == ["444444444444"]
-
-    def test_account_with_no_state_or_status_aborts_the_run(self) -> None:
-        """
-        An account reporting neither field aborts the run, with a remediation hint.
-
-        The cause is environment-wide rather than per-account: an SDK too old to
-        model `State` at a point when `Status` has been retired makes every
-        account report nothing. Analyzing anyway would attempt every closed
-        account and then die inside assume_role with an AccessDenied that names
-        none of the real cause, so this fails at the point the information is
-        actually missing.
-        """
-        with pytest.raises(RuntimeError, match="neither State nor Status") as exc_info:
-            self._run([{"Id": "333333333333", "Name": "Unknown"}])
-
-        # The error must be actionable, not merely loud.
-        assert "boto3" in str(exc_info.value)
-
-    def test_account_with_unrecognized_state_aborts_the_run(self) -> None:
-        """
-        A state this code does not classify aborts the run rather than guessing.
-
-        Neither guess is safe. Analyzing an account that turns out to be unusable
-        burns the run on a downstream error that explains nothing, and skipping
-        one that is actually usable drops it from the compliance picture that
-        gates SCP deployment. Refusing to guess keeps a human in the loop, so the
-        message has to name both the offending value and the fix.
-        """
-        with pytest.raises(RuntimeError, match="does not recognize") as exc_info:
-            self._run([{"Id": "333333333333", "Name": "Future", "State": "SOME_FUTURE_STATE"}])
-
-        message = str(exc_info.value)
-        assert "SOME_FUTURE_STATE" in message
-        assert "INACTIVE_ACCOUNT_STATES" in message
-
-    def test_skipped_account_does_not_incur_a_tag_api_call(self) -> None:
-        """Filtering happens before tag fetching, so skipped accounts cost no API calls."""
-        _, mock_org_client, _ = self._run([
-            {"Id": "333333333333", "Name": "Closed", "State": "CLOSED"},
-            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-        ])
-
-        # list_tags_for_resource is never called directly now -- tags are read
-        # through get_paginator("list_tags_for_resource").paginate(...), so the
-        # calls a tag lookup makes are recorded on that paginator's `paginate`
-        # instead. get_paginator's side_effect (set up by
-        # _org_client_for_account_listing) returns the same tags paginator
-        # every time it is asked for this operation, so asking for it again
-        # here retrieves the one the real run already called.
-        tags_paginator = mock_org_client.get_paginator("list_tags_for_resource")
-        tagged_ids = [
-            call.kwargs["ResourceId"]
-            for call in tags_paginator.paginate.call_args_list
-        ]
-        assert tagged_ids == ["444444444444"]
-
-    def test_management_account_is_still_excluded(self) -> None:
-        """State filtering does not disturb the existing management account exclusion."""
-        analyzed = self._analyzed_ids([
-            {"Id": "222222222222", "Name": "Mgmt", "State": "ACTIVE"},
-            {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-        ])
-
-        assert analyzed == ["444444444444"]
-
-    def test_skipped_accounts_are_summarized(self) -> None:
-        """A summary line reports how many accounts were skipped in each state."""
-        _, _, mock_logger = self._run([
-            {"Id": "333333333333", "Name": "A", "State": "CLOSED"},
-            {"Id": "444444444444", "Name": "B", "State": "CLOSED"},
-            {"Id": "555555555555", "Name": "C", "State": "SUSPENDED"},
-            {"Id": "666666666666", "Name": "D", "State": "ACTIVE"},
-        ])
-
-        logged = " ".join(str(call) for call in mock_logger.info.call_args_list)
-        assert "2 CLOSED" in logged
-        assert "1 SUSPENDED" in logged
+        run.assert_called_once_with(
+            security_session,
+            snapshot.analyzable_accounts,
+            config,
+            snapshot.member_account_ids,
+            ORG_ID,
+        )
 
 
 class TestFetchAccountTags:
-    """Test _fetch_account_tags directly, below the get_subaccount_information layer."""
+    """Test _fetch_account_tags directly, below the discover_organization layer."""
 
     def test_a_tag_on_the_second_page_is_read(self) -> None:
         """
@@ -744,149 +343,6 @@ class TestBuildAccountInfoFromAccountDict:
         assert result.name == "777777777777"
         assert result.environment == "production"
         assert result.owner == "TeamC"
-
-
-class TestSkipAccountIds:
-    """
-    Test that accounts named in skip_account_ids are excluded from analysis.
-
-    A skipped account is never scanned, so it writes no result files. Placement
-    only ever sees accounts that have results, so a skipped account cannot hold
-    back an org-wide policy and does not appear in its affected accounts. The
-    generated policy may therefore deny actions the skipped account relies on,
-    which is the accepted cost of skipping it.
-    """
-
-    @staticmethod
-    def _config(skip_account_ids: List[str]) -> HeadroomConfig:
-        """Build a config whose management account is 222222222222."""
-        return HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=False,
-            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag"),
-            skip_account_ids=skip_account_ids,
-        )
-
-    def _run(
-        self,
-        accounts: List[Dict[str, Any]],
-        skip_account_ids: List[str]
-    ) -> Tuple[List[AccountInfo], MagicMock, MagicMock]:
-        """Run get_subaccount_information over raw Organizations account dicts."""
-        mock_org_client, tags_paginator = _org_client_for_account_listing([{"Accounts": accounts}])
-        tags_paginator.paginate.return_value = [{"Tags": []}]
-        mgmt_session = MagicMock()
-        mgmt_session.client.return_value = mock_org_client
-
-        with (
-            patch("headroom.analysis.get_management_account_session", return_value=mgmt_session),
-            patch("headroom.analysis.logger") as mock_logger,
-        ):
-            result = get_subaccount_information(self._config(skip_account_ids), MagicMock())
-
-        return result, mock_org_client, mock_logger
-
-    def test_skipped_account_is_excluded(self) -> None:
-        """An account named in skip_account_ids is not analyzed."""
-        result, _, _ = self._run(
-            [
-                {"Id": "333333333333", "Name": "Skipped", "State": "ACTIVE"},
-                {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-            ],
-            skip_account_ids=["333333333333"],
-        )
-
-        assert [account.account_id for account in result] == ["444444444444"]
-
-    def test_empty_skip_list_analyzes_every_active_account(self) -> None:
-        """The default empty skip list excludes nothing."""
-        result, _, _ = self._run(
-            [
-                {"Id": "333333333333", "Name": "One", "State": "ACTIVE"},
-                {"Id": "444444444444", "Name": "Two", "State": "ACTIVE"},
-            ],
-            skip_account_ids=[],
-        )
-
-        assert [account.account_id for account in result] == ["333333333333", "444444444444"]
-
-    def test_skipped_account_is_not_tag_queried(self) -> None:
-        """
-        A skipped account costs no Organizations API call.
-
-        Skipping happens before AccountInfo is built, so the per-account
-        ListTagsForResource call is never made for it.
-        """
-        _, mock_org_client, _ = self._run(
-            [
-                {"Id": "333333333333", "Name": "Skipped", "State": "ACTIVE"},
-                {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-            ],
-            skip_account_ids=["333333333333"],
-        )
-
-        # As in TestAccountStateFiltering above: the direct method is never
-        # called now, so the call is recorded on the tags paginator instead,
-        # which get_paginator's side_effect hands back again on request.
-        tags_paginator = mock_org_client.get_paginator("list_tags_for_resource")
-        tags_paginator.paginate.assert_called_once_with(ResourceId="444444444444")
-
-    def test_skipped_accounts_are_logged(self) -> None:
-        """The operator can see which accounts the config excluded."""
-        _, _, mock_logger = self._run(
-            [
-                {"Id": "333333333333", "Name": "SkippedOne", "State": "ACTIVE"},
-                {"Id": "444444444444", "Name": "SkippedTwo", "State": "ACTIVE"},
-                {"Id": "555555555555", "Name": "Live", "State": "ACTIVE"},
-            ],
-            skip_account_ids=["444444444444", "333333333333"],
-        )
-
-        mock_logger.info.assert_any_call(
-            "Skipped 2 account(s) named in skip_account_ids: 333333333333, 444444444444"
-        )
-
-    def test_skipping_the_management_account_is_allowed(self) -> None:
-        """
-        Naming the always-excluded management account is redundant, not an error.
-
-        The management account is filtered out before the skip list is consulted,
-        so it never registers as skipped, but it is still a real organization
-        member and must not be reported as unmatched.
-        """
-        result, _, _ = self._run(
-            [
-                {"Id": "222222222222", "Name": "Mgmt", "State": "ACTIVE"},
-                {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-            ],
-            skip_account_ids=["222222222222"],
-        )
-
-        assert [account.account_id for account in result] == ["444444444444"]
-
-    def test_skip_id_matching_no_account_aborts(self) -> None:
-        """
-        An entry matching no account aborts rather than silently doing nothing.
-
-        A typo leaves the intended account being analyzed while the operator
-        believes it is excluded, so the mismatch must surface.
-        """
-        with pytest.raises(RuntimeError, match="999999999999"):
-            self._run(
-                [{"Id": "444444444444", "Name": "Live", "State": "ACTIVE"}],
-                skip_account_ids=["999999999999"],
-            )
-
-    def test_abort_names_every_unmatched_skip_id(self) -> None:
-        """The error lists all bad entries so they can be fixed in one pass."""
-        with pytest.raises(RuntimeError) as exc_info:
-            self._run(
-                [{"Id": "444444444444", "Name": "Live", "State": "ACTIVE"}],
-                skip_account_ids=["999999999999", "888888888888"],
-            )
-
-        assert "888888888888, 999999999999" in str(exc_info.value)
 
 
 class TestDuplicateAccountNameGuard:

@@ -233,6 +233,198 @@ class TestEveryStateIsClassified:
         assert set(get_args(AccountStateType)) == {ACTIVE_ACCOUNT_STATE} | INACTIVE_ACCOUNT_STATES
 
 
+class TestLifecycleStateFiltering:
+    """
+    Only ACTIVE accounts are analyzed.
+
+    AWS Organizations reports an account's lifecycle position through two
+    fields: `State` (PENDING_ACTIVATION, ACTIVE, SUSPENDED, PENDING_CLOSURE,
+    CLOSED) and the older `Status` (ACTIVE, SUSPENDED, PENDING_CLOSURE), which
+    AWS retires on 2026-09-09. Only an ACTIVE account can have the Headroom
+    role assumed in it, so every other state is skipped.
+
+    Every account dictionary below carries `State` rather than `Status` on
+    purpose: the rest of this file uses `Status` exclusively, so without these
+    the precedence between the two fields would go unpinned.
+    """
+
+    @staticmethod
+    def _accounts(*others: Dict[str, str]) -> List[Dict[str, str]]:
+        """The management account, which is never analyzed, plus `others`."""
+        return [
+            {"Id": MANAGEMENT, "Name": "management", "State": "ACTIVE"},
+            *others,
+        ]
+
+    def _analyzed_ids(self, *others: Dict[str, str]) -> List[str]:
+        """Return the account IDs that survived lifecycle filtering."""
+        snapshot = discover_organization(
+            _config(), _org_client(self._accounts(*others))
+        )
+        return [account.account_id for account in snapshot.analyzable_accounts]
+
+    @pytest.mark.parametrize(
+        "state", ["CLOSED", "SUSPENDED", "PENDING_CLOSURE", "PENDING_ACTIVATION"]
+    )
+    def test_a_non_active_account_is_skipped(self, state: str) -> None:
+        """
+        Each inactive state is excluded, for its own reason.
+
+        CLOSED and SUSPENDED cannot have a role assumed in them at all.
+        PENDING_ACTIVATION never finished sign-up. PENDING_CLOSURE is still
+        functional, and excluding it is deliberate policy rather than
+        necessity: an account on its way out of the organization should not
+        hold back an organization-wide recommendation.
+        """
+        analyzed = self._analyzed_ids(
+            {"Id": BILLING, "Name": "leaving", "State": state},
+            {"Id": PAYMENTS, "Name": "payments", "State": "ACTIVE"},
+        )
+
+        assert analyzed == [PAYMENTS]
+
+    def test_state_takes_precedence_over_status(self) -> None:
+        """
+        `State` wins when the two fields disagree.
+
+        AWS retires `Status` on 2026-09-09, so `State` is the authoritative
+        field. Reading `Status` first would drop this account from the
+        compliance picture on the strength of the field being retired.
+        """
+        analyzed = self._analyzed_ids(
+            {"Id": PAYMENTS, "Name": "payments", "State": "ACTIVE", "Status": "SUSPENDED"},
+        )
+
+        assert analyzed == [PAYMENTS]
+
+    def test_falls_back_to_status_when_state_absent(self) -> None:
+        """
+        `Status` is used when `State` is missing.
+
+        An SDK released before 2025-09-09 does not model `State`, so botocore
+        drops it from the response and only `Status` is available.
+        """
+        analyzed = self._analyzed_ids(
+            {"Id": BILLING, "Name": "retired", "Status": "SUSPENDED"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+        )
+
+        assert analyzed == [PAYMENTS]
+
+    def test_account_with_no_state_or_status_aborts_the_run(self) -> None:
+        """
+        An account reporting neither field aborts the run, with a remediation hint.
+
+        The cause is environment-wide rather than per-account: an SDK too old
+        to model `State` at a point when `Status` has been retired makes every
+        account report nothing. Analyzing anyway would attempt every closed
+        account and then die inside assume_role with an AccessDenied that
+        names none of the real cause, so this fails at the point the
+        information is actually missing.
+        """
+        with pytest.raises(RuntimeError, match="neither State nor Status") as exc_info:
+            self._analyzed_ids({"Id": PAYMENTS, "Name": "payments"})
+
+        # The error must be actionable, not merely loud.
+        assert "boto3" in str(exc_info.value)
+
+    def test_account_with_unrecognized_state_aborts_the_run(self) -> None:
+        """
+        A state this code does not classify aborts the run rather than guessing.
+
+        Neither guess is safe. Analyzing an account that turns out to be
+        unusable burns the run on a downstream error that explains nothing,
+        and skipping one that is actually usable drops it from the compliance
+        picture that gates SCP deployment. Refusing to guess keeps a human in
+        the loop, so the message has to name both the offending value and the
+        fix.
+        """
+        with pytest.raises(RuntimeError, match="does not recognize") as exc_info:
+            self._analyzed_ids(
+                {"Id": PAYMENTS, "Name": "payments", "State": "SOME_FUTURE_STATE"}
+            )
+
+        message = str(exc_info.value)
+        assert "SOME_FUTURE_STATE" in message
+        assert "INACTIVE_ACCOUNT_STATES" in message
+
+    def test_skipped_accounts_are_summarized_by_state(self) -> None:
+        """
+        One summary line reports how many accounts were skipped in each state.
+
+        The operator's only signal that the analyzable set is smaller than the
+        organization. Reported per state, because two CLOSED accounts are
+        routine and two PENDING_ACTIVATION ones are an onboarding that stalled.
+        """
+        accounts = self._accounts(
+            {"Id": BILLING, "Name": "billing", "State": "CLOSED"},
+            {"Id": RETIRED, "Name": "retired", "State": "CLOSED"},
+            {"Id": SKIPPED, "Name": "sandbox", "State": "SUSPENDED"},
+            {"Id": PAYMENTS, "Name": "payments", "State": "ACTIVE"},
+        )
+
+        with patch("headroom.aws.organization_snapshot.logger") as mock_logger:
+            discover_organization(_config(), _org_client(accounts))
+
+        logged = " ".join(str(call) for call in mock_logger.info.call_args_list)
+        assert "Skipped 3 non-active account(s)" in logged
+        assert "2 CLOSED" in logged
+        assert "1 SUSPENDED" in logged
+
+
+class TestSkipAccountIdsReporting:
+    """
+    What `skip_account_ids` tells the operator it did.
+
+    The exclusion itself is covered by `TestProjections`; these two are the
+    messages, which no other test asserts on -- and a skip that reports
+    nothing is a skip the operator cannot confirm did what was intended.
+    """
+
+    def test_skipped_accounts_are_logged(self) -> None:
+        """
+        The operator can see which accounts the configuration excluded.
+
+        Sorted, and named individually rather than counted: the reason to read
+        this line is to confirm the entries did what was intended, and a bare
+        count cannot tell a correct entry from one that matched a neighbour.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": BILLING, "Name": "billing", "Status": "ACTIVE"},
+            {"Id": SKIPPED, "Name": "sandbox", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+        ]
+
+        with patch("headroom.aws.organization_snapshot.logger") as mock_logger:
+            discover_organization(
+                _config(skip_account_ids=[SKIPPED, BILLING]), _org_client(accounts)
+            )
+
+        mock_logger.info.assert_any_call(
+            f"Skipped 2 account(s) named in skip_account_ids: {BILLING}, {SKIPPED}"
+        )
+
+    def test_the_abort_names_every_unmatched_skip_id(self) -> None:
+        """
+        All bad entries are listed, so they can be fixed in one pass.
+
+        Reporting only the first turns a two-typo configuration into two
+        aborted runs.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+        ]
+
+        with pytest.raises(RuntimeError) as exc_info:
+            discover_organization(
+                _config(skip_account_ids=[RETIRED, BILLING]), _org_client(accounts)
+            )
+
+        assert f"{BILLING}, {RETIRED}" in str(exc_info.value)
+
+
 class TestFetchAccountTagsPagination:
     """`_fetch_account_tags` paginates; moved here with the Task 5 regression test it covers."""
 
@@ -332,14 +524,12 @@ class TestFilenameSafetyGatesAreEnforced:
     `discover_organization` must call the filename-safety and duplicate-name
     checks itself, rather than depend on a caller to.
 
-    Today `perform_analysis` (headroom/analysis.py) still calls both checks
-    after `get_subaccount_information` returns, which is why deleting either
-    call from `discover_organization` leaves every existing test green and
-    line coverage at 100% -- `.coveragerc` sets no `branch = True`, so a
-    missing function call is invisible to it. Task 10's rewritten
-    `perform_analysis` calls neither, making `discover_organization` their
-    sole caller from then on. These two tests are what would catch a
-    regression once that happens.
+    `discover_organization` is now their sole caller: `perform_analysis`
+    consumes the snapshot and calls neither. Nothing else would catch their
+    removal -- `.coveragerc` sets no `branch = True`, so a deleted function
+    call is invisible to line coverage, and every direct test of the two
+    checks would stay green with nothing calling them. These two tests are
+    what fail instead.
     """
 
     def test_an_unsafe_account_name_aborts_the_run(self) -> None:
@@ -384,10 +574,7 @@ class TestFilenameSafetyGatesAreEnforced:
 class TestSkippingTheManagementAccountIsAllowed:
     """
     Naming the management account in `skip_account_ids` is redundant, not an
-    error -- and this is the only place that stays true once Task 10 deletes
-    `get_subaccount_information` and, with it,
-    `TestSkipAccountIds.test_skipping_the_management_account_is_allowed` in
-    tests/test_analysis.py.
+    error -- and this is the only place that says so.
     """
 
     def test_naming_the_management_account_in_skip_account_ids_does_not_abort(self) -> None:
