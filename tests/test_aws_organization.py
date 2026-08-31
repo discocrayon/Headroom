@@ -1,6 +1,6 @@
 """Tests for headroom/aws/organization.py."""
 
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 from unittest.mock import Mock
 
 import pytest
@@ -236,8 +236,70 @@ class TestBuildOrganizationHierarchy:
             },
         )
 
-        with pytest.raises(RuntimeError, match="111111111111 appears under more than one parent"):
+        with pytest.raises(
+            RuntimeError,
+            match="111111111111 appears under more than one parent: r-1111 and ou-1111-11111111",
+        ):
             build_organization_hierarchy(org_client, "r-1111")
+
+    def test_a_later_accounts_page_error_aborts_with_no_partial_hierarchy(self) -> None:
+        """A failure listing accounts partway through must not return what it read first."""
+        error: object = {"Error": {"Code": "ThrottlingException"}}
+
+        def get_paginator(operation_name: str) -> Mock:
+            paginator = Mock()
+
+            def paginate_op(**kwargs: str) -> Iterable[Dict[str, Any]]:
+                if operation_name == "list_organizational_units_for_parent":
+                    return [{"OrganizationalUnits": []}]
+
+                def pages() -> Iterator[Dict[str, Any]]:
+                    yield {
+                        "Accounts": [
+                            {"Id": "111111111111", "Name": "payments"}
+                        ]
+                    }
+                    raise ClientError(error, "ListAccountsForParent")  # type: ignore[arg-type]
+
+                return pages()
+
+            paginator.paginate.side_effect = paginate_op
+            return paginator
+
+        org_client = Mock()
+        org_client.get_paginator.side_effect = get_paginator
+
+        with pytest.raises(RuntimeError, match="Failed to list the accounts under r-1111"):
+            build_organization_hierarchy(org_client, "r-1111")
+
+    def test_accounts_are_retained_whatever_their_lifecycle_state(self) -> None:
+        """
+        SUSPENDED and CLOSED accounts stay in the hierarchy.
+
+        Placement is driven by the check results that exist on disk, not by an
+        account's current lifecycle state, so a result written before an
+        account closed must still resolve to a placement. Filtering here
+        would collapse organization membership into the narrower,
+        already-filtered view that get_subaccount_information deliberately
+        applies for analysis, and CLAUDE.md calls that collapse out by name.
+        """
+        org_client = _paginating_org_client(
+            ous_by_parent={},
+            accounts_by_parent={
+                "r-1111": [[
+                    {"Id": "111111111111", "Name": "sandbox", "Status": "SUSPENDED"},
+                    {"Id": "222222222222", "Name": "retired", "Status": "CLOSED"},
+                ]],
+            },
+        )
+
+        hierarchy = build_organization_hierarchy(org_client, "r-1111")
+
+        assert set(hierarchy.accounts) == {"111111111111", "222222222222"}
+        assert hierarchy.accounts["111111111111"].parent_ou_id is None
+        assert hierarchy.accounts["111111111111"].ou_path == ["Root"]
+        assert hierarchy.accounts["222222222222"].parent_ou_id is None
+        assert hierarchy.accounts["222222222222"].ou_path == ["Root"]
 
     def test_a_parent_reached_twice_aborts(self) -> None:
         """
@@ -271,7 +333,7 @@ class TestOrganizationStructureAnalysis:
         )
         roots_paginator = Mock()
         roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
-        original = org_client.get_paginator.side_effect
+        original: Callable[[str], Mock] = org_client.get_paginator.side_effect
 
         def get_paginator(operation_name: str) -> Mock:
             if operation_name == "list_roots":
