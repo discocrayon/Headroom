@@ -5,14 +5,19 @@ These tests verify the complete integration flow from CLI arguments through
 configuration loading, merging, validation, and analysis execution.
 """
 
+import json
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 from typing import Dict, Any, Generator
 from headroom.main import main
 from pathlib import Path
 
-from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, ORG_INFO_FILENAME
+from headroom.checks.registry import get_check_names
+from headroom.config import AccountTagLayout, HeadroomConfig
+from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, GENERATED_MARKER, ORG_INFO_FILENAME
 from headroom.types import (
+    AccountOrgPlacement,
     RCPCheckParseResult,
     RCPPlacementRecommendations,
     OrganizationHierarchy,
@@ -826,7 +831,8 @@ class TestMainIntegration:
         mock_final_config.management_account_id = "111111111111"
         mocks['merge'].return_value = mock_final_config
 
-        with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
+        with patch('headroom.main.handle_scp_workflow', return_value=[]), \
+             patch('headroom.main.handle_rcp_workflow', return_value=[]), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.discover_organization'), \
@@ -957,3 +963,147 @@ class TestMainIntegration:
         assert any("Third-Party Accounts: 1" in msg for msg in printed)
         assert any("Reasoning: Test reasoning" in msg for msg in printed)
         mock_gen_rcp.assert_called_once()
+
+
+class TestGenerationLeavesTheTreeWholeOnFailure:
+    """
+    A failure anywhere in generation leaves the previous run's output whole.
+
+    main() used to write grab_org_info.tf, replace the RCP symlink, and write
+    every SCP file before RCP results were read at all. A late RCP failure
+    therefore left this run's org-info and SCP output beside the previous
+    run's RCP output -- two descriptions of different organizations, which
+    Terraform will happily apply.
+    """
+
+    def _seed(self, tmp_path: Path) -> Dict[str, Path]:
+        """Lay down a complete previous run, plus files Headroom does not own."""
+        scps = tmp_path / "scps"
+        rcps = tmp_path / "rcps"
+        scps.mkdir()
+        rcps.mkdir()
+
+        org_info = scps / ORG_INFO_FILENAME
+        org_info.write_text(f"{GENERATED_MARKER}\n# previous run\n")
+        scp_file = scps / "payments_scps.tf"
+        scp_file.write_text(f"{GENERATED_MARKER}\nmodule \"scp_payments\" {{}}\n")
+        stale = scps / "retired_ou_scps.tf"
+        stale.write_text(f"{GENERATED_MARKER}\nmodule \"scp_retired\" {{}}\n")
+        unmanaged = scps / "custom.tf"
+        unmanaged.write_text('provider "aws" {}\n')
+
+        link = rcps / ORG_INFO_FILENAME
+        link.symlink_to(Path("..") / "scps" / ORG_INFO_FILENAME)
+        rcp_file = rcps / "payments_rcps.tf"
+        rcp_file.write_text(f"{GENERATED_MARKER}\nmodule \"rcp_payments\" {{}}\n")
+
+        return {
+            "org_info": org_info,
+            "scp_file": scp_file,
+            "stale": stale,
+            "unmanaged": unmanaged,
+            "link": link,
+            "rcp_file": rcp_file,
+        }
+
+    def _seed_results(self, tmp_path: Path) -> Path:
+        """
+        SCP results that parse, RCP check directories that hold nothing.
+
+        parse_rcp_result_files rejects a check whose directory is missing, so
+        present-and-empty is what reaches the zero-evidence guard in
+        handle_rcp_workflow -- after SCP parsing, placement, and printing have
+        all succeeded. No mock is involved: this is a real production failure.
+        """
+        results = tmp_path / "headroom_results"
+        scp_check = results / "scps" / "deny_ec2_imds_v1"
+        scp_check.mkdir(parents=True)
+        (scp_check / "payments_111111111111.json").write_text(json.dumps({
+            "summary": {
+                "account_name": "payments",
+                "account_id": "111111111111",
+                "check": "deny_ec2_imds_v1",
+                "total_instances": 3,
+                "violations": 0,
+                "exemptions": 0,
+                "compliant": 3,
+                "compliance_percentage": 100.0,
+            },
+            "violations": [],
+            "exemptions": [],
+            "compliant_instances": [],
+        }))
+
+        for check_name in get_check_names("rcps"):
+            (results / "rcps" / check_name).mkdir(parents=True)
+
+        return results
+
+    def test_a_late_rcp_failure_changes_nothing_on_disk(self, tmp_path: Path) -> None:
+        seeded = self._seed(tmp_path)
+        results = self._seed_results(tmp_path)
+
+        before = {
+            name: (path.read_bytes(), path.lstat().st_mtime_ns)
+            for name, path in seeded.items()
+            if name != "link"
+        }
+        link_before = (
+            os.readlink(seeded["link"]),
+            seeded["link"].lstat().st_mtime_ns,
+        )
+
+        config = HeadroomConfig(
+            management_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Env", name="Name", owner="Owner"
+            ),
+            results_dir=str(results),
+            scps_dir=str(tmp_path / "scps"),
+            rcps_dir=str(tmp_path / "rcps"),
+        )
+        snapshot = OrganizationSnapshot(
+            organization_id=ORG_ID,
+            member_account_ids=frozenset({"111111111111"}),
+            analyzable_accounts=(),
+            hierarchy=OrganizationHierarchy(
+                root_id="r-1111",
+                organizational_units={},
+                accounts={
+                    "111111111111": AccountOrgPlacement(
+                        account_id="111111111111",
+                        account_name="payments",
+                        parent_ou_id=None,
+                        ou_path=["r-1111"],
+                    )
+                },
+            ),
+        )
+
+        with patch("headroom.main.parse_cli_args"), \
+             patch("headroom.main.load_yaml_config"), \
+             patch("headroom.main.setup_configuration", return_value=config), \
+             patch("headroom.main.get_security_analysis_session"), \
+             patch("headroom.main.get_management_account_session"), \
+             patch("headroom.main.discover_organization", return_value=snapshot), \
+             patch("headroom.main.perform_analysis"), \
+             pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+
+        after = {
+            name: (path.read_bytes(), path.lstat().st_mtime_ns)
+            for name, path in seeded.items()
+            if name != "link"
+        }
+        assert after == before
+        assert os.readlink(seeded["link"]) == link_before[0]
+        assert seeded["link"].lstat().st_mtime_ns == link_before[1]
+        assert sorted(p.name for p in (tmp_path / "scps").iterdir()) == [
+            "custom.tf", "grab_org_info.tf", "payments_scps.tf", "retired_ou_scps.tf",
+        ]
+        assert sorted(p.name for p in (tmp_path / "rcps").iterdir()) == [
+            "grab_org_info.tf", "payments_rcps.tf",
+        ]

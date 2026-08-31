@@ -8,7 +8,6 @@ from headroom.usage import load_yaml_config, parse_cli_args, merge_configs
 from headroom.main import (
     main,
     setup_configuration,
-    process_policy_recommendations,
     handle_scp_workflow,
     handle_rcp_workflow,
     ensure_org_info_symlink,
@@ -396,88 +395,6 @@ class TestSetupConfiguration:
         assert isinstance(result, HeadroomConfig)
 
 
-class TestProcessPolicyRecommendations:
-    """Test process_policy_recommendations function."""
-
-    def test_process_policy_recommendations_with_recommendations(self) -> None:
-        """Test processing non-empty recommendations."""
-        recommendations = {"check1": "recommendation1"}
-        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
-        terraform_generator = MagicMock()
-
-        with patch('headroom.main.print_policy_recommendations') as mock_print:
-            process_policy_recommendations(
-                recommendations,
-                org_hierarchy,
-                "Test Recommendations",
-                terraform_generator,
-                "arg1",
-                "arg2"
-            )
-
-        mock_print.assert_called_once_with(recommendations, org_hierarchy, "Test Recommendations")
-        terraform_generator.assert_called_once_with(recommendations, org_hierarchy, "arg1", "arg2")
-
-    def test_process_policy_recommendations_empty(self) -> None:
-        """
-        Empty recommendations still reach the generator.
-
-        The generator's plan is what the directory is reconciled against, so
-        skipping it here would leave a previous run's policy files deployed.
-        """
-        recommendations: Dict[str, str] = {}
-        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
-        terraform_generator = MagicMock(return_value={})
-
-        with patch('headroom.main.print_policy_recommendations') as mock_print:
-            plan = process_policy_recommendations(
-                recommendations,
-                org_hierarchy,
-                "Test Recommendations",
-                terraform_generator,
-                "arg1"
-            )
-
-        assert plan == {}
-        mock_print.assert_called_once_with(recommendations, org_hierarchy, "Test Recommendations")
-        terraform_generator.assert_called_once_with(recommendations, org_hierarchy, "arg1")
-
-    def test_process_policy_recommendations_returns_the_plan(self) -> None:
-        """The generator's plan is handed back for the caller to reconcile against."""
-        recommendations: List[str] = ["rec1"]
-        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
-        expected = {Path("/out/root_scps.tf"): "content"}
-        terraform_generator = MagicMock(return_value=expected)
-
-        with patch('headroom.main.print_policy_recommendations'):
-            plan = process_policy_recommendations(
-                recommendations,
-                org_hierarchy,
-                "Test Recommendations",
-                terraform_generator
-            )
-
-        assert plan == expected
-
-    def test_process_policy_recommendations_list(self) -> None:
-        """Test processing list of recommendations."""
-        recommendations = ["rec1", "rec2"]
-        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
-        terraform_generator = MagicMock()
-
-        with patch('headroom.main.print_policy_recommendations') as mock_print:
-            process_policy_recommendations(
-                recommendations,
-                org_hierarchy,
-                "Test Recommendations",
-                terraform_generator,
-                "arg1"
-            )
-
-        mock_print.assert_called_once()
-        terraform_generator.assert_called_once()
-
-
 class TestMainDiscoversOnce:
     """`main` reads the organization once and hands the same view to every stage."""
 
@@ -573,53 +490,46 @@ class TestHandleScpWorkflow:
     """Test handle_scp_workflow function."""
 
     def test_handle_scp_workflow_with_recommendations(self) -> None:
-        """Test SCP workflow with recommendations."""
-        config = MagicMock(spec=HeadroomConfig)
-        config.scps_dir = "/test/scps"
+        """The workflow prints its recommendations and hands them back unwritten."""
+        recommendations = [MagicMock()]
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
-        recommendations = {"check1": "recommendation1"}
+        config = MagicMock()
 
-        with patch('headroom.main.analyze_scp_compliance', return_value=recommendations):
-            with patch('headroom.main.process_policy_recommendations') as mock_process:
-                handle_scp_workflow(config, org_hierarchy)
+        with patch('headroom.main.analyze_scp_compliance', return_value=recommendations), \
+             patch('headroom.main.print_policy_recommendations') as mock_print:
+            result = handle_scp_workflow(config, org_hierarchy)
 
-        mock_process.assert_called_once()
-        call_args = mock_process.call_args
-        assert call_args[0][0] == recommendations
-        assert call_args[0][1] == org_hierarchy
-        assert call_args[0][2] == "SCP PLACEMENT RECOMMENDATIONS"
+        assert result == recommendations
+        mock_print.assert_called_once_with(
+            recommendations, org_hierarchy, "SCP PLACEMENT RECOMMENDATIONS"
+        )
 
     def test_handle_scp_workflow_no_recommendations(self) -> None:
         """
-        Nothing to place still generates, producing an empty plan.
+        Nothing to place still returns an empty list, unwritten.
 
-        Reconciliation deletes what the plan omits, so an empty plan is how a
-        policy that lost its placement loses the file that deploys it.
+        Nothing here decides whether that empties the directory -- the caller
+        compiles the plan. handle_scp_workflow's job stops at handing the
+        empty list back, having printed it like any other.
         """
-        config = MagicMock(spec=HeadroomConfig)
-        config.scps_dir = "/test/scps"
+        config = MagicMock()
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        with patch('headroom.main.analyze_scp_compliance', return_value=[]):
-            with patch(
-                'headroom.main.process_policy_recommendations', return_value={}
-            ) as mock_process:
-                plan = handle_scp_workflow(config, org_hierarchy)
+        with patch('headroom.main.analyze_scp_compliance', return_value=[]), \
+             patch('headroom.main.print_policy_recommendations') as mock_print:
+            result = handle_scp_workflow(config, org_hierarchy)
 
-        assert plan == {}
-        mock_process.assert_called_once()
-        assert mock_process.call_args[0][0] == []
+        assert result == []
+        mock_print.assert_called_once_with([], org_hierarchy, "SCP PLACEMENT RECOMMENDATIONS")
 
 
 class TestHandleRcpWorkflow:
     """Test handle_rcp_workflow function."""
 
     def test_handle_rcp_workflow_complete(self) -> None:
-        """Test RCP workflow with complete data."""
+        """The workflow prints its recommendations and hands them back unwritten."""
         config = MagicMock(spec=HeadroomConfig)
         config.results_dir = "/test/results"
-        config.rcps_dir = "/test/rcps"
-        config.scps_dir = "/test/scps"
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
         parse_result = [
@@ -629,18 +539,17 @@ class TestHandleRcpWorkflow:
                 accounts_with_blockers=set(),
             )
         ]
-        recommendations = [{"recommendation": "test"}]
+        recommendations = [MagicMock()]
 
-        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
-            with patch('headroom.main.determine_rcp_placement', return_value=recommendations):
-                with patch('headroom.main.process_policy_recommendations') as mock_process:
-                    handle_rcp_workflow(config, org_hierarchy)
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result), \
+             patch('headroom.main.determine_rcp_placement', return_value=recommendations), \
+             patch('headroom.main.print_policy_recommendations') as mock_print:
+            result = handle_rcp_workflow(config, org_hierarchy)
 
-        mock_process.assert_called_once()
-        call_args = mock_process.call_args
-        assert call_args[0][0] == recommendations
-        assert call_args[0][1] == org_hierarchy
-        assert call_args[0][2] == "RCP PLACEMENT RECOMMENDATIONS"
+        assert result == recommendations
+        mock_print.assert_called_once_with(
+            recommendations, org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS"
+        )
 
     def test_handle_rcp_workflow_no_third_party_map(self) -> None:
         """
@@ -672,7 +581,6 @@ class TestHandleRcpWorkflow:
         """
         config = MagicMock(spec=HeadroomConfig)
         config.results_dir = "/test/results"
-        config.rcps_dir = "/test/rcps"
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
         parse_result = [
@@ -683,14 +591,12 @@ class TestHandleRcpWorkflow:
             )
         ]
 
-        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
-            with patch('headroom.main.determine_rcp_placement', return_value=[]):
-                with patch(
-                    'headroom.main.process_policy_recommendations', return_value={}
-                ) as mock_process:
-                    assert handle_rcp_workflow(config, org_hierarchy) == {}
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result), \
+             patch('headroom.main.determine_rcp_placement', return_value=[]), \
+             patch('headroom.main.print_policy_recommendations') as mock_print:
+            assert handle_rcp_workflow(config, org_hierarchy) == []
 
-        mock_process.assert_called_once()
+        mock_print.assert_called_once_with([], org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS")
 
     def test_handle_rcp_workflow_all_checks_empty(self) -> None:
         """Test RCP workflow when every check parsed but found nothing."""
@@ -715,7 +621,7 @@ class TestHandleRcpWorkflow:
         mock_determine.assert_not_called()
 
     def test_handle_rcp_workflow_no_recommendations(self) -> None:
-        """Placing nothing still generates, so reconciliation can empty the directory."""
+        """Placing nothing still returns an empty list, unwritten."""
         config = MagicMock(spec=HeadroomConfig)
         config.results_dir = "/test/results"
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
@@ -728,20 +634,15 @@ class TestHandleRcpWorkflow:
             )
         ]
 
-        config.rcps_dir = "/test/rcps"
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result), \
+             patch('headroom.main.determine_rcp_placement', return_value=[]), \
+             patch('headroom.main.print_policy_recommendations') as mock_print:
+            assert handle_rcp_workflow(config, org_hierarchy) == []
 
-        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
-            with patch('headroom.main.determine_rcp_placement', return_value=[]):
-                with patch(
-                    'headroom.main.process_policy_recommendations', return_value={}
-                ) as mock_process:
-                    assert handle_rcp_workflow(config, org_hierarchy) == {}
-
-        mock_process.assert_called_once()
-        assert mock_process.call_args[0][0] == []
+        mock_print.assert_called_once_with([], org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS")
 
     def test_handle_rcp_workflow_none_recommendations(self) -> None:
-        """A generator handed None still runs, and its plan is what reconciles."""
+        """Placement handing back None is printed and returned, not written."""
         config = MagicMock(spec=HeadroomConfig)
         config.results_dir = "/test/results"
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
@@ -754,16 +655,12 @@ class TestHandleRcpWorkflow:
             )
         ]
 
-        config.rcps_dir = "/test/rcps"
+        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result), \
+             patch('headroom.main.determine_rcp_placement', return_value=None), \
+             patch('headroom.main.print_policy_recommendations') as mock_print:
+            assert handle_rcp_workflow(config, org_hierarchy) is None
 
-        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result):
-            with patch('headroom.main.determine_rcp_placement', return_value=None):
-                with patch(
-                    'headroom.main.process_policy_recommendations', return_value={}
-                ) as mock_process:
-                    assert handle_rcp_workflow(config, org_hierarchy) == {}
-
-        mock_process.assert_called_once()
+        mock_print.assert_called_once_with(None, org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS")
 
 
 class TestEnsureOrgInfoSymlink:
