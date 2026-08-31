@@ -454,9 +454,11 @@ def run_checks(
     outcome by a different route, since `shutdown` joins no threads and
     leaves the queue where it lies.
     """
-    # frozenset reaches here from the snapshot, and every analyzer downstream
-    # is annotated Set[str]. One conversion, at the boundary, rather than a
-    # cast at each of the six analyzer call sites.
+    # frozenset reaches here from the snapshot, and frozenset is not a subtype
+    # of Set[str] -- typing.Set is builtins.set. The parameter threads from the
+    # RCP checks down through every service adapter that reads a policy
+    # document, so widening the annotation is a change to all of them. One
+    # conversion at the boundary instead.
     mutable_org_account_ids = set(org_account_ids)
 
     pending = []
