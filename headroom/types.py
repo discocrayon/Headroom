@@ -58,7 +58,7 @@ class OrganizationHierarchy:
     accounts: Dict[str, AccountOrgPlacement]
 
 
-@dataclass
+@dataclass(frozen=True)
 class AccountInfo:
     """
     An account Headroom will analyze, with its tag-derived metadata.
@@ -87,11 +87,15 @@ class OrganizationSnapshot:
     The outer dataclass is frozen: a stage cannot reassign `organization_id`,
     `member_account_ids`, `analyzable_accounts`, or `hierarchy` to a
     projection it computed itself, which is the failure this type exists to
-    remove. It does not make the contents deeply immutable: `hierarchy`
-    still holds ordinary dicts and lists, and `analyzable_accounts` is a
-    tuple of mutable `AccountInfo` objects, so a stage already holding a
-    reference can still edit an entry in place. Deep immutability is
-    deliberately out of scope for this change.
+    remove. Three of the four fields are immutable the whole way down --
+    `organization_id` is a string, `member_account_ids` a frozenset, and
+    `analyzable_accounts` a tuple of frozen `AccountInfo` -- so a stage that
+    holds a reference cannot edit an entry in place either.
+
+    `hierarchy` is the one exception: `OrganizationHierarchy` holds ordinary
+    dicts and lists, so its contents stay mutable. Deep-freezing it would mean
+    reworking every producer and consumer of those collections, and that is
+    deliberately out of scope here.
 
     Attributes:
         organization_id: This organization's ID, such as `o-11111111111`
