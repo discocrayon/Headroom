@@ -193,25 +193,21 @@ class TestBuildOrganizationHierarchy:
     def test_a_later_page_error_aborts_with_no_partial_hierarchy(self) -> None:
         """A failure partway through must not return what it read first."""
         error: object = {"Error": {"Code": "ThrottlingException"}}
+        operations: List[str] = []
 
         def get_paginator(operation_name: str) -> Mock:
+            operations.append(operation_name)
             paginator = Mock()
 
-            def paginate_op(**kwargs: str) -> Iterable[Dict[str, Any]]:
-                if operation_name == "list_accounts_for_parent":
-                    return [{"Accounts": []}]
+            def pages(**kwargs: str) -> Iterator[Dict[str, Any]]:
+                yield {
+                    "OrganizationalUnits": [
+                        {"Id": "ou-1111-11111111", "Name": "Production"}
+                    ]
+                }
+                raise ClientError(error, "ListOrganizationalUnitsForParent")  # type: ignore[arg-type]
 
-                def pages() -> Iterator[Dict[str, Any]]:
-                    yield {
-                        "OrganizationalUnits": [
-                            {"Id": "ou-1111-11111111", "Name": "Production"}
-                        ]
-                    }
-                    raise ClientError(error, "ListOrganizationalUnitsForParent")  # type: ignore[arg-type]
-
-                return pages()
-
-            paginator.paginate.side_effect = paginate_op
+            paginator.paginate.side_effect = pages
             return paginator
 
         org_client = Mock()
@@ -219,6 +215,13 @@ class TestBuildOrganizationHierarchy:
 
         with pytest.raises(RuntimeError, match="Failed to list the OUs under r-1111"):
             build_organization_hierarchy(org_client, "r-1111")
+
+        # The OU listing raises before the traversal reaches the accounts under
+        # that same parent, so the abort is immediate rather than "finish this
+        # parent, then fail". The previous form of this test carried a
+        # list_accounts_for_parent branch to answer a call that never comes;
+        # asserting the call never comes is the thing actually worth pinning.
+        assert operations == ["list_organizational_units_for_parent"]
 
     def test_an_account_under_two_parents_aborts(self) -> None:
         """
