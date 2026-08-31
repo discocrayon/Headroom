@@ -1,13 +1,12 @@
 """Tests for headroom/aws/organization.py."""
 
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from unittest.mock import Mock
 
 import pytest
 from botocore.exceptions import ClientError
 
 from headroom.aws.organization import (
-    analyze_organization_structure,
     build_organization_hierarchy,
     find_organization_root,
     lookup_account_id_by_name,
@@ -320,34 +319,6 @@ class TestBuildOrganizationHierarchy:
 
         with pytest.raises(RuntimeError, match="ou-3333-33333333 was reached more than once"):
             build_organization_hierarchy(org_client, "r-1111")
-
-
-class TestOrganizationStructureAnalysis:
-    """Test organization structure analysis functions."""
-
-    def test_the_session_adapter_finds_the_root_and_walks_from_it(self) -> None:
-        """Kept only until Task 4 deletes analyze_organization_structure."""
-        org_client = _paginating_org_client(
-            ous_by_parent={"r-1111": [[{"Id": "ou-1111-11111111", "Name": "Production"}]]},
-            accounts_by_parent={},
-        )
-        roots_paginator = Mock()
-        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
-        original: Callable[[str], Mock] = org_client.get_paginator.side_effect
-
-        def get_paginator(operation_name: str) -> Mock:
-            if operation_name == "list_roots":
-                return roots_paginator
-            return original(operation_name)
-
-        org_client.get_paginator.side_effect = get_paginator
-        session = Mock()
-        session.client.return_value = org_client
-
-        hierarchy = analyze_organization_structure(session)
-
-        assert hierarchy.root_id == "r-1111"
-        assert "ou-1111-11111111" in hierarchy.organizational_units
 
 
 class TestLookupAccountIdByName:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
+from mypy_boto3_organizations.client import OrganizationsClient
 
 from .config import HeadroomConfig
 from .log_context import configure_logging
@@ -17,7 +18,7 @@ from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_place
 from .terraform.generate_org_info import generate_terraform_org_info
 from .terraform.models import TerraformPlan
 from .terraform.reconcile import reconcile_generated_terraform
-from .aws.organization import analyze_organization_structure
+from .aws.organization import build_organization_hierarchy, find_organization_root
 from .types import OrganizationHierarchy
 from .constants import ORG_INFO_FILENAME
 from .output import OutputHandler
@@ -94,11 +95,14 @@ def setup_organization_context(
 
     Raises:
         ValueError: If management account configuration is missing
-        RuntimeError: If role assumption fails
+        RuntimeError: If role assumption or the traversal fails
         ClientError: If AWS API calls fail
     """
     mgmt_session = get_management_account_session(final_config, security_session)
-    organization_hierarchy = analyze_organization_structure(mgmt_session)
+    org_client: OrganizationsClient = mgmt_session.client("organizations")
+    organization_hierarchy = build_organization_hierarchy(
+        org_client, find_organization_root(org_client)
+    )
     return mgmt_session, organization_hierarchy
 
 
@@ -243,7 +247,7 @@ def main() -> None:
 
         # Generate Terraform organization info file (needed by both SCP and RCP workflows)
         org_info_path = Path(final_config.scps_dir) / ORG_INFO_FILENAME
-        generate_terraform_org_info(mgmt_session, str(org_info_path))
+        generate_terraform_org_info(org_hierarchy, str(org_info_path))
 
         # Create symlink from RCP directory to SCP grab_org_info.tf (needed for RCP Terraform)
         ensure_org_info_symlink(final_config.rcps_dir, final_config.scps_dir)

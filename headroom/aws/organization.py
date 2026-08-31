@@ -9,7 +9,6 @@ import logging
 from collections import deque
 from typing import Deque, Dict, List, Optional, Sequence, Set, Tuple, cast
 
-from boto3.session import Session
 from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 from mypy_boto3_organizations.type_defs import AccountTypeDef, OrganizationalUnitTypeDef, RootTypeDef
@@ -246,29 +245,6 @@ def find_organization_root(org_client: OrganizationsClient) -> str:
     root_id = roots[0]["Id"]
     logger.info(f"Found organization root: {root_id}")
     return root_id
-
-
-def analyze_organization_structure(session: Session) -> OrganizationHierarchy:
-    """Analyze AWS Organizations structure. Superseded by `discover_organization`."""
-    org_client: OrganizationsClient = session.client("organizations")
-    return build_organization_hierarchy(org_client, find_organization_root(org_client))
-
-
-def create_account_ou_mapping(session: Session) -> Dict[str, Optional[str]]:
-    """
-    Create mapping of account IDs to their direct parent OU IDs.
-
-    Returns dictionary with account_id -> parent_ou_id relationships.
-
-    parent_ou_id is None for accounts attached directly to the organization root.
-    """
-    hierarchy = analyze_organization_structure(session)
-    mapping: Dict[str, Optional[str]] = {}
-
-    for account_id, account_info in hierarchy.accounts.items():
-        mapping[account_id] = account_info.parent_ou_id
-
-    return mapping
 
 
 def _format_account_candidates(candidates: List[Tuple[str, str]]) -> str:

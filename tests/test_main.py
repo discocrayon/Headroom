@@ -475,8 +475,9 @@ class TestSetupOrganizationContext:
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
         with patch('headroom.main.get_management_account_session', return_value=mgmt_session):
-            with patch('headroom.main.analyze_organization_structure', return_value=org_hierarchy):
-                result_session, result_hierarchy = setup_organization_context(config, security_session)
+            with patch('headroom.main.find_organization_root'):
+                with patch('headroom.main.build_organization_hierarchy', return_value=org_hierarchy):
+                    result_session, result_hierarchy = setup_organization_context(config, security_session)
 
         assert result_session == mgmt_session
         assert result_hierarchy == org_hierarchy

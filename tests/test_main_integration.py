@@ -144,8 +144,10 @@ class TestMainIntegration:
         with patch('headroom.main.analyze_scp_compliance', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.build_organization_hierarchy'), \
+             patch('headroom.main.find_organization_root'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -189,8 +191,10 @@ class TestMainIntegration:
         with patch('headroom.main.analyze_scp_compliance', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.build_organization_hierarchy'), \
+             patch('headroom.main.find_organization_root'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -239,8 +243,10 @@ class TestMainIntegration:
         with patch('headroom.main.analyze_scp_compliance', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.build_organization_hierarchy'), \
+             patch('headroom.main.find_organization_root'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -563,8 +569,10 @@ class TestMainIntegration:
         with patch('headroom.main.analyze_scp_compliance', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.build_organization_hierarchy'), \
+             patch('headroom.main.find_organization_root'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -605,8 +613,10 @@ class TestMainIntegration:
         with patch('headroom.main.analyze_scp_compliance', return_value=None), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.generate_terraform_org_info'), \
-             patch('headroom.main.analyze_organization_structure'), \
+             patch('headroom.main.build_organization_hierarchy'), \
+             patch('headroom.main.find_organization_root'), \
              patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
@@ -661,9 +671,11 @@ class TestMainIntegration:
         with (
             patch('headroom.main.analyze_scp_compliance', return_value=[]),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
+            patch('headroom.main.get_management_account_session'),
             patch('headroom.main.parse_rcp_result_files', return_value=rcp_evidence()),
             patch('headroom.main.generate_terraform_org_info'),
-            patch('headroom.main.analyze_organization_structure'),
+            patch('headroom.main.build_organization_hierarchy'),
+            patch('headroom.main.find_organization_root'),
             patch('headroom.main.ensure_org_info_symlink')
         ):
             main()
@@ -725,7 +737,8 @@ class TestMainIntegration:
 
         with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess, \
-             patch('headroom.main.analyze_organization_structure') as mock_analyze, \
+             patch('headroom.main.build_organization_hierarchy') as mock_analyze, \
+             patch('headroom.main.find_organization_root'), \
              patch('headroom.main.ensure_org_info_symlink'):
             # cause sts.assume_role to raise
             mock_get_sess.return_value.client.return_value.assume_role.side_effect = err
@@ -849,6 +862,7 @@ class TestMainIntegration:
         with (
             patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
+            patch('headroom.main.get_management_account_session'),
             patch('headroom.main.parse_rcp_result_files', return_value=[
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
@@ -857,7 +871,8 @@ class TestMainIntegration:
                 )
             ]),
             patch('headroom.main.generate_terraform_org_info'),
-            patch('headroom.main.analyze_organization_structure', return_value=mock_org_hierarchy),
+            patch('headroom.main.build_organization_hierarchy', return_value=mock_org_hierarchy),
+            patch('headroom.main.find_organization_root'),
             patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
             patch('headroom.main.generate_rcp_terraform') as mock_gen_rcp,
             patch('headroom.main.generate_scp_terraform'),
