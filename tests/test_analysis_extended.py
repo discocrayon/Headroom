@@ -20,8 +20,8 @@ from headroom.analysis import (
     run_checks_for_type,
     get_all_organization_account_ids,
     get_organization_id,
-    AccountInfo
 )
+from headroom.types import AccountInfo
 from headroom.checks.base import BaseCheck
 from headroom.config import HeadroomConfig, AccountTagLayout
 from tests.constants import ORG_ID

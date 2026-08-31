@@ -4,7 +4,6 @@ import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, cast
-from dataclasses import dataclass
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
@@ -18,16 +17,9 @@ from .write_results import results_exist
 from .aws.sessions import assume_role, new_session
 from .aws.helpers import paginate
 from .utils import format_account_identifier
+from .types import AccountInfo
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class AccountInfo:
-    account_id: str
-    environment: str
-    name: str
-    owner: str
 
 
 def get_security_analysis_session(config: HeadroomConfig) -> Session:

@@ -59,6 +59,51 @@ class OrganizationHierarchy:
 
 
 @dataclass
+class AccountInfo:
+    """
+    An account Headroom will analyze, with its tag-derived metadata.
+
+    `name` is the analysis name: it comes from the configured tag when
+    `use_account_name_from_tags` is set and falls back to the account ID, so
+    it is deliberately distinct from `AccountOrgPlacement.account_name`, which
+    is always the name AWS Organizations reports.
+    """
+    account_id: str
+    environment: str
+    name: str
+    owner: str
+
+
+@dataclass(frozen=True)
+class OrganizationSnapshot:
+    """
+    One run's captured view of the organization.
+
+    Built once, by `discover_organization`, and consumed unchanged by the scan
+    and by all three Terraform generators. Nothing downstream refreshes
+    Organizations data, so every stage reasons about the same organization.
+
+    The outer dataclass is frozen; `hierarchy` still holds dicts and lists.
+    Freezing the projections is what prevents a stage substituting its own,
+    which is the failure this type exists to remove; deep immutability of the
+    hierarchy is a separate concern and not one this change takes on.
+
+    Attributes:
+        organization_id: This organization's ID, such as `o-11111111111`
+        member_account_ids: Every organization member, including the
+            management account, accounts skipped by configuration, and
+            accounts in every non-ACTIVE lifecycle state
+        analyzable_accounts: The accounts the scan will run against, in the
+            order Organizations reported them
+        hierarchy: The complete OU tree, retaining every account
+    """
+    organization_id: str
+    member_account_ids: frozenset[str]
+    analyzable_accounts: tuple[AccountInfo, ...]
+    hierarchy: OrganizationHierarchy
+
+
+@dataclass
 class CheckResult:
     """
     Base class for all check results.

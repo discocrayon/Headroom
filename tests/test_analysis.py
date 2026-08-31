@@ -25,8 +25,8 @@ from headroom.analysis import (
     _verify_no_duplicate_account_names,
     ACTIVE_ACCOUNT_STATE,
     INACTIVE_ACCOUNT_STATES,
-    AccountInfo
 )
+from headroom.types import AccountInfo
 from headroom.checks.base import BaseCheck
 from headroom.checks.registry import get_all_check_classes, get_check_names
 from headroom.config import HeadroomConfig, AccountTagLayout
