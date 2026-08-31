@@ -763,6 +763,52 @@ class TestMainIntegration:
             for msg in printed
         )
 
+    def test_main_discovery_failure_names_the_discovery_phase(
+        self,
+        mock_cli_args: MagicMock,
+        valid_yaml_config: Dict[str, Any],
+        mock_dependencies: Dict[str, MagicMock]
+    ) -> None:
+        """
+        A guard inside `discover_organization` reports the discovery phase.
+
+        The two tests above reach the same label through a configuration
+        error and a denied AssumeRole, and both of those sit in the discovery
+        block whatever `discover_organization` is doing -- so neither notices
+        the discovery call itself moving into the scan. Every guard in
+        discovery raises RuntimeError, and the phase is what tells an
+        operator the organization changed mid-read before any account was
+        touched, rather than something going wrong once the scan was under
+        way.
+        """
+        mocks = mock_dependencies
+        mocks['parse'].return_value = mock_cli_args
+        mocks['load'].return_value = valid_yaml_config
+        mock_final_config = MagicMock()
+        mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
+        mock_final_config.management_account_id = "111111111111"
+        mocks['merge'].return_value = mock_final_config
+
+        err = RuntimeError(
+            "Account 111111111111 appears under more than one parent"
+        )
+
+        with patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
+             patch('headroom.main.discover_organization', side_effect=err), \
+             patch('headroom.main.ensure_org_info_symlink'):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+        printed = [c.args[0] for c in mocks['print'].call_args_list]
+        assert any(
+            "Runtime Error during organization discovery" in msg
+            for msg in printed
+        )
+
     def test_main_runtime_error_in_generation_is_handled(
         self,
         mock_cli_args: MagicMock,

@@ -265,6 +265,27 @@ class TestOrganizationIdIsRequired:
 
         org_client.get_paginator.assert_not_called()
 
+    def test_an_empty_organization_id_aborts_the_run(self) -> None:
+        """
+        An empty ID is a present field, so a `None` check lets it through.
+
+        `snapshot.organization_id` is what every `aws:SourceOrgID` condition
+        is compared against. The empty string matches no organization, so
+        every organization-scoped source guard in the estate would classify
+        as naming a foreign org -- the allowlist inverted, reached with no
+        error anywhere. That is the outcome this abort exists to prevent, and
+        the missing-ID case above cannot pin it: narrowing the guard to
+        `org_id is None` still passes every other test in the suite.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(accounts)
+        org_client.describe_organization.return_value = {"Organization": {"Id": ""}}
+
+        with pytest.raises(RuntimeError, match="no organization ID"):
+            discover_organization(_config(), org_client)
+
     def test_a_response_with_no_organization_at_all_aborts_the_run(self) -> None:
         """
         DescribeOrganization is documented to carry an Organization block, so
