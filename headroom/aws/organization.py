@@ -264,11 +264,17 @@ def list_organization_accounts(
     Returns:
         Every account, in every lifecycle state, including the management
         account
+
+    Raises:
+        RuntimeError: If the listing fails at any page
     """
     accounts: List[AccountTypeDef] = []
 
-    for page in paginate(org_client, "list_accounts"):
-        accounts.extend(cast(Sequence[AccountTypeDef], page.get("Accounts", [])))
+    try:
+        for page in paginate(org_client, "list_accounts"):
+            accounts.extend(cast(Sequence[AccountTypeDef], page.get("Accounts", [])))
+    except (ClientError, BotoCoreError) as e:
+        raise RuntimeError(f"Failed to list the organization's accounts: {e}")
 
     return accounts
 

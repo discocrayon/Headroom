@@ -14,7 +14,7 @@ import unicodedata
 from pathlib import Path
 from typing import AbstractSet, Dict, List, Optional, Sequence, cast
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 from mypy_boto3_organizations.type_defs import AccountTypeDef, TagTypeDef
 
@@ -77,14 +77,16 @@ def _determine_account_name(account: AccountTypeDef, tags: Dict[str, str], confi
 
     Returns:
         The configured name tag when use_account_name_from_tags is set,
-        otherwise the name Organizations reports. Each path falls back to the
-        account ID, and never to the other: a missing name tag yields the
-        account ID rather than the Organizations name.
+        otherwise the name Organizations reports. A missing name tag falls
+        back to the account ID and never to the Organizations name. The
+        Organizations name needs no fallback of its own:
+        `_verify_every_account_is_named` has already aborted the run if any
+        account came back without one.
     """
     account_id: str = account["Id"]
     if config.use_account_name_from_tags:
         return tags.get(config.account_tag_layout.name) or account_id
-    account_name: str = account.get("Name") or account_id
+    account_name: str = account["Name"]
     return account_name
 
 
@@ -110,7 +112,7 @@ def _build_account_info_from_account_dict(
         ClientError: If AWS API calls fail
     """
     account_id = account["Id"]
-    account_name = account.get("Name", account_id)
+    account_name = account["Name"]
 
     tags = _fetch_account_tags(org_client, account_id, account_name)
 
@@ -266,6 +268,46 @@ def _verify_no_duplicate_account_ids(member_accounts: Sequence[AccountTypeDef]) 
         f"{len(duplicated)} account ID(s) were returned more than once by "
         f"list_accounts: {', '.join(duplicated)}. The organization was "
         "modified during discovery. Re-run Headroom."
+    )
+
+
+def _verify_every_account_is_named(member_accounts: Sequence[AccountTypeDef]) -> None:
+    """
+    Abort if `list_accounts` reports an account carrying no name.
+
+    Organizations names every account, and the membership listing's name is
+    read twice: `_verify_views_agree` compares it against the traversal's,
+    and `_determine_account_name` turns it into the analysis name that names
+    the result files. Both index `Name` directly, so without this gate a
+    nameless account surfaced as the bare KeyError of whichever ran first --
+    an exception `_failures_reported` does not catch, naming neither the
+    discovery phase nor the account.
+
+    Substituting the account ID is the fallback that suggests itself and the
+    one that cannot be taken: the ID is what the cross-check would then
+    compare the two views' names against, so it would report them agreeing
+    on a name neither view holds. An empty name is treated as an absent one,
+    because it serves neither purpose above either.
+
+    Args:
+        member_accounts: Every organization member, from `list_accounts`
+
+    Raises:
+        RuntimeError: If any account has no name
+    """
+    unnamed = sorted(
+        account["Id"] for account in member_accounts if not account.get("Name")
+    )
+
+    if not unnamed:
+        return
+
+    raise RuntimeError(
+        f"list_accounts reported {len(unnamed)} account(s) with no name: "
+        f"{', '.join(unnamed)}. Organizations names every account, and both "
+        "the result filename and the placement match are built from that "
+        "name, so there is nothing to fall back to. Re-run Headroom; if it "
+        "recurs, the Organizations response is not the shape AWS documents."
     )
 
 
@@ -486,9 +528,14 @@ def _read_organization_id(org_client: OrganizationsClient) -> str:
         This organization's ID, such as `o-11111111111`
 
     Raises:
-        RuntimeError: If the response carries no organization ID
+        RuntimeError: If the read fails, or the response carries no
+            organization ID
     """
-    organization = org_client.describe_organization().get("Organization", {})
+    try:
+        organization = org_client.describe_organization().get("Organization", {})
+    except (ClientError, BotoCoreError) as e:
+        raise RuntimeError(f"Failed to describe the organization: {e}")
+
     org_id = organization.get("Id")
     if not org_id:
         raise RuntimeError(
@@ -682,16 +729,18 @@ def discover_organization(
 
     Raises:
         RuntimeError: If the organization has no ID, no root or several, if
-            `list_accounts` returns an account ID more than once, if a
-            `skip_account_ids` entry matches nothing, if a lifecycle state
-            cannot be classified, if the two views disagree, or if an account
-            name cannot become a result filename
+            `list_accounts` returns an account ID more than once or an
+            account with no name, if a `skip_account_ids` entry matches
+            nothing, if a lifecycle state cannot be classified, if the two
+            views disagree, or if an account name cannot become a result
+            filename
     """
     organization_id = _read_organization_id(org_client)
     logger.info(f"Organization ID: {organization_id}")
 
     member_accounts = list_organization_accounts(org_client)
     _verify_no_duplicate_account_ids(member_accounts)
+    _verify_every_account_is_named(member_accounts)
     member_account_ids = frozenset(account["Id"] for account in member_accounts)
     logger.info(f"Found {len(member_account_ids)} accounts in organization")
 

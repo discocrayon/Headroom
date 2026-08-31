@@ -4110,7 +4110,8 @@ def discover_organization(
     2. List every member account via list_accounts(), all pages. Deliberately
        unfiltered: the management account, accounts named in skip_account_ids,
        and accounts in every non-ACTIVE lifecycle state are all members
-    3. Abort if list_accounts reported one account ID more than once
+    3. Abort if list_accounts reported one account ID more than once, or
+       reported an account carrying no name
     4. Abort if a skip_account_ids entry matched no member. Checked against
        full membership before any filtering, so a mistyped entry reports itself
        rather than losing the race to a lifecycle abort it may have caused
@@ -4135,15 +4136,21 @@ def discover_organization(
        - environment from the layout's environment tag (default "unknown")
        - owner from the layout's owner tag (default "unknown")
        - name: if use_account_name_from_tags, the layout's name tag (default
-         account_id); otherwise account.Name from the API (default account_id)
+         account_id); otherwise account.Name from the API, which step 3 has
+         already required rather than defaulted
     9. Verify those names can become result filenames, and under
        exclude_account_ids that they are unique (see "Account name
        validation"), then return the frozen OrganizationSnapshot
 
     Returns: OrganizationSnapshot
 
-    Raises: RuntimeError on any of the aborts above, and on an account under
-            more than one parent or an OU reached twice during the traversal
+    Raises: RuntimeError on any of the aborts above, on an account under
+            more than one parent or an OU reached twice during the traversal,
+            and on a failed Organizations read: describe_organization,
+            list_accounts, list_roots and the two per-parent listings all
+            wrap ClientError and BotoCoreError, so a refusal or a connection
+            failure is reported against the discovery phase rather than as
+            an unlabelled traceback
     """
 ```
 
@@ -4154,7 +4161,7 @@ def discover_organization(
 class AccountInfo:
     account_id: str
     environment: str       # From tags, default "unknown"
-    name: str             # From tags/API, default account_id
+    name: str             # The name tag (default account_id), or the API name
     owner: str            # From tags, default "unknown"
 
 @dataclass(frozen=True)
@@ -4195,12 +4202,13 @@ the global view plus tags and is what names those result files. The
 canonicalization fallback in `lookup_account_id_by_name` bridges the two, and it can
 only do that if the raw Organizations names are identical on both sides.
 
-**Five disagreements abort discovery.** Each is a case where what the run found
+**Six disagreements abort discovery.** Each is a case where what the run found
 contradicts what it was told, or contradicts itself, and none has a safe reading:
 
 | Guard | Aborts when | Why not resolve it |
 |-------|-------------|--------------------|
 | Duplicate account IDs | `list_accounts` reports one account ID more than once | Two `AccountInfo` for one account become two workers, therefore two threads writing one result file. Nothing downstream would notice on its own: `member_account_ids` is a frozenset, so the repeat dedupes there, and the cross-check keys accounts by ID, so the duplicate collapses before it can be seen |
+| Account with no name | `list_accounts` reports an account carrying no `Name` | The cross-check compares the two views' raw names and the result filename is built from one of them, so substituting the account ID would report the two views agreeing on a name neither of them holds |
 | Unmatched `skip_account_ids` | A configured entry matches no organization member | A typo, a wrong digit count, and an account that has left the organization all look identical to a correct entry, and the account the operator meant to exclude keeps being analyzed with nothing in the output saying so |
 | Views disagree | An account is in one view only, or the two views name it differently | Result filenames come from one view and placement matching from the other, so proceeding attributes results to the wrong account or to none |
 | Name unusable as a filename | An analyzable account's name is empty, holds a null byte, reads as a path, or runs past 237 bytes | See "Account name validation": a path separator writes the account's results where generation does not look, without failing |
@@ -4214,7 +4222,7 @@ organization ID.
 **Concurrent organization mutation aborts the run.** This captures a view; it is not
 transaction isolation. Organizations offers no consistent snapshot across calls, so an
 account created, closed, renamed or moved between two of the reads above can make them
-disagree. Two of the five guards -- duplicate IDs and the cross-check -- exist to catch
+disagree. Two of the six guards -- duplicate IDs and the cross-check -- exist to catch
 exactly that, as do the traversal's two invariants, and all four say the same thing: the
 organization was modified during discovery, re-run Headroom. The remedy is a retry, not
 reconciliation. Proceeding on two disagreeing views would produce placement

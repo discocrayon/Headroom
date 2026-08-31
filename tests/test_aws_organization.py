@@ -4,7 +4,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from unittest.mock import Mock
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from headroom.aws.organization import (
     build_organization_hierarchy,
@@ -523,3 +523,23 @@ class TestListOrganizationAccounts:
             "222222222222",
         ]
         org_client.get_paginator.assert_called_once_with("list_accounts")
+
+    def test_a_connection_failure_aborts_with_the_listing_named(self) -> None:
+        """
+        A connection-level failure leaves botocore as a BotoCoreError, not a
+        ClientError, and `main`'s reporter catches ValueError, RuntimeError
+        and ClientError only. Unwrapped, the first listing of a run would end
+        it in a traceback naming no phase, while every other Organizations
+        reader here reports which listing failed.
+        """
+        org_client = Mock()
+        paginator = Mock()
+        paginator.paginate.side_effect = EndpointConnectionError(
+            endpoint_url="https://organizations.amazonaws.com/"
+        )
+        org_client.get_paginator.return_value = paginator
+
+        with pytest.raises(
+            RuntimeError, match="Failed to list the organization's accounts"
+        ):
+            list_organization_accounts(org_client)

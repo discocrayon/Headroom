@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, cast, get_args
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 from mypy_boto3_organizations.literals import AccountStateType
 from mypy_boto3_organizations.type_defs import AccountTypeDef
 
@@ -233,6 +233,39 @@ class TestOrganizationIdIsRequired:
             discover_organization(_config(), org_client)
 
         org_client.get_paginator.assert_not_called()
+
+    def test_a_response_with_no_organization_at_all_aborts_the_run(self) -> None:
+        """
+        DescribeOrganization is documented to carry an Organization block, so
+        a response without one is a shape this code has never seen -- which
+        is exactly when a bare KeyError helps least. The `{}` default keeps
+        the abort here, carrying the message that says what the ID is for.
+        """
+        org_client = _org_client(
+            [{"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"}]
+        )
+        org_client.describe_organization.return_value = {}
+
+        with pytest.raises(RuntimeError, match="no organization ID"):
+            discover_organization(_config(), org_client)
+
+    def test_a_connection_failure_reading_the_organization_aborts_the_run(self) -> None:
+        """
+        `describe_organization` is the first Organizations call a run makes,
+        and a connection-level failure leaves botocore as a BotoCoreError,
+        not a ClientError. `main`'s reporter catches ValueError, RuntimeError
+        and ClientError only, so unwrapped this ends the run in a traceback
+        naming neither the phase nor the call.
+        """
+        org_client = _org_client(
+            [{"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"}]
+        )
+        org_client.describe_organization.side_effect = EndpointConnectionError(
+            endpoint_url="https://organizations.amazonaws.com/"
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to describe the organization"):
+            discover_organization(_config(), org_client)
 
 
 class TestEveryStateIsClassified:
@@ -723,6 +756,59 @@ class TestDuplicateAccountIdGuard:
             discover_organization(_config(), org_client)
 
 
+class TestEveryAccountMustBeNamed:
+    """
+    A `list_accounts` entry carrying no name aborts rather than borrowing one.
+
+    `_verify_views_agree` compares the two views' raw Organizations names, so
+    it indexes `Name` directly, and a nameless account used to reach it as a
+    bare KeyError -- an exception `main`'s reporter does not catch, naming
+    neither the discovery phase nor the account.
+    """
+
+    def test_an_account_with_no_name_aborts_the_run(self) -> None:
+        """
+        Substituting the account ID is the tempting fallback and the wrong
+        one: the ID is what the two views' names would then be compared
+        against, so the cross-check would report them agreeing on a name
+        neither view holds.
+
+        The gate runs over the membership listing, before the traversal, so
+        the traversal's own `account["Name"]` is never reached -- the run
+        stops while the listing that omitted the name is still the subject.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(accounts)
+
+        with pytest.raises(
+            RuntimeError, match=rf"account\(s\) with no name: {PAYMENTS}"
+        ):
+            discover_organization(_config(), org_client)
+
+        org_client.get_paginator.assert_called_once_with("list_accounts")
+
+    def test_an_empty_name_aborts_the_run_as_a_missing_one(self) -> None:
+        """
+        An empty name is absent for every purpose the name serves: there is
+        nothing to compare across the views and nothing to name a result
+        file. It aborts here rather than reaching the filename gate, which
+        would otherwise report it against an account name the run invented.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "", "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(accounts)
+
+        with pytest.raises(
+            RuntimeError, match=rf"account\(s\) with no name: {PAYMENTS}"
+        ):
+            discover_organization(_config(), org_client)
+
+
 class TestFetchAccountTags:
     """Test _fetch_account_tags directly, below the discover_organization layer."""
 
@@ -876,28 +962,6 @@ class TestBuildAccountInfoFromAccountDict:
         assert result.environment == "unknown"
         assert result.owner == "unknown"
         mock_logger.error.assert_called_once()
-
-    def test_build_account_info_missing_account_name_in_api(self) -> None:
-        """Test building AccountInfo when account Name field is missing."""
-        config = HeadroomConfig(
-            use_account_name_from_tags=False,
-            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
-        )
-        account = cast(AccountTypeDef, {"Id": "777777777777"})
-        mock_org_client = MagicMock()
-        mock_org_client.get_paginator.return_value.paginate.return_value = [{
-            "Tags": [
-                {"Key": "Env", "Value": "production"},
-                {"Key": "OwnerTag", "Value": "TeamC"}
-            ]
-        }]
-
-        result = _build_account_info_from_account_dict(account, mock_org_client, config)
-
-        assert result.account_id == "777777777777"
-        assert result.name == "777777777777"
-        assert result.environment == "production"
-        assert result.owner == "TeamC"
 
 
 class TestDuplicateAccountNameGuard:
