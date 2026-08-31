@@ -1,250 +1,291 @@
 """Tests for headroom/aws/organization.py."""
 
-from typing import Any, Dict, Iterator
-from unittest.mock import Mock, patch
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from unittest.mock import Mock
 
 import pytest
 from botocore.exceptions import ClientError
 
 from headroom.aws.organization import (
     analyze_organization_structure,
-    create_account_ou_mapping,
+    build_organization_hierarchy,
     find_organization_root,
     lookup_account_id_by_name,
 )
 from headroom.types import (
     AccountOrgPlacement,
     OrganizationHierarchy,
-    OrganizationalUnit,
 )
+
+
+def _paginating_org_client(
+    ous_by_parent: Dict[str, List[List[Dict[str, str]]]],
+    accounts_by_parent: Dict[str, List[List[Dict[str, str]]]],
+    calls: Optional[List[Tuple[str, str]]] = None,
+) -> Mock:
+    """
+    Build an Organizations client whose two listings paginate per parent.
+
+    Each dict maps a parent ID to the list of pages that parent's listing
+    returns, so a test spells its pagination out rather than relying on the
+    order the traversal happens to visit parents in. `calls`, when given,
+    records every (operation, parent) pair the traversal issues.
+    """
+    def get_paginator(operation_name: str) -> Mock:
+        paginator = Mock()
+
+        def paginate_op(**kwargs: str) -> List[Dict[str, object]]:
+            parent = kwargs["ParentId"]
+            if calls is not None:
+                calls.append((operation_name, parent))
+            if operation_name == "list_organizational_units_for_parent":
+                pages = ous_by_parent.get(parent, [[]])
+                return [{"OrganizationalUnits": page} for page in pages]
+            pages = accounts_by_parent.get(parent, [[]])
+            return [{"Accounts": page} for page in pages]
+
+        paginator.paginate.side_effect = paginate_op
+        return paginator
+
+    org_client = Mock()
+    org_client.get_paginator.side_effect = get_paginator
+    return org_client
+
+
+class TestBuildOrganizationHierarchy:
+    """Test build_organization_hierarchy."""
+
+    def test_root_ous_on_page_two_are_retained(self) -> None:
+        """A top-level OU past page one was silently dropped."""
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [
+                    [{"Id": "ou-1111-11111111", "Name": "Production"}],
+                    [{"Id": "ou-2222-22222222", "Name": "Staging"}],
+                ],
+            },
+            accounts_by_parent={},
+        )
+
+        hierarchy = build_organization_hierarchy(org_client, "r-1111")
+
+        assert set(hierarchy.organizational_units) == {
+            "ou-1111-11111111",
+            "ou-2222-22222222",
+        }
+
+    def test_nested_ous_on_page_two_are_retained(self) -> None:
+        """A nested OU past page one was dropped along with its subtree."""
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [[{"Id": "ou-1111-11111111", "Name": "Production"}]],
+                "ou-1111-11111111": [
+                    [],
+                    [{"Id": "ou-2222-22222222", "Name": "Payments"}],
+                ],
+            },
+            accounts_by_parent={},
+        )
+
+        hierarchy = build_organization_hierarchy(org_client, "r-1111")
+
+        payments = hierarchy.organizational_units["ou-2222-22222222"]
+        assert payments.parent_ou_id == "ou-1111-11111111"
+        assert payments.name == "Payments"
+        assert hierarchy.organizational_units["ou-1111-11111111"].child_ous == [
+            "ou-2222-22222222"
+        ]
+
+    def test_ou_accounts_on_page_two_are_retained(self) -> None:
+        """An account past page one of its OU was dropped from placement."""
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [[{"Id": "ou-1111-11111111", "Name": "Production"}]],
+            },
+            accounts_by_parent={
+                "ou-1111-11111111": [
+                    [{"Id": "111111111111", "Name": "payments"}],
+                    [{"Id": "222222222222", "Name": "billing"}],
+                ],
+            },
+        )
+
+        hierarchy = build_organization_hierarchy(org_client, "r-1111")
+
+        assert set(hierarchy.accounts) == {"111111111111", "222222222222"}
+        assert hierarchy.accounts["222222222222"].parent_ou_id == "ou-1111-11111111"
+        assert hierarchy.accounts["222222222222"].ou_path == ["Production"]
+
+    def test_root_accounts_on_page_two_are_retained(self) -> None:
+        """An account hanging off the root, past page one, was dropped."""
+        org_client = _paginating_org_client(
+            ous_by_parent={},
+            accounts_by_parent={
+                "r-1111": [
+                    [{"Id": "111111111111", "Name": "management"}],
+                    [{"Id": "222222222222", "Name": "sandbox"}],
+                ],
+            },
+        )
+
+        hierarchy = build_organization_hierarchy(org_client, "r-1111")
+
+        sandbox = hierarchy.accounts["222222222222"]
+        assert sandbox.parent_ou_id is None
+        assert sandbox.ou_path == ["Root"]
+
+    def test_an_empty_intermediate_page_does_not_truncate(self) -> None:
+        """
+        An empty page mid-listing is not the end of the listing.
+
+        A reader that stopped on the first empty page would lose everything
+        after it, which is the same bug as reading page one only, arriving
+        later in the sequence.
+        """
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [
+                    [{"Id": "ou-1111-11111111", "Name": "Production"}],
+                    [],
+                    [{"Id": "ou-2222-22222222", "Name": "Staging"}],
+                ],
+            },
+            accounts_by_parent={
+                "r-1111": [
+                    [{"Id": "111111111111", "Name": "management"}],
+                    [],
+                    [{"Id": "222222222222", "Name": "sandbox"}],
+                ],
+            },
+        )
+
+        hierarchy = build_organization_hierarchy(org_client, "r-1111")
+
+        assert len(hierarchy.organizational_units) == 2
+        assert len(hierarchy.accounts) == 2
+
+    def test_each_parent_is_queried_exactly_once_per_listing(self) -> None:
+        """
+        The old traversal listed every OU's children twice: once on the way
+        into the recursion, once again to fill child_ous.
+        """
+        calls: List[Tuple[str, str]] = []
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [[{"Id": "ou-1111-11111111", "Name": "Production"}]],
+                "ou-1111-11111111": [[{"Id": "ou-2222-22222222", "Name": "Payments"}]],
+            },
+            accounts_by_parent={},
+            calls=calls,
+        )
+
+        build_organization_hierarchy(org_client, "r-1111")
+
+        assert sorted(calls) == sorted([
+            ("list_organizational_units_for_parent", "r-1111"),
+            ("list_organizational_units_for_parent", "ou-1111-11111111"),
+            ("list_organizational_units_for_parent", "ou-2222-22222222"),
+            ("list_accounts_for_parent", "r-1111"),
+            ("list_accounts_for_parent", "ou-1111-11111111"),
+            ("list_accounts_for_parent", "ou-2222-22222222"),
+        ])
+
+    def test_a_later_page_error_aborts_with_no_partial_hierarchy(self) -> None:
+        """A failure partway through must not return what it read first."""
+        error: object = {"Error": {"Code": "ThrottlingException"}}
+
+        def get_paginator(operation_name: str) -> Mock:
+            paginator = Mock()
+
+            def paginate_op(**kwargs: str) -> Iterable[Dict[str, Any]]:
+                if operation_name == "list_accounts_for_parent":
+                    return [{"Accounts": []}]
+
+                def pages() -> Iterator[Dict[str, Any]]:
+                    yield {
+                        "OrganizationalUnits": [
+                            {"Id": "ou-1111-11111111", "Name": "Production"}
+                        ]
+                    }
+                    raise ClientError(error, "ListOrganizationalUnitsForParent")  # type: ignore[arg-type]
+
+                return pages()
+
+            paginator.paginate.side_effect = paginate_op
+            return paginator
+
+        org_client = Mock()
+        org_client.get_paginator.side_effect = get_paginator
+
+        with pytest.raises(RuntimeError, match="Failed to list the OUs under r-1111"):
+            build_organization_hierarchy(org_client, "r-1111")
+
+    def test_an_account_under_two_parents_aborts(self) -> None:
+        """
+        One account has one parent. Seeing it twice means the organization
+        moved it between pages, and the hierarchy dict would silently keep
+        whichever placement was written last.
+        """
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [[{"Id": "ou-1111-11111111", "Name": "Production"}]],
+            },
+            accounts_by_parent={
+                "r-1111": [[{"Id": "111111111111", "Name": "payments"}]],
+                "ou-1111-11111111": [[{"Id": "111111111111", "Name": "payments"}]],
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="111111111111 appears under more than one parent"):
+            build_organization_hierarchy(org_client, "r-1111")
+
+    def test_a_parent_reached_twice_aborts(self) -> None:
+        """
+        An OU listed under two parents would recurse without end. AWS cannot
+        produce that, but an OU moved between pages can be observed twice.
+        """
+        org_client = _paginating_org_client(
+            ous_by_parent={
+                "r-1111": [[
+                    {"Id": "ou-1111-11111111", "Name": "Production"},
+                    {"Id": "ou-2222-22222222", "Name": "Staging"},
+                ]],
+                "ou-1111-11111111": [[{"Id": "ou-3333-33333333", "Name": "Shared"}]],
+                "ou-2222-22222222": [[{"Id": "ou-3333-33333333", "Name": "Shared"}]],
+            },
+            accounts_by_parent={},
+        )
+
+        with pytest.raises(RuntimeError, match="ou-3333-33333333 was reached more than once"):
+            build_organization_hierarchy(org_client, "r-1111")
 
 
 class TestOrganizationStructureAnalysis:
     """Test organization structure analysis functions."""
 
-    def test_analyze_organization_structure_success(self) -> None:
-        """Test successful organization structure analysis."""
-        mock_session = Mock()
-        mock_org_client = Mock()
-        mock_session.client.return_value = mock_org_client
-
-        # Mock root response
-        roots_paginator = Mock()
-        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
-        mock_org_client.get_paginator.return_value = roots_paginator
-
-        # Mock OU responses
-        mock_org_client.list_organizational_units_for_parent.side_effect = [
-            # Root level OUs
-            {"OrganizationalUnits": [{"Id": "ou-1234", "Name": "Production"}]},
-            # Child OUs (empty for simplicity)
-            {"OrganizationalUnits": []},
-            # Child OUs for Production OU (empty)
-            {"OrganizationalUnits": []},
-        ]
-
-        # Mock account responses
-        mock_org_client.list_accounts_for_parent.side_effect = [
-            # Accounts under Production OU
-            {"Accounts": [{"Id": "222222222222", "Name": "prod-account"}]},
-            # Accounts directly under root (not in any OU)
-            {"Accounts": [{"Id": "111111111111", "Name": "management-account"}]},
-        ]
-
-        result = analyze_organization_structure(mock_session)
-
-        assert result.root_id == "r-1111"
-        assert "ou-1234" in result.organizational_units
-        assert "111111111111" in result.accounts
-        assert "222222222222" in result.accounts
-
-        # Verify Production OU structure
-        prod_ou = result.organizational_units["ou-1234"]
-        assert prod_ou.name == "Production"
-        assert prod_ou.parent_ou_id is None
-        assert "222222222222" in prod_ou.accounts
-
-    def test_analyze_organization_structure_retains_non_active_accounts(self) -> None:
-        """
-        Non-active accounts must stay in the OU hierarchy.
-
-        The hierarchy resolves account names read back from result files on disk,
-        so a result file written before an account closed must still resolve;
-        filtering the hierarchy would make lookup_account_id_by_name raise
-        RuntimeError for it. Filtering here is also unnecessary, because
-        placement is driven by the check results that exist, leaving an account
-        with no results already inert. The lifecycle-state filtering applied in
-        get_subaccount_information deliberately does not apply here.
-        """
-        mock_session = Mock()
-        mock_org_client = Mock()
-        mock_session.client.return_value = mock_org_client
-
-        roots_paginator = Mock()
-        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
-        mock_org_client.get_paginator.return_value = roots_paginator
-        mock_org_client.list_organizational_units_for_parent.side_effect = [
-            {"OrganizationalUnits": [{"Id": "ou-1234", "Name": "Production"}]},
-            {"OrganizationalUnits": []},
-            {"OrganizationalUnits": []},
-        ]
-        mock_org_client.list_accounts_for_parent.side_effect = [
-            {"Accounts": [
-                {"Id": "222222222222", "Name": "prod-account", "State": "ACTIVE"},
-                {"Id": "333333333333", "Name": "closed-account", "State": "CLOSED"},
-            ]},
-            {"Accounts": [
-                {"Id": "111111111111", "Name": "management-account", "State": "ACTIVE"},
-            ]},
-        ]
-
-        result = analyze_organization_structure(mock_session)
-
-        assert "333333333333" in result.accounts
-        assert "333333333333" in result.organizational_units["ou-1234"].accounts
-        assert lookup_account_id_by_name("closed-account", result) == "333333333333"
-
-    def test_analyze_organization_structure_no_roots(self) -> None:
-        """Test error handling when no roots found."""
-        mock_session = Mock()
-        mock_org_client = Mock()
-        mock_session.client.return_value = mock_org_client
-
-        roots_paginator = Mock()
-        roots_paginator.paginate.return_value = [{"Roots": []}]
-        mock_org_client.get_paginator.return_value = roots_paginator
-
-        with pytest.raises(RuntimeError, match="No roots found in organization"):
-            analyze_organization_structure(mock_session)
-
-    def test_analyze_organization_structure_client_error(self) -> None:
-        """Test error handling for AWS client errors."""
-        mock_session = Mock()
-        mock_org_client = Mock()
-        mock_session.client.return_value = mock_org_client
-
-        roots_paginator = Mock()
-        roots_paginator.paginate.side_effect = ClientError(
-            {"Error": {"Code": "AccessDenied", "Message": "AWS Error"}},
-            "ListRoots"
+    def test_the_session_adapter_finds_the_root_and_walks_from_it(self) -> None:
+        """Kept only until Task 4 deletes analyze_organization_structure."""
+        org_client = _paginating_org_client(
+            ous_by_parent={"r-1111": [[{"Id": "ou-1111-11111111", "Name": "Production"}]]},
+            accounts_by_parent={},
         )
-        mock_org_client.get_paginator.return_value = roots_paginator
-
-        with pytest.raises(RuntimeError, match="Failed to get organization root"):
-            analyze_organization_structure(mock_session)
-
-    def test_create_account_ou_mapping(self) -> None:
-        """Test account to OU mapping creation."""
-        mock_session = Mock()
-
-        # Mock organization hierarchy
-        mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1111",
-            organizational_units={
-                "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
-            },
-            accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "management-account", "r-1111", ["Root"]),
-                "222222222222": AccountOrgPlacement("222222222222", "prod-account", "ou-1234", ["Production"])
-            }
-        )
-
-        with patch('headroom.aws.organization.analyze_organization_structure', return_value=mock_hierarchy):
-            result = create_account_ou_mapping(mock_session)
-
-        assert result["111111111111"] == "r-1111"
-        assert result["222222222222"] == "ou-1234"
-
-    def test_analyze_organization_structure_client_error_handling(self) -> None:
-        """Test error handling for various AWS client errors."""
-        mock_session = Mock()
-        mock_org_client = Mock()
-        mock_session.client.return_value = mock_org_client
-
-        # Mock root response
         roots_paginator = Mock()
         roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
-        mock_org_client.get_paginator.return_value = roots_paginator
+        original = org_client.get_paginator.side_effect
 
-        # Mock OU responses with errors
-        mock_org_client.list_organizational_units_for_parent.side_effect = [
-            # Root level OUs
-            {"OrganizationalUnits": [{"Id": "ou-1234", "Name": "Production"}]},
-            # Child OUs (empty for simplicity)
-            {"OrganizationalUnits": []},
-            # Child OUs for Production OU (empty)
-            {"OrganizationalUnits": []},
-        ]
+        def get_paginator(operation_name: str) -> Mock:
+            if operation_name == "list_roots":
+                return roots_paginator
+            return original(operation_name)
 
-        # Mock account responses with errors
-        mock_org_client.list_accounts_for_parent.side_effect = [
-            # First call fails
-            ClientError(
-                {"Error": {"Code": "AccessDenied", "Message": "Failed to get accounts"}},
-                "ListAccountsForParent"
-            ),
-            # Second call succeeds
-            {"Accounts": [{"Id": "111111111111", "Name": "management-account"}]},
-        ]
+        org_client.get_paginator.side_effect = get_paginator
+        session = Mock()
+        session.client.return_value = org_client
 
-        # Should raise exception on first error
-        with pytest.raises(RuntimeError, match="Failed to get accounts/child OUs for OU ou-1234"):
-            analyze_organization_structure(mock_session)
+        hierarchy = analyze_organization_structure(session)
 
-    def test_analyze_organization_structure_root_accounts_error(self) -> None:
-        """Test error handling when getting accounts under root fails."""
-        mock_session = Mock()
-        mock_org_client = Mock()
-        mock_session.client.return_value = mock_org_client
-
-        # Mock root response
-        roots_paginator = Mock()
-        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
-        mock_org_client.get_paginator.return_value = roots_paginator
-
-        # Mock OU responses (empty)
-        mock_org_client.list_organizational_units_for_parent.return_value = {
-            "OrganizationalUnits": []
-        }
-
-        # Mock account responses with error for root accounts
-        mock_org_client.list_accounts_for_parent.side_effect = [
-            # Root accounts call fails
-            ClientError(
-                {"Error": {"Code": "AccessDenied", "Message": "Failed to get root accounts"}},
-                "ListAccountsForParent"
-            ),
-        ]
-
-        # Should raise exception on error
-        with pytest.raises(RuntimeError, match="Failed to get accounts under root"):
-            analyze_organization_structure(mock_session)
-
-    def test_analyze_organization_structure_ou_listing_error(self) -> None:
-        """Test error handling when listing OUs fails."""
-        mock_session = Mock()
-        mock_org_client = Mock()
-        mock_session.client.return_value = mock_org_client
-
-        # Mock root response
-        roots_paginator = Mock()
-        roots_paginator.paginate.return_value = [{"Roots": [{"Id": "r-1111"}]}]
-        mock_org_client.get_paginator.return_value = roots_paginator
-
-        # Mock OU listing failure
-        mock_org_client.list_organizational_units_for_parent.side_effect = ClientError(
-            {"Error": {"Code": "AccessDenied", "Message": "Failed to list OUs"}},
-            "ListOrganizationalUnitsForParent"
-        )
-
-        # Mock account responses (empty)
-        mock_org_client.list_accounts_for_parent.return_value = {
-            "Accounts": []
-        }
-
-        # Should raise exception on error
-        with pytest.raises(RuntimeError, match="Failed to list OUs for parent None"):
-            analyze_organization_structure(mock_session)
+        assert hierarchy.root_id == "r-1111"
+        assert "ou-1111-11111111" in hierarchy.organizational_units
 
 
 class TestLookupAccountIdByName:
