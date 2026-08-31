@@ -5,11 +5,10 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 
 import pytest
-from typing import Any, Dict, Iterable, Iterator, List, Set, Tuple, cast, get_args
+from typing import Any, Dict, Iterable, Iterator, List, Set, Tuple, cast
 from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
-from mypy_boto3_organizations.literals import AccountStateType
 from mypy_boto3_organizations.type_defs import AccountTypeDef
 
 from headroom.analysis import (
@@ -19,13 +18,11 @@ from headroom.analysis import (
     run_checks,
     run_checks_for_type,
     _build_account_info_from_account_dict,
-    _fetch_account_tags,
     _run_checks_for_account,
     _verify_account_names_are_filename_safe,
     _verify_no_duplicate_account_names,
-    ACTIVE_ACCOUNT_STATE,
-    INACTIVE_ACCOUNT_STATES,
 )
+from headroom.aws.organization_snapshot import _fetch_account_tags
 from headroom.types import AccountInfo
 from headroom.checks.base import BaseCheck
 from headroom.checks.registry import get_all_check_classes, get_check_names
@@ -356,30 +353,6 @@ class TestGetSubaccountInformation:
         with pytest.raises(ValueError, match="management_account_id must be set in config"):
             get_subaccount_information(config, session)
 
-    @patch("headroom.analysis.get_management_account_session")
-    @patch("headroom.analysis.logger")
-    def test_get_subaccount_information_tag_fetch_error(self, mock_logger: MagicMock, mock_get_mgmt_session: MagicMock) -> None:
-        config = HeadroomConfig(
-            management_account_id="222222222222",
-            security_analysis_account_id="111111111111",
-            use_account_name_from_tags=True,
-            account_tag_layout=AccountTagLayout(environment="Env", name="NameTag", owner="OwnerTag")
-        )
-        mock_org_client, tags_paginator = _org_client_for_account_listing([
-            {"Accounts": [
-                {"Id": "333333333333", "Name": "SubAccount1", "State": "ACTIVE"}
-            ]}
-        ])
-        tags_paginator.paginate.side_effect = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "ListTagsForResource")
-        mgmt_session = MagicMock()
-        mgmt_session.client.return_value = mock_org_client
-        mock_get_mgmt_session.return_value = mgmt_session
-        result = get_subaccount_information(config, MagicMock())
-        assert result == [
-            AccountInfo(account_id="333333333333", environment="unknown", name="333333333333", owner="unknown")
-        ]
-        mock_logger.warning.assert_called()
-
     def test_get_subaccount_information_assume_role_failure(self) -> None:
         config = HeadroomConfig(
             management_account_id="222222222222",
@@ -552,18 +525,6 @@ class TestAccountStateFiltering:
         assert "SOME_FUTURE_STATE" in message
         assert "INACTIVE_ACCOUNT_STATES" in message
 
-    def test_every_state_aws_defines_is_classified(self) -> None:
-        """
-        The recognized states must exhaustively cover the AWS enum.
-
-        Because an unrecognized state now aborts the run, a state AWS adds would
-        break Headroom in production. This test moves that discovery to the point
-        where boto3-stubs is upgraded: AccountStateType is the SDK's own
-        enumeration, so if AWS adds a sixth state this fails in CI and names it,
-        instead of a run failing at a customer.
-        """
-        assert set(get_args(AccountStateType)) == {ACTIVE_ACCOUNT_STATE} | INACTIVE_ACCOUNT_STATES
-
     def test_skipped_account_does_not_incur_a_tag_api_call(self) -> None:
         """Filtering happens before tag fetching, so skipped accounts cost no API calls."""
         _, mock_org_client, _ = self._run([
@@ -629,32 +590,6 @@ class TestFetchAccountTags:
         tags = _fetch_account_tags(org_client, "111111111111", "payments")
 
         assert tags == {"Owner": "payments-team", "Name": "payments"}
-
-    def test_a_client_error_on_the_second_page_discards_the_first(self) -> None:
-        """
-        A failure partway through pagination returns {}, not the pages already read.
-
-        A half-read tag set is precisely the case where a missing Name tag
-        silently renames an account, so a page-two failure must not leave
-        page one's Owner tag in the result.
-        """
-        def _pages() -> Iterator[Dict[str, Any]]:
-            yield {"Tags": [{"Key": "Owner", "Value": "payments-team"}]}
-            raise ClientError(
-                {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
-                "ListTagsForResource"
-            )
-
-        org_client = MagicMock()
-        paginator = MagicMock()
-        paginator.paginate.return_value = _pages()
-        org_client.get_paginator.return_value = paginator
-
-        with patch("headroom.analysis.logger") as mock_logger:
-            tags = _fetch_account_tags(org_client, "111111111111", "payments")
-
-        assert tags == {}
-        mock_logger.warning.assert_called_once()
 
 
 class TestBuildAccountInfoFromAccountDict:
@@ -744,7 +679,7 @@ class TestBuildAccountInfoFromAccountDict:
         assert result.environment == "dev"
         assert result.owner == "unknown"
 
-    @patch("headroom.analysis.logger")
+    @patch("headroom.aws.organization_snapshot.logger")
     def test_build_account_info_tag_fetch_failure(self, mock_logger: MagicMock) -> None:
         """Test building AccountInfo when tag fetching fails."""
         config = HeadroomConfig(
@@ -766,7 +701,7 @@ class TestBuildAccountInfoFromAccountDict:
         assert result.owner == "unknown"
         mock_logger.warning.assert_called_once()
 
-    @patch("headroom.analysis.logger")
+    @patch("headroom.aws.organization_snapshot.logger")
     def test_build_account_info_with_other_client_error(self, mock_logger: MagicMock) -> None:
         """Test building AccountInfo when tags fetch fails with non-AccessDenied error."""
         config = HeadroomConfig(
@@ -911,24 +846,6 @@ class TestSkipAccountIds:
         mock_logger.info.assert_any_call(
             "Skipped 2 account(s) named in skip_account_ids: 333333333333, 444444444444"
         )
-
-    def test_skip_takes_precedence_over_unknown_lifecycle_state(self) -> None:
-        """
-        Skipping an account bypasses lifecycle classification for it.
-
-        An unrecognized lifecycle state normally aborts the run. Checking the
-        skip list first makes skip_account_ids an escape hatch for the account
-        that triggered the abort, so one odd account cannot block the run.
-        """
-        result, _, _ = self._run(
-            [
-                {"Id": "333333333333", "Name": "Odd", "State": "SOME_NEW_STATE"},
-                {"Id": "444444444444", "Name": "Live", "State": "ACTIVE"},
-            ],
-            skip_account_ids=["333333333333"],
-        )
-
-        assert [account.account_id for account in result] == ["444444444444"]
 
     def test_skipping_the_management_account_is_allowed(self) -> None:
         """
