@@ -95,9 +95,18 @@ class TestProjections:
         stay in it or its account ID reads as a third party. The hierarchy
         resolves result files written before an account closed. Only the
         analyzable set is filtered.
+
+        The management account's own state is deliberately unrecognizable
+        (`BRAND_NEW_STATE`, not `ACTIVE`). `_select_analyzable_accounts`
+        excludes the management account before it ever consults
+        `_should_skip_account`, so this must not abort. If that ordering
+        regressed -- lifecycle classification running first -- a management
+        account in any state the lifecycle check cannot classify would abort
+        the entire run, for an account excluded from analysis regardless of
+        its state.
         """
         accounts = [
-            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": MANAGEMENT, "Name": "management", "Status": "BRAND_NEW_STATE"},
             {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
             {"Id": RETIRED, "Name": "retired", "Status": "SUSPENDED"},
             {"Id": SKIPPED, "Name": "sandbox", "Status": "ACTIVE"},
@@ -143,7 +152,7 @@ class TestProjections:
 
     def test_the_tag_name_and_the_organizations_name_stay_distinct(self) -> None:
         """
-        Two names, on purpose, and a second-page tag proves both are read.
+        Two names, on purpose.
 
         AccountInfo.name is the analysis name and names the result files;
         AccountOrgPlacement.account_name is what Organizations reports and is
@@ -190,6 +199,11 @@ class TestOrganizationIdIsRequired:
         Every source guard scoped to an organization is classified against
         this value, so continuing without it would put a foreign
         organization's sources in an allowlist, or leave this one's out.
+
+        Asserting the abort alone would not distinguish "reads the ID first"
+        from "reads everything, then checks the ID last." `get_paginator` is
+        never called at all here, which pins the former: the account listing
+        -- and every other Organizations call -- is never requested.
         """
         accounts = [
             {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
@@ -199,6 +213,8 @@ class TestOrganizationIdIsRequired:
 
         with pytest.raises(RuntimeError, match="no organization ID"):
             discover_organization(_config(), org_client)
+
+        org_client.get_paginator.assert_not_called()
 
 
 class TestEveryStateIsClassified:
@@ -306,6 +322,94 @@ class TestSkipPrecedesLifecycleClassification:
 
         snapshot = discover_organization(
             _config(skip_account_ids=[BILLING]), org_client
+        )
+
+        assert [account.account_id for account in snapshot.analyzable_accounts] == [PAYMENTS]
+
+
+class TestFilenameSafetyGatesAreEnforced:
+    """
+    `discover_organization` must call the filename-safety and duplicate-name
+    checks itself, rather than depend on a caller to.
+
+    Today `perform_analysis` (headroom/analysis.py) still calls both checks
+    after `get_subaccount_information` returns, which is why deleting either
+    call from `discover_organization` leaves every existing test green and
+    line coverage at 100% -- `.coveragerc` sets no `branch = True`, so a
+    missing function call is invisible to it. Task 10's rewritten
+    `perform_analysis` calls neither, making `discover_organization` their
+    sole caller from then on. These two tests are what would catch a
+    regression once that happens.
+    """
+
+    def test_an_unsafe_account_name_aborts_the_run(self) -> None:
+        """
+        Without this gate, `../Prod` reaches `ResultFilePathResolver`, which
+        interpolates the account name into a path rather than treating it as
+        plain text: the result file lands one level *above* its check
+        directory, at `check_dir/../Prod.json`, silently overwriting
+        whatever was already there instead of landing where policy
+        generation reads results from.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "../Prod", "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(accounts)
+
+        with pytest.raises(RuntimeError, match="cannot be used as result filenames"):
+            discover_organization(_config(), org_client)
+
+    def test_duplicate_account_names_abort_the_run(self) -> None:
+        """
+        Without this gate, two accounts sharing a name -- legal only because
+        `exclude_account_ids` drops the account ID from the filename, the
+        only thing that otherwise guarantees uniqueness -- resolve to the
+        same result file path. Run with a worker per account, that is two
+        threads interleaving `json.dump` output into one file: either
+        corrupt JSON, or a valid file silently splicing both accounts'
+        results together for policy generation to read.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "shared-name", "Status": "ACTIVE"},
+            {"Id": BILLING, "Name": "shared-name", "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(accounts)
+
+        with pytest.raises(RuntimeError, match="not unique"):
+            discover_organization(_config(exclude_account_ids=True), org_client)
+
+
+class TestSkippingTheManagementAccountIsAllowed:
+    """
+    Naming the management account in `skip_account_ids` is redundant, not an
+    error -- and this is the only place that stays true once Task 10 deletes
+    `get_subaccount_information` and, with it,
+    `TestSkipAccountIds.test_skipping_the_management_account_is_allowed` in
+    tests/test_analysis.py.
+    """
+
+    def test_naming_the_management_account_in_skip_account_ids_does_not_abort(self) -> None:
+        """
+        The management account is excluded before the skip list is
+        consulted, so it never registers as skipped by
+        `_select_analyzable_accounts` -- but `_verify_skip_account_ids_matched`
+        checks every skip entry against full membership, not against the
+        analyzable set, and the management account is still a real member.
+        Collapsing those two projections -- checking the entry against
+        analyzable accounts instead of membership -- would make this entry
+        look unmatched and abort a run whose configuration is doing nothing
+        wrong.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(accounts)
+
+        snapshot = discover_organization(
+            _config(skip_account_ids=[MANAGEMENT]), org_client
         )
 
         assert [account.account_id for account in snapshot.analyzable_accounts] == [PAYMENTS]
