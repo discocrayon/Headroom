@@ -413,3 +413,69 @@ class TestSkippingTheManagementAccountIsAllowed:
         )
 
         assert [account.account_id for account in snapshot.analyzable_accounts] == [PAYMENTS]
+
+
+class TestTheTwoViewsMustAgree:
+    """The global listing and the OU traversal describe one organization."""
+
+    def test_an_account_in_no_parent_aborts(self) -> None:
+        """
+        list_accounts_for_parent returns accounts in every lifecycle state,
+        so an account that is a member but sits under nothing means the
+        organization changed mid-read, not that it is closed.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(
+            accounts,
+            accounts_by_parent={"r-1111": [accounts[0]]},
+        )
+
+        with pytest.raises(RuntimeError, match=f"under no root or OU: {PAYMENTS}"):
+            discover_organization(_config(), org_client)
+
+    def test_an_account_under_a_parent_but_not_a_member_aborts(self) -> None:
+        """An account created between the two reads is in one view only."""
+        accounts = [{"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"}]
+        org_client = _org_client(
+            accounts,
+            accounts_by_parent={
+                "r-1111": accounts + [{"Id": PAYMENTS, "Name": "payments"}]
+            },
+        )
+
+        with pytest.raises(RuntimeError, match=f"not organization members: {PAYMENTS}"):
+            discover_organization(_config(), org_client)
+
+    def test_an_account_named_differently_by_the_two_views_aborts(self) -> None:
+        """
+        lookup_account_id_by_name matches the traversal's name against result
+        files named from the global view, so the two disagreeing means every
+        later lookup is matching against a name that no longer exists.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(
+            accounts,
+            accounts_by_parent={
+                "r-1111": [accounts[0], {"Id": PAYMENTS, "Name": "payments-renamed"}]
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="'payments' and 'payments-renamed'"):
+            discover_organization(_config(), org_client)
+
+    def test_agreeing_views_do_not_abort(self) -> None:
+        """The ordinary case: one organization, two consistent readings."""
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+        ]
+
+        snapshot = discover_organization(_config(), _org_client(accounts))
+
+        assert snapshot.member_account_ids == frozenset({MANAGEMENT, PAYMENTS})

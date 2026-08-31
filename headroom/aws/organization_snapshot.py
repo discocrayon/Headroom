@@ -19,7 +19,7 @@ from mypy_boto3_organizations.client import OrganizationsClient
 from mypy_boto3_organizations.type_defs import AccountTypeDef, TagTypeDef
 
 from ..config import HeadroomConfig
-from ..types import AccountInfo, OrganizationSnapshot
+from ..types import AccountInfo, OrganizationHierarchy, OrganizationSnapshot
 from .helpers import paginate
 from .organization import (
     build_organization_hierarchy,
@@ -524,6 +524,82 @@ def _select_analyzable_accounts(
     return analyzable
 
 
+def _verify_views_agree(
+    member_accounts: Sequence[AccountTypeDef],
+    hierarchy: OrganizationHierarchy
+) -> None:
+    """
+    Abort unless the global listing and the OU traversal describe one organization.
+
+    `list_accounts` is canonical for membership and lifecycle; the traversal
+    is canonical for placement. Every account has exactly one parent, and
+    `list_accounts_for_parent` returns accounts in every lifecycle state, so
+    in a quiescent organization the two views hold the same accounts under the
+    same names. That is what makes an unconditional abort safe here: it cannot
+    misfire on an organization that has merely closed an account.
+
+    The names must agree because the two feed different consumers.
+    `AccountOrgPlacement.account_name` comes from the traversal and is what
+    `lookup_account_id_by_name` matches; `AccountInfo.name` comes from the
+    global view plus tags and names the result files. The canonicalization
+    fallback in `lookup_account_id_by_name` bridges the two, and it can only
+    do that if the raw Organizations names are the same on both sides.
+
+    Every disagreement means the organization changed between the two reads.
+    This is a captured view, not transaction isolation, so the remedy is to
+    re-run rather than to reconcile.
+
+    Args:
+        member_accounts: Every organization member, from `list_accounts`
+        hierarchy: The placement view, from `build_organization_hierarchy`
+
+    Raises:
+        RuntimeError: If an account is in one view only, or is named
+            differently by the two
+    """
+    inventory_names = {account["Id"]: account["Name"] for account in member_accounts}
+    placed_names = {
+        account_id: placement.account_name
+        for account_id, placement in hierarchy.accounts.items()
+    }
+
+    unplaced = sorted(set(inventory_names) - set(placed_names))
+    if unplaced:
+        raise RuntimeError(
+            f"{len(unplaced)} organization member(s) sit under no root or OU: "
+            f"{', '.join(unplaced)}. Every account has a parent, so the "
+            "organization was modified while Headroom was reading it. Re-run "
+            "Headroom."
+        )
+
+    unknown = sorted(set(placed_names) - set(inventory_names))
+    if unknown:
+        raise RuntimeError(
+            f"{len(unknown)} account(s) sit under a root or OU but are not "
+            f"organization members: {', '.join(unknown)}. The organization was "
+            "modified while Headroom was reading it. Re-run Headroom."
+        )
+
+    renamed = sorted(
+        account_id
+        for account_id in inventory_names
+        if inventory_names[account_id] != placed_names[account_id]
+    )
+    if renamed:
+        listed = ", ".join(
+            f"{account_id} ('{inventory_names[account_id]}' and "
+            f"'{placed_names[account_id]}')"
+            for account_id in renamed
+        )
+        raise RuntimeError(
+            f"{len(renamed)} account(s) are named differently by the two "
+            f"Organizations views: {listed}. Result files are named from the "
+            "first and placement is matched against the second, so the "
+            "organization was modified while Headroom was reading it. Re-run "
+            "Headroom."
+        )
+
+
 def discover_organization(
     config: HeadroomConfig,
     org_client: OrganizationsClient
@@ -581,6 +657,7 @@ def discover_organization(
     hierarchy = build_organization_hierarchy(
         org_client, find_organization_root(org_client)
     )
+    _verify_views_agree(member_accounts, hierarchy)
 
     analyzable_accounts = tuple(
         _build_account_info_from_account_dict(account, org_client, config)
