@@ -522,3 +522,4 @@ class TestListOrganizationAccounts:
             "111111111111",
             "222222222222",
         ]
+        org_client.get_paginator.assert_called_once_with("list_accounts")
