@@ -226,6 +226,49 @@ def _should_skip_account(account: AccountTypeDef, account_id: str) -> bool:
     )
 
 
+def _verify_no_duplicate_account_ids(member_accounts: Sequence[AccountTypeDef]) -> None:
+    """
+    Abort if `list_accounts` reports the same account ID more than once.
+
+    `build_organization_hierarchy` already guards this on the traversal
+    side: an account under two parents raises rather than being placed
+    twice. The membership view had no equivalent, and nothing downstream
+    would have noticed on its own -- `member_account_ids` is a frozenset, so
+    a repeated ID dedupes there harmlessly, and `_verify_views_agree` keys
+    `inventory_names` by ID, so the duplicate collapses before the
+    cross-check can see it. Left unguarded, a repeated ID becomes two
+    `AccountInfo` for one account, therefore two workers in the pool,
+    therefore two threads writing the same result file.
+
+    AWS returns a duplicate only if the organization is mutated
+    mid-listing, the same condition every other guard in this module
+    treats as an abort and retry rather than something to reconcile.
+
+    Args:
+        member_accounts: Every organization member, from `list_accounts`
+
+    Raises:
+        RuntimeError: If an account ID appears more than once
+    """
+    seen_counts: Dict[str, int] = {}
+    for account in member_accounts:
+        account_id = account["Id"]
+        seen_counts[account_id] = seen_counts.get(account_id, 0) + 1
+
+    duplicated = sorted(
+        account_id for account_id, count in seen_counts.items() if count > 1
+    )
+
+    if not duplicated:
+        return
+
+    raise RuntimeError(
+        f"{len(duplicated)} account ID(s) were returned more than once by "
+        f"list_accounts: {', '.join(duplicated)}. The organization was "
+        "modified during discovery. Re-run Headroom."
+    )
+
+
 def _verify_skip_account_ids_matched(config: HeadroomConfig, seen_account_ids: AbstractSet[str]) -> None:
     """
     Abort if a skip_account_ids entry matched no account in the organization.
@@ -638,7 +681,8 @@ def discover_organization(
         The run's organization snapshot
 
     Raises:
-        RuntimeError: If the organization has no ID, no root or several, if a
+        RuntimeError: If the organization has no ID, no root or several, if
+            `list_accounts` returns an account ID more than once, if a
             `skip_account_ids` entry matches nothing, if a lifecycle state
             cannot be classified, if the two views disagree, or if an account
             name cannot become a result filename
@@ -647,6 +691,7 @@ def discover_organization(
     logger.info(f"Organization ID: {organization_id}")
 
     member_accounts = list_organization_accounts(org_client)
+    _verify_no_duplicate_account_ids(member_accounts)
     member_account_ids = frozenset(account["Id"] for account in member_accounts)
     logger.info(f"Found {len(member_account_ids)} accounts in organization")
 

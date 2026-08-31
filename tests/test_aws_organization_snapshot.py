@@ -689,6 +689,40 @@ class TestTheTwoViewsMustAgree:
         assert snapshot.member_account_ids == frozenset({MANAGEMENT, PAYMENTS})
 
 
+class TestDuplicateAccountIdGuard:
+    """
+    list_accounts returning one account ID twice must abort on its own.
+
+    build_organization_hierarchy already aborts when an account is placed
+    under two parents; the membership view had no equivalent guard.
+    """
+
+    def test_a_duplicated_account_id_in_membership_aborts(self) -> None:
+        """
+        `member_account_ids` is a frozenset and `_verify_views_agree` keys
+        `inventory_names` by ID, so both silently collapse a repeated
+        `list_accounts` entry before anything else can see it.
+
+        The traversal view lists PAYMENTS once, so the traversal's own
+        duplicate-parent guard is not what raises here -- only the
+        membership view is duplicated.
+        """
+        accounts = [
+            {"Id": MANAGEMENT, "Name": "management", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+            {"Id": PAYMENTS, "Name": "payments", "Status": "ACTIVE"},
+        ]
+        org_client = _org_client(
+            accounts,
+            accounts_by_parent={"r-1111": accounts[:2]},
+        )
+
+        with pytest.raises(
+            RuntimeError, match=f"more than once by list_accounts: {PAYMENTS}"
+        ):
+            discover_organization(_config(), org_client)
+
+
 class TestFetchAccountTags:
     """Test _fetch_account_tags directly, below the discover_organization layer."""
 
