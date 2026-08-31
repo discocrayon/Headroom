@@ -211,7 +211,7 @@ class HierarchyPlacementAnalyzer(Generic[T]):
         Return the OUs that hang directly off the organization root.
 
         A parent naming something that is not an OU here is the root, which
-        analyze_organization_structure records as None and hierarchies built
+        build_organization_hierarchy records as None and hierarchies built
         elsewhere sometimes record as the root ID.
 
         Returns:

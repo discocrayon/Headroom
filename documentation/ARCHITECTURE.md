@@ -45,7 +45,8 @@ headroom/
 │   │   └── users.py   # SCP-focused IAM user enumeration
 │   ├── kms.py     # KMS key policy analysis
 │   ├── lambda_functions.py  # Lambda function analysis
-│   ├── organization.py  # Organizations API integration
+│   ├── organization.py  # Organizations API reads and hierarchy traversal
+│   ├── organization_snapshot.py  # The run's one Organizations read, as an OrganizationSnapshot
 │   ├── policy_documents.py  # Shared resource-policy statement reading
 │   ├── rds.py     # RDS analysis functions
 │   ├── s3.py      # S3 bucket policy analysis
@@ -100,7 +101,9 @@ headroom/
 ## Data Flow
 
 1. **Configuration**: Parse CLI args and YAML config
-2. **AWS Integration**: Establish cross-account sessions
+2. **Organization Discovery**: Establish cross-account sessions, then read AWS Organizations
+   exactly once into the run's `OrganizationSnapshot` -- the organization ID, full membership,
+   the analyzable accounts, and the OU hierarchy. No later stage reads Organizations again
 3. **Analysis**: Execute SCP and RCP compliance checks across accounts
 4. **Results Processing**: Analyze compliance and determine SCP/RCP placement
 5. **Terraform Generation**: Create deployment configurations with appropriate allowlists
@@ -114,16 +117,21 @@ sequenceDiagram
     participant Prod1 as Headroom Role<br/>(Production Account 1)
     participant ProdN as Headroom Role<br/>(Other Accounts...)
 
-    Note over Tool: Step 1: Get Organization Info
+    Note over Tool: Step 1: Organization discovery<br/>(the run's only reads of Organizations)
     Tool->>Mgmt: AssumeRole(OrgAndAccountInfoReader)
     Mgmt-->>Tool: Session Credentials
-    Tool->>Mgmt: list_accounts()
-    Mgmt-->>Tool: Account List with Tags & OU Structure
-    Tool->>Mgmt: describe_organizational_units()
+    Tool->>Mgmt: describe_organization()
+    Mgmt-->>Tool: Organization ID
+    Tool->>Mgmt: list_accounts() [all pages]
+    Mgmt-->>Tool: Every member account, in every lifecycle state
+    Tool->>Mgmt: list_roots(), then list_organizational_units_for_parent()<br/>and list_accounts_for_parent() once per parent
     Mgmt-->>Tool: OU Hierarchy
-    Note over Tool: Skip accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)
+    Tool->>Mgmt: list_tags_for_resource() per analyzable account
+    Mgmt-->>Tool: Account Tags
+    Note over Tool: OrganizationSnapshot: organization ID, membership,<br/>analyzable accounts, hierarchy
+    Note over Tool: Accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)<br/>and accounts in skip_account_ids stay in membership and in the<br/>hierarchy, and drop out of the analyzable set only
 
-    Note over Tool: Step 2: Analyze accounts<br/>(max_account_workers at a time, default 16)
+    Note over Tool: Step 2: Analyze accounts from the snapshot<br/>(max_account_workers at a time, default 16)
     Tool->>Prod1: AssumeRole(Headroom)
     Prod1-->>Tool: Session Credentials
     Tool->>Prod1: describe_instances() [all regions]
@@ -138,7 +146,7 @@ sequenceDiagram
     Tool->>ProdN: Check IMDSv2 Compliance
     ProdN-->>Tool: Compliance Results
 
-    Note over Tool: Step 3: Generate Outputs
+    Note over Tool: Step 3: Generate Outputs<br/>(from the snapshot's hierarchy - no further Organizations reads)
     Tool->>Tool: Write JSON Results
     Tool->>Tool: Generate Terraform SCPs
     Tool->>Tool: Generate Org Data Sources

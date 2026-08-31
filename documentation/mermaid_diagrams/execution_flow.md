@@ -9,16 +9,21 @@ sequenceDiagram
     participant Prod1 as Headroom Role<br/>(Production Account 1)
     participant ProdN as Headroom Role<br/>(Other Accounts...)
 
-    Note over Tool: Step 1: Get Organization Info
+    Note over Tool: Step 1: Organization discovery<br/>(the run's only reads of Organizations)
     Tool->>Mgmt: AssumeRole(OrgAndAccountInfoReader)
     Mgmt-->>Tool: Session Credentials
-    Tool->>Mgmt: list_accounts()
-    Mgmt-->>Tool: Account List with Tags & OU Structure
-    Tool->>Mgmt: describe_organizational_units()
+    Tool->>Mgmt: describe_organization()
+    Mgmt-->>Tool: Organization ID
+    Tool->>Mgmt: list_accounts() [all pages]
+    Mgmt-->>Tool: Every member account, in every lifecycle state
+    Tool->>Mgmt: list_roots(), then list_organizational_units_for_parent()<br/>and list_accounts_for_parent() once per parent
     Mgmt-->>Tool: OU Hierarchy
-    Note over Tool: Skip accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)
+    Tool->>Mgmt: list_tags_for_resource() per analyzable account
+    Mgmt-->>Tool: Account Tags
+    Note over Tool: OrganizationSnapshot: organization ID, membership,<br/>analyzable accounts, hierarchy
+    Note over Tool: Accounts not in ACTIVE state<br/>(CLOSED, SUSPENDED, PENDING_CLOSURE, PENDING_ACTIVATION)<br/>and accounts in skip_account_ids stay in membership and in the<br/>hierarchy, and drop out of the analyzable set only
 
-    Note over Tool: Step 2: Run Checks on Each Account
+    Note over Tool: Step 2: Run Checks on Each Account<br/>(from snapshot.analyzable_accounts)
     Tool->>Prod1: AssumeRole(Headroom)
     Prod1-->>Tool: Session Credentials
 
@@ -40,11 +45,7 @@ sequenceDiagram
     ProdN-->>Tool: Check Results
     Tool->>Tool: Write Results to JSON
 
-    Note over Tool: Step 3: Parse Results & Generate Terraform
-    Tool->>Mgmt: AssumeRole(OrgAndAccountInfoReader)
-    Mgmt-->>Tool: Session Credentials
-    Tool->>Mgmt: Get Organization Hierarchy
-    Mgmt-->>Tool: Full OU Structure
+    Note over Tool: Step 3: Parse Results & Generate Terraform<br/>(from snapshot.hierarchy - the management role is not assumed again<br/>and Organizations is not read again)
 
     Tool->>Tool: Parse SCP Results
     Tool->>Tool: Determine SCP Placement (root/OU/account)

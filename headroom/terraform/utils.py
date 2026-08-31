@@ -57,7 +57,7 @@ def ou_path_names(
     Return the names of the OUs from the top level down to this one.
 
     The walk stops at the first parent that is not itself an OU here, which is
-    the organization root: analyze_organization_structure records a top-level
+    the organization root: build_organization_hierarchy records a top-level
     OU's parent as None, and hierarchies assembled elsewhere sometimes record
     the root ID instead.
 

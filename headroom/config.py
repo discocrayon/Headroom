@@ -49,8 +49,8 @@ class HeadroomConfig(BaseModel):
     # and may deny actions it relies on.
     #
     # Skipping does not remove the account from the organization membership set
-    # used to tell in-org principals from third parties; see
-    # get_all_organization_account_ids.
+    # used to tell in-org principals from third parties; see the snapshot's
+    # member_account_ids.
     skip_account_ids: List[str] = []
     use_account_name_from_tags: bool
     account_tag_layout: AccountTagLayout

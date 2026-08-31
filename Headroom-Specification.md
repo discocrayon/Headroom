@@ -144,7 +144,8 @@ headroom/
 │   │   ├── roles.py        # Trust policy analysis (RCP)
 │   │   ├── saml_providers.py  # SAML provider enumeration (SCP)
 │   │   └── users.py        # User enumeration (SCP)
-│   ├── organization.py     # Organizations API integration
+│   ├── organization.py     # Organizations API reads and hierarchy traversal
+│   ├── organization_snapshot.py  # The run's one Organizations read - see Organization Integration
 │   └── sessions.py         # Session management
 ├── checks/
 │   ├── base.py             # BaseCheck abstract class
@@ -182,7 +183,7 @@ headroom/
 
 1. **Configuration:** Load YAML → merge with CLI args → validate with Pydantic
 2. **AWS Setup:** Assume security analysis role (if specified) → assume OrgAndAccountInfoReader in management account
-3. **Account Discovery:** Query Organizations API → extract account metadata with tags → filter management account → filter to ACTIVE accounts only
+3. **Organization Discovery:** Read Organizations once into the run's `OrganizationSnapshot` → organization ID, full membership, the OU hierarchy, and account metadata with tags → filter the management account, `skip_account_ids` and every non-ACTIVE account out of the analyzable set only
 4. **Analysis:** Filter out accounts whose results all already exist, then analyze the rest
    through a `ThreadPoolExecutor` of `max_account_workers` workers (default 16, maximum 32),
    one worker per account. Each worker:
@@ -223,7 +224,7 @@ headroom/
    filename, so two accounts sharing one would interleave their JSON. Both aborts name the
    offending names and never the account IDs. "Account name validation" below gives the
    comparison rule.
-5. **Placement:** Parse all result files → analyze org structure → determine policy levels
+5. **Placement:** Parse all result files → match them against the captured hierarchy → determine policy levels
 6. **Generation:** Generate `grab_org_info.tf` + SCP Terraform files + RCP Terraform files
 
 ---
@@ -298,10 +299,14 @@ account locals in `grab_org_info.tf` fail more loudly, declaring the same
 The guard reads every account in the organization rather than the analyzed subset,
 because `_generate_account_locals` declares a local for every account the hierarchy
 holds. A collision between an analyzed account and a skipped one is still a duplicate
-local. That is also why this check cannot move to startup: the pre-flight guards see
-`get_subaccount_information`'s output, which has already dropped the management account,
-`skip_account_ids`, and every non-ACTIVE account. Making it early would mean fetching the
-hierarchy before the scan, which the pipeline does not do, and the retry after a late
+local. That is also why it is not one of the two startup guards: those run over
+`analyzable_accounts`, which has already dropped the management account,
+`skip_account_ids`, and every non-ACTIVE account, so they cannot see this collision at
+all. Nothing else keeps it late. The hierarchy it needs is captured before the scan
+now, by organization discovery, so an equivalent pre-flight over
+`snapshot.hierarchy.accounts` is available; the check stays where the identifiers are
+actually claimed, inside `make_account_base_names`, so all three generators inherit it
+rather than trusting a separate pre-flight to have run, and the retry after a late
 abort is cheap -- resume skips every account already scanned.
 
 The message names the account names and never the account IDs, matching the two startup
@@ -394,6 +399,10 @@ class OrganizationHierarchy:
     organizational_units: Dict[str, OrganizationalUnit]   # Keyed by OU ID
     accounts: Dict[str, AccountOrgPlacement]              # Keyed by account ID
 ```
+
+`AccountInfo` and `OrganizationSnapshot`, the run's whole captured view of the
+organization, live in `types.py` too and are described under "Organization
+Integration".
 
 ### Check Result Models
 
@@ -2916,10 +2925,10 @@ withheld from the statement regardless of what it contributed.
 **Rows five and six: an organization scope.** `aws:SourceOrgID` names an
 organization directly and `aws:SourceOrgPaths` carries it as the first element
 of a path such as `o-11111111111/r-1111/ou-1111-11111111/`, so both reduce to
-the same comparison against this organization's own ID. That ID comes from
-`get_organization_id`, which calls `organizations:DescribeOrganization` on the
-management account session the run already holds. The deployed statement
-resolves the same value through
+the same comparison against this organization's own ID. That ID is
+`snapshot.organization_id`, read once during organization discovery by
+`organizations:DescribeOrganization` on the management account session `main`
+holds. The deployed statement resolves the same value through
 `data.aws_organizations_organization.current.id`, so this is discovery catching
 up to what deployment always knew.
 
@@ -3353,14 +3362,17 @@ def determine_rcp_placement(
 # terraform/generate_org_info.py
 
 def generate_terraform_org_info(
-    session: boto3.Session,
+    organization_hierarchy: OrganizationHierarchy,
     output_path: str
 ) -> None:
     """
     Generate grab_org_info.tf with AWS Organizations data sources.
 
     Algorithm:
-    1. Call analyze_organization_structure() to get OrganizationHierarchy
+    1. Take the hierarchy the run already captured (snapshot.hierarchy). This
+       reads no AWS API. It used to run a traversal of its own, the second in a
+       single run, so the data sources written here could describe a different
+       organization from the one placement had just used
     2. Name every OU for its path down from the root ({ou_path} below), so
        two OUs sharing a name under different parents stay apart. Colliding
        or reserved names abort the run.
@@ -4083,57 +4095,131 @@ def get_headroom_session(
 ### Organization Integration
 
 ```python
-# aws/organization.py
+# aws/organization_snapshot.py
 
-def analyze_organization_structure(
-    session: boto3.Session
-) -> OrganizationHierarchy:
+def discover_organization(
+    config: HeadroomConfig,
+    org_client: OrganizationsClient
+) -> OrganizationSnapshot:
     """
-    Analyze complete AWS Organizations structure.
+    Read the organization once and return the run's whole view of it.
 
     Algorithm:
-    1. Get organization via describe_organization()
-    2. Extract root_id from roots[0].id
-    3. Recursively list all OUs via list_organizational_units_for_parent()
-    4. For each OU:
-       - Get child OUs (recursive)
-       - Get child accounts via list_accounts_for_parent()
-       - Build OrganizationalUnit object
-    5. Build account placement information:
-       - Determine parent_ou_id
-       - Calculate ou_path (root to account)
-    6. Return OrganizationHierarchy
-    """
+    1. Read this organization's ID via describe_organization(). A response
+       carrying no ID aborts rather than falling back
+    2. List every member account via list_accounts(), all pages. Deliberately
+       unfiltered: the management account, accounts named in skip_account_ids,
+       and accounts in every non-ACTIVE lifecycle state are all members
+    3. Abort if list_accounts reported one account ID more than once
+    4. Abort if a skip_account_ids entry matched no member. Checked against
+       full membership before any filtering, so a mistyped entry reports itself
+       rather than losing the race to a lifecycle abort it may have caused
+    5. Narrow membership to the analyzable accounts, in this order: drop the
+       management account, then skip_account_ids, then every account not in the
+       ACTIVE lifecycle state (see "Account Lifecycle State Filtering" below).
+       Configured skips are consulted before the lifecycle check so an account
+       whose state cannot be classified can be excluded by configuration
+       instead of aborting every other account's analysis
+    6. Find the organization's single root via list_roots(), all pages, then
+       walk the tree breadth-first from it, reading each parent's children
+       exactly once: one list_organizational_units_for_parent() and one
+       list_accounts_for_parent() per parent, building the OrganizationalUnit
+       entries and, for every account, an AccountOrgPlacement carrying its
+       parent_ou_id (None directly under the root) and its ou_path. Every
+       account is retained whatever its lifecycle state and whether or not
+       configuration skips it
+    7. Cross-check the two views: they must hold the same account IDs under the
+       same names, or the run aborts
+    8. For each analyzable account, get tags via list_tags_for_resource(), all
+       pages, and build AccountInfo:
+       - environment from the layout's environment tag (default "unknown")
+       - owner from the layout's owner tag (default "unknown")
+       - name: if use_account_name_from_tags, the layout's name tag (default
+         account_id); otherwise account.Name from the API (default account_id)
+    9. Verify those names can become result filenames, and under
+       exclude_account_ids that they are unique (see "Account name
+       validation"), then return the frozen OrganizationSnapshot
 
-def get_account_info(
-    session: boto3.Session,
-    config: HeadroomConfig
-) -> List[AccountInfo]:
-    """
-    Get account information with tag-based metadata.
+    Returns: OrganizationSnapshot
 
-    Algorithm:
-    1. List all accounts via list_accounts()
-    2. Filter out management account
-    3. Filter out accounts not in the ACTIVE lifecycle state
-       (see "Account Lifecycle State Filtering" below)
-    4. For each remaining account:
-       - Get tags via list_tags_for_resource()
-       - Extract environment (default "unknown")
-       - Extract owner (default "unknown")
-       - Extract name:
-         - If use_account_name_from_tags: use tag (default account_id)
-         - Else: use account.Name from API (default account_id)
-    5. Return List[AccountInfo]
+    Raises: RuntimeError on any of the aborts above, and on an account under
+            more than one parent or an OU reached twice during the traversal
     """
+```
 
-@dataclass
+```python
+# types.py
+
+@dataclass(frozen=True)
 class AccountInfo:
     account_id: str
     environment: str       # From tags, default "unknown"
     name: str             # From tags/API, default account_id
     owner: str            # From tags, default "unknown"
+
+@dataclass(frozen=True)
+class OrganizationSnapshot:
+    organization_id: str                          # This organization, e.g. o-11111111111
+    member_account_ids: frozenset[str]            # Every member, unfiltered
+    analyzable_accounts: tuple[AccountInfo, ...]  # What the scan runs against
+    hierarchy: OrganizationHierarchy              # Every OU and every account
 ```
+
+#### One captured view, read once
+
+`discover_organization` is the only place a run reads AWS Organizations. The scan,
+SCP generation, RCP generation and `grab_org_info.tf` all consume the
+`OrganizationSnapshot` it returns. Before it existed, four independent reads could each
+observe a different organization -- placement could be computed against one hierarchy
+and the Terraform data sources rendered from another -- and nothing detected the
+disagreement.
+
+Each Organizations operation therefore runs exactly once per run, in this order:
+`describe_organization`, `list_accounts` (paginated), `list_roots`, then
+`list_organizational_units_for_parent` and `list_accounts_for_parent` once per parent,
+then `list_tags_for_resource` once per analyzable account. The management role is
+assumed once, before the scan, and never again.
+
+**Two views, cross-checked.** `list_accounts` is canonical for membership and lifecycle
+state; the OU traversal is canonical for placement. The cross-check is unconditional,
+and it is `list_accounts_for_parent` that makes an unconditional check safe: it returns
+accounts in **every** lifecycle state, CLOSED and SUSPENDED included, so a quiescent
+organization presents the same accounts on both sides no matter what state they are in.
+A cross-check written against a view that dropped closed accounts would have had to
+tolerate a set difference, and would then have tolerated a real one.
+
+The names must agree as well as the IDs, because the two views feed different consumers.
+`AccountOrgPlacement.account_name` comes from the traversal and is what
+`lookup_account_id_by_name` matches result files against; `AccountInfo.name` comes from
+the global view plus tags and is what names those result files. The
+canonicalization fallback in `lookup_account_id_by_name` bridges the two, and it can
+only do that if the raw Organizations names are identical on both sides.
+
+**Five disagreements abort discovery.** Each is a case where what the run found
+contradicts what it was told, or contradicts itself, and none has a safe reading:
+
+| Guard | Aborts when | Why not resolve it |
+|-------|-------------|--------------------|
+| Duplicate account IDs | `list_accounts` reports one account ID more than once | Two `AccountInfo` for one account become two workers, therefore two threads writing one result file. Nothing downstream would notice on its own: `member_account_ids` is a frozenset, so the repeat dedupes there, and the cross-check keys accounts by ID, so the duplicate collapses before it can be seen |
+| Unmatched `skip_account_ids` | A configured entry matches no organization member | A typo, a wrong digit count, and an account that has left the organization all look identical to a correct entry, and the account the operator meant to exclude keeps being analyzed with nothing in the output saying so |
+| Views disagree | An account is in one view only, or the two views name it differently | Result filenames come from one view and placement matching from the other, so proceeding attributes results to the wrong account or to none |
+| Name unusable as a filename | An analyzable account's name is empty, holds a null byte, reads as a path, or runs past 237 bytes | See "Account name validation": a path separator writes the account's results where generation does not look, without failing |
+| Duplicate names under `exclude_account_ids` | Two analyzable accounts share a name under canonical caseless matching | The account ID is not in the filename, so both accounts resolve to one path and interleave their JSON into it |
+
+The traversal enforces two more of its own, for the same reason: an account appearing
+under more than one parent, and an OU reached twice. `find_organization_root` and
+`_read_organization_id` add the structural aborts -- no root, several roots, no
+organization ID.
+
+**Concurrent organization mutation aborts the run.** This captures a view; it is not
+transaction isolation. Organizations offers no consistent snapshot across calls, so an
+account created, closed, renamed or moved between two of the reads above can make them
+disagree. Two of the five guards -- duplicate IDs and the cross-check -- exist to catch
+exactly that, as do the traversal's two invariants, and all four say the same thing: the
+organization was modified during discovery, re-run Headroom. The remedy is a retry, not
+reconciliation. Proceeding on two disagreeing views would produce placement
+and Terraform describing an organization that never existed, and discovery is the
+cheapest part of a run to repeat -- it happens before any account is scanned.
 
 #### Account Lifecycle State Filtering
 
@@ -4189,21 +4275,22 @@ set exactly covers `AccountStateType`, the SDK's own enumeration of the field.
 A new AWS state therefore surfaces as a CI failure naming the state when
 `boto3-stubs` is upgraded, rather than as a failed run in production.
 
-**Scope.** This filtering applies only to the account list that drives
-per-account checks. It deliberately does **not** apply to:
+**Scope.** This filtering produces one of the snapshot's four fields,
+`analyzable_accounts`, which is the account list that drives per-account checks.
+It deliberately does **not** reach the other three:
 
-- `get_all_organization_account_ids()`, the organization-membership oracle for
-  the third-party RCP checks. A closed account remains an organization member
+- `member_account_ids` is the organization-membership oracle for the third-party
+  RCP checks, and is unfiltered. A closed account remains an organization member
   until AWS removes it, and organization-based RCP conditions still match it, so
   filtering here would reclassify a recently-closed sibling account as a third
   party and produce false positive findings.
-- `get_organization_id()`, which reads this organization's own ID from
-  `organizations:DescribeOrganization` on the management account session. It
-  names the organization, not its members, so no account filtering applies.
-- `analyze_organization_structure()`, which resolves account names read back
-  from result files on disk. A result file written before an account closed must
-  still resolve, and placement is driven by the results that exist, which leaves
-  an account with no results already inert.
+- `organization_id` is this organization's own ID, read from
+  `organizations:DescribeOrganization`. It names the organization, not its
+  members, so no account filtering applies.
+- `hierarchy` retains every account, because it is what resolves account names
+  read back from result files on disk. A result file written before an account
+  closed must still resolve, and placement is driven by the results that exist,
+  which leaves an account with no results already inert.
 
 ### Region Discovery
 
@@ -4513,9 +4600,11 @@ def run_checks(
     Run all checks across all accounts.
 
     Algorithm:
-    1. Receive org_account_ids and org_id, both gathered by perform_analysis().
-       org_id comes from get_organization_id(), which classifies aws:SourceOrgID
-       and aws:SourceOrgPaths guards on service principals
+    1. Receive org_account_ids and org_id. perform_analysis() gathers neither:
+       it is handed the run's OrganizationSnapshot and passes down two of its
+       fields, member_account_ids and organization_id, both read during
+       organization discovery before the scan began. org_id is what classifies
+       aws:SourceOrgID and aws:SourceOrgPaths guards on service principals
     2. Serially, for each account, drop it from the work list when both
        all_check_results_exist("scps", ...) and all_check_results_exist("rcps", ...)
        report every result already on disk
@@ -4551,7 +4640,7 @@ def run_checks(
     from an account with zero violations, so swallowing the error could
     green-light a policy that breaks it. Accounts that genuinely cannot be
     analyzed are excluded earlier, by lifecycle state in
-    `get_subaccount_information`.
+    `discover_organization`, and never reach the pool.
 
     Aborting takes two mechanisms because Python cannot kill a running thread.
     Future.cancel clears the queue but does nothing to accounts already in
