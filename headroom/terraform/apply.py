@@ -8,6 +8,11 @@ first mkdir. What it proves is ownership: Headroom writes over a file only
 when that file's first line is GENERATED_MARKER, and deletes only a regular
 .tf file carrying the same line.
 
+The one thing preflight cannot decide is whether the two output directories
+are really one directory, when neither exists yet and creating them is what
+makes the alias. That is checked again once they exist, which is still ahead
+of the first write, link, or unlink.
+
 This is not a transaction. Nothing before the mutation phase changes the
 filesystem, but an OS failure partway through the mutation phase can still
 leave a partial apply.
@@ -16,11 +21,12 @@ leave a partial apply.
 import logging
 import os
 from dataclasses import dataclass, field
+from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from .plan import TerraformPlan
-from ..constants import GENERATED_MARKER
+from ..constants import GENERATED_MARKER, ORG_INFO_FILENAME
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +66,11 @@ def _is_marked_regular_file(path: Path) -> bool:
     """
     Report whether Headroom wrote this file and may therefore delete it.
 
-    A symlink is rejected before anything else: rcps/grab_org_info.tf points
-    at the real file in scps/, so reading through the link finds the marker
-    and would delete a link Headroom maintains rather than removes.
+    A symlink is rejected before anything else. The reserved
+    rcps/grab_org_info.tf is never a candidate here -- it is always in the
+    plan -- so what this protects is an operator's own symlink in a managed
+    directory: reading through one that points at a marked file finds the
+    marker and deletes a link Headroom never wrote.
 
     A file we cannot read is a file we cannot prove is ours, so it is not a
     deletion candidate. Note that a planned *destination* we cannot read is
@@ -103,6 +111,62 @@ def _filesystem_identity(path: Path) -> Optional[Tuple[int, int]]:
     except OSError:
         return None
     return (info.st_dev, info.st_ino)
+
+
+def _directory_identity(path: Path) -> Optional[Tuple[int, int]]:
+    """
+    An output directory's (device, inode) pair, or None if it is not there.
+
+    Symlinks are followed, the opposite of `_filesystem_identity`: what
+    matters about an output directory is which directory the writes land in,
+    and rcps_dir spelled as a symlink to scps_dir is one of the aliases this
+    exists to catch. For a directory entry about to be deleted the opposite
+    holds, which is why the two are separate.
+
+    Args:
+        path: A managed directory, which need not exist yet
+
+    Returns:
+        (st_dev, st_ino), or None if the directory cannot be stat'd --
+        including simply not existing, which cannot be aliased to anything
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _directory_aliases(directories: Tuple[Path, ...]) -> List[str]:
+    """
+    Report every pair of managed directories that is really one directory.
+
+    `plan.compile_terraform_plan` compares the output directories lexically,
+    deliberately: compilation reads nothing, so the same plan validates
+    identically on every machine. A lexical comparison cannot see two
+    spellings that reach one inode -- a symlink, or a case variant on a
+    case-insensitive filesystem -- so the collision it names has to be caught
+    again here, where reading the filesystem is allowed.
+
+    Args:
+        directories: The plan's managed directories, existing or not
+
+    Returns:
+        One message per aliased pair; empty when the directories are distinct
+        or do not exist yet
+    """
+    aliased: List[str] = []
+    for first, second in combinations(directories, 2):
+        identity = _directory_identity(first)
+        if identity is None or identity != _directory_identity(second):
+            continue
+        aliased.append(
+            f"{first} and {second} resolve to the same directory. Every RCP "
+            "file would be generated over an SCP file of the same name, and "
+            f"{ORG_INFO_FILENAME} would be a symlink to itself. Set scps_dir "
+            "and rcps_dir to different directories."
+        )
+    return aliased
 
 
 def _protected_identities(result: _Preflight) -> Set[Tuple[int, int]]:
@@ -223,11 +287,13 @@ def _preflight(plan: TerraformPlan) -> _Preflight:
         Every write, unchanged entry, symlink change, and stale deletion
 
     Raises:
-        RuntimeError: If any destination is not Headroom's to touch. Every
+        RuntimeError: If any destination is not Headroom's to touch, or the
+            output directories are one directory under two names. Every
             conflict is reported, not just the first: these are hand-edited
             files, and an operator commonly has several.
     """
     result = _Preflight()
+    result.conflicts.extend(_directory_aliases(plan.managed_directories))
 
     for destination, content in sorted(plan.files.items()):
         _preflight_file(destination, content, result)
@@ -252,10 +318,11 @@ def _preflight(plan: TerraformPlan) -> _Preflight:
     if result.conflicts:
         listing = "\n  ".join(sorted(result.conflicts))
         raise RuntimeError(
-            f"Refusing to write {len(result.conflicts)} destination(s) Headroom "
-            f"does not own:\n  {listing}\n"
-            "Ownership is the marker on a file's first line. Move these files "
-            "aside or rename them. Nothing was changed."
+            f"Refusing to apply: {len(result.conflicts)} destination(s) or "
+            f"output directory(ies) are not this run's to write:\n  {listing}\n"
+            "Ownership of a file is the marker on its first line; a file "
+            "Headroom does not own must be moved aside or renamed. Nothing "
+            "was changed."
         )
 
     return result
@@ -277,12 +344,25 @@ def apply_terraform_plan(plan: TerraformPlan) -> None:
         plan: A validated whole-run plan
 
     Raises:
-        RuntimeError: If preflight finds any destination Headroom does not own
+        RuntimeError: If preflight finds any destination Headroom does not
+            own, or the output directories turn out to be one directory
     """
     decided = _preflight(plan)
 
     for directory in plan.managed_directories:
         directory.mkdir(parents=True, exist_ok=True)
+
+    # Preflight saw neither directory, so the alias only exists once mkdir has
+    # made it. Creating a directory destroys nothing, so checking here is
+    # still ahead of everything that does.
+    created_as_one = _directory_aliases(plan.managed_directories)
+    if created_as_one:
+        listing = "\n  ".join(sorted(created_as_one))
+        raise RuntimeError(
+            "Refusing to apply: creating the output directories produced one "
+            f"directory under two names:\n  {listing}\n"
+            "No file was written, linked, or deleted."
+        )
 
     for destination in sorted(decided.to_write):
         with open(destination, 'w') as handle:

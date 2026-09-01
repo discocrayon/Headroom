@@ -51,6 +51,22 @@ def plan_for(
     )
 
 
+def aliased_dirs(tmp_path: Path) -> Tuple[Path, Path]:
+    """
+    Two spellings of one directory: the RCP directory is a symlink to the SCP
+    directory.
+
+    A directory symlink pins the failure on every filesystem. The
+    case-variant spelling that motivates this reaches the same inode too, but
+    only where the filesystem is case-insensitive.
+    """
+    scps = Path(os.path.abspath(tmp_path / "scps"))
+    rcps = Path(os.path.abspath(tmp_path / "rcps"))
+    scps.mkdir()
+    rcps.symlink_to(scps, target_is_directory=True)
+    return scps, rcps
+
+
 def org_with_one_ou() -> OrganizationHierarchy:
     """One OU holding one account, enough to place at every level."""
     return OrganizationHierarchy(
@@ -190,6 +206,28 @@ def test_an_unrelated_symlink_is_left_alone(tmp_path: Path) -> None:
     apply_terraform_plan(plan_for(scps, rcps, {}))
 
     assert unrelated.is_symlink()
+
+
+def test_a_symlink_to_a_live_marked_file_is_left_alone(tmp_path: Path) -> None:
+    """
+    README.md promises every symlink but the reserved one is left alone. The
+    dangling link above never reaches the ownership test -- `is_file` is
+    already False -- so only a link whose target really exists and really
+    carries the marker exercises the symlink check itself. Reading through
+    such a link finds the marker and deletes an operator's link.
+    """
+    scps, rcps = dirs(tmp_path)
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    target = modules / "shared.tf"
+    target.write_text(generated("# shared by hand\n"))
+    operator_link = scps / "shared_modules.tf"
+    operator_link.symlink_to(Path("..") / "modules" / "shared.tf")
+
+    apply_terraform_plan(plan_for(scps, rcps, {}))
+
+    assert operator_link.is_symlink()
+    assert target.read_text() == generated("# shared by hand\n")
 
 
 def test_stale_marked_files_are_deleted(tmp_path: Path) -> None:
@@ -439,6 +477,94 @@ def test_a_to_delete_candidate_that_is_really_a_planned_write_survives(
 
     assert planned_name.read_text() == generated("# new\n")
     assert on_disk_name.exists()
+
+
+def test_two_names_for_one_output_directory_abort_with_both_named(
+    tmp_path: Path
+) -> None:
+    """
+    The compiler compares the two output directories lexically, on purpose:
+    it reads nothing, so the same plan validates identically everywhere. That
+    comparison cannot see two paths reaching one inode, and applying such a
+    plan writes the shared org-info file, unlinks it under the other
+    spelling, and symlinks it to itself -- content gone, exit 0.
+    """
+    scps, rcps = aliased_dirs(tmp_path)
+    earlier_run = scps / ORG_INFO_FILENAME
+    earlier_run.write_text(generated("# an earlier run's org info\n"))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        converge([], scps, rcps)
+
+    message = str(exc_info.value)
+    assert str(scps) in message
+    assert str(rcps) in message
+    assert "resolve to the same directory" in message
+    assert earlier_run.read_text() == generated("# an earlier run's org info\n")
+
+
+def test_two_names_for_one_output_directory_abort_before_any_deletion(
+    tmp_path: Path
+) -> None:
+    """
+    The stale scan globs both spellings, so one inode is listed twice and
+    unlinked twice: the second unlink raises FileNotFoundError partway
+    through the mutation phase, after the org-info file has already been
+    destroyed.
+    """
+    scps, rcps = aliased_dirs(tmp_path)
+    (scps / ORG_INFO_FILENAME).write_text(generated("# an earlier run's org info\n"))
+    stale = scps / "retired_ou_scps.tf"
+    stale.write_text(generated())
+
+    with pytest.raises(RuntimeError, match="resolve to the same directory"):
+        converge([], scps, rcps)
+
+    assert stale.read_text() == generated()
+
+
+def test_one_output_directory_under_two_names_joins_the_one_report(
+    tmp_path: Path
+) -> None:
+    """
+    An operator reads one report. The aliased directories are the cause of
+    every filename collision that follows, so listing them beside the
+    hand-edited files preflight also refused is what lets that operator fix
+    the run in one pass instead of one error at a time.
+    """
+    scps, rcps = aliased_dirs(tmp_path)
+    hand_written = scps / "root_scps.tf"
+    hand_written.write_text('module "mine" {}\n')
+
+    with pytest.raises(RuntimeError) as exc_info:
+        converge([scp_rec("root")], scps, rcps)
+
+    message = str(exc_info.value)
+    assert "2 destination(s)" in message
+    assert "resolve to the same directory" in message
+    assert str(hand_written) in message
+    assert hand_written.read_text() == 'module "mine" {}\n'
+
+
+def test_output_directories_that_only_mkdir_makes_one_abort_before_any_write(
+    tmp_path: Path
+) -> None:
+    """
+    Neither directory exists yet, so there is nothing on disk for preflight
+    to compare -- mkdir itself is what creates the alias. Checking again once
+    the directories exist still happens before the first write, and mkdir
+    destroys nothing.
+    """
+    real = tmp_path / "terraform"
+    real.mkdir()
+    (tmp_path / "aliased").symlink_to(real, target_is_directory=True)
+    scps = Path(os.path.abspath(real / "scps"))
+    rcps = Path(os.path.abspath(tmp_path / "aliased" / "scps"))
+
+    with pytest.raises(RuntimeError, match="resolve to the same directory"):
+        converge([], scps, rcps)
+
+    assert list(scps.iterdir()) == []
 
 
 def test_a_failed_write_leaves_stale_files_undeleted(tmp_path: Path) -> None:

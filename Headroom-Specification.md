@@ -3582,6 +3582,19 @@ rather than being overwritten, the same as any other ownership conflict.
 Non-`.tf` files and subdirectories (`.terraform/`, modules) are never
 candidates.
 
+**Two names for one output directory:** `scps_dir` and `rcps_dir` pointing at
+one directory would generate every RCP file over the SCP file of the same
+name and reduce `grab_org_info.tf` to a symlink to itself. Compilation
+compares the two lexically, which is what keeps it free of filesystem access,
+so it catches only two spellings of the same path - not a symlink, and not a
+case variant on a case-insensitive filesystem, both of which reach one inode
+under two names. `apply_terraform_plan` compares them by device and inode
+instead, twice: in preflight, where the alias joins the one aggregated
+ownership report, and again immediately after the directories are created,
+which is the only point at which an alias that `mkdir` itself produced first
+becomes observable. Both abort naming both configured paths, and neither has
+written, linked, or deleted anything.
+
 **Empty is not the same as unknown:**
 
 Deleting every policy file is the correct response to a run that placed
