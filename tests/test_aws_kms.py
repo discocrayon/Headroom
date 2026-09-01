@@ -8,129 +8,53 @@ from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
 from headroom.aws.kms import (
-    analyze_kms_key_policies,
-    UnsupportedPrincipalTypeError,
     UnknownGranteePrincipalError,
-    UnknownPrincipalTypeError,
-    _extract_account_ids_from_principal,
-    _has_wildcard_principal,
+    analyze_kms_key_policies,
 )
-from headroom.aws.policy_documents import MalformedPolicyError
+from headroom.aws.policy_documents import (
+    MalformedPolicyError,
+    UnknownPrincipalTypeError,
+)
 from tests.constants import ORG_ID
-
-
-class TestExtractAccountIdsFromPrincipal:
-    """Test _extract_account_ids_from_principal function."""
-
-    def test_extract_from_arn_string(self) -> None:
-        """Test extraction from ARN format string."""
-        principal = "arn:aws:iam::333333333333:root"
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"333333333333"}
-
-    def test_extract_from_plain_account_id(self) -> None:
-        """Test extraction from plain 12-digit account ID."""
-        principal = "333333333333"
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"333333333333"}
-
-    def test_extract_from_wildcard(self) -> None:
-        """Test that wildcard returns empty set."""
-        principal = "*"
-        result = _extract_account_ids_from_principal(principal)
-        assert result == set()
-
-    def test_extract_from_list(self) -> None:
-        """Test extraction from list of principals."""
-        principal = [
-            "arn:aws:iam::111111111111:root",
-            "arn:aws:iam::222222222222:root"
-        ]
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"111111111111", "222222222222"}
-
-    def test_extract_from_dict_aws(self) -> None:
-        """Test extraction from dict with AWS key."""
-        principal = {
-            "AWS": "arn:aws:iam::111111111111:root"
-        }
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"111111111111"}
-
-    def test_extract_from_dict_aws_list(self) -> None:
-        """Test extraction from dict with AWS key containing list."""
-        principal = {
-            "AWS": [
-                "arn:aws:iam::111111111111:root",
-                "222222222222"
-            ]
-        }
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"111111111111", "222222222222"}
-
-    def test_extract_from_dict_service(self) -> None:
-        """Test that Service principals return empty set."""
-        principal = {
-            "Service": "lambda.amazonaws.com"
-        }
-        result = _extract_account_ids_from_principal(principal)
-        assert result == set()
-
-    def test_unsupported_federated_principal(self) -> None:
-        """Test that Federated principals raise UnsupportedPrincipalTypeError."""
-        principal = {
-            "Federated": "arn:aws:iam::333333333333:saml-provider/MyProvider"
-        }
-        with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            _extract_account_ids_from_principal(principal)
-        assert "Federated" in str(exc_info.value)
-        assert "would break if the RCP is deployed" in str(exc_info.value)
-
-
-class TestHasWildcardPrincipal:
-    """Test _has_wildcard_principal function."""
-
-    def test_wildcard_string(self) -> None:
-        """Test detection of wildcard string."""
-        assert _has_wildcard_principal("*") is True
-
-    def test_non_wildcard_string(self) -> None:
-        """Test non-wildcard string."""
-        assert _has_wildcard_principal("arn:aws:iam::333333333333:root") is False
-
-    def test_wildcard_in_list(self) -> None:
-        """Test detection of wildcard in list."""
-        principal = ["arn:aws:iam::333333333333:root", "*"]
-        assert _has_wildcard_principal(principal) is True
-
-    def test_no_wildcard_in_list(self) -> None:
-        """Test list without wildcard."""
-        principal = ["arn:aws:iam::333333333333:root", "arn:aws:iam::111111111111:root"]
-        assert _has_wildcard_principal(principal) is False
-
-    def test_wildcard_in_dict_aws_string(self) -> None:
-        """Test detection of wildcard in dict AWS string."""
-        principal = {"AWS": "*"}
-        assert _has_wildcard_principal(principal) is True
-
-    def test_wildcard_in_dict_aws_list(self) -> None:
-        """Test detection of wildcard in dict AWS list."""
-        principal = {
-            "AWS": ["arn:aws:iam::333333333333:root", "*"]
-        }
-        assert _has_wildcard_principal(principal) is True
-
-    def test_no_wildcard_in_dict(self) -> None:
-        """Test dict without wildcard."""
-        principal = {
-            "AWS": "arn:aws:iam::333333333333:root",
-            "Service": "lambda.amazonaws.com"
-        }
-        assert _has_wildcard_principal(principal) is False
 
 
 class TestAnalyzeKmsKeyPolicies:
     """Test analyze_kms_key_policies function."""
+
+    def test_an_unparseable_policy_aborts_the_run(self) -> None:
+        """
+        A document AWS could not have stored means Headroom misread it.
+
+        Recording the key as clean would let the RCP deploy over whatever
+        the policy actually grants, which is INV-01's case. The analyzer
+        catches nothing here, so the JSONDecodeError reaches the top and
+        ends the run.
+        """
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "kms": mock_kms_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.return_value = [
+            {"Keys": [{
+                "KeyId": "key-123",
+                "KeyArn": "arn:aws:kms:us-east-1:111111111111:key/key-123",
+            }]}
+        ]
+        mock_kms_client.get_paginator.return_value = keys_paginator
+        mock_kms_client.get_key_policy.return_value = {"Policy": "{not json"}
+
+        with pytest.raises(json.JSONDecodeError):
+            analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_analyze_keys_with_third_party_access(self) -> None:
         """Test successful analysis with keys having third-party access."""
@@ -376,20 +300,16 @@ class TestAnalyzeKmsKeyPolicies:
         assert "999999999999" in results[0].actions_by_account
         assert "888888888888" in results[0].actions_by_account
 
-    def test_federated_principal_fails_fast(self) -> None:
-        """Test that Federated principals raise UnsupportedPrincipalTypeError."""
-        mock_session = MagicMock()
-        mock_ec2_client = MagicMock()
-        mock_kms_client = MagicMock()
+    def test_a_federated_principal_blocks_the_key_rather_than_the_run(self) -> None:
+        """
+        A Federated principal carries no account ID the allowlist can hold.
 
-        mock_session.client.side_effect = lambda service, **kwargs: {
-            "ec2": mock_ec2_client,
-            "kms": mock_kms_client,
-        }.get(service)
-
-        mock_ec2_client.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
+        A SAML provider ARN carries twelve digits, but they name the account
+        hosting the provider rather than the caller, so no allowlist keyed on
+        aws:PrincipalAccount can preserve the grant. The key blocks the
+        account for this check; the other accounts' scans still finish.
+        """
+        mock_session, mock_kms_client = self._single_region_session()
 
         keys_paginator = MagicMock()
         keys_paginator.paginate.return_value = [
@@ -402,19 +322,77 @@ class TestAnalyzeKmsKeyPolicies:
                 ]
             }
         ]
-
         mock_kms_client.get_paginator.return_value = keys_paginator
 
-        policy_response = {
-            "Policy": '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::333333333333:saml-provider/MyProvider"},"Action":"kms:Decrypt","Resource":"*"}]}'
+        mock_kms_client.get_key_policy.return_value = {
+            "Policy": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Federated": "arn:aws:iam::333333333333:saml-provider/Example"
+                    },
+                    "Action": "kms:Decrypt",
+                    "Resource": "*",
+                }],
+            })
         }
-        mock_kms_client.get_key_policy.return_value = policy_response
 
-        org_account_ids = {"111111111111"}
+        results = analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
 
-        with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
-        assert "Federated" in str(exc_info.value)
+        assert len(results) == 1
+        assert results[0].has_non_account_principals is True
+
+    def test_a_canonical_user_blocks_the_key_rather_than_the_run(self) -> None:
+        """A canonical user ID maps to no account the allowlist can carry."""
+        mock_session, mock_kms_client = self._single_region_session()
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.return_value = [
+            {
+                "Keys": [
+                    {
+                        "KeyId": "key-canonical",
+                        "KeyArn": "arn:aws:kms:us-east-1:111111111111:key/key-canonical"
+                    }
+                ]
+            }
+        ]
+        mock_kms_client.get_paginator.return_value = keys_paginator
+
+        mock_kms_client.get_key_policy.return_value = {
+            "Policy": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Effect": "Allow",
+                    "Principal": {"CanonicalUser": "d" * 64},
+                    "Action": "kms:Decrypt",
+                    "Resource": "*",
+                }],
+            })
+        }
+
+        results = analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        assert len(results) == 1
+        assert results[0].has_non_account_principals is True
+
+    @staticmethod
+    def _single_region_session() -> tuple[MagicMock, MagicMock]:
+        """Build a session mock wired to one region and return (session, kms_client)."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "kms": mock_kms_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+        return mock_session, mock_kms_client
 
     def test_analyze_kms_policies_unknown_principal_type(self) -> None:
         """Test analyze_kms_key_policies with unknown principal type."""

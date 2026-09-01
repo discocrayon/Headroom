@@ -1,10 +1,16 @@
 # CLAUDE.md
 
-Guidance for agents working in this repository. `AGENTS.md` points here; this file is the single source of truth.
+Guidance for agents working in this repository. `AGENTS.md` points here; this file is the single source of truth for *how to work*. [`spec/`](spec/README.md) is the single source of truth for *what the software must do*.
 
 ## Truth hierarchy
 
-Code and tests define current behavior. `Headroom-Specification.md` is the specification: it expresses intent, and agents keep it current. The flow runs from code to specification, never back — do not regenerate or replace implementation from it, and do update the section describing behavior you changed, in the same change. Where the two disagree, resolve the discrepancy explicitly and say which side you changed.
+The version-controlled specification corpus is the primary product. The implementation is an expression of that corpus.
+
+- `spec/` is **normative**: it states intended behavior. [`spec/README.md`](spec/README.md) carries the full authority model and precedence chain; read it before your first change.
+- Code and tests are **evidence of current behavior**, not of intent.
+- Where the two disagree, **report the conflict**. Do not quietly change either side to match the other. If the intent is unambiguous, fix the implementation and say so; if it is not, record it in the unresolved table in [`spec/checks/index.md`](spec/checks/index.md) and leave behavior alone.
+- Change the specification and the implementation in the same commit. A behavior change with no corresponding specification edit is incomplete.
+- Git history supplies dates. No document carries a manual "last updated" field.
 
 ## The pipeline
 
@@ -12,37 +18,85 @@ Headroom scans an AWS Organization and generates Terraform SCPs and RCPs that wi
 
 Configuration → organization discovery → checks → result artifacts → placement → Terraform generation → reconciliation.
 
+[`spec/architecture/overview.md`](spec/architecture/overview.md) owns the stages.
+
 ## Always
 
-- Use obviously fake AWS identifiers in code, tests, documentation, and examples: real prefix, real length, a repeated digit for the body (`111111111111`, `i-11111111111111111`, `ami-11111111111111111`). An identifier that arrives from a bug report, error message, console screenshot, or API response is real; rewrite it before it enters the repo, commit messages included. IP addresses take the same rule: `111.111.111.111`, or `222.222.222.222` where a test needs a second host, and never 52.x or 54.x, which are live AWS EC2 ranges and read as a real instance's public IP. `HOW_TO_ADD_A_CHECK.md` carries the full table, including the one carve-out this rule has: Canonical's Ubuntu image owner in `test_environment/test_deny_ec2_ami_owner/data.tf`, where the lookup is live and a fake resolves to no AMI.
-- Preserve wire compatibility of persisted results unless you are performing an explicit migration. A later run reads back both the result JSON and the result filenames, and `results_exist` tolerates the account-name and the account-name-plus-ID form so an existing results directory still resumes.
-- Check discovery under `headroom/checks/` intentionally uses dynamic imports: `headroom/checks/__init__.py` imports every module in `scps/` and `rcps/` so each `@register_check` decorator runs and a new check needs no edit elsewhere. That is the exception; everywhere else, import at the top of the file.
-- Never commit a design or plan document. `design-docs/`, `docs/superpowers/` and `.superpowers/` are git-ignored scratch for working out a change, and they stay that way: they go stale the moment the code moves, and nothing may cite them, because a reader who clones the repository does not have them. Anything durable a design produced belongs in `Headroom-Specification.md` or `documentation/`, where the truth hierarchy above applies to it -- including any number a document quotes, which must be derivable from what is committed.
-- Organization membership, analyzable accounts, and hierarchy are distinct projections, and code that collapses them is wrong. All three are fields of the one `OrganizationSnapshot` that `discover_organization` builds. `list_organization_accounts` is deliberately unfiltered, because a closed account is still an organization member and still matches organization-based RCP conditions. `_select_analyzable_accounts` drops the management account, `skip_account_ids`, and every non-ACTIVE account. `build_organization_hierarchy` builds the OU tree that placement walks, and retains every account whatever its lifecycle state.
+These are global invariants; [`spec/invariants.md`](spec/invariants.md) states each one in full and is the place to cite, argue with, or amend it.
+
+- **INV-15** — use obviously fake AWS identifiers everywhere, including commit messages. An identifier from a bug report, error message, console screenshot, or API response is real; rewrite it before it enters the repo.
+- **INV-14** — persisted results keep wire compatibility unless you are performing an explicit migration. A later run reads back both the JSON and the filenames.
+- **INV-13** — collection, writing, and placement are driven by the registry. Parsing and Terraform generation are not yet: `parse_results.py` branches on `deny_ec2_ami_owner` and `deny_iam_user_creation` by name with no registry-coverage test to catch a third, and `RCP_TERRAFORM_VARIABLES` and `_build_scp_terraform_module` both name checks by hand, where a test guards each. Check discovery in `headroom/checks/__init__.py` is the one sanctioned dynamic import; everywhere else, import at the top of the file.
+- **INV-04** — organization membership, analyzable accounts, and hierarchy are distinct projections. Code that collapses them is wrong.
+- **INV-01** — absence of evidence is not evidence of safety. A region that could not be read, a policy that could not be parsed, and an API that failed are not "no findings".
 
 ## Routes
 
-Read the branch that matches your change and skip the rest. `Headroom-Specification.md` is over 6,000 lines: open it to answer a specific question about intent, or to update the section covering what you changed, never as background reading.
+Match the longest path prefix. Always load [`spec/README.md`](spec/README.md) and
+[`spec/invariants.md`](spec/invariants.md), whatever you are touching; load the
+rest only as this table directs. Specification paths are shown relative to
+`spec/`.
 
-- **Adding or changing a check, or registry discovery** → `HOW_TO_ADD_A_CHECK.md`, `headroom/checks/registry.py`, and `tests/test_checks_registry.py`. Every stage from collection to Terraform is driven by the registry rather than by check name, with one exception: a new RCP check must also be named in `RCP_TERRAFORM_VARIABLES`, which `test_table_covers_every_registered_rcp_check` in `tests/test_generate_rcps.py` enforces.
-- **Principal, action, wildcard, or statement interpretation** → `headroom/aws/policy_documents.py` plus every service adapter that reads policy documents: `headroom/aws/ecr.py`, `kms.py`, `s3.py`, `secretsmanager.py`, `sqs.py`, and `iam/roles.py`. A change to how a statement is read is a change to all of them.
-- **Generated paths, symlinks, ownership markers, or reconciliation** → "Generation Is Reconciliation, Not Appending" in `documentation/ARCHITECTURE.md`, then `headroom/terraform/plan.py`, `headroom/terraform/apply.py`, and `tests/test_terraform_plan.py` / `tests/test_terraform_apply.py`. Generation is render-before-mutate at the whole-run boundary: `compile_terraform_plan` renders and validates every file, the reserved symlink, and both directories without touching the filesystem, and `apply_terraform_plan` is the only place Headroom writes, links, or deletes. Ownership is the marker on a file's first line; the one exception is `rcps/grab_org_info.tf`, the sole symlink Headroom maintains, which a marked legacy regular file may migrate into and an unmarked one blocks. A run that parses zero result files aborts rather than emptying the directories. The guarantee is bounded: parsing, rendering, validation, and preflight failures mutate nothing, but an OS failure partway through apply can still leave a partial apply.
-- **Result JSON schemas, filenames, resume behavior, or cache detection** → the writer `headroom/write_results.py`, its one call site `BaseCheck.execute` in `headroom/checks/base.py`, and both readers, `headroom/parse_results.py` for SCPs and `headroom/terraform/generate_rcps.py` for RCPs. The readers only glob `*.json` per check directory and take account identity from the JSON `summary`; resume is a separate path, through `all_check_results_exist` in `headroom/analysis.py` into `results_exist`. So a filename change can silently re-scan or silently skip accounts without any reader failing. Tests: `tests/test_write_results.py`, `tests/test_parse_results.py`, and `TestRunChecks` in `tests/test_analysis_extended.py`.
-- **The worker pool, the cooperative abort, or a per-session memo** → "Concurrency model" in `documentation/ARCHITECTURE.md`, then `run_checks` in `headroom/analysis.py`, `get_all_regions` / `memoize_per_session` in `headroom/aws/helpers.py`, `get_instances` in `headroom/aws/ec2.py` -- the third memo, and the only one not in `helpers.py` -- and `headroom/log_context.py`, with `TestRunChecksPool` in `tests/test_analysis.py` and `tests/performance/test_call_counts.py`. One worker per account and one session per worker is what makes the three memos safe: each is a `WeakKeyDictionary` keyed on the session object, so a memo reached by two accounts is a correctness bug, not a slow path. `log_context.py` rides that same property: a worker stamps its account on the thread before its first check and clears it on the way out, so a pool path that returns without doing either leaves every later record labeled with another account, and `tests/conftest.py` restores that thread-local between tests.
-- **Account enumeration or hierarchy behavior** → `headroom/aws/organization_snapshot.py`, which is where the run's one read of Organizations lives, then `headroom/aws/organization.py` and `headroom/analysis.py`, keeping the three projections above distinct, with `tests/test_aws_organization_snapshot.py`, `tests/test_placement_hierarchy.py` and `tests/test_nested_ou_hierarchy.py`.
-- **Public CLI options or configuration** → `headroom/usage.py`, `headroom/config.py`, and `sample_config.yaml`, then update `README.md` and `documentation/SETUP.md`, with `tests/test_config.py` and `tests/test_main.py`.
-- **Documentation prose with no behavior change** → edit the file; no implementation file is implicated. `tests/test_documentation_links.py` is the only test that reads Markdown and it fails only on a relative link whose target is missing, so run it in place of `tox` when you add, move, or retarget a link.
+| Touched path | Specifications | Also open |
+|---|---|---|
+| `headroom/checks/scps/<name>.py` | [`checks/scps/<name>.md`](spec/checks/scps/), [`architecture/check-framework.md`](spec/architecture/check-framework.md) | That specification's own `applies_to` and `verification`. A **new** check also needs [`HOW_TO_ADD_A_CHECK.md`](HOW_TO_ADD_A_CHECK.md) and a case in its service's `_build_<service>_terraform_parameters`; `test_every_registered_scp_check_is_rendered` fails by name when you forget. |
+| `headroom/checks/rcps/<name>.py` | [`checks/rcps/<name>.md`](spec/checks/rcps/), [`architecture/check-framework.md`](spec/architecture/check-framework.md), [`contracts/policy-model.md`](spec/contracts/policy-model.md) | As above. A **new** check must be named in `RCP_TERRAFORM_VARIABLES`; `test_table_covers_every_registered_rcp_check` fails by name. |
+| `headroom/checks/base.py`, `headroom/checks/registry.py` | [`architecture/check-framework.md`](spec/architecture/check-framework.md), [`contracts/results.md`](spec/contracts/results.md) | `headroom/write_results.py` - `BaseCheck.execute` is its one call site. `tests/test_checks_registry.py`. |
+| `headroom/aws/policy_documents.py` | [`contracts/policy-model.md`](spec/contracts/policy-model.md), every `checks/rcps/*.md` | Every adapter that reads a statement: `headroom/aws/ecr.py`, `kms.py`, `s3.py`, `secretsmanager.py`, `sqs.py`, `iam/roles.py`. A change to how a statement is read is a change to all six. `read_principal` is the one rule all six read a `Principal` element by, and `tests/test_aws_policy_documents.py` pins it; six copies of that walk once disagreed four ways. |
+| `headroom/aws/<service>.py` | the `checks/*` documents naming that service, [`contracts/policy-model.md`](spec/contracts/policy-model.md) | `headroom/aws/policy_documents.py`, if statement interpretation moves. |
+| `headroom/aws/organization.py`, `headroom/aws/organization_snapshot.py` | [`architecture/aws-execution.md`](spec/architecture/aws-execution.md), [`contracts/placement.md`](spec/contracts/placement.md) | Keep INV-04's three projections distinct. `discover_organization` is the run's one read of Organizations; every later stage consumes the frozen `OrganizationSnapshot`. `tests/test_aws_organization_snapshot.py`, `tests/test_placement_hierarchy.py`, `tests/test_nested_ou_hierarchy.py`. |
+| `headroom/analysis.py`, `headroom/log_context.py` | [`architecture/aws-execution.md`](spec/architecture/aws-execution.md) for the worker pool and the failure policy | One worker per account, one session per worker. Each memo — `get_all_regions` and `memoize_per_session` in `headroom/aws/helpers.py`, `get_instances` in `headroom/aws/ec2.py` — is a `WeakKeyDictionary` keyed on that session, so a memo entry reached by two accounts is a correctness bug. `log_context.py` stamps the account on the thread; `tests/conftest.py` restores the thread-local between tests. `TestRunChecksPool` in `tests/test_analysis.py`, `tests/performance/test_call_counts.py`. |
+| `headroom/aws/sessions.py`, `headroom/aws/helpers.py` | [`architecture/aws-execution.md`](spec/architecture/aws-execution.md) | `find_tag_value_as_iam_matches` is the one rule both tag checks read their tag by, so a change to it changes [`checks/scps/deny_ec2_imds_v1.md`](spec/checks/scps/deny_ec2_imds_v1.md) and [`checks/scps/deny_eks_create_cluster_without_tag.md`](spec/checks/scps/deny_eks_create_cluster_without_tag.md) together. |
+| `headroom/write_results.py`, `headroom/parse_results.py` | [`contracts/results.md`](spec/contracts/results.md), [`contracts/placement.md`](spec/contracts/placement.md) | Both readers: `parse_results.py` for SCPs, `headroom/terraform/generate_rcps.py` for RCPs. A filename change can silently re-scan or silently skip accounts without any reader failing. `tests/test_write_results.py`, `tests/test_parse_results.py`, `TestRunChecks` in `tests/test_analysis_extended.py`. |
+| `headroom/placement/` | [`contracts/placement.md`](spec/contracts/placement.md) | - |
+| `headroom/terraform/` | [`contracts/terraform.md`](spec/contracts/terraform.md), [`contracts/placement.md`](spec/contracts/placement.md) | `plan.py` renders and validates the whole run without touching disk; `apply.py` is the only place Headroom writes, links, or deletes. `tests/test_terraform_plan.py`, `tests/test_terraform_apply.py`. |
+| `headroom/config.py`, `headroom/usage.py`, `sample_config.yaml` | [`contracts/configuration.md`](spec/contracts/configuration.md) | `README.md` and [`documentation/SETUP.md`](documentation/SETUP.md). `tests/test_config.py`, `tests/test_main.py`. |
+| `headroom/main.py` | [`architecture/overview.md`](spec/architecture/overview.md) for the stage order, [`architecture/aws-execution.md`](spec/architecture/aws-execution.md) for the top-level `try`, [`contracts/terraform.md`](spec/contracts/terraform.md) for the compile-then-apply boundary | Both workflows parse, place, and print but write nothing; `main()` calls `compile_terraform_plan` and then `apply_terraform_plan`. |
+| `headroom/constants.py`, `headroom/enums.py`, `headroom/types.py`, `headroom/utils.py`, `headroom/output.py` | Whichever contract owns the value you are changing | The consumer. These modules hold no behavior of their own; a constant is normative wherever it is consumed. |
+| `test_environment/modules/` | [`contracts/terraform.md`](spec/contracts/terraform.md), [`contracts/policy-model.md`](spec/contracts/policy-model.md), the affected `checks/*` documents | - |
+| `tests/` | [`verification/strategy.md`](spec/verification/strategy.md) | - |
+| `spec/checks/` | [`checks/index.md`](spec/checks/index.md) | `tests/test_spec_corpus.py` for what is mechanically enforced. |
+| Prose in any `.md`, with no behavior change | The owner named in [`spec/README.md`](spec/README.md) | No implementation file is implicated. `tests/test_documentation_links.py` fails on a relative link whose target is missing, and `tests/test_spec_corpus.py` on a malformed or missing check specification; run those two in place of `tox`. |
+
+Three things no row can key on:
+
+- **A change to how something fails also touches
+  [`spec/architecture/aws-execution.md`](spec/architecture/aws-execution.md).** It
+  owns the general failure policy, so a new tolerated exception, a widened
+  `except`, or a moved `try` changes it whatever file you edited.
+- **Correcting a claim in one specification means checking whether another states
+  the same thing.** A documentation-only fix matches no path row at all.
+  `aws-execution.md` has twice been the document left stale by a correction made
+  elsewhere — once for tag tolerance, once for the top-level `try`.
+- **A test file named in a check specification's `verification:` list routes to
+  that specification.** `tests/` is the longest prefix any row can offer and it
+  points only at [`verification/strategy.md`](spec/verification/strategy.md), but a
+  check test encodes that specification's **Decision table** and **Acceptance
+  scenarios**, and a service test encodes its **Evidence** and **Failure
+  behavior**. Editing the evidence with the statement of intent unread is the
+  failure the truth hierarchy exists to prevent.
+  `grep -l '<filename>' spec/checks/*/*.md` names the owners, and there is often
+  more than one — `tests/test_aws_policy_documents.py` answers to seven
+  specifications and `tests/test_aws_ec2.py` to four. Renaming or deleting such a
+  file is already caught, since `tests/test_spec_corpus.py` fails on a
+  `verification:` path that does not exist; changing what it asserts is caught by
+  nothing.
 
 ## Conventions
 
-`.cursorrules` is authoritative for code conventions. It carries the fail-fast rules, the single-source-of-defaults rule for CLI and config values, and the import rules including the check-discovery exception above.
+[`CONVENTIONS.md`](CONVENTIONS.md) is authoritative for code conventions, and is
+imported below so that it loads with this file. It carries the fail-fast rules,
+the single-source-of-defaults rule for CLI and config values, and the import
+rules including the check-discovery exception above.
+
+@CONVENTIONS.md
 
 ## Completion
 
 - Read the implementation and the existing tests for every boundary you touch before editing.
 - Write the failing test first and watch it fail for the reason you expect, then write only enough code to pass it. One test, one implementation, repeat — do not write every test up front. Start a bug fix with the test that reproduces it.
 - An assertion that computes its expected value the way the code computes it passes by construction and can never disagree with the code. Take expected values from an independent source: a known-good literal, a worked example, the documented shape of the AWS policy.
-- Tests are flat under `tests/`, one file per module. The single exception is `tests/performance/`, which holds call-count contracts rather than behavior tests.
+- Tests are flat under `tests/`, one file per module.
 - Run the smallest relevant test files while working, then `tox` before calling the work done.
 - If verification cannot run, report the exact unavailable dependency or environment constraint instead of a pass.
-- Update documentation when public behavior, configuration, output formats, invariants, or the routing above changed, including the section of `Headroom-Specification.md` that covers it, and otherwise leave it alone. Do this once, when the code has settled, rather than rewriting prose after every edit.
+- Update the specification document that owns what you changed, in the same change. `spec/README.md` names the owner. Do this once, when the code has settled, rather than rewriting prose after every edit.

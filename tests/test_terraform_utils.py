@@ -96,5 +96,8 @@ class TestClaimPlanPath:
         plan: Dict[Path, str] = {}
         claim_plan_path(plan, Path("root_scps.tf"), "root", "the organization root")
 
-        with pytest.raises(RuntimeError, match="root_scps.tf"):
+        with pytest.raises(RuntimeError) as exc_info:
             claim_plan_path(plan, Path("root_scps.tf"), "acct", "account 'Root'")
+
+        assert "root_scps.tf" in str(exc_info.value)
+        assert "account 'Root'" in str(exc_info.value)

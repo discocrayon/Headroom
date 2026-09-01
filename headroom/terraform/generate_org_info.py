@@ -26,6 +26,11 @@ def render_terraform_org_info(organization_hierarchy: OrganizationHierarchy) -> 
     the run captured, so the data sources describe the same organization
     placement just used.
 
+    The hierarchy is passed in rather than walked here. Both policy generators
+    emit `local.<path>_ou_id` references built from the caller's walk, and this
+    file declares those locals; a second walk can disagree with the first and
+    produce Terraform that fails at plan time on an undeclared local (INV-12).
+
     Args:
         organization_hierarchy: The run's captured organization hierarchy
 

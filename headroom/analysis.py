@@ -92,7 +92,14 @@ def run_checks_for_type(
     Run all checks of a given type for a single account.
 
     This function automatically discovers and runs all registered checks
-    of the specified type. No code changes needed when adding new checks.
+    of the specified type, so a new check needs no edit here. Parsing and
+    Terraform generation are not registry-driven and can still need one,
+    in three places: parsing branches on a check name in
+    `headroom/parse_results.py`, a new SCP check needs a case in
+    `_build_scp_terraform_module`, and a new RCP check an entry in
+    `RCP_TERRAFORM_VARIABLES`. Both generators carry a guard that fails by
+    name when you forget. Parsing carries none, and only one of its three
+    branches is pinned by any test at all (INV-13).
 
     Args:
         check_type: Type of checks to run (scps, rcps)

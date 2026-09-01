@@ -167,8 +167,9 @@ See [full examples](documentation/EXAMPLES.md).
 - **KMS Third-Party Access Allowlist**
 - **Secrets Manager Third-Party Access Allowlist**
 - **SQS Third-Party Access Allowlist**
+- **Service Confused Deputy**: Narrows the AWS service exemption the other six grant, for calls that name the account they act for
 
-[View detailed check documentation](documentation/CHECKS.md)
+[View the per-check specifications](spec/checks/index.md)
 
 ### Key Capabilities
 - **Multi-region scanning** for comprehensive coverage
@@ -177,9 +178,13 @@ See [full examples](documentation/EXAMPLES.md).
 - **Exemption support** via resource tags
 - **100% test coverage** with type safety
 
-Accounts are analyzed concurrently, 16 at a time by default. Combined with caching the
-region list and the EC2 instance list per account, a 300-account organization goes from
-roughly 4.9 hours to roughly 16 minutes.
+Accounts are analyzed concurrently, 16 at a time by default. Combined with three
+per-account caches — the enabled-region list, the EC2 instance sweep, and the six
+resource-policy analyses that `deny_service_confused_deputy` re-reads — a 300-account
+organization goes from roughly 4.9 hours to roughly 16 minutes. Those figures are
+derived from a per-account census of API calls rather than measured on the wall clock;
+[`documentation/SETUP.md`](documentation/SETUP.md#tuning-max_account_workers) shows the
+arithmetic and the assumption it rests on.
 
 ## How It Works
 
@@ -199,7 +204,7 @@ Security Analysis Account
 3. Analyze compliance and determine optimal policy placement
 4. Generate Terraform with smart allowlists
 
-[View detailed architecture](documentation/ARCHITECTURE.md)
+[View the architecture specification](spec/architecture/overview.md)
 
 ## Sample Output
 
@@ -236,7 +241,7 @@ module "scps_root" {
 ✅ **Working**:
 - Multi-account AWS Organizations scanning
 - SCP checks: EC2 IMDSv1, EC2 IMDS hop limit, EC2 AMI owner, EC2 public IP, IAM users, IAM SAML providers, EKS tags, Lambda function URLs, RDS encryption
-- RCP checks: IAM trust policies, S3, ECR, KMS, Secrets Manager, SQS third-party access
+- RCP checks: IAM trust policies, S3, ECR, KMS, Secrets Manager, SQS third-party access, and service confused deputy
 - Terraform auto-generation with allowlists
 - Terraform output reconciled to the current run, with stale policy files removed
 - JSON violation reports
@@ -250,10 +255,18 @@ module "scps_root" {
 
 ## Documentation
 
+The specification corpus in **[`spec/`](spec/README.md)** is the authority on
+intended behavior. Start at its manifest, which carries the authority model, the
+precedence chain, and which document owns which topic. Routing from a file you
+are touching to the specifications that govern it is in
+[`CLAUDE.md`](CLAUDE.md#routes).
+
+- **[Specification manifest](spec/README.md)** - What Headroom promises, and which document owns which topic
+- **[Global invariants](spec/invariants.md)** - The rules no subsystem may break
+- **[Check specifications](spec/checks/index.md)** - One document per registered check
 - **[Setup Guide](documentation/SETUP.md)** - Detailed IAM role setup and configuration
-- **[Architecture](documentation/ARCHITECTURE.md)** - Module structure and execution flow
-- **[Check Reference](documentation/CHECKS.md)** - Detailed documentation of all checks
-- **[Examples](documentation/EXAMPLES.md)** - Full Terraform and JSON output examples
+- **[Examples](documentation/EXAMPLES.md)** - Illustrative Terraform and JSON output
+- **[Test environment](test_environment/README.md)** - Live-test topology, cost, and cleanup
 - **[Adding Checks](HOW_TO_ADD_A_CHECK.md)** - Guide for contributing new checks
 - **[Roadmap](ROADMAP.md)** - Future plans and ideas
 
@@ -279,16 +292,45 @@ mypy headroom/ tests/
 
 ```bash
 python -m headroom --help
-
-Options:
-  --config CONFIG              Path to config YAML (required)
-  --results-dir RESULTS_DIR    Results output directory
-  --scps-dir SCPS_DIR         SCP Terraform output directory
-  --rcps-dir RCPS_DIR         RCP Terraform output directory
-  --max-account-workers MAX_ACCOUNT_WORKERS
-                               Accounts to analyze concurrently, 1 runs them
-                               serially (default 16, maximum 32)
 ```
+
+```
+usage: headroom [-h] --config CONFIG [--results-dir RESULTS_DIR]
+                [--scps-dir SCPS_DIR] [--rcps-dir RCPS_DIR]
+                [--max-account-workers MAX_ACCOUNT_WORKERS]
+                [--security-analysis-account-id SECURITY_ANALYSIS_ACCOUNT_ID]
+                [--management-account-id MANAGEMENT_ACCOUNT_ID]
+                [--exclude-account-ids]
+
+Headroom - analyze AWS org and generate SCP Terraform
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       Path to config YAML
+  --results-dir RESULTS_DIR
+                        Directory containing headroom results (default
+                        test_environment/headroom_results)
+  --scps-dir SCPS_DIR   Directory to output SCP Terraform (default
+                        test_environment/scps)
+  --rcps-dir RCPS_DIR   Directory to output RCP Terraform (default
+                        test_environment/rcps)
+  --max-account-workers MAX_ACCOUNT_WORKERS
+                        Accounts to analyze concurrently, 1 runs them serially
+                        (default 16, maximum 32)
+  --security-analysis-account-id SECURITY_ANALYSIS_ACCOUNT_ID
+                        AWS Account ID where security analysis role is located
+  --management-account-id MANAGEMENT_ACCOUNT_ID
+                        AWS Organization management account ID
+  --exclude-account-ids
+                        Exclude account IDs from result files and filenames
+```
+
+The four defaults the help text prints — the three directories and
+`--max-account-workers` — are read from `headroom/config.py`. Argparse carries
+no default of its own: an option you omit arrives as `None`, `merge_configs`
+drops it, and the YAML file or the `config.py` field default decides. Every
+config field's default, and which fields have no CLI option at all, live in
+[`spec/contracts/configuration.md`](spec/contracts/configuration.md).
 
 ## Test Environment
 
@@ -306,7 +348,7 @@ We welcome contributions! Here's how to get started:
 
 1. Read [CLAUDE.md](CLAUDE.md) for repository conventions and the verification steps
 2. Check out [HOW_TO_ADD_A_CHECK.md](HOW_TO_ADD_A_CHECK.md) to add new policy checks
-3. Review our [plugin system](documentation/CHECKS.md) for extensibility
+3. Write the check's specification under [`spec/checks/`](spec/checks/index.md) first - the test suite fails until it exists
 4. Ensure 100% test coverage and run `tox` before submitting
 
 **Good first issues**: Look for checks that follow similar patterns to existing ones.

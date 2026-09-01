@@ -194,6 +194,7 @@ def _build_eks_terraform_parameters(enabled_policies: set[str]) -> List[Terrafor
 
 
 def _build_iam_terraform_parameters(
+    module_name: str,
     enabled_policies: set[str],
     recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy
@@ -211,13 +212,32 @@ def _build_iam_terraform_parameters(
     parameters.append(TerraformParameter("deny_iam_saml_provider_not_aws_sso", deny_iam_saml_provider_not_aws_sso))
 
     deny_iam_user_creation = "deny_iam_user_creation" in enabled_policies
+    transformed_arns = [
+        _replace_account_id_in_arn(arn, organization_hierarchy)
+        for arn in (_get_allowed_iam_user_arns(recommendations) if deny_iam_user_creation else [])
+    ]
+
+    # An empty allowlist renders NotResource: [], and a policy array takes one
+    # or more values, so Organizations rejects the document and the entire SCP
+    # fails to attach - every other statement in this module with it. Reaching
+    # here means the covered accounts hold no IAM user at all, which is an
+    # ordinary fact about them rather than a broken run, so the policy stays
+    # off and the rest of the organization still generates (INV-06).
+    if deny_iam_user_creation and not transformed_arns:
+        logger.warning(
+            f"Module {module_name}: leaving deny_iam_user_creation off because no "
+            f"IAM user exists in the accounts it covers, so the allowlist would "
+            f"be empty."
+        )
+        parameters.append(TerraformComment(
+            "deny_iam_user_creation stays off here: no IAM user in the accounts "
+            "this module covers, so the allowlist would be empty - and "
+            "NotResource: [] is rejected as a malformed policy."
+        ))
+        deny_iam_user_creation = False
+
     parameters.append(TerraformParameter("deny_iam_user_creation", deny_iam_user_creation))
     if deny_iam_user_creation:
-        allowed_iam_user_arns = _get_allowed_iam_user_arns(recommendations)
-        transformed_arns = [
-            _replace_account_id_in_arn(arn, organization_hierarchy)
-            for arn in allowed_iam_user_arns
-        ]
         parameters.append(TerraformParameter("iam_allowed_users", transformed_arns))
 
     return parameters
@@ -287,7 +307,7 @@ def _build_scp_terraform_module(
     parameters.append(TerraformComment(""))
     parameters.extend(_build_eks_terraform_parameters(enabled_policies))
     parameters.append(TerraformComment(""))
-    parameters.extend(_build_iam_terraform_parameters(enabled_policies, recommendations, organization_hierarchy))
+    parameters.extend(_build_iam_terraform_parameters(module_name, enabled_policies, recommendations, organization_hierarchy))
     parameters.append(TerraformComment(""))
     parameters.extend(_build_lambda_terraform_parameters(enabled_policies))
     parameters.append(TerraformComment(""))

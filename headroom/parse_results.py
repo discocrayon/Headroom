@@ -19,6 +19,7 @@ from .aws.organization import lookup_account_id_by_name
 from .constants import DENY_EC2_AMI_OWNER
 from .placement import HierarchyPlacementAnalyzer
 from .output import OutputHandler
+from .utils import delete_and_rerun_remedy
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -165,11 +166,25 @@ def _parse_single_scp_result_file(
 
     resolved_check_name = summary.get("check", check_name)
 
+    # Placement clears an account when this count is zero, so defaulting it
+    # would answer an unanswerable question in the safest possible direction
+    # (INV-01). deny_iam_saml_provider_not_aws_sso shipped without the key and
+    # had every account it rejected cleared for a root-level deny. The
+    # remaining fields below are reporting only and no placement decision reads
+    # them, so a missing one costs accuracy rather than safety.
+    if "violations" not in summary:
+        raise RuntimeError(
+            f"{result_file} has no violations count in its summary. Placement "
+            f"reads that count and nothing else to decide whether an account is "
+            f"safe, so an absent key would clear the account rather than stop "
+            f"the run. {delete_and_rerun_remedy(result_file, resolved_check_name)}"
+        )
+
     return SCPCheckResult(
         account_id=account_id,
         account_name=summary.get("account_name", ""),
         check_name=resolved_check_name,
-        violations=summary.get("violations", 0),
+        violations=summary["violations"],
         exemptions=summary.get("exemptions", 0),
         compliant=summary.get("compliant", 0),
         total_instances=summary.get("total_instances"),

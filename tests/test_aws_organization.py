@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from headroom.aws.organization import (
     build_organization_hierarchy,
     find_organization_root,
+    get_organizations_client,
     list_organization_accounts,
     lookup_account_id_by_name,
 )
@@ -618,6 +619,34 @@ class TestListOrganizationAccounts:
         ]
         org_client.get_paginator.assert_called_once_with("list_accounts")
 
+    def test_a_page_without_the_accounts_key_raises(self) -> None:
+        """
+        A `ListAccounts` page with no `Accounts` key aborts rather than reading
+        as empty.
+
+        This listing is the membership oracle the third-party RCP checks read
+        to tell an in-organization principal from an outsider. Defaulting the
+        missing key to no accounts turns an unanswerable page into the most
+        permissive possible answer: every account the dropped page held is
+        reclassified as a third party and lands in the generated allowlist.
+        That is the shape INV-01 forbids.
+
+        `ListAccountsResponse` carries `Accounts` and `NextToken`, and
+        botocore's wire model marks neither required, so a page holding only
+        the token is a shape the model permits. `_list_child_accounts` reads
+        the sibling listing the same way, so the two agree.
+        """
+        org_client = Mock()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Accounts": [{"Id": "111111111111", "Name": "payments"}], "NextToken": "page-2"},
+            {"NextToken": "page-3"},
+        ]
+        org_client.get_paginator.return_value = paginator
+
+        with pytest.raises(KeyError, match="Accounts"):
+            list_organization_accounts(org_client)
+
     def test_a_connection_failure_aborts_with_the_listing_named(self) -> None:
         """
         A connection-level failure leaves botocore as a BotoCoreError, not a
@@ -637,3 +666,22 @@ class TestListOrganizationAccounts:
             RuntimeError, match="Failed to list the organization's accounts"
         ):
             list_organization_accounts(org_client)
+
+
+class TestGetOrganizationsClient:
+    """Test get_organizations_client."""
+
+    def test_the_client_is_built_from_the_management_session(self) -> None:
+        """
+        The session handed in is the one the client must bind to.
+
+        Building it from any other session reads a different account's
+        organization view, and the management session is the only one whose
+        role can read Organizations at all.
+        """
+        mgmt_session = Mock()
+
+        client = get_organizations_client(mgmt_session)
+
+        mgmt_session.client.assert_called_once_with("organizations")
+        assert client is mgmt_session.client.return_value

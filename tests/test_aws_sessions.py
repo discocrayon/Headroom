@@ -365,6 +365,38 @@ class TestSessionConstructionIsCentralised:
         assert builders == {"aws/sessions.py"}
 
 
+class TestAwsAccessIsCentralised:
+    """Guard the boundary that keeps AWS calls inside one package."""
+
+    def test_only_the_aws_package_constructs_a_client(self) -> None:
+        """
+        Every boto3 client in the package must be built inside `aws/`.
+
+        A client built outside it is an AWS call the rest of the codebase
+        cannot see: `spec/architecture/overview.md` states that a check
+        composes `aws/` functions and decides, and that the orchestrator does
+        neither. Once one caller reaches past the boundary, the next has a
+        precedent, and the question of which module talks to AWS stops having
+        an answer. Nothing at runtime notices, so pin it statically.
+        """
+        package_root = Path(headroom.__file__).parent
+
+        builders = set()
+        for path in sorted(package_root.rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                func = getattr(node, "func", None)
+                if getattr(func, "attr", None) != "client":
+                    continue
+                builders.add(path.relative_to(package_root).as_posix())
+
+        # An empty set satisfies all(), so the scan finding nothing would pass
+        # this guard while proving nothing about the boundary.
+        assert builders, "no client() call found anywhere; the scan is broken"
+        assert all(module.startswith("aws/") for module in sorted(builders)), (
+            f"outside aws/: {sorted(m for m in builders if not m.startswith('aws/'))}"
+        )
+
+
 class TestConcurrentClientConstruction:
     """Test that workers do not build STS clients from one session at once."""
 

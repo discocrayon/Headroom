@@ -6,6 +6,8 @@ Tooling functionality:
 - Metrics based on violations present in AWS accounts
 - SCP/RCP scoring metrics: calculated by `SCPs/RCPs in use`/`Service in use` at account and OU and org levels
 - Auto-add a given SCP/RCP at the most widely applicable level possible (e.g. root if all accounts can have it enabled) once analysis is performed
+- Condition-aware RCP analysis: treat a wildcard principal confined by `aws:PrincipalOrgID`, `aws:PrincipalOrgPaths`, or `aws:PrincipalAccount` as scoped rather than as a blocker
+- CloudTrail historical analysis for wildcard principal resolution
 - Add **past state checking** via [Sigma Rules](https://github.com/SigmaHQ/sigma) inside the repository, and add support for checking past CloudTrail logs in ElasticSearch, Splunk, SumoLogic, [etc.](https://sigmahq.io/docs/digging-deeper/backends.html#available)
 - Add **observability queries** via [Sigma Rules](https://github.com/SigmaHQ/sigma) inside the repository, and add support for generating Terraform for alerting off of  SCP-caused denials of CloudTrail logs in ElasticSearch, Splunk, SumoLogic, [etc.](https://sigmahq.io/docs/digging-deeper/backends.html#available)
 

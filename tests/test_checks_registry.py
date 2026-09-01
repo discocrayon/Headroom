@@ -2,8 +2,10 @@
 
 import pytest
 from headroom.checks.registry import (
+    _CHECK_REGISTRY,
     get_check_class,
     get_all_check_classes,
+    get_check_names,
     get_check_type_map,
 )
 
@@ -109,3 +111,27 @@ class TestGetCheckTypeMap:
         assert type_map["deny_sqs_third_party_access"] == "rcps"
         assert type_map["deny_service_confused_deputy"] == "rcps"
         assert len(type_map) == 16
+
+
+def test_every_registry_key_matches_its_class_check_name() -> None:
+    """
+    The decorator's key and the class attribute must agree.
+
+    @register_check keys the registry by its check_name argument, while
+    get_check_names reads CHECK_NAME off the class. A check whose two names
+    differ is listed under one and retrievable only under the other, so
+    get_check_class(name) raises for a name get_check_names just returned.
+    """
+    mismatched = {
+        key: cls.CHECK_NAME
+        for key, cls in _CHECK_REGISTRY.items()
+        if key != cls.CHECK_NAME
+    }
+
+    assert mismatched == {}
+
+
+def test_every_listed_check_name_is_retrievable() -> None:
+    """The two registry projections must round trip."""
+    for check_name in get_check_names():
+        assert get_check_class(check_name).CHECK_NAME == check_name

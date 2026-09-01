@@ -2,6 +2,7 @@
   "summary": {
     "account_name": "fort-knox",
     "check": "deny_iam_user_creation",
+    "violations": 0,
     "total_users": 1,
     "users": [
       "arn:aws:iam::REDACTED:user/service/github-actions"

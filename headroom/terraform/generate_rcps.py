@@ -25,6 +25,7 @@ from .utils import (
     ou_id_local_name,
     ou_path_names,
 )
+from ..utils import delete_and_rerun_remedy
 from ..checks.registry import get_check_names
 from ..types import (
     AccountThirdPartyMap,
@@ -85,7 +86,7 @@ def _parse_single_rcp_result_file(
         raise RuntimeError(
             f"Result file {result_file} names no check in its summary, so it "
             "cannot be confirmed to belong to the directory it was found in. "
-            "Re-run the analysis to regenerate it."
+            f"{delete_and_rerun_remedy(result_file, check_name)}"
         )
 
     reported_check = summary["check"]
@@ -100,7 +101,7 @@ def _parse_single_rcp_result_file(
         raise RuntimeError(
             f"Result file {result_file} has no 'violations' count in its summary, "
             "so whether this account can take the RCP cannot be determined. "
-            "Re-run the analysis to regenerate it."
+            f"{delete_and_rerun_remedy(result_file, check_name)}"
         )
 
     if "unique_third_party_accounts" not in summary:
@@ -108,8 +109,7 @@ def _parse_single_rcp_result_file(
             f"Result file {result_file} has no 'unique_third_party_accounts' "
             "list in its summary, so the third parties this account must keep "
             "reaching cannot be determined. An empty allowlist is not the same "
-            "answer: it denies every third party. Re-run the analysis to "
-            "regenerate it."
+            f"answer: it denies every third party. {delete_and_rerun_remedy(result_file, check_name)}"
         )
 
     blocks_rcp = summary["violations"] > 0
@@ -543,8 +543,15 @@ RCP_TERRAFORM_VARIABLES: Dict[str, RcpTerraformVars] = {
     ),
     DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS: RcpTerraformVars(
         comment="Secrets Manager",
-        # No `_access_` segment, unlike its five siblings. The Terraform
-        # module defines the variable this way; do not "fix" it here.
+        # No `_access_` segment. Two counts are in play here and they
+        # differ: three of the seven allowlist variables lack that
+        # substring - this one, STS, and the confused-deputy check - while
+        # only two depart from the derivation rule, the check name without
+        # `deny_` plus `_account_ids_allowlist`. STS's check name carries
+        # no `_access_` either, so its variable follows that rule exactly;
+        # this one and the confused-deputy check are the two departures
+        # `spec/contracts/policy-model.md` counts. The Terraform module
+        # defines the variable this way; do not "fix" it here.
         enable_var="deny_secrets_manager_third_party_access",
         allowlist_var="secrets_manager_third_party_account_ids_allowlist",
     ),

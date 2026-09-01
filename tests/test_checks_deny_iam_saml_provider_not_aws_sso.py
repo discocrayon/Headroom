@@ -11,6 +11,8 @@ from headroom.aws.iam import SamlProviderAnalysis
 from headroom.checks.scps.deny_iam_saml_provider_not_aws_sso import (
     DenySamlProviderNotAwsSsoCheck,
 )
+from headroom.parse_results import _get_safe_results, parse_scp_result_files
+from headroom.types import AccountOrgPlacement, OrganizationHierarchy
 
 
 class TestCheckDenySamlProviderNotAwsSso:
@@ -149,3 +151,90 @@ class TestCheckDenySamlProviderNotAwsSso:
         assert summary["violating_provider_arns"] == []
         assert results["violations"] == []
         assert results["compliant_instances"] == []
+
+
+class TestPlacementCanSeeTheViolations:
+    """
+    The count placement reads must reflect the providers the check rejected.
+
+    The check wrote its violations to the `violations` array and omitted the
+    count from `summary`, where placement looks. Parsing defaulted the missing
+    key to zero, so an account full of rejected providers cleared every safety
+    predicate and the deny was recommended at root.
+    """
+
+    def test_summary_carries_the_violation_count(self, tmp_path: Path) -> None:
+        check = DenySamlProviderNotAwsSsoCheck(
+            check_name="deny_iam_saml_provider_not_aws_sso",
+            account_name="test-account",
+            account_id="111111111111",
+            results_dir=str(tmp_path),
+        )
+        providers = [
+            SamlProviderAnalysis(
+                arn=f"arn:aws:iam::111111111111:saml-provider/Okta{index}",
+                name=f"Okta{index}",
+                create_date=None,
+                valid_until=None,
+            )
+            for index in range(3)
+        ]
+
+        with patch(
+            "headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.get_saml_providers_analysis"
+        ) as mock_get_providers:
+            mock_get_providers.return_value = providers
+            check.execute(MagicMock(spec=boto3.Session))
+
+        check_dir = tmp_path / "scps" / "deny_iam_saml_provider_not_aws_sso"
+        results_file = check_dir / "test-account_111111111111.json"
+        with open(results_file) as file_handle:
+            summary = json.load(file_handle)["summary"]
+
+        assert summary["violations"] == 3
+        assert summary["compliant"] == 0
+        assert summary["compliance_percentage"] == 0.0
+
+    def test_a_wholly_non_compliant_account_does_not_parse_as_safe(self, tmp_path: Path) -> None:
+        """
+        The end the conflict was about: what placement actually reads back.
+
+        `is_safe_for_root` clears an account when its parsed violation count is
+        zero, so this is the assertion that would have caught the deny being
+        recommended over an organization the check had just rejected.
+        """
+        check = DenySamlProviderNotAwsSsoCheck(
+            check_name="deny_iam_saml_provider_not_aws_sso",
+            account_name="test-account",
+            account_id="111111111111",
+            results_dir=str(tmp_path),
+        )
+        okta = SamlProviderAnalysis(
+            arn="arn:aws:iam::111111111111:saml-provider/Okta",
+            name="Okta",
+            create_date=None,
+            valid_until=None,
+        )
+
+        with patch(
+            "headroom.checks.scps.deny_iam_saml_provider_not_aws_sso.get_saml_providers_analysis"
+        ) as mock_get_providers:
+            mock_get_providers.return_value = [okta]
+            check.execute(MagicMock(spec=boto3.Session))
+
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1111",
+            organizational_units={},
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="test-account",
+                    parent_ou_id=None,
+                    ou_path=["Root"],
+                )
+            },
+        )
+        parsed = parse_scp_result_files(str(tmp_path), hierarchy)
+
+        assert [result.violations for result in parsed] == [1]
+        assert _get_safe_results(parsed) == []

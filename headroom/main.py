@@ -4,7 +4,6 @@ from contextlib import contextmanager
 import logging
 
 from botocore.exceptions import ClientError
-from mypy_boto3_organizations.client import OrganizationsClient
 
 from .config import HeadroomConfig
 from .log_context import configure_logging
@@ -14,6 +13,7 @@ from .parse_results import analyze_scp_compliance, print_policy_recommendations
 from .terraform.apply import apply_terraform_plan
 from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement
 from .terraform.plan import compile_terraform_plan
+from .aws.organization import get_organizations_client
 from .aws.organization_snapshot import discover_organization
 from .types import OrganizationHierarchy, RCPPlacementRecommendations, SCPPlacementRecommendations
 from .output import OutputHandler
@@ -177,7 +177,7 @@ def main() -> None:
     with _failures_reported("organization discovery"):
         security_session = get_security_analysis_session(final_config)
         mgmt_session = get_management_account_session(final_config, security_session)
-        org_client: OrganizationsClient = mgmt_session.client("organizations")
+        org_client = get_organizations_client(mgmt_session)
         snapshot = discover_organization(final_config, org_client)
 
     with _failures_reported("the scan"):

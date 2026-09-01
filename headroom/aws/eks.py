@@ -7,7 +7,8 @@ from typing import Dict, List
 from boto3.session import Session
 from mypy_boto3_eks.client import EKSClient
 
-from .helpers import get_all_regions
+from ..constants import EKS_PAVED_ROAD_TAG_KEY, EKS_PAVED_ROAD_TAG_VALUE
+from .helpers import find_tag_value_as_iam_matches, get_all_regions
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ def get_eks_cluster_tag_analysis(
        b. For each cluster:
           - Call describe_cluster() to get details
           - Extract tags from response
-          - Check if PavedRoad key exists with value "true"
+          - Read the PavedRoad tag the way IAM matches the condition key
           - Create DenyEksCreateClusterWithoutTag result
     3. Return all results across all regions
 
@@ -120,6 +121,8 @@ def _analyze_eks_cluster(
 
     Raises:
         ClientError: If describe_cluster API call fails
+        RuntimeError: If the cluster carries the paved-road tag key more than
+            once, in cases that differ
     """
     response = eks_client.describe_cluster(name=cluster_name)
     cluster = response["cluster"]
@@ -127,8 +130,10 @@ def _analyze_eks_cluster(
     cluster_arn = cluster["arn"]
     tags = cluster.get("tags", {})
 
-    # Check for exact match: PavedRoad key with value "true" (case-sensitive)
-    has_paved_road_tag = tags.get("PavedRoad") == "true"
+    tag_value = find_tag_value_as_iam_matches(
+        tags, EKS_PAVED_ROAD_TAG_KEY, f"Cluster {cluster_name}"
+    )
+    has_paved_road_tag = tag_value == EKS_PAVED_ROAD_TAG_VALUE
 
     return DenyEksCreateClusterWithoutTag(
         cluster_name=cluster_name,

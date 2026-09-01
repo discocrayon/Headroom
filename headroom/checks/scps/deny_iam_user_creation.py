@@ -64,7 +64,12 @@ class DenyIamUserCreationCheck(BaseCheck[IamUserAnalysis]):
         """
         total = len(check_result.compliant)
 
+        # Zero, and written rather than left out. Every user this check finds is
+        # compliant, so the count is always zero - but placement reads this key
+        # to decide whether the account is safe, and a reader cannot tell an
+        # absent key from a genuine zero. Stating it keeps the distinction.
         return {
             "total_users": total,
             "users": [user["user_arn"] for user in check_result.compliant],
+            "violations": len(check_result.violations),
         }

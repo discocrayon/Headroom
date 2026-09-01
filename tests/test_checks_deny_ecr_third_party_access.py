@@ -282,6 +282,83 @@ class TestCheckDenyECRThirdPartyAccess:
         assert result_dict["has_wildcard_principal"] is False
         assert "999999999999" in result_dict["third_party_account_ids"]
 
+    def test_categorize_result_non_account_principal_is_a_violation(
+        self,
+        temp_results_dir: str,
+        org_account_ids: set[str],
+    ) -> None:
+        """A Federated or CanonicalUser principal blocks the account."""
+        check = DenyECRThirdPartyAccessCheck(
+            check_name=DENY_ECR_THIRD_PARTY_ACCESS,
+            account_name="test",
+            account_id="111111111111",
+            results_dir=temp_results_dir,
+            org_account_ids=org_account_ids,
+            org_id=ORG_ID,
+        )
+
+        result = ECRPolicyAnalysis(
+            scope="repository",
+            repository_name="federated-repo",
+            repository_arn="arn:aws:ecr:us-east-1:111111111111:repository/federated-repo",
+            region="us-east-1",
+            third_party_account_ids=set(),
+            actions_by_account={},
+            has_wildcard_principal=False,
+            has_non_account_principals=True,
+        )
+
+        category, result_dict = check.categorize_result(result)
+
+        assert category == "violation"
+        assert result_dict["has_non_account_principals"] is True
+
+    def test_a_non_account_principal_alone_is_not_cleared(
+        self,
+        temp_results_dir: str,
+        org_account_ids: set[str],
+    ) -> None:
+        """
+        A repository whose only finding is a Federated principal is reported.
+
+        No allowlist keyed on aws:PrincipalAccount can preserve that grant, so
+        dropping it would clear the account and deploy an RCP that denies a
+        grant the account depends on, against INV-01.
+        """
+        mock_session = MagicMock()
+
+        with (
+            patch("headroom.checks.rcps.deny_ecr_third_party_access.analyze_ecr_policies") as mock_analysis,
+            patch("headroom.checks.base.write_check_results") as mock_write,
+            patch("builtins.print")
+        ):
+            mock_analysis.return_value = [
+                ECRPolicyAnalysis(
+                    scope="repository",
+                    repository_name="federated-repo",
+                    repository_arn="arn:aws:ecr:us-east-1:111111111111:repository/federated-repo",
+                    region="us-east-1",
+                    third_party_account_ids=set(),
+                    actions_by_account={},
+                    has_wildcard_principal=False,
+                    has_non_account_principals=True,
+                )
+            ]
+
+            check = DenyECRThirdPartyAccessCheck(
+                check_name=DENY_ECR_THIRD_PARTY_ACCESS,
+                account_name="test-account",
+                account_id="111111111111",
+                results_dir=temp_results_dir,
+                org_account_ids=org_account_ids,
+                org_id=ORG_ID,
+            )
+            check.execute(mock_session)
+
+            summary = mock_write.call_args[1]["results_data"]["summary"]
+
+            assert summary["violations"] == 1
+
     def test_actions_by_account_union(
         self,
         temp_results_dir: str,

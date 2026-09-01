@@ -1,16 +1,23 @@
 # Class Model Diagram
 
+Field lists are read from the dataclasses themselves. Most of these live in
+`headroom/types.py`; three do not, and the exceptions are marked in the diagram:
+`AccountInfo` is defined in `headroom/analysis.py`, `CategorizedCheckResult` in
+`headroom/checks/base.py`, and `PlacementCandidate` in
+`headroom/placement/hierarchy.py`.
+
 ```mermaid
 classDiagram
   class HeadroomConfig {
+    +str? management_account_id
+    +str? security_analysis_account_id
+    +bool exclude_account_ids
+    +List~str~ skip_account_ids
     +bool use_account_name_from_tags
     +AccountTagLayout account_tag_layout
-    +str? security_analysis_account_id
-    +str? management_account_id
     +str results_dir
     +str scps_dir
     +str rcps_dir
-    +bool exclude_account_ids
   }
 
   class AccountTagLayout {
@@ -20,6 +27,7 @@ classDiagram
   }
 
   class AccountInfo {
+    <<headroom.analysis>>
     +str account_id
     +str environment
     +str name
@@ -67,8 +75,10 @@ classDiagram
     +int violations
     +int exemptions
     +int compliant
-    +int? total_instances
     +float compliance_percentage
+    +int? total_instances
+    +List~str~? iam_user_arns
+    +List~str~? ami_owners
   }
 
   class RCPCheckResult {
@@ -86,6 +96,8 @@ classDiagram
     +List~str~ affected_accounts
     +float compliance_percentage
     +str reasoning
+    +List~str~? allowed_iam_user_arns
+    +List~str~? ec2_allowed_ami_owners
   }
 
   class RCPPlacementRecommendations {
@@ -115,10 +127,12 @@ classDiagram
     +analyze(session)* List~T~
     +categorize_result(result)* tuple
     +build_summary_fields(check_result)* Dict
+    +_build_results_data(check_result) Dict
     +execute(session) None
   }
 
   class CategorizedCheckResult {
+    <<headroom.checks.base>>
     +List~Dict~ violations
     +List~Dict~ exemptions
     +List~Dict~ compliant
@@ -126,6 +140,7 @@ classDiagram
   }
 
   class PlacementCandidate {
+    <<headroom.placement.hierarchy>>
     +str level
     +str? target_id
     +List~str~ affected_accounts
@@ -133,9 +148,12 @@ classDiagram
   }
 
   class HierarchyPlacementAnalyzer~T~ {
+    <<headroom.placement.hierarchy>>
     +OrganizationHierarchy org
     +determine_placement() List~PlacementCandidate~
-    -_group_results_by_ou() Dict
+    -_group_results_by_ou_subtree() Dict
+    -_top_level_ou_ids() Set
+    -_ancestor_ou_ids() Set
   }
 
   HeadroomConfig --> AccountTagLayout

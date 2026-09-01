@@ -9,6 +9,7 @@ import logging
 from collections import deque
 from typing import Deque, Dict, List, Optional, Sequence, Set, Tuple, cast
 
+from boto3.session import Session
 from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
 from mypy_boto3_organizations.type_defs import AccountTypeDef, OrganizationalUnitTypeDef, RootTypeDef
@@ -21,6 +22,27 @@ from .helpers import paginate
 logger = logging.getLogger(__name__)
 
 
+def get_organizations_client(mgmt_session: Session) -> OrganizationsClient:
+    """
+    Build the Organizations client every read in this module takes.
+
+    The client is constructed here rather than by the caller because only
+    `aws/` calls AWS: `main` sequences the stages and never talks to a
+    service itself, and `test_only_the_aws_package_constructs_a_client`
+    pins that. It stays a parameter of the functions below rather than
+    something they each build, because one client serves the whole
+    discovery pass and the tests inject a fake in its place.
+
+    Args:
+        mgmt_session: Session for the management account, already assumed
+
+    Returns:
+        An Organizations client bound to that session
+    """
+    organizations_client: OrganizationsClient = mgmt_session.client("organizations")
+    return organizations_client
+
+
 def _list_child_ous(
     org_client: OrganizationsClient,
     parent_id: str
@@ -31,6 +53,14 @@ def _list_child_ous(
     Args:
         org_client: AWS Organizations client
         parent_id: Root or OU ID to list the children of
+
+    Reads `OrganizationalUnits` permissively, where the two account listings
+    index their key directly. A dropped OU page costs this walk the subtree
+    beneath it, and the accounts in that subtree then go missing from the
+    placement view - which `build_organization_snapshot` cross-checks against
+    the membership view, aborting on any disagreement. The account listings
+    have no such backstop: `list_accounts` is the membership oracle itself, so
+    a page it silently dropped is a disagreement nothing downstream can see.
 
     Returns:
         The parent's direct child OUs
@@ -78,14 +108,16 @@ def _list_child_accounts(
 
     Raises:
         RuntimeError: If the listing fails at any page
+        KeyError: If a page carries no `Accounts` key. Indexed rather than
+            defaulted: this listing feeds organization membership, and a page
+            read as empty would reclassify every account it held as a third
+            party (INV-01)
     """
     child_accounts: List[AccountTypeDef] = []
 
     try:
         for page in paginate(org_client, "list_accounts_for_parent", ParentId=parent_id):
-            child_accounts.extend(
-                cast(Sequence[AccountTypeDef], page.get("Accounts", []))
-            )
+            child_accounts.extend(cast(Sequence[AccountTypeDef], page["Accounts"]))
     except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to list the accounts under {parent_id}: {e}")
 
@@ -283,12 +315,16 @@ def list_organization_accounts(
 
     Raises:
         RuntimeError: If the listing fails at any page
+        KeyError: If a page carries no `Accounts` key. Indexed rather than
+            defaulted: this listing feeds organization membership, and a page
+            read as empty would reclassify every account it held as a third
+            party (INV-01)
     """
     accounts: List[AccountTypeDef] = []
 
     try:
         for page in paginate(org_client, "list_accounts"):
-            accounts.extend(cast(Sequence[AccountTypeDef], page.get("Accounts", [])))
+            accounts.extend(cast(Sequence[AccountTypeDef], page["Accounts"]))
     except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to list the organization's accounts: {e}")
 

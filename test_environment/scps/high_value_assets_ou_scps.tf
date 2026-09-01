@@ -8,14 +8,19 @@ module "scps_high_value_assets_ou" {
 
   # EC2
   deny_ec2_ami_owner = false
+  deny_ec2_imds_hop_limit = false
   deny_ec2_imds_v1 = true
+  deny_ec2_public_ip = false
 
   # EKS
   deny_eks_create_cluster_without_tag = false
 
   # IAM
-  deny_iam_user_creation = false
   deny_iam_saml_provider_not_aws_sso = false
+  deny_iam_user_creation = false
+
+  # Lambda
+  deny_lambda_auth_type_none = false
 
   # RDS
   deny_rds_unencrypted = true

@@ -12,7 +12,9 @@ module "scps_root" {
     "444444444444",
     "amazon",
   ]
+  deny_ec2_imds_hop_limit = false
   deny_ec2_imds_v1 = false
+  deny_ec2_public_ip = false
 
   # EKS
   deny_eks_create_cluster_without_tag = true
@@ -27,6 +29,9 @@ module "scps_root" {
     "arn:aws:iam::${local.acme_co_account_id}:user/terraform-user",
     "arn:aws:iam::${local.shared_foo_bar_account_id}:user/legacy-developer",
   ]
+
+  # Lambda
+  deny_lambda_auth_type_none = false
 
   # RDS
   deny_rds_unencrypted = false

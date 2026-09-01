@@ -2,8 +2,15 @@
 Check registry for auto-discovery of compliance checks.
 
 This module provides a decorator-based registry pattern that allows checks
-to self-register. This eliminates the need for hardcoded check lists and
-makes adding new checks require zero changes to other files.
+to self-register, so that registering a check is the whole of wiring it into
+discovery. Collection, result writing and placement then iterate the registry
+rather than a hardcoded list.
+
+They are not every stage. Parsing and Terraform generation still branch on a
+hardcoded check name, so a new check does take edits outside its own module:
+INV-13 in `spec/invariants.md` records the three departures, and
+`spec/architecture/check-framework.md` lists what the framework itself
+requires.
 """
 
 from typing import Callable, Dict, List, Optional, Type

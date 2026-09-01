@@ -4,7 +4,10 @@ Tests for headroom.aws.eks module.
 Tests for DenyEksCreateClusterWithoutTag dataclass and get_eks_cluster_tag_analysis function.
 """
 
+from typing import Dict, List
 from unittest.mock import MagicMock
+
+import pytest
 
 from headroom.aws.eks import (
     DenyEksCreateClusterWithoutTag,
@@ -235,55 +238,6 @@ class TestGetEksClusterTagAnalysis:
         assert results[1].region == "us-west-2"
         assert results[1].has_paved_road_tag is False
 
-    def test_get_eks_cluster_tag_analysis_case_sensitive(self) -> None:
-        """Test that PavedRoad tag check is case-sensitive."""
-        mock_session = MagicMock()
-        mock_ec2_client = MagicMock()
-        mock_eks_client = MagicMock()
-
-        mock_session.client.side_effect = lambda service, **kwargs: {
-            "ec2": mock_ec2_client,
-            "eks": mock_eks_client,
-        }.get(service)
-
-        # Mock regions
-        mock_ec2_client.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
-
-        # Mock clusters with different tag casings
-        cluster_paginator = MagicMock()
-        cluster_paginator.paginate.return_value = [
-            {"clusters": ["lowercase-cluster", "uppercase-value-cluster"]}
-        ]
-        mock_eks_client.get_paginator.return_value = cluster_paginator
-
-        def describe_cluster_side_effect(name: str) -> dict:
-            if name == "lowercase-cluster":
-                return {
-                    "cluster": {
-                        "name": "lowercase-cluster",
-                        "arn": "arn:aws:eks:us-east-1:111111111111:cluster/lowercase-cluster",
-                        "tags": {"pavedroad": "true"}  # lowercase key - should fail
-                    }
-                }
-            return {
-                "cluster": {
-                    "name": "uppercase-value-cluster",
-                    "arn": "arn:aws:eks:us-east-1:111111111111:cluster/uppercase-value-cluster",
-                    "tags": {"PavedRoad": "True"}  # uppercase value - should fail
-                }
-            }
-
-        mock_eks_client.describe_cluster.side_effect = describe_cluster_side_effect
-
-        results = get_eks_cluster_tag_analysis(mock_session)
-
-        assert len(results) == 2
-        # Both should be False due to case sensitivity
-        assert results[0].has_paved_road_tag is False  # wrong key case
-        assert results[1].has_paved_road_tag is False  # wrong value case
-
     def test_get_eks_cluster_tag_analysis_pagination(self) -> None:
         """Test EKS cluster analysis with pagination."""
         mock_session = MagicMock()
@@ -363,3 +317,78 @@ class TestGetEksClusterTagAnalysis:
         assert len(results) == 1
         assert results[0].tags == {}
         assert results[0].has_paved_road_tag is False
+
+
+class TestPavedRoadTagIsMatchedAsIamMatchesIt:
+    """
+    The cluster's tag is read the way IAM reads the condition key.
+
+    `deny_eks_create_cluster_without_tag` conditions on
+    `aws:RequestTag/PavedRoad`. AWS documents that a condition key name is
+    matched without regard to case while the value is compared by
+    StringNotEquals, which is case-sensitive, so the two halves pull opposite
+    ways and the scan has to follow both. This is the rule
+    `deny_ec2_imds_v1` already follows for its own tag.
+    """
+
+    def _analysis(self, tags: Dict[str, str]) -> List[DenyEksCreateClusterWithoutTag]:
+        """Run the analysis over one cluster carrying the given tags."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_eks_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "eks": mock_eks_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        cluster_paginator = MagicMock()
+        cluster_paginator.paginate.return_value = [{"clusters": ["test-cluster"]}]
+        mock_eks_client.get_paginator.return_value = cluster_paginator
+
+        mock_eks_client.describe_cluster.return_value = {
+            "cluster": {
+                "name": "test-cluster",
+                "arn": "arn:aws:eks:us-east-1:111111111111:cluster/test-cluster",
+                "tags": tags,
+            }
+        }
+
+        return get_eks_cluster_tag_analysis(mock_session)
+
+    @pytest.mark.parametrize("key", ["pavedroad", "PAVEDROAD", "Pavedroad"])
+    def test_tag_key_is_matched_without_regard_to_case(self, key: str) -> None:
+        """
+        A cluster tagged `pavedroad=true` is compliant, not a violation.
+
+        Matching the key exactly reported it as a violation, which blocked the
+        account and withheld the SCP over a cluster whose recreation
+        enforcement would have allowed.
+        """
+        assert self._analysis({key: "true"})[0].has_paved_road_tag is True
+
+    @pytest.mark.parametrize("value", ["True", "TRUE", "tRuE"])
+    def test_tag_value_is_matched_exactly(self, value: str) -> None:
+        """
+        StringNotEquals is case-sensitive, so `PavedRoad=True` is a violation.
+
+        Lowercasing here would clear an account whose cluster enforcement
+        would refuse to recreate.
+        """
+        assert self._analysis({"PavedRoad": value})[0].has_paved_road_tag is False
+
+    def test_key_twice_in_differing_cases_aborts(self) -> None:
+        """
+        Two spellings both match the condition key; at most one value can.
+
+        AWS documents that a condition on `aws:RequestTag/PavedRoad` matches a
+        tag key named `PavedRoad` or `pavedroad`, but not both. Whether this
+        cluster's recreation is allowed has no determinate answer, and taking
+        whichever tag the dict happens to yield first would invent one.
+        """
+        with pytest.raises(RuntimeError, match=r"more than once in cases that differ"):
+            self._analysis({"PavedRoad": "true", "pavedroad": "false"})

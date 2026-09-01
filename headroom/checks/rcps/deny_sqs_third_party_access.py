@@ -73,8 +73,9 @@ class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
         """
         Analyze SQS queue policies for third-party access.
 
-        Filters to only return queues with wildcards or third-party access.
-        Queues with neither are not relevant to this check.
+        Filters to only return queues with a wildcard principal, a principal
+        type carrying no account ID, or third-party account access.
+        Queues with none of the three are not relevant to this check.
 
         Args:
             session: boto3.Session for the target account

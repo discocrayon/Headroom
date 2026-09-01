@@ -125,7 +125,8 @@ launch creates. Headroom reads the instance's tag for exactly that reason, and
 treats a tagged IMDSv1 instance as exempt rather than as a blocker. It is a
 proxy and it can be wrong - a tag added afterwards with `CreateTags`, or an
 instance whose Terraform never declares it, wears the tag while its relaunch
-carries none. That cost is accepted deliberately; see `documentation/CHECKS.md`.
+carries none. That cost is accepted deliberately; see
+`../../../spec/checks/scps/deny_ec2_imds_v1.md`.
 
 Measured with `RunInstances --dry-run` under this statement: `HttpTokens=optional`
 tagged `true` is allowed, tagged `True` is denied, untagged is denied.
@@ -176,9 +177,15 @@ resource "aws_eks_cluster" "example" {
 
 #### Tag Matching
 
-- The condition uses `StringNotEquals`, requiring exact match: `PavedRoad` (case-sensitive) must equal `"true"` (string)
-- Missing tag or incorrect value (e.g., `"True"`, `"TRUE"`, `"yes"`) will be denied
-- The tag must be present in the request tags at cluster creation time
+- The condition uses `StringNotEquals`, which compares the *value*
+  case-sensitively: only `"true"` satisfies it. A missing tag, or a value of
+  `"True"`, `"TRUE"`, or `"yes"`, is denied.
+- The tag *key* is the opposite, exactly as for `ExemptFromIMDSv2` above. IAM
+  matches condition key names without regard to case, so `pavedroad=true`
+  satisfies the condition as surely as `PavedRoad=true`. Do not rely on that;
+  tag one way and stay consistent, because a request carrying both spellings
+  hits what AWS calls an unexpected condition failure.
+- The tag must be present in the request tags at cluster creation time.
 
 ### IAM User Creation Restriction (`deny_iam_user_creation`)
 

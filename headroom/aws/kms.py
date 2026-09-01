@@ -11,7 +11,7 @@ import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
@@ -22,26 +22,17 @@ from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..types import JsonDict
 from .helpers import get_all_regions, memoize_per_session, paginate
 from .policy_documents import (
+    normalize_actions,
+    RESOURCE_POLICY_PRINCIPAL_TYPES,
     ServicePrincipalSource,
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
+    read_principal,
     read_service_principal_sources,
 )
 
 logger = logging.getLogger(__name__)
-
-
-class UnknownPrincipalTypeError(Exception):
-    """Raised when an unknown principal type is encountered in a key policy."""
-
-
-class UnsupportedPrincipalTypeError(Exception):
-    """
-    Raised when a principal type would break RCP deployment.
-
-    This includes Federated principals or other types that the RCP cannot handle.
-    """
 
 
 class UnknownGranteePrincipalError(Exception):
@@ -52,9 +43,6 @@ class UnknownGranteePrincipalError(Exception):
     which is the failure this analysis exists to prevent.
     """
 
-
-ALLOWED_PRINCIPAL_TYPES = {"AWS", "Service"}
-FAIL_FAST_PRINCIPAL_TYPES = {"Federated"}
 
 # A grant held by an AWS service names the service rather than an account.
 # The generated RCP exempts those callers with aws:PrincipalIsAWSService,
@@ -120,6 +108,9 @@ class KMSKeyPolicyAnalysis:
             NotPrincipal, which reaches everyone it does not name. Only the
             policy contributes: CreateGrant requires a concrete principal,
             so no grant can be a wildcard
+        has_non_account_principals: True if the policy grants to a principal
+            type carrying no account ID - Federated or CanonicalUser - which
+            no allowlist keyed on aws:PrincipalAccount can preserve
         grants: The key's grants that reach outside the organization, which
             is where a reader looks when the key policy alone does not
             explain an entry in third_party_account_ids
@@ -134,103 +125,9 @@ class KMSKeyPolicyAnalysis:
     third_party_account_ids: Set[str]
     actions_by_account: Dict[str, List[str]] = field(default_factory=dict)
     has_wildcard_principal: bool = False
+    has_non_account_principals: bool = False
     grants: List[KMSGrantFinding] = field(default_factory=list)
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
-
-
-def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
-    """
-    Extract AWS account IDs from a KMS policy principal.
-
-    Args:
-        principal: Principal field from policy statement (can be string, list, or dict)
-
-    Returns:
-        Set of extracted account IDs (12-digit strings)
-
-    Raises:
-        UnknownPrincipalTypeError: If an unknown principal type is encountered
-        UnsupportedPrincipalTypeError: If a principal type would break RCP deployment
-    """
-    account_ids: Set[str] = set()
-
-    if isinstance(principal, str):
-        if principal == "*":
-            return set()
-        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
-        if arn_match:
-            account_ids.add(arn_match.group(1))
-        else:
-            if re.match(r'^\d{12}$', principal):
-                account_ids.add(principal)
-    elif isinstance(principal, list):
-        for item in principal:
-            account_ids.update(_extract_account_ids_from_principal(item))
-    elif isinstance(principal, dict):
-        unknown_types = set(principal.keys()) - ALLOWED_PRINCIPAL_TYPES - FAIL_FAST_PRINCIPAL_TYPES
-        if unknown_types:
-            raise UnknownPrincipalTypeError(
-                f"Unknown principal type(s) found in KMS policy: {unknown_types}. "
-                f"Expected one of: {ALLOWED_PRINCIPAL_TYPES}"
-            )
-
-        fail_fast_types = set(principal.keys()) & FAIL_FAST_PRINCIPAL_TYPES
-        if fail_fast_types:
-            raise UnsupportedPrincipalTypeError(
-                f"KMS key policy contains {fail_fast_types} principal type(s). "
-                f"These principal types would break if the RCP is deployed because the RCP "
-                f"restricts based on aws:PrincipalAccount, which does not apply to {fail_fast_types} principals. "
-                f"Remove these principals from the KMS policy before deploying the RCP."
-            )
-
-        if "AWS" in principal:
-            value = principal["AWS"]
-            if isinstance(value, str):
-                account_ids.update(_extract_account_ids_from_principal(value))
-            elif isinstance(value, list):
-                for item in value:
-                    account_ids.update(_extract_account_ids_from_principal(item))
-
-    return account_ids
-
-
-def _has_wildcard_principal(principal: Any) -> bool:
-    """
-    Check if principal contains a wildcard.
-
-    Args:
-        principal: Principal field from policy statement
-
-    Returns:
-        True if principal contains wildcard
-    """
-    if isinstance(principal, str):
-        return principal == "*"
-    elif isinstance(principal, list):
-        return any(_has_wildcard_principal(item) for item in principal)
-    elif isinstance(principal, dict):
-        for key, value in principal.items():
-            if key == "AWS":
-                if isinstance(value, str) and value == "*":
-                    return True
-                if isinstance(value, list) and any(item == "*" for item in value):
-                    return True
-    return False
-
-
-def _normalize_actions(action: Any) -> List[str]:
-    """
-    Normalize action field to list of strings.
-
-    Args:
-        action: Action field from policy statement (can be string or list)
-
-    Returns:
-        List of action strings
-    """
-    if isinstance(action, str):
-        return [action]
-    return list(action)
 
 
 def _grant_principal_account_id(principal: str) -> Optional[str]:
@@ -412,10 +309,10 @@ def _analyze_key_in_region(
         KMSKeyPolicyAnalysis result for this key
 
     Raises:
-        UnsupportedPrincipalTypeError: If policy contains principals that would break RCP
         UnknownGranteePrincipalError: If a grant names a principal the analyzer
             cannot classify
-        MalformedPolicyError: If Statement is neither an object nor a list
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
     """
     key_id = key["KeyId"]
     key_arn = key["KeyArn"]
@@ -423,6 +320,7 @@ def _analyze_key_in_region(
     third_party_accounts: Set[str] = set()
     actions_by_account: defaultdict[str, Set[str]] = defaultdict(set)
     has_wildcard = False
+    has_non_account_principals = False
     sources: List[ServicePrincipalSource] = []
 
     policy = _read_key_policy(kms_client, key_id, region)
@@ -450,12 +348,18 @@ def _analyze_key_in_region(
             read_service_principal_sources(statement, org_account_ids, org_id, f"Key '{key_id}' in {region}")
         )
 
-        if _has_wildcard_principal(principal):
-            has_wildcard = True
+        reading = read_principal(
+            principal, RESOURCE_POLICY_PRINCIPAL_TYPES, f"Key '{key_id}' in {region}"
+        )
 
-        account_ids = _extract_account_ids_from_principal(principal)
+        has_non_account_principals = (
+            has_non_account_principals or reading.has_non_account_principals
+        )
 
-        actions = _normalize_actions(statement.get("Action", []))
+        has_wildcard = has_wildcard or reading.has_wildcard
+        account_ids = reading.account_ids
+
+        actions = normalize_actions(statement.get("Action", []))
 
         for account_id in account_ids:
             if account_id in org_account_ids:
@@ -489,6 +393,7 @@ def _analyze_key_in_region(
         third_party_account_ids=third_party_accounts,
         actions_by_account=actions_by_account_serializable,
         has_wildcard_principal=has_wildcard,
+        has_non_account_principals=has_non_account_principals,
         grants=grants,
         service_principal_sources=sources,
     )
@@ -534,8 +439,6 @@ def analyze_kms_key_policies(
 
     Raises:
         ClientError: If AWS API calls fail
-        UnsupportedPrincipalTypeError: If any key policy contains principal
-            types that would break RCP deployment (like Federated)
         UnknownGranteePrincipalError: If a grant names a principal the
             analyzer cannot classify
     """
@@ -559,7 +462,7 @@ def analyze_kms_key_policies(
                     )
 
                     has_service_source = has_actionable_service_principal_source(analysis.service_principal_sources)
-                    if analysis.third_party_account_ids or analysis.has_wildcard_principal or has_service_source:
+                    if analysis.third_party_account_ids or analysis.has_wildcard_principal or analysis.has_non_account_principals or has_service_source:
                         results.append(analysis)
 
         except ClientError:

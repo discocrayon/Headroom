@@ -6,24 +6,50 @@ The tool requires two types of IAM roles to be deployed across your AWS Organiza
 
 ### 1. Headroom Role (All Accounts)
 
-Deploy a `Headroom` role in **every account** you want to analyze. This role needs permissions to:
-- Describe EC2 instances (all regions)
-- List IAM users and roles
-- Read IAM policies
-- Describe EKS clusters (all regions)
-- Describe RDS instances (all regions)
-- Read S3 bucket policies
-- Read ECR repository policies
+Deploy a `Headroom` role in **every account** you want to analyze. Every read
+below is attempted in every enabled region unless marked otherwise, and each one
+maps to an analyzer under `headroom/aws/`. A missing permission surfaces as
+`AccessDenied`, which aborts the run rather than reporting an empty result:
 
-**Example Terraform**: See [`test_environment/headroom_roles.tf`](https://github.com/discocrayon/Headroom/blob/main/test_environment/headroom_roles.tf)
+| Service | Actions |
+|---|---|
+| Region discovery | `ec2:DescribeRegions` (once, not per region) |
+| EC2 | `ec2:DescribeInstances`, `ec2:DescribeImages` |
+| EKS | `eks:ListClusters`, `eks:DescribeCluster` |
+| RDS | `rds:DescribeDBInstances`, `rds:DescribeDBClusters` |
+| Lambda | `lambda:ListFunctions`, `lambda:ListFunctionUrlConfigs` |
+| IAM | `iam:ListUsers`, `iam:ListRoles`, `iam:ListSAMLProviders` (global, not per region) |
+| S3 | `s3:ListAllMyBuckets`, `s3:GetBucketAcl`, `s3:GetBucketPolicy` (global, not per region) |
+| ECR | `ecr:DescribeRepositories`, `ecr:GetRepositoryPolicy`, `ecr:GetRegistryPolicy` |
+| KMS | `kms:ListKeys`, `kms:GetKeyPolicy`, `kms:ListGrants` |
+| Secrets Manager | `secretsmanager:ListSecrets`, `secretsmanager:GetResourcePolicy` |
+| SQS | `sqs:ListQueues`, `sqs:GetQueueAttributes` |
+
+Two reads that are easy to over-grant. A role's trust policy arrives inline on
+`iam:ListRoles` as `AssumeRolePolicyDocument`, so no `iam:GetRole` is needed. And
+ECR is read at two levels: `ecr:GetRegistryPolicy` returns the registry-wide
+policy, which is a separate permission from the per-repository
+`ecr:GetRepositoryPolicy`.
+
+**Example Terraform**: See [`test_environment/modules/headroom_role/main.tf`](https://github.com/discocrayon/Headroom/blob/main/test_environment/modules/headroom_role/main.tf). That module
+attaches the `ViewOnlyAccess` and `SecurityAudit` AWS managed policies rather
+than enumerating actions, so it is a different mechanism from the table above
+and does not correspond to it action for action.
+[`test_environment/headroom_roles.tf`](https://github.com/discocrayon/Headroom/blob/main/test_environment/headroom_roles.tf) calls that module once per
+subaccount and grants nothing itself.
 
 ### 2. OrgAndAccountInfoReader Role (Management Account)
 
-Deploy an `OrgAndAccountInfoReader` role in your [AWS Organizations management account](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_getting-started_concepts.html#organization-structure). This role needs permissions to:
-- List AWS Organizations accounts
-- Describe organizational units
-- Read account tags
-- Describe the organization, for its ID
+Deploy an `OrgAndAccountInfoReader` role in your [AWS Organizations management account](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_getting-started_concepts.html#organization-structure). This role needs:
+
+| Action | Read for |
+|---|---|
+| `organizations:ListRoots` | The organization root ID |
+| `organizations:ListOrganizationalUnitsForParent` | The OU tree, walked from the root |
+| `organizations:ListAccountsForParent` | The accounts directly under one OU |
+| `organizations:ListAccounts` | Organization membership and each account's lifecycle state |
+| `organizations:ListTagsForResource` | Account tags, per account |
+| `organizations:DescribeOrganization` | The organization ID |
 
 The organization ID classifies `aws:SourceOrgID` and `aws:SourceOrgPaths` guards on service principals: a guard naming your organization needs no allowlist entry, and one naming another organization withholds the confused deputy statement from that account. Without `organizations:DescribeOrganization` the run aborts rather than guessing.
 
@@ -34,6 +60,62 @@ The organization ID classifies `aws:SourceOrgID` and `aws:SourceOrgPaths` guards
 **All roles must trust the Security Analysis Account** where Headroom runs from.
 
 In the `test_environment/`, this is represented by `aws_organizations_account.security_tooling.id` ([see code](https://github.com/search?q=repo%3Adiscocrayon%2Fheadroom%20aws_organizations_account.security_tooling.id&type=code)).
+
+### Permission to Assume These Roles
+
+Trust, above, lets `OrgAndAccountInfoReader` and `Headroom` be assumed *from*
+the Security Analysis Account. It does not, by itself, let anything call
+`sts:AssumeRole` — that permission belongs to the calling principal, not to
+the role being assumed. Role chaining needs both halves: the target role's
+trust policy naming the calling account, and a permissions policy on the
+calling principal naming the target role. Which principal needs which grant
+depends on which [execution option](#execution-options) below you run.
+
+**Option 1** (Headroom runs in the Security Analysis Account): grant this to
+whichever user or role runs Headroom there:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::222222222222:role/OrgAndAccountInfoReader",
+        "arn:aws:iam::*:role/Headroom"
+      ]
+    }
+  ]
+}
+```
+
+**Option 2** (Headroom runs in the Management Account): the management-account
+principal only ever calls `sts:AssumeRole` against `OrganizationAccountAccessRole`;
+grant that principal this instead:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::111111111111:role/OrganizationAccountAccessRole"
+    }
+  ]
+}
+```
+
+`OrganizationAccountAccessRole`, once assumed, makes the two remaining calls —
+into `OrgAndAccountInfoReader` and `Headroom` — as a Security Analysis Account
+principal itself, so it needs the same grant Option 1 describes. That is
+already satisfied if the role kept the `AdministratorAccess` policy AWS
+attaches to it by default; narrow that policy and attach the Option 1
+statement to the role directly.
+
+Without the grant that matches your option, Headroom's first `sts:AssumeRole`
+call fails.
 
 ### SCP Exemption Requirement
 
@@ -105,23 +187,31 @@ security_analysis_account_id: '111111111111'  # Required for this option
 
 ## Configuration Parameters
 
+[`spec/contracts/configuration.md`](../spec/contracts/configuration.md) is the
+authority on every field, its type, and its default. The summary below covers
+the ones that shape a first run.
+
+`config.yaml` is gitignored: it carries account IDs.
+
 ### Required
 - `management_account_id`: Your AWS Organizations management account ID
+- `use_account_name_from_tags`: When `true`, uses tag-based account names instead of AWS Organizations names. There is no default; a config that omits it is rejected.
+- `account_tag_layout`: Which tag keys hold account metadata. There is no default, and all three members — `environment`, `name`, and `owner` — must be named. See [Account Tag Layout](#account-tag-layout).
 
 ### Optional
 - `security_analysis_account_id`: Only required if running from management account (Option 2)
 - `exclude_account_ids`: When `true`, excludes account IDs from result files and filenames (default: `false`). This redacts identifiers; it does not skip any account. See [Resolving Result Files Back to Accounts](#resolving-result-files-back-to-accounts).
 - `skip_account_ids`: Account IDs to leave out of analysis entirely (default: `[]`). See [Skipping Accounts](#skipping-accounts).
-- `use_account_name_from_tags`: When `true`, uses tag-based account names instead of AWS Organizations names (default: `false`)
-- `account_tag_layout`: Tag keys for extracting account metadata (all optional)
+- `results_dir`, `scps_dir`, `rcps_dir`: Where results and generated Terraform are written. Each also has a CLI option, and the contract above carries the defaults.
 - `max_account_workers`: how many accounts to analyze at once. Defaults to 16, and must be
   between 1 and 32. See [Tuning `max_account_workers`](#tuning-max_account_workers).
 
-Every key is one of the above. Headroom refuses to start on a key it does not recognize,
-rather than ignoring it: a dropped key is indistinguishable from a misspelled one, and the
-setting most likely to be misspelled is one whose loss changes how the run behaves without
-changing whether it succeeds. `max_account_worker: 1` used to configure sixteen workers and
-say nothing. The same applies to the keys inside `account_tag_layout`.
+Every key is one of these or one of the three required above. Headroom refuses to
+start on a key it does not recognize, rather than ignoring it: a dropped key is
+indistinguishable from a misspelled one, and the setting most likely to be
+misspelled is one whose loss changes how the run behaves without changing whether
+it succeeds. `max_account_worker: 1` used to configure sixteen workers and say
+nothing. The same applies to the keys inside `account_tag_layout`.
 
 ### Skipping Accounts
 
@@ -163,7 +253,9 @@ classify and which would otherwise abort the run.
 
 ### Account Tag Layout
 
-All tags are optional. The tool works even without these tags on your accounts:
+All three members must be named in the config, but the tags themselves are
+optional on the accounts — each falls back rather than failing when an account
+does not carry it:
 
 ```yaml
 account_tag_layout:

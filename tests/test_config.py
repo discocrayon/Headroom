@@ -1,16 +1,43 @@
 import pytest
+from pathlib import Path
 from typing import cast
 import argparse
 from pydantic import ValidationError
 from headroom.config import (
     DEFAULT_ACCOUNT_WORKERS,
     DEFAULT_RCPS_DIR,
+    DEFAULT_RESULTS_DIR,
     DEFAULT_SCPS_DIR,
     MAX_ACCOUNT_WORKERS,
     AccountTagLayout,
     HeadroomConfig,
 )
 from headroom.usage import merge_configs
+
+HEADROOM_PACKAGE = Path(__file__).resolve().parent.parent / "headroom"
+
+
+@pytest.mark.parametrize(
+    "directory_default",
+    [DEFAULT_RCPS_DIR, DEFAULT_RESULTS_DIR, DEFAULT_SCPS_DIR],
+)
+def test_a_directory_default_is_written_in_one_place(directory_default: str) -> None:
+    """
+    `spec/contracts/configuration.md` gives every default one definition site.
+
+    Copies had accumulated outside `config.py`: the `help=` strings `--help`
+    prints, and the `output_dir` parameter default on each of the two
+    Terraform generators, which every caller already overrides. Moving the
+    path in `config.py` left all of them advertising the old one, and the
+    operator reads `--help`.
+    """
+    holders = {
+        source.relative_to(HEADROOM_PACKAGE).as_posix()
+        for source in HEADROOM_PACKAGE.rglob("*.py")
+        if directory_default in source.read_text()
+    }
+
+    assert holders == {"config.py"}
 
 
 class TestAccountTagLayout:
