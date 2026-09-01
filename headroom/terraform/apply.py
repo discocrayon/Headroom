@@ -17,7 +17,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from .plan import TerraformPlan
 from ..constants import GENERATED_MARKER
@@ -78,6 +78,57 @@ def _is_marked_regular_file(path: Path) -> bool:
     if path.is_symlink() or not path.is_file():
         return False
     return _first_line(path) == GENERATED_MARKER
+
+
+def _filesystem_identity(path: Path) -> Optional[Tuple[int, int]]:
+    """
+    A path's (device, inode) pair, or None if it cannot be stat'd right now.
+
+    Path equality is a string comparison and does not see filesystem
+    aliasing: a case-insensitive or Unicode-normalization-insensitive
+    filesystem (APFS, the common case on macOS) can resolve a planned
+    destination and a differently-spelled on-disk entry to the same inode.
+    Symlinks are not followed -- what matters is the identity of the
+    directory entry itself, not of whatever it points to.
+
+    Args:
+        path: Any path, possibly gone by the time this runs
+
+    Returns:
+        (st_dev, st_ino), or None if the path cannot be stat'd -- including
+        simply not existing, which cannot be aliased to anything
+    """
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _protected_identities(result: _Preflight) -> Set[Tuple[int, int]]:
+    """
+    Filesystem identities of every destination this run must not delete.
+
+    A stale-deletion candidate is found by listing a directory and comparing
+    paths to what the plan spells, so a candidate that is really a planned
+    write, an unchanged file, or the reserved link's own destination under
+    another name would otherwise slip past that string comparison and be
+    deleted right back out.
+
+    Args:
+        result: Preflight decisions so far
+
+    Returns:
+        Every (st_dev, st_ino) this run is about to write, leave unchanged,
+        or route the reserved symlink through
+    """
+    destinations: List[Path] = list(result.to_write) + list(result.unchanged)
+    if result.link_destination is not None:
+        destinations.append(result.link_destination)
+    return {
+        identity for identity in map(_filesystem_identity, destinations)
+        if identity is not None
+    }
 
 
 def _preflight_file(destination: Path, content: str, result: _Preflight) -> None:
@@ -191,6 +242,12 @@ def _preflight(plan: TerraformPlan) -> _Preflight:
         for candidate in directory.glob("*.tf"):
             if candidate not in planned and _is_marked_regular_file(candidate):
                 result.to_delete.add(candidate)
+
+    protected = _protected_identities(result)
+    result.to_delete = {
+        candidate for candidate in result.to_delete
+        if _filesystem_identity(candidate) not in protected
+    }
 
     if result.conflicts:
         listing = "\n  ".join(sorted(result.conflicts))

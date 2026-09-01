@@ -277,30 +277,75 @@ def test_a_marked_file_whose_content_changed_is_rewritten(tmp_path: Path) -> Non
 
 def test_a_directory_at_the_link_path_aborts(tmp_path: Path) -> None:
     scps, rcps = dirs(tmp_path)
-    (rcps / ORG_INFO_FILENAME).mkdir()
+    theirs = rcps / ORG_INFO_FILENAME
+    theirs.mkdir()
+    surprise = theirs / "not_ours.txt"
+    surprise.write_text("do not touch\n")
 
     with pytest.raises(
         RuntimeError, match="directory where the shared org-info link belongs"
     ):
         apply_terraform_plan(plan_for(scps, rcps, {}))
 
+    assert theirs.is_dir()
+    assert surprise.read_text() == "do not touch\n"
 
-def test_a_marked_file_that_cannot_be_read_to_compare_aborts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+
+def test_a_marked_file_that_cannot_be_read_to_compare_aborts(tmp_path: Path) -> None:
     """
-    The marker line reads fine -- that is a separate, narrower read from the
-    full-content comparison -- but the comparison read fails. Still a
-    conflict, never a silent overwrite.
+    _first_line's readline() decodes only its first buffered chunk and
+    returns as soon as it sees the marker line's newline; the later
+    full-content comparison decodes the whole file and only then reaches an
+    undecodable tail far past that chunk. A big enough real file reaches
+    this branch on its own -- no need to fake a read failing.
     """
     scps, rcps = dirs(tmp_path)
     destination = scps / "payments_scps.tf"
-    destination.write_text(generated())
-
-    def _raise(self: Path) -> str:
-        raise OSError("simulated read failure")
-
-    monkeypatch.setattr(Path, "read_text", _raise)
+    destination.write_bytes(
+        f"{GENERATED_MARKER}\n".encode("utf-8") + b"x" * 200_000 + b"\xff\xfe"
+    )
 
     with pytest.raises(RuntimeError, match="cannot be read to compare"):
         apply_terraform_plan(plan_for(scps, rcps, {destination: generated()}))
+
+
+def test_a_to_delete_candidate_that_is_really_a_planned_write_survives(
+    tmp_path: Path
+) -> None:
+    """
+    A case-insensitive or Unicode-normalization-insensitive filesystem (APFS,
+    the common case on macOS) can give a planned destination and a
+    differently-spelled on-disk entry the same inode, so the glob-based
+    stale scan finds what is really the file this run is about to write,
+    under its other name, and would delete it right back out. Path equality
+    cannot see that aliasing. Two names hard-linked to one inode pin the
+    same failure deterministically, regardless of whether this test's own
+    filesystem happens to be case- or normalization-insensitive.
+    """
+    scps, rcps = dirs(tmp_path)
+    on_disk_name = scps / "existing_scps.tf"
+    on_disk_name.write_text(generated("# old\n"))
+    planned_name = scps / "planned_scps.tf"
+    os.link(on_disk_name, planned_name)
+
+    apply_terraform_plan(plan_for(scps, rcps, {planned_name: generated("# new\n")}))
+
+    assert planned_name.read_text() == generated("# new\n")
+    assert on_disk_name.exists()
+
+
+def test_a_failed_write_leaves_stale_files_undeleted(tmp_path: Path) -> None:
+    """
+    Deleting last is what makes a stale file's removal conditional on the
+    desired writes having succeeded: pins the ordering itself, not merely
+    the end state of a run where nothing goes wrong.
+    """
+    scps, rcps = dirs(tmp_path)
+    stale = scps / "retired_ou_scps.tf"
+    stale.write_text(generated())
+    unwritable = scps / "missing_parent" / "broken_scps.tf"
+
+    with pytest.raises(OSError):
+        apply_terraform_plan(plan_for(scps, rcps, {unwritable: generated()}))
+
+    assert stale.exists()
