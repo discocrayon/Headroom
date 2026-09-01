@@ -7,7 +7,6 @@ it is `terraform.apply`'s job, and the split is the point: a run that fails
 while parsing, rendering, or validating has mutated nothing.
 """
 
-import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +24,6 @@ from ..types import (
     RCPPlacementRecommendations,
     SCPPlacementRecommendations,
 )
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "TerraformPlan",

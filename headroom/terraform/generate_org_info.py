@@ -5,7 +5,6 @@ Generates Terraform configuration files for AWS Organizations structure data
 to support SCP/RCP deployment targeting.
 """
 
-import logging
 from typing import Dict, List, Optional, Set
 
 from .utils import (
@@ -17,9 +16,6 @@ from .utils import (
 )
 from ..constants import GENERATED_MARKER
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
-
-# Set up logging
-logger = logging.getLogger(__name__)
 
 
 def render_terraform_org_info(organization_hierarchy: OrganizationHierarchy) -> str:
@@ -36,11 +32,6 @@ def render_terraform_org_info(organization_hierarchy: OrganizationHierarchy) -> 
     Returns:
         Complete Terraform configuration as a string
     """
-    logger.info("Generating Terraform organization info file")
-    logger.info(
-        f"Found {len(organization_hierarchy.organizational_units)} OUs and "
-        f"{len(organization_hierarchy.accounts)} accounts"
-    )
     return _generate_terraform_content(organization_hierarchy)
 
 

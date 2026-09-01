@@ -4,15 +4,12 @@ Terraform Utility Functions
 Shared utility functions used across the Terraform generation modules.
 """
 
-import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .models import RenderedTerraformFiles
 from ..types import AccountOrgPlacement, OrganizationalUnit
 from ..utils import make_safe_variable_name
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "account_id_local_name",
