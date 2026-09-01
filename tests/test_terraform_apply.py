@@ -607,6 +607,36 @@ def test_a_to_delete_candidate_that_is_really_a_planned_write_survives(
     assert on_disk_name.read_text() == generated("# old\n")
 
 
+def test_an_incorrect_link_does_not_shield_the_stale_file_it_points_at(
+    tmp_path: Path
+) -> None:
+    """
+    The reserved link's own identity is the link's, never its target's.
+
+    A destination this run must not delete is protected by device and inode,
+    and the reserved link is one of those destinations. Reading that identity
+    through the link instead of from the link hands the protection to
+    whatever the link happens to point at -- and an incorrect link is by
+    definition pointing at the wrong thing. Here it points at a stale
+    generated file in the same directory, which then survives every run:
+    protected by the very link that is about to stop pointing at it.
+
+    This is the one place the lstat-versus-stat distinction is observable.
+    Deletion candidates are proven to be regular files before they get this
+    far, and every planned file destination is proven not to be a symlink, so
+    the reserved link is the only entry whose two readings differ.
+    """
+    scps, rcps = dirs(tmp_path)
+    stale = rcps / "retired_ou_rcps.tf"
+    stale.write_text(generated("# retired\n"))
+    (rcps / ORG_INFO_FILENAME).symlink_to(stale.name)
+
+    apply_terraform_plan(plan_for(scps, rcps, {}))
+
+    assert not stale.exists()
+    assert os.readlink(rcps / ORG_INFO_FILENAME) == f"../{scps.name}/{ORG_INFO_FILENAME}"
+
+
 def test_two_names_for_one_output_directory_abort_with_both_named(
     tmp_path: Path
 ) -> None:

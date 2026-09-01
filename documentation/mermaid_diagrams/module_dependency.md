@@ -6,12 +6,12 @@ graph TD
   headroom.main --> headroom.config
   headroom.main --> headroom.analysis
   headroom.main --> headroom.parse_results
-  headroom.main --> headroom.terraform.generate_scps
+  headroom.main --> headroom.terraform.plan
+  headroom.main --> headroom.terraform.apply
   headroom.main --> headroom.terraform.generate_rcps
-  headroom.main --> headroom.terraform.generate_org_info
   headroom.main --> headroom.aws.organization_snapshot
+  headroom.main --> headroom.log_context
   headroom.main --> headroom.types
-  headroom.main --> headroom.constants
   headroom.main --> headroom.output
 
   headroom.analysis --> headroom.config
@@ -44,6 +44,18 @@ graph TD
   headroom.parse_results --> headroom.output
 
   headroom.placement.hierarchy --> headroom.types
+
+  headroom.terraform.plan --> headroom.terraform.generate_org_info
+  headroom.terraform.plan --> headroom.terraform.generate_scps
+  headroom.terraform.plan --> headroom.terraform.generate_rcps
+  headroom.terraform.plan --> headroom.terraform.models
+  headroom.terraform.plan --> headroom.terraform.utils
+  headroom.terraform.plan --> headroom.config
+  headroom.terraform.plan --> headroom.constants
+  headroom.terraform.plan --> headroom.types
+
+  headroom.terraform.apply --> headroom.terraform.plan
+  headroom.terraform.apply --> headroom.constants
 
   headroom.terraform.generate_scps --> headroom.types
   headroom.terraform.generate_scps --> headroom.terraform.utils

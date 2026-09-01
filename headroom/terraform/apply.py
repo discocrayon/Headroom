@@ -360,6 +360,12 @@ def _preflight(plan: TerraformPlan) -> _Preflight:
     for destination, source in sorted(plan.symlinks.items()):
         _preflight_symlink(destination, source, result)
 
+    # The name check below is deliberately redundant with the identity filter
+    # that follows it, and deleting it leaves every test green. It stays
+    # because it is the check that says what the rule is -- do not delete a
+    # file this run is writing -- while the identity filter exists only to
+    # catch the same file reached under a spelling this one cannot see. Read
+    # in the other order, the rule is an inference from inode arithmetic.
     planned = set(plan.files) | set(plan.symlinks)
     for directory in plan.managed_directories:
         if not directory.is_dir():
