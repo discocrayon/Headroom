@@ -835,6 +835,50 @@ class TestMainIntegration:
         printed = [c.args[0] for c in mocks['print'].call_args_list]
         assert any("Runtime Error" in msg for msg in printed)
 
+    def test_main_reports_a_filesystem_failure_instead_of_a_raw_traceback(
+        self,
+        mock_cli_args: MagicMock,
+        valid_yaml_config: Dict[str, Any],
+        mock_dependencies: Dict[str, MagicMock]
+    ) -> None:
+        """
+        Generation is the phase that touches the disk, and the disk is the one
+        thing it cannot prove anything about in advance.
+
+        Preflight decides every mutation by reading, but reading proves only
+        what was true when it read: a directory that cannot be created, a
+        filesystem that fills up, a file whose permissions changed since. Those
+        arrive as OSError, which no other arm catches, so the run ended on a
+        traceback -- the only failure mode that never says which phase it came
+        from.
+        """
+        mocks = mock_dependencies
+        mocks['parse'].return_value = mock_cli_args
+        mocks['load'].return_value = valid_yaml_config
+        mock_final_config = MagicMock()
+        mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
+        mock_final_config.management_account_id = "111111111111"
+        mocks['merge'].return_value = mock_final_config
+
+        mocks['apply'].side_effect = PermissionError(13, "Permission denied")
+
+        with patch('headroom.main.handle_scp_workflow', return_value=[]), \
+             patch('headroom.main.handle_rcp_workflow', return_value=[]), \
+             patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
+             patch('headroom.main.discover_organization'):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+        printed = [c.args[0] for c in mocks['print'].call_args_list]
+        assert any(
+            "Filesystem Error during Terraform generation" in msg
+            for msg in printed
+        )
+
     def test_main_reports_a_scan_failure_instead_of_a_raw_traceback(
         self,
         mock_cli_args: MagicMock,

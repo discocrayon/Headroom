@@ -367,6 +367,14 @@ aws account get-region-opt-status --region-name <region> --account-id <member-ac
 - Validate YAML syntax in your config file
 - `Extra inputs are not permitted` names a key Headroom does not recognize. Check it against
   [Configuration Parameters](#configuration-parameters); it is usually a typo.
+- `scps_dir and rcps_dir are the same directory` means both policy types would be generated
+  into one directory, where every RCP file overwrites the SCP file of the same name. This is
+  checked when the configuration is read, so it costs a second rather than a full scan.
+- `must not contain '..'` rejects a parent traversal in `scps_dir` or `rcps_dir`. Headroom
+  folds `..` away without reading the filesystem and the operating system does not, so the
+  two disagree about where a file lands the moment a component of the path is a symlink --
+  Terraform would load one directory while Headroom wrote another, both reporting success.
+  Spell the directory out.
 
 ### "Refusing to apply"
 
@@ -385,6 +393,15 @@ reserved `rcps/grab_org_info.tf` are never touched and never need moving.
 
 `cannot be read to compare` in the same list means the file carries bytes that are not text
 in this locale's encoding, so its ownership cannot be proven either way.
+
+### "Filesystem Error during Terraform generation"
+
+Applying decides every write by reading first, but reading proves only what was true when it
+read. A directory that cannot be created, a full filesystem, or permissions that changed
+since preflight all surface here. Each file is replaced atomically -- a fully written
+temporary is renamed over the destination -- so no file is left half-written, but a failure
+partway through means some files were replaced and others were not. Fix the underlying cause
+and re-run; the run is idempotent and will finish what it started.
 
 ### "cannot be used as result filenames"
 

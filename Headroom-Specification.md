@@ -3607,8 +3607,14 @@ failed write is invisible to Terraform and to the stale-file scan alike.
 
 **Two names for one output directory:** `scps_dir` and `rcps_dir` pointing at
 one directory would generate every RCP file over the SCP file of the same
-name and reduce `grab_org_info.tf` to a symlink to itself. Compilation
-compares the two lexically, which is what keeps it free of filesystem access,
+name and reduce `grab_org_info.tf` to a symlink to itself. `HeadroomConfig`
+rejects the two settings being written identically, which is where a plain
+typo is caught - at the point it is made, rather than after a scan of every
+account in the organization. It rejects a `..` component in either setting
+for the same reason the compiler can afford to be lexical: Headroom folds
+`..` away without reading anything and the operating system does not, so the
+two disagree about where a file goes the moment a component of the path is a
+symlink. Compilation compares the two lexically, which is what keeps it free of filesystem access,
 so it catches only two spellings of the same path - not a symlink, and not a
 case variant on a case-insensitive filesystem, both of which reach one inode
 under two names. `apply_terraform_plan` compares them by device and inode

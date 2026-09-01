@@ -134,9 +134,12 @@ def _failures_reported(phase: str) -> Iterator[None]:
     per-account one.
 
     Only the first two phases reach AWS, so only they can raise the
-    ClientError arm; generation reads result files and writes Terraform. The
-    handler stays shared anyway, because a phase's set of failure modes is
-    not what decides how its failure is reported.
+    ClientError arm; generation reads result files and writes Terraform, which
+    is where the OSError arm earns its place -- a directory that cannot be
+    created or a file that cannot be replaced would otherwise end the run in a
+    traceback, the one failure mode that reports itself without naming its
+    phase. The handler stays shared anyway, because a phase's set of failure
+    modes is not what decides how its failure is reported.
 
     Only the scan reaches an account; a failure there has already printed one
     ERROR line per failed account, and what this adds is the summary that
@@ -156,6 +159,10 @@ def _failures_reported(phase: str) -> Iterator[None]:
         error_code = e.response['Error']['Code']
         OutputHandler.error(f"AWS API Error ({error_code}) during {phase}", e)
         logger.error(f"AWS API error during {phase}: {e}", exc_info=True)
+        exit(1)
+    except OSError as e:
+        OutputHandler.error(f"Filesystem Error during {phase}", e)
+        logger.error(f"Filesystem error during {phase}: {e}", exc_info=True)
         exit(1)
 
 

@@ -4,6 +4,8 @@ import argparse
 from pydantic import ValidationError
 from headroom.config import (
     DEFAULT_ACCOUNT_WORKERS,
+    DEFAULT_RCPS_DIR,
+    DEFAULT_SCPS_DIR,
     MAX_ACCOUNT_WORKERS,
     AccountTagLayout,
     HeadroomConfig,
@@ -80,6 +82,63 @@ class TestAccountTagLayout:
                 "owner": "Owner",
                 "cost_center": "CostCenter",
             })
+
+
+class TestOutputDirectories:
+    """The two Terraform output directories, checked where they are set."""
+
+    @staticmethod
+    def _config(
+        scps_dir: str = DEFAULT_SCPS_DIR, rcps_dir: str = DEFAULT_RCPS_DIR
+    ) -> HeadroomConfig:
+        return HeadroomConfig(
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Environment", name="Name", owner="Owner"
+            ),
+            scps_dir=scps_dir,
+            rcps_dir=rcps_dir,
+        )
+
+    @pytest.mark.parametrize("key", ["scps_dir", "rcps_dir"])
+    def test_a_parent_traversal_in_an_output_directory_is_rejected(
+        self, key: str
+    ) -> None:
+        """
+        `..` makes the configured path and the written path two different
+        places the moment any component of it is a symlink.
+
+        Headroom folds `..` away lexically, so `live/../scps` becomes `scps`
+        and every destination is calculated from there. The OS resolves the
+        same spelling by walking `live` first, which lands somewhere else
+        entirely when `live` is a link. Terraform then loads one directory
+        while Headroom writes the other, and both report success.
+        """
+        traversal = "terraform/live/../scps"
+        with pytest.raises(ValidationError, match="must not contain"):
+            if key == "scps_dir":
+                self._config(scps_dir=traversal)
+            else:
+                self._config(rcps_dir=traversal)
+
+    def test_one_directory_for_both_policy_types_is_rejected(self) -> None:
+        """
+        Caught here rather than at generation, which is the far side of a
+        scan of every account in the organization.
+
+        Generation rejects it too, and has to: it is the only place that can
+        see two spellings reaching one directory. But a plain typo is visible
+        the moment the configuration is read, and finding out then costs the
+        operator a second instead of a full run.
+        """
+        with pytest.raises(ValidationError, match="same directory"):
+            self._config(scps_dir="terraform/policies", rcps_dir="terraform/policies")
+
+    def test_the_default_directories_are_accepted(self) -> None:
+        """The shipped defaults must survive the checks above."""
+        config = self._config()
+
+        assert config.scps_dir != config.rcps_dir
 
 
 class TestHeadroomConfig:
