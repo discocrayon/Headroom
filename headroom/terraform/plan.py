@@ -11,7 +11,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Mapping, Tuple
 
 from .generate_org_info import render_terraform_org_info
 from .generate_rcps import render_rcp_terraform
@@ -47,8 +47,8 @@ class TerraformPlan:
             `os.readlink` must return for the link to be considered correct.
     """
     managed_directories: Tuple[Path, ...]
-    files: Dict[Path, str]
-    symlinks: Dict[Path, str]
+    files: Mapping[Path, str]
+    symlinks: Mapping[Path, str]
 
 
 def _canonical(path: Path) -> Path:

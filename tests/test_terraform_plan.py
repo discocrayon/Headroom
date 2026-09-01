@@ -7,7 +7,7 @@ the filesystem. These tests pin that the rendering half touches nothing.
 
 import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import pytest
 
@@ -18,7 +18,6 @@ from headroom.terraform.generate_rcps import render_rcp_terraform
 from headroom.terraform.generate_scps import render_scp_terraform
 from headroom.terraform.models import RenderedTerraformFiles
 from headroom.terraform.plan import TerraformPlan, compile_terraform_plan, _validate_plan
-from headroom.terraform.utils import claim_plan_path
 from headroom.types import (
     AccountOrgPlacement,
     OrganizationHierarchy,
@@ -170,21 +169,37 @@ def test_two_spellings_of_one_directory_are_rejected_before_the_collision(
         compile_terraform_plan(config, org_with_one_ou(), [scp_rec()], [rcp_rec()])
 
 
+def _scp_render_colliding_with_org_info(
+    recommendations: List[SCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy,
+    output_path: Path,
+) -> RenderedTerraformFiles:
+    """Stand-in for render_scp_terraform: claims grab_org_info.tf too."""
+    return {output_path / "grab_org_info.tf": f"{GENERATED_MARKER}\n"}
+
+
 def test_two_components_claiming_one_destination_are_rejected(
-    tmp_path: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Reachable through the compiler's claim_plan_path merge.
 
-    An account named so that it reduces to the identifier grab_org_info.tf
-    already uses would generate over the organization data sources.
+    render_terraform_org_info and render_scp_terraform each keep their own
+    namespace collision-free, but cannot see each other's, so only
+    claim_plan_path -- not `files.update`, which would silently drop one --
+    catches the two landing on one destination. Forcing the SCP renderer to
+    emit grab_org_info.tf collides with the organization data sources the
+    compiler always claims first.
     """
-    plan_files: RenderedTerraformFiles = {}
-    destination = tmp_path / "root_scps.tf"
-    claim_plan_path(plan_files, destination, "a", "an SCP file")
+    monkeypatch.setattr(
+        "headroom.terraform.plan.render_scp_terraform",
+        _scp_render_colliding_with_org_info,
+    )
 
     with pytest.raises(RuntimeError, match="claim"):
-        claim_plan_path(plan_files, destination, "b", "an RCP file")
+        compile_terraform_plan(
+            config_for(tmp_path), org_with_one_ou(), [scp_rec()], [rcp_rec()]
+        )
 
 
 def _plan(tmp_path: Path, files: Dict[Path, str], symlinks: Dict[Path, str]) -> TerraformPlan:
