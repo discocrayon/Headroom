@@ -174,8 +174,9 @@ headroom/
     ├── generate_org_info.py
     ├── generate_scps.py
     ├── generate_rcps.py
+    ├── apply.py            # The only writer, linker, and deleter of Terraform
     ├── models.py           # Terraform generation data models
-    ├── reconcile.py        # Reconciliation against existing Terraform
+    ├── plan.py             # Renders and validates the whole run's Terraform plan
     └── utils.py
 ```
 
@@ -3361,12 +3362,11 @@ def determine_rcp_placement(
 ```python
 # terraform/generate_org_info.py
 
-def generate_terraform_org_info(
-    organization_hierarchy: OrganizationHierarchy,
-    output_path: str
-) -> None:
+def render_terraform_org_info(
+    organization_hierarchy: OrganizationHierarchy
+) -> str:
     """
-    Generate grab_org_info.tf with AWS Organizations data sources.
+    Render grab_org_info.tf's content from AWS Organizations data sources.
 
     Algorithm:
     1. Take the hierarchy the run already captured (snapshot.hierarchy). This
@@ -3395,7 +3395,8 @@ def generate_terraform_org_info(
            account's OWN parent OU. The child-accounts data source lists an
            OU's immediate children only, so searching the top-level OU above
            a nested account finds nothing.
-    5. Write to {scps_dir}/grab_org_info.tf
+    5. Return the rendered content. Nothing is written here; the caller
+       (`compile_terraform_plan`) places it at {scps_dir}/grab_org_info.tf
 
     Validation Pattern:
     validation_check = (length(filter_result) == 1) ?
@@ -3474,13 +3475,13 @@ locals {
      ```python
 # terraform/generate_scps.py
 
-def generate_scp_terraform(
+def render_scp_terraform(
     recommendations: List[SCPPlacementRecommendations],
-         organization_hierarchy: OrganizationHierarchy,
-    output_dir: str
-) -> TerraformPlan:
+    organization_hierarchy: OrganizationHierarchy,
+    output_path: Path
+) -> RenderedTerraformFiles:
     """
-    Generate SCP Terraform files based on placement recommendations.
+    Render every SCP file this run's recommendations call for.
 
     Algorithm:
     1. Group by recommended_level (root/ou/account); a "none" recommendation
@@ -3500,9 +3501,9 @@ def generate_scp_terraform(
          - Add ec2_allowed_ami_owners list
          - Leave the policy off if that list is empty (see Allowlist Guard
            below)
-    4. Write the completed plan to {scps_dir}/, skipping any file whose
-       content already matches
-    5. Return the plan, which the caller reconciles the directory against
+    4. Return the rendered files, keyed by destination path. Nothing is
+       written; the caller (`compile_terraform_plan`) merges every renderer's
+       output into the run's plan, and only `apply_terraform_plan` writes it
        (see Reconciliation below)
 
     An empty recommendation list is a plan for an empty directory, not an
@@ -3534,22 +3535,23 @@ account under that OU started violating it: without reconciliation the OU-wide
 attachment survives and keeps denying the very account whose violation forced
 the move.
 
-`main()` reconciles once, after every writer has run, over the union of:
+`compile_terraform_plan` merges every renderer's output into one plan before
+`apply_terraform_plan` writes any of it, over the union of:
 
 | Source | Contributes |
 |---|---|
-| `generate_scp_terraform` | Every path in the SCP plan |
-| `generate_rcp_terraform` | Every path in the RCP plan |
-| `generate_terraform_org_info` | `{scps_dir}/grab_org_info.tf` |
+| `compile_terraform_plan` | Every path: org-info, every SCP file, every RCP file, and the reserved symlink |
+| `apply_terraform_plan` | The only writer - creates, updates, links, and deletes to match the plan |
 
-Every generated `.tf` in either directory that the union omits is deleted.
-`handle_scp_workflow` and `handle_rcp_workflow` parse, place, and print, but
-write nothing - `main()` calls both, in full, before any of the three writers
-above runs, so a parse or placement failure in either policy type has written
-nothing when it raises. Reconciling once, after both workflows and all three
-writers - rather than inside each - is what keeps a raise anywhere in
-generation from deleting anything: the previous output stays whole, complete,
-and deployable.
+Every generated `.tf` in either directory that the plan omits is deleted,
+last, after every write and the symlink have succeeded. `handle_scp_workflow`
+and `handle_rcp_workflow` parse, place, and print, but write nothing -
+`main()` calls both, then `compile_terraform_plan`, before
+`apply_terraform_plan` runs, so a parse, placement, or rendering failure in
+either policy type has written nothing when it raises. Compiling the whole
+plan before applying any of it - rather than writing and reconciling per
+directory - is what keeps a raise anywhere in generation from deleting
+anything: the previous output stays whole, complete, and deployable.
 
 **What counts as Headroom's file:** the first line, matched exactly:
 
@@ -3558,7 +3560,8 @@ and deployable.
 ```
 
 Rendered unconditionally by `TerraformModule.render()` and by the org-info
-header, and checked with `find_managed_files()`. Three alternatives were
+header, and checked, during `apply_terraform_plan`'s preflight, by
+`_first_line` in `headroom/terraform/apply.py`. Three alternatives were
 rejected:
 
 | Signal | Why not |
@@ -3567,10 +3570,17 @@ rejected:
 | Manifest file | Separate state. Lose it and every generated file is an orphan; let it go stale and it names files that were never ours |
 | Substring search for "Generated by Headroom" | `scps/README.md` opens with "All of these files are auto-generated by Headroom." and would be deleted |
 
-Symlinks are excluded before the marker is even read: `rcps/grab_org_info.tf`
-points at the real file in `scps/`, so following it finds the marker and
-deletes a link Headroom is responsible for maintaining. Non-`.tf` files and
-subdirectories (`.terraform/`, modules) are never candidates.
+Unrelated symlinks are excluded before the marker is even read, and are never
+candidates for overwrite or deletion. `rcps/grab_org_info.tf` is the one
+exception: it is the reserved symlink Headroom itself maintains, pointing at
+the real file in `scps/`. `apply_terraform_plan` creates it when absent,
+leaves it exactly as it is when it already resolves to the right target, and
+replaces it when it points somewhere else. A marked legacy regular file at
+that path - the shape an older Headroom layout left on disk - is migrated
+into the symlink; an unmarked file or a directory at that path aborts the run
+rather than being overwritten, the same as any other ownership conflict.
+Non-`.tf` files and subdirectories (`.terraform/`, modules) are never
+candidates.
 
 **Empty is not the same as unknown:**
 
@@ -3704,13 +3714,13 @@ locals {
 ```python
 # terraform/generate_rcps.py
 
-def generate_rcp_terraform(
+def render_rcp_terraform(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_dir: str
-) -> TerraformPlan:
+    output_path: Path
+) -> RenderedTerraformFiles:
     """
-    Generate RCP Terraform files based on placement recommendations.
+    Render every RCP file this run's recommendations call for.
 
     Algorithm:
     1. Group by recommended_level (root/ou/account)
@@ -3726,9 +3736,9 @@ def generate_rcp_terraform(
          flag as true with its third-party allowlist variable; otherwise emit
          the enable flag as false and omit the allowlist
        - Third-party IDs are already unioned by placement logic
-    4. Write the completed plan to {rcps_dir}/, skipping any file whose
-       content already matches
-    5. Return the plan, which the caller reconciles the directory against
+    4. Return the rendered files, keyed by destination path. Nothing is
+       written; the caller (`compile_terraform_plan`) merges every renderer's
+       output into the run's plan, and only `apply_terraform_plan` writes it
        (see Reconciliation under SCP Terraform Generation)
 
     An empty recommendation list is a plan for an empty directory, not an

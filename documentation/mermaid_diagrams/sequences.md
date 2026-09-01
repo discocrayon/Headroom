@@ -14,6 +14,8 @@ sequenceDiagram
   participant TFSCP as headroom.terraform.generate_scps
   participant TFRCP as headroom.terraform.generate_rcps
   participant TFOrg as headroom.terraform.generate_org_info
+  participant TFPlan as headroom.terraform.plan
+  participant TFApply as headroom.terraform.apply
 
   User->>CLI: run `python -m headroom --config sample_config.yaml`
   CLI->>Usage: parse_cli_args()
@@ -29,24 +31,24 @@ sequenceDiagram
   CLI->>Analysis: perform_analysis(config, security_session, snapshot)
   Analysis-->>CLI: None (writes JSON results)
 
-  CLI->>TFOrg: generate_terraform_org_info(snapshot.hierarchy, path)
-  TFOrg-->>CLI: grab_org_info.tf written
-
   Note over CLI: SCP Workflow
-  CLI->>ParseSCP: parse_scp_results(config)
-  ParseSCP->>ParseSCP: parse_scp_result_files()
-  ParseSCP->>ParseSCP: determine_scp_placement()
+  CLI->>ParseSCP: analyze_scp_compliance(config, hierarchy)
   ParseSCP-->>CLI: List[SCPPlacementRecommendations]
-  CLI->>TFSCP: generate_scp_terraform(recommendations, hierarchy)
-  TFSCP-->>CLI: SCP Terraform files written
 
   Note over CLI: RCP Workflow
   CLI->>ParseRCP: parse_rcp_result_files(results_dir, hierarchy)
   ParseRCP-->>CLI: List[RCPCheckParseResult]
   CLI->>ParseRCP: determine_rcp_placement(parse_results, hierarchy)
   ParseRCP-->>CLI: List[RCPPlacementRecommendations]
-  CLI->>TFRCP: generate_rcp_terraform(recommendations, hierarchy)
-  TFRCP-->>CLI: RCP Terraform files written
+
+  Note over CLI: Nothing has been written yet
+  CLI->>TFPlan: compile_terraform_plan(config, hierarchy, scp_recs, rcp_recs)
+  TFPlan->>TFOrg: render_terraform_org_info(hierarchy)
+  TFPlan->>TFSCP: render_scp_terraform(scp_recs, hierarchy, scps)
+  TFPlan->>TFRCP: render_rcp_terraform(rcp_recs, hierarchy, rcps)
+  TFPlan-->>CLI: validated TerraformPlan
+  CLI->>TFApply: apply_terraform_plan(plan)
+  TFApply-->>CLI: files written, link updated, stale files deleted
 
   CLI-->>User: Done
 ```
