@@ -10,7 +10,6 @@ from headroom.main import (
     setup_configuration,
     handle_scp_workflow,
     handle_rcp_workflow,
-    ensure_org_info_symlink,
 )
 from headroom.config import AccountTagLayout, HeadroomConfig
 from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
@@ -433,9 +432,8 @@ class TestMainDiscoversOnce:
              patch("headroom.main.parse_cli_args"), \
              patch("headroom.main.load_yaml_config"), \
              patch("headroom.main.setup_configuration", return_value=config), \
-             patch("headroom.main.reconcile_generated_terraform"), \
-             patch("headroom.main.ensure_org_info_symlink"), \
-             patch("headroom.main.generate_terraform_org_info", side_effect=_record(seen)), \
+             patch("headroom.main.compile_terraform_plan", side_effect=_record(seen)), \
+             patch("headroom.main.apply_terraform_plan"), \
              patch("headroom.main.handle_scp_workflow", side_effect=_record(seen, returns=[])), \
              patch("headroom.main.handle_rcp_workflow", side_effect=_record(seen, returns=[])):
             main()
@@ -476,9 +474,8 @@ class TestMainDiscoversOnce:
              patch("headroom.main.parse_cli_args"), \
              patch("headroom.main.load_yaml_config"), \
              patch("headroom.main.setup_configuration", return_value=config), \
-             patch("headroom.main.reconcile_generated_terraform"), \
-             patch("headroom.main.ensure_org_info_symlink"), \
-             patch("headroom.main.generate_terraform_org_info"), \
+             patch("headroom.main.compile_terraform_plan"), \
+             patch("headroom.main.apply_terraform_plan"), \
              patch("headroom.main.handle_scp_workflow", return_value=[]), \
              patch("headroom.main.handle_rcp_workflow", return_value=[]):
             main()
@@ -661,27 +658,3 @@ class TestHandleRcpWorkflow:
             assert handle_rcp_workflow(config, org_hierarchy) is None
 
         mock_print.assert_called_once_with(None, org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS")
-
-
-class TestEnsureOrgInfoSymlink:
-    """Test ensure_org_info_symlink function."""
-
-    def test_ensure_org_info_symlink_creates_directory_and_symlink(self) -> None:
-        """Test that ensure_org_info_symlink creates RCP directory and calls _create_org_info_symlink."""
-        with (
-            patch('headroom.main.Path') as mock_path_class,
-            patch('headroom.main._create_org_info_symlink') as mock_create_symlink
-        ):
-            mock_rcps_path = MagicMock()
-            mock_path_class.return_value = mock_rcps_path
-
-            ensure_org_info_symlink("test_rcps", "test_scps")
-
-            # Verify Path was called with rcps_dir
-            mock_path_class.assert_called_once_with("test_rcps")
-
-            # Verify mkdir was called to create directory
-            mock_rcps_path.mkdir.assert_called_once_with(parents=True, exist_ok=True)
-
-            # Verify _create_org_info_symlink was called with correct args
-            mock_create_symlink.assert_called_once_with(mock_rcps_path, "test_scps")

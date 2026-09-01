@@ -2,7 +2,6 @@ from typing import Dict, Iterator, List
 import argparse
 from contextlib import contextmanager
 import logging
-from pathlib import Path
 
 from botocore.exceptions import ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
@@ -12,13 +11,11 @@ from .log_context import configure_logging
 from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session
 from .parse_results import analyze_scp_compliance, print_policy_recommendations
-from .terraform.generate_scps import generate_scp_terraform
-from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, generate_rcp_terraform, _create_org_info_symlink
-from .terraform.generate_org_info import generate_terraform_org_info
-from .terraform.reconcile import reconcile_generated_terraform
+from .terraform.apply import apply_terraform_plan
+from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement
+from .terraform.plan import compile_terraform_plan
 from .aws.organization_snapshot import discover_organization
 from .types import OrganizationHierarchy, RCPPlacementRecommendations, SCPPlacementRecommendations
-from .constants import ORG_INFO_FILENAME
 from .output import OutputHandler
 
 logger = logging.getLogger(__name__)
@@ -47,23 +44,6 @@ def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> Head
     OutputHandler.success("Final Config", final_config.model_dump())
 
     return final_config
-
-
-def ensure_org_info_symlink(rcps_dir: str, scps_dir: str) -> None:
-    """
-    Create symlink from rcps/grab_org_info.tf to scps/grab_org_info.tf.
-
-    The grab_org_info.tf file contains shared organization structure data sources
-    needed by both SCP and RCP modules. This function ensures the symlink exists
-    in the RCP directory.
-
-    Args:
-        rcps_dir: RCP directory path where symlink should be created
-        scps_dir: SCP directory path (contains the actual grab_org_info.tf file)
-    """
-    rcps_path = Path(rcps_dir)
-    rcps_path.mkdir(parents=True, exist_ok=True)
-    _create_org_info_symlink(rcps_path, scps_dir)
 
 
 def handle_scp_workflow(
@@ -197,26 +177,12 @@ def main() -> None:
         perform_analysis(final_config, security_session, snapshot)
 
     with _failures_reported("Terraform generation"):
-        # Everything that can fail on bad input runs first. A raise here has
-        # written nothing, so the previous run's output is still whole.
         scp_recommendations = handle_scp_workflow(final_config, snapshot.hierarchy)
         rcp_recommendations = handle_rcp_workflow(final_config, snapshot.hierarchy)
-
-        org_info_path = Path(final_config.scps_dir) / ORG_INFO_FILENAME
-        generate_terraform_org_info(snapshot.hierarchy, str(org_info_path))
-        ensure_org_info_symlink(final_config.rcps_dir, final_config.scps_dir)
-
-        expected = {org_info_path}
-        expected |= set(generate_scp_terraform(
-            scp_recommendations, snapshot.hierarchy, final_config.scps_dir
-        ))
-        expected |= set(generate_rcp_terraform(
-            rcp_recommendations, snapshot.hierarchy, final_config.rcps_dir
-        ))
-
-        # Both workflows have succeeded, so this run's plan is complete and
-        # anything generated but unaccounted for belongs to a previous one.
-        reconcile_generated_terraform(
-            [Path(final_config.scps_dir), Path(final_config.rcps_dir)],
-            expected,
+        plan = compile_terraform_plan(
+            final_config,
+            snapshot.hierarchy,
+            scp_recommendations,
+            rcp_recommendations,
         )
+        apply_terraform_plan(plan)
