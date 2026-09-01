@@ -69,15 +69,26 @@ _DOCUMENTED_COUNT = re.compile(
     r"commits\s+(\w+)\s+real\s+twelve-digit\s+account ID",
 )
 
-# Directories holding third-party or generated content. .tox alone carries a
-# site-packages tree that mentions account IDs in vendored documentation.
+# Directories holding third-party or generated content, and the working scratch
+# a change in progress leaves behind. .tox alone carries a site-packages tree
+# that mentions account IDs in vendored documentation.
+#
+# The scratch trees are the three CONVENTIONS.md names and .gitignore excludes:
+# .superpowers/, docs/superpowers/, and design-docs/. This scan walks the
+# filesystem rather than the git index, so without them it reads notes no commit
+# can ever carry and fails the suite on an unrelated plan's leftovers. Matching
+# is by path component at any depth, so `docs/superpowers/` is named here by its
+# own directory name.
 _UNSCANNED_DIRECTORIES = frozenset({
     ".git",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
+    ".superpowers",
     ".tox",
+    "design-docs",
     "node_modules",
+    "superpowers",
     "venv",
 })
 

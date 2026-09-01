@@ -27,7 +27,7 @@ terraform.tfvars
 docs/superpowers/
 
 # Design and plan documents. Local scratch for working out a change; anything
-# durable they produce belongs in Headroom-Specification.md or documentation/.
+# durable they produce belongs in the specification corpus under spec/.
 design-docs/
 
 # Editor swap files

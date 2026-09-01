@@ -286,6 +286,28 @@ def test_skips_tool_directories(tmp_path: Path) -> None:
     assert account_ids_by_location(tmp_path) == {}
 
 
+@pytest.mark.parametrize("scratch", [
+    ".superpowers/sdd/some-plan",
+    "docs/superpowers/plans",
+    "design-docs",
+])
+def test_skips_the_git_ignored_scratch_directories(scratch: str, tmp_path: Path) -> None:
+    """
+    A tree `.gitignore` excludes holds nothing this invariant can reach.
+
+    `.superpowers/`, `docs/superpowers/`, and `design-docs/` are working
+    scratch for a change in progress. No commit can carry a byte of them, so
+    an identifier written there escapes to nobody - and the scan walks the
+    filesystem rather than the index, so it read them anyway and failed
+    `tox` on notes left over from an unrelated plan.
+    """
+    directory = tmp_path / scratch
+    directory.mkdir(parents=True)
+    (directory / "notes.md").write_text(f"the account was {FABRICATED}\n")
+
+    assert account_ids_by_location(tmp_path) == {}
+
+
 def test_skips_files_that_hold_no_readable_identifier(tmp_path: Path) -> None:
     (tmp_path / "logo.png").write_bytes(b"\x89PNG" + FABRICATED.encode())
 

@@ -5,8 +5,6 @@ Generates Terraform configuration files for AWS Organizations structure data
 to support SCP/RCP deployment targeting.
 """
 
-import logging
-from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .utils import (
@@ -19,21 +17,14 @@ from .utils import (
 from ..constants import GENERATED_MARKER
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
 
-# Set up logging
-logger = logging.getLogger(__name__)
 
-
-def generate_terraform_org_info(
-    organization_hierarchy: OrganizationHierarchy,
-    output_path: str
-) -> None:
+def render_terraform_org_info(organization_hierarchy: OrganizationHierarchy) -> str:
     """
-    Generate grab_org_info.tf from an already-captured hierarchy.
+    Render grab_org_info.tf from an already-captured hierarchy.
 
-    This used to run a hierarchy traversal of its own, which was the second
-    of two in a single run. The two were independent reads, so the data
-    sources written here could describe a different organization from the one
-    placement had just used. It now renders the hierarchy the run captured.
+    Nothing is written and nothing on disk is read. This renders the hierarchy
+    the run captured, so the data sources describe the same organization
+    placement just used.
 
     The hierarchy is passed in rather than walked here. Both policy generators
     emit `local.<path>_ou_id` references built from the caller's walk, and this
@@ -42,25 +33,11 @@ def generate_terraform_org_info(
 
     Args:
         organization_hierarchy: The run's captured organization hierarchy
-        output_path: Path to write the Terraform file
 
-    Raises:
-        IOError: If the file write fails
+    Returns:
+        Complete Terraform configuration as a string
     """
-    logger.info("Generating Terraform organization info file")
-    logger.info(
-        f"Found {len(organization_hierarchy.organizational_units)} OUs and "
-        f"{len(organization_hierarchy.accounts)} accounts"
-    )
-
-    terraform_content = _generate_terraform_content(organization_hierarchy)
-
-    output_file = Path(output_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_file, 'w') as f:
-        f.write(terraform_content)
-    logger.info(f"Successfully generated Terraform file: {output_path}")
+    return _generate_terraform_content(organization_hierarchy)
 
 
 def _generate_terraform_header() -> List[str]:

@@ -34,9 +34,8 @@ instead of reusing what discovery captured.
 """
 
 from collections import Counter, defaultdict
-from pathlib import Path
 from typing import Any, Callable, DefaultDict, Dict, List, Sequence, Set, Tuple
-from unittest.mock import MagicMock, Mock, mock_open, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from botocore.exceptions import ClientError
 
@@ -57,7 +56,7 @@ from headroom.aws.sqs import analyze_sqs_queue_policies
 from headroom.checks.registry import get_all_check_classes
 from headroom.config import AccountTagLayout, HeadroomConfig
 from headroom.main import main
-from headroom.terraform.generate_org_info import generate_terraform_org_info
+from headroom.terraform.generate_org_info import render_terraform_org_info
 from headroom.types import OrganizationHierarchy, OrganizationSnapshot
 
 ORG_ACCOUNT_IDS = {"111111111111"}
@@ -387,11 +386,10 @@ class TestOrganizationsIsReadOnce:
              patch("headroom.main.parse_cli_args"), \
              patch("headroom.main.load_yaml_config"), \
              patch("headroom.main.setup_configuration", return_value=_snapshot_config()), \
-             patch("headroom.main.generate_terraform_org_info"), \
-             patch("headroom.main.ensure_org_info_symlink"), \
              patch("headroom.main.handle_scp_workflow", return_value=[]), \
              patch("headroom.main.handle_rcp_workflow", return_value=[]), \
-             patch("headroom.main.reconcile_generated_terraform"):
+             patch("headroom.main.compile_terraform_plan"), \
+             patch("headroom.main.apply_terraform_plan"):
             main()
 
         assert security.call_count == 1
@@ -407,7 +405,7 @@ class TestOrganizationsIsReadOnce:
         `org_client.operations` taken right after discovery. Nothing between
         that capture and an assertion against it could ever add an
         operation -- the four projection reads are plain attribute access on
-        a frozen dataclass, and `generate_terraform_org_info` takes no
+        a frozen dataclass, and `render_terraform_org_info` takes no
         client -- so a captured-copy comparison would hold no matter what
         discovery read or what a consumer read afterward: it would compare
         the list to itself. The literal is this fixture's whole call log,
@@ -428,8 +426,7 @@ class TestOrganizationsIsReadOnce:
         _ = snapshot.member_account_ids
         _ = snapshot.analyzable_accounts
         _ = snapshot.hierarchy
-        with patch("builtins.open", mock_open()), patch.object(Path, "mkdir"):
-            generate_terraform_org_info(snapshot.hierarchy, "out/grab_org_info.tf")
+        render_terraform_org_info(snapshot.hierarchy)
 
         assert org_client.operations == [
             "describe_organization",

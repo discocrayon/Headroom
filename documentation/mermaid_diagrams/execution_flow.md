@@ -53,22 +53,20 @@ sequenceDiagram
 
     Note over Tool: Step 3: Parse Results & Generate Terraform<br/>(from snapshot.hierarchy - the management role is not assumed again<br/>and Organizations is not read again)
 
-    Tool->>Tool: Generate Org Info Data Sources
-    Tool->>Tool: Symlink rcps/grab_org_info.tf to the SCP directory's file
-
     Tool->>Tool: Parse SCP Results
     Tool->>Tool: Determine SCP Placement (root/OU/account)
-    Tool->>Tool: Generate SCP Terraform Files
 
     Tool->>Tool: Parse RCP Results
     Tool->>Tool: Determine RCP Placement (root/OU/account)
-    Tool->>Tool: Generate RCP Terraform Files
 
-    Tool->>Tool: Reconcile: delete marked files this run did not plan
+    Note over Tool: Nothing has been written yet
+    Tool->>Tool: Compile: render the org info, every SCP and RCP file,<br/>and the reserved symlink into one validated plan
+    Tool->>Tool: Apply: write the changed files, then the link,<br/>then delete the marked files this run did not plan
 ```
 
-Two orderings in Step 3 are load-bearing. The organization data sources and the
-symlink are written before either workflow runs, because both workflows'
-generated modules reference them. Reconciliation runs last and only if both
-workflows succeeded — a raise anywhere above it leaves the previous run's output
-whole rather than deleting files this run never got as far as planning.
+Two orderings in Step 3 are load-bearing. Nothing reaches the filesystem until
+both workflows have parsed and placed and the whole run has rendered, so a raise
+in either workflow — or in rendering, or in validation — leaves the previous
+run's output whole rather than half replaced. Inside the apply, deletion runs
+last and only after every write and the link have succeeded, so removing a stale
+file is conditional on the file that supersedes it already being there.

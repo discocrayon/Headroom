@@ -46,10 +46,10 @@ the operator actually reads. `--help` printed `(default
 test_environment/headroom_results)` from an English literal in
 `headroom/usage.py`, so moving the path in `config.py` left the help text
 advertising the old one; the three `help=` strings interpolate the constant.
-The same literals sat on `generate_scp_terraform` and `generate_rcp_terraform`
-as `output_dir` parameter defaults that every caller already overrode —
-`main.py` passes `final_config.scps_dir` and `final_config.rcps_dir` — so the
-parameter is required and the dead default is gone.
+The same literals sat on the two policy generators as `output_dir` parameter
+defaults that every caller already overrode — `compile_terraform_plan` passes
+`config.scps_dir` and `config.rcps_dir` — so the parameter is required and the
+dead default is gone.
 `test_a_directory_default_is_written_in_one_place` fails when a fourth copy
 appears anywhere under `headroom/`.
 
@@ -177,4 +177,4 @@ python -m headroom --config CONFIG
 ```
 
 There are no subcommands and no dry-run option. One invocation runs the whole
-pipeline: scan, place, generate, reconcile.
+pipeline: scan, place, compile, apply.

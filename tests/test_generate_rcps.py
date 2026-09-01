@@ -5,7 +5,6 @@ Tests for RCP Terraform generation functions.
 """
 
 import json
-import os
 import re
 import tempfile
 import shutil
@@ -22,8 +21,7 @@ from headroom.constants import (
 from headroom.terraform.generate_rcps import (
     parse_rcp_result_files,
     determine_rcp_placement,
-    generate_rcp_terraform,
-    _create_org_info_symlink,
+    render_rcp_terraform,
     _render_account_rcp_terraform,
     _render_ou_rcp_terraform,
     _render_root_rcp_terraform,
@@ -1540,8 +1538,8 @@ class TestCreateAccountLevelRcpRecommendations:
         assert account_ids == {"222222222222", "444444444444"}
 
 
-class TestGenerateRcpTerraform:
-    """Test generate_rcp_terraform function."""
+class TestRenderRcpTerraform:
+    """Test render_rcp_terraform function."""
 
     @pytest.fixture
     def temp_base_dir(self) -> Generator[str, None, None]:
@@ -1554,11 +1552,6 @@ class TestGenerateRcpTerraform:
     def temp_output_dir(self, temp_base_dir: str) -> str:
         """Create temporary RCP output directory."""
         return f"{temp_base_dir}/rcps"
-
-    @pytest.fixture
-    def temp_scps_dir(self, temp_base_dir: str) -> str:
-        """Create temporary SCP directory."""
-        return f"{temp_base_dir}/scps"
 
     @pytest.fixture
     def sample_org_hierarchy(self) -> OrganizationHierarchy:
@@ -1601,12 +1594,14 @@ class TestGenerateRcpTerraform:
             )
         ]
 
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
+        rendered = render_rcp_terraform(
+            recommendations, sample_org_hierarchy, Path(temp_output_dir)
+        )
 
         root_file = Path(temp_output_dir) / "root_rcps.tf"
-        assert root_file.exists()
+        assert root_file in rendered
 
-        content = root_file.read_text()
+        content = rendered[root_file]
         assert "module \"rcps_root\"" in content
         assert "local.root_ou_id" in content
         assert "999999999999" in content
@@ -1630,12 +1625,14 @@ class TestGenerateRcpTerraform:
             )
         ]
 
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
+        rendered = render_rcp_terraform(
+            recommendations, sample_org_hierarchy, Path(temp_output_dir)
+        )
 
         ou_file = Path(temp_output_dir) / "production_ou_rcps.tf"
-        assert ou_file.exists()
+        assert ou_file in rendered
 
-        content = ou_file.read_text()
+        content = rendered[ou_file]
         assert "module \"rcps_production_ou\"" in content
         assert "local.production_ou_id" in content
         assert "999999999999" in content
@@ -1658,12 +1655,14 @@ class TestGenerateRcpTerraform:
             )
         ]
 
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
+        rendered = render_rcp_terraform(
+            recommendations, sample_org_hierarchy, Path(temp_output_dir)
+        )
 
         account_file = Path(temp_output_dir) / "prod_account_1_rcps.tf"
-        assert account_file.exists()
+        assert account_file in rendered
 
-        content = account_file.read_text()
+        content = rendered[account_file]
         assert "module \"rcps_prod_account_1\"" in content
         assert "local.prod_account_1_account_id" in content
         assert "999999999999" in content
@@ -1688,7 +1687,7 @@ class TestGenerateRcpTerraform:
 
         # Should raise exception for missing OU
         with pytest.raises(RuntimeError, match="OU ou-9999 not found in organization hierarchy"):
-            generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
+            render_rcp_terraform(recommendations, sample_org_hierarchy, Path(temp_output_dir))
 
     def test_generate_skips_missing_account(
         self,
@@ -1709,16 +1708,16 @@ class TestGenerateRcpTerraform:
 
         # Should raise exception for missing account
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
-            generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
+            render_rcp_terraform(recommendations, sample_org_hierarchy, Path(temp_output_dir))
 
-    def test_generate_raises_when_an_account_collides_with_root(
+    def test_render_raises_when_an_account_collides_with_root(
         self,
         temp_output_dir: str,
     ) -> None:
         """
         An account named `root` renders to root_rcps.tf, the root file's own name.
 
-        The RCP generator writes root before accounts, so root claims the
+        The RCP renderer takes root before accounts, so root claims the
         filename first and the account render is the one that raises -
         otherwise the account would win, silently downgrading an
         organization-wide RCP to one account's.
@@ -1755,7 +1754,7 @@ class TestGenerateRcpTerraform:
         ]
 
         with pytest.raises(RuntimeError, match="root_rcps.tf"):
-            generate_rcp_terraform(recommendations, org, temp_output_dir)
+            render_rcp_terraform(recommendations, org, Path(temp_output_dir))
 
         output_path = Path(temp_output_dir)
         assert not output_path.exists() or len(list(output_path.glob("*.tf"))) == 0
@@ -1765,118 +1764,14 @@ class TestGenerateRcpTerraform:
         temp_output_dir: str,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test generating with no recommendations."""
+        """Test rendering with no recommendations."""
         recommendations: List[RCPPlacementRecommendations] = []
 
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
+        rendered = render_rcp_terraform(
+            recommendations, sample_org_hierarchy, Path(temp_output_dir)
+        )
 
-        output_path = Path(temp_output_dir)
-        assert not output_path.exists() or len(list(output_path.glob("*.tf"))) == 0
-
-    def test_no_symlink_created_by_generate_rcp_terraform(
-        self,
-        temp_output_dir: str,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """
-        Test that grab_org_info.tf symlink is NOT created by generate_rcp_terraform.
-
-        After refactoring, symlink creation is handled explicitly in main.py,
-        not as a side effect of generate_rcp_terraform.
-        """
-        recommendations = [
-            RCPPlacementRecommendations(
-                check_name="deny_sts_third_party_assumerole",
-                recommended_level="account",
-                target_ou_id=None,
-                affected_accounts=["111111111111"],
-                third_party_account_ids=["999999999999"],
-                reasoning="Test no symlink creation"
-            )
-        ]
-
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
-
-        symlink_path = Path(temp_output_dir) / "grab_org_info.tf"
-        # Symlink should NOT be created by generate_rcp_terraform
-        assert not symlink_path.exists()
-
-    def test_symlink_replaces_existing_file(
-        self,
-        temp_output_dir: str,
-        temp_scps_dir: str
-    ) -> None:
-        """Test that an existing regular file is replaced by a symlink using _create_org_info_symlink."""
-        output_path = Path(temp_output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        existing_file = output_path / "grab_org_info.tf"
-
-        # Create a regular file
-        with open(existing_file, 'w') as f:
-            f.write("# Old content")
-
-        assert existing_file.exists()
-        assert not existing_file.is_symlink()
-
-        # Call the helper directly (now this is called from main.py, not generate_rcp_terraform)
-        _create_org_info_symlink(output_path, temp_scps_dir)
-
-        # Should now be a symlink (broken symlinks return False for exists())
-        assert existing_file.is_symlink()
-        expected_target = os.path.relpath(f"{temp_scps_dir}/grab_org_info.tf", temp_output_dir)
-        assert os.readlink(existing_file) == expected_target
-
-    def test_symlink_updates_existing_symlink(
-        self,
-        temp_output_dir: str,
-        temp_scps_dir: str
-    ) -> None:
-        """Test that an existing symlink is recreated (handles broken symlinks) using _create_org_info_symlink."""
-        output_path = Path(temp_output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        symlink_path = output_path / "grab_org_info.tf"
-
-        # Create a symlink to a different location
-        os.symlink("../wrong/path.tf", symlink_path)
-
-        assert symlink_path.is_symlink()
-        assert os.readlink(symlink_path) == "../wrong/path.tf"
-
-        # Call the helper directly (now this is called from main.py, not generate_rcp_terraform)
-        _create_org_info_symlink(output_path, temp_scps_dir)
-
-        # Should now point to the correct location
-        assert symlink_path.is_symlink()
-        expected_target = os.path.relpath(f"{temp_scps_dir}/grab_org_info.tf", temp_output_dir)
-        assert os.readlink(symlink_path) == expected_target
-
-    def test_no_terraform_files_with_no_recommendations(
-        self,
-        temp_output_dir: str,
-        sample_org_hierarchy: OrganizationHierarchy
-    ) -> None:
-        """Test that no Terraform files or symlinks are created when no recommendations exist."""
-        recommendations: List[RCPPlacementRecommendations] = []
-
-        generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
-
-        # No terraform files should be created
-        output_path = Path(temp_output_dir)
-        assert not output_path.exists() or len(list(output_path.glob("*.tf"))) == 0
-
-    def test_create_org_info_symlink_direct(self, temp_output_dir: str, temp_scps_dir: str) -> None:
-        """Test _create_org_info_symlink helper function directly."""
-        output_path = Path(temp_output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        symlink_path = output_path / "grab_org_info.tf"
-
-        # Create symlink
-        _create_org_info_symlink(output_path, temp_scps_dir)
-
-        # Check is_symlink (broken symlinks return False for exists())
-        assert symlink_path.is_symlink()
-        expected_target = os.path.relpath(f"{temp_scps_dir}/grab_org_info.tf", temp_output_dir)
-        assert os.readlink(symlink_path) == expected_target
+        assert rendered == {}
 
 
 class TestRcpTerraformVariableTable:
@@ -2397,15 +2292,14 @@ class TestRenderRootRcpTerraform:
         """
         No root recommendation means no root file in the plan.
 
-        Reconciliation deletes what the plan omits, so this is what removes a
+        Applying deletes what the plan omits, so this is what removes a
         root_rcps.tf left behind by a run that did place a policy there.
         """
         org = OrganizationHierarchy(root_id="r-root", organizational_units={}, accounts={})
 
-        plan = generate_rcp_terraform([], org, str(tmp_path))
+        plan = render_rcp_terraform([], org, tmp_path)
 
         assert plan == {}
-        assert not (tmp_path / "root_rcps.tf").exists()
 
 
 class TestEveryRcpCheckReachesTerraform:
@@ -2473,9 +2367,11 @@ class TestEveryRcpCheckReachesTerraform:
 
         parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
         recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
-        generate_rcp_terraform(recommendations, single_account_hierarchy, temp_output_dir)
+        rendered = render_rcp_terraform(
+            recommendations, single_account_hierarchy, Path(temp_output_dir)
+        )
 
-        content = (Path(temp_output_dir) / "root_rcps.tf").read_text()
+        content = rendered[Path(temp_output_dir) / "root_rcps.tf"]
 
         for tf_vars in RCP_TERRAFORM_VARIABLES.values():
             assert f"{tf_vars.enable_var} = true" in content
@@ -2518,9 +2414,11 @@ class TestEveryRcpCheckReachesTerraform:
 
         parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
         recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
-        generate_rcp_terraform(recommendations, single_account_hierarchy, temp_output_dir)
+        rendered = render_rcp_terraform(
+            recommendations, single_account_hierarchy, Path(temp_output_dir)
+        )
 
-        content = (Path(temp_output_dir) / "root_rcps.tf").read_text()
+        content = rendered[Path(temp_output_dir) / "root_rcps.tf"]
 
         assert "deny_sts_third_party_assumerole = true" in content
         assert "sts_third_party_assumerole_account_ids_allowlist = []" in content
@@ -2548,9 +2446,11 @@ class TestEveryRcpCheckReachesTerraform:
 
         parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
         recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
-        generate_rcp_terraform(recommendations, single_account_hierarchy, temp_output_dir)
+        rendered = render_rcp_terraform(
+            recommendations, single_account_hierarchy, Path(temp_output_dir)
+        )
 
-        content = (Path(temp_output_dir) / "root_rcps.tf").read_text()
+        content = rendered[Path(temp_output_dir) / "root_rcps.tf"]
 
         assert "deny_sts_third_party_assumerole = true" in content
         assert "deny_s3_third_party_access = false" in content

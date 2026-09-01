@@ -14,10 +14,10 @@ TerraformScalarValue: TypeAlias = bool | int | float | str
 TerraformListValue: TypeAlias = list[str]
 TerraformValue: TypeAlias = TerraformScalarValue | TerraformListValue
 
-# Everything one run means the output directory to hold, rendered but not yet
-# written. Building the whole plan before touching disk is what keeps a failure
-# partway through generation from leaving half of the previous output replaced.
-TerraformPlan: TypeAlias = Dict[Path, str]
+# Everything one renderer means its output directory to hold, keyed by
+# destination path. Rendered, not yet written, and not yet the whole run's
+# plan -- the compiler merges the three renderers' output into that.
+RenderedTerraformFiles: TypeAlias = Dict[Path, str]
 
 
 @dataclass
