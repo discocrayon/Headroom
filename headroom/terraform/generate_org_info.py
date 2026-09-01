@@ -35,6 +35,11 @@ def generate_terraform_org_info(
     sources written here could describe a different organization from the one
     placement had just used. It now renders the hierarchy the run captured.
 
+    The hierarchy is passed in rather than walked here. Both policy generators
+    emit `local.<path>_ou_id` references built from the caller's walk, and this
+    file declares those locals; a second walk can disagree with the first and
+    produce Terraform that fails at plan time on an undeclared local (INV-12).
+
     Args:
         organization_hierarchy: The run's captured organization hierarchy
         output_path: Path to write the Terraform file

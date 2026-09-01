@@ -173,7 +173,7 @@ class TestCallCounts:
         hand-maintained, so a seventh doubly-called analyzer has to be added
         here to be covered.
         """
-        session = _session([{}])
+        session = _session([_empty_response()])
 
         for analyzer in SHARED_ANALYZERS:
             analyzer(session, ORG_ACCOUNT_IDS, ORG_ID)

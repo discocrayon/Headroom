@@ -16,22 +16,20 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
-from ...constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..helpers import memoize_per_session
 from ..policy_documents import (
     ServicePrincipalSource,
+    TRUST_POLICY_PRINCIPAL_TYPES,
     has_actionable_service_principal_source,
     has_not_principal,
+    normalize_actions,
     normalize_statements,
+    read_principal,
     read_service_principal_sources,
 )
 
 # Set up logging
 logger = logging.getLogger(__name__)
-
-
-class UnknownPrincipalTypeError(Exception):
-    """Raised when an unknown principal type is encountered in a trust policy."""
 
 
 class InvalidFederatedPrincipalError(Exception):
@@ -41,8 +39,6 @@ class InvalidFederatedPrincipalError(Exception):
 class MalformedStatementError(Exception):
     """Raised when a trust policy statement names neither or both action keys."""
 
-
-ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES
 
 ASSUME_ROLE_ACTION = "sts:AssumeRole"
 
@@ -69,56 +65,6 @@ class TrustPolicyAnalysis:
     third_party_account_ids: Set[str]
     has_wildcard_principal: bool
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
-
-
-def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
-    """
-    Extract AWS account IDs from an IAM policy principal.
-
-    Args:
-        principal: Principal field from IAM policy statement (can be string, list, or dict)
-
-    Returns:
-        Set of extracted account IDs (12-digit strings)
-    """
-    account_ids: Set[str] = set()
-
-    if isinstance(principal, str):
-        # Handle wildcard
-        if principal == "*":
-            return set()
-        # Extract the account ID from any principal ARN, whatever its
-        # partition or service. A trust policy principal can be an STS
-        # session ARN as well as an IAM one.
-        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
-        if arn_match:
-            account_ids.add(arn_match.group(1))
-        else:
-            # If not an ARN, check if it's a plain 12-digit account ID
-            if re.match(r'^\d{12}$', principal):
-                account_ids.add(principal)
-    elif isinstance(principal, list):
-        for item in principal:
-            account_ids.update(_extract_account_ids_from_principal(item))
-    elif isinstance(principal, dict):
-        # Validate that all principal types are known
-        unknown_types = set(principal.keys()) - ALLOWED_PRINCIPAL_TYPES
-        if unknown_types:
-            raise UnknownPrincipalTypeError(
-                f"Unknown principal type(s) found: {unknown_types}. "
-                f"Expected one of: {ALLOWED_PRINCIPAL_TYPES}"
-            )
-
-        # Process AWS principals to extract account IDs
-        if "AWS" in principal:
-            value = principal["AWS"]
-            if isinstance(value, str):
-                account_ids.update(_extract_account_ids_from_principal(value))
-            elif isinstance(value, list):
-                for item in value:
-                    account_ids.update(_extract_account_ids_from_principal(item))
-
-    return account_ids
 
 
 def _action_pattern_matches(pattern: str, action: str) -> bool:
@@ -159,6 +105,7 @@ def _grants_assume_role(statement: Any, role_name: str) -> bool:
     Raises:
         MalformedStatementError: If the statement carries both Action and
             NotAction, or neither
+        TypeError: If the element it carries is neither a string nor a list
     """
     has_action = "Action" in statement
     has_not_action = "NotAction" in statement
@@ -172,37 +119,12 @@ def _grants_assume_role(statement: Any, role_name: str) -> bool:
             "way misstates who can assume this role."
         )
 
-    patterns = statement["Action"] if has_action else statement["NotAction"]
-    if isinstance(patterns, str):
-        patterns = [patterns]
-
-    covered = any(_action_pattern_matches(p, ASSUME_ROLE_ACTION) for p in patterns)
+    covered = any(
+        _action_pattern_matches(pattern, ASSUME_ROLE_ACTION)
+        for pattern in normalize_actions(statement["Action"] if has_action else statement["NotAction"])
+    )
 
     return covered if has_action else not covered
-
-
-def _has_wildcard_principal(principal: Any) -> bool:
-    """
-    Check if principal contains a wildcard.
-
-    Args:
-        principal: Principal field from IAM policy statement
-
-    Returns:
-        True if principal contains wildcard
-    """
-    if isinstance(principal, str):
-        return principal == "*"
-    elif isinstance(principal, list):
-        return any(_has_wildcard_principal(item) for item in principal)
-    elif isinstance(principal, dict):
-        for key, value in principal.items():
-            if key == "AWS":
-                if isinstance(value, str) and value == "*":
-                    return True
-                if isinstance(value, list) and any(item == "*" for item in value):
-                    return True
-    return False
 
 
 @memoize_per_session
@@ -227,7 +149,16 @@ def analyze_iam_roles_trust_policies(
         List of TrustPolicyAnalysis for roles with third-party accounts or wildcards
 
     Raises:
-        MalformedPolicyError: If a Statement is neither an object nor a list
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
+        KeyError: If a page carries no `Roles` key. Indexed rather than
+            defaulted: botocore marks `Roles` required on the response, so a
+            page without it is a shape the service model forbids, and reading
+            it as no roles would clear the account on a listing nobody
+            read (INV-01). An account with none comes back as an empty list,
+            which is a different thing and passes through
+        TypeError: If a statement's Action or NotAction element is neither a
+            string nor a list
     """
     iam_client: IAMClient = session.client("iam")
     results: List[TrustPolicyAnalysis] = []
@@ -236,7 +167,7 @@ def analyze_iam_roles_trust_policies(
     paginator = iam_client.get_paginator("list_roles")
     try:
         for page in paginator.paginate():
-            for role in page.get("Roles", []):
+            for role in page["Roles"]:
                 role_name = role["RoleName"]
                 role_arn = role["Arn"]
 
@@ -292,26 +223,39 @@ def analyze_iam_roles_trust_policies(
                     # federated identity call plain AssumeRole - and aborting
                     # the run over it would cost more than it catches. The
                     # literal pairing is a clearer sign of real confusion.
-                    if isinstance(principal, dict) and "Federated" in principal:
-                        declared_actions = statement.get("Action", [])
-                        if isinstance(declared_actions, str):
-                            declared_actions = [declared_actions]
-                        if ASSUME_ROLE_ACTION in declared_actions:
-                            raise InvalidFederatedPrincipalError(
-                                f"Role '{role_name}' has Federated principal with sts:AssumeRole action. "
-                                f"Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity."
-                            )
+                    names_federated_principal = isinstance(principal, dict) and "Federated" in principal
+                    grants_literal_assume_role = "Action" in statement and ASSUME_ROLE_ACTION in normalize_actions(statement["Action"])
+                    if names_federated_principal and grants_literal_assume_role:
+                        raise InvalidFederatedPrincipalError(
+                            f"Role '{role_name}' has Federated principal with sts:AssumeRole action. "
+                            f"Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity."
+                        )
 
-                    # Check for wildcard
-                    if _has_wildcard_principal(principal):
+                    # A trust policy is not a resource policy, so the
+                    # permitted principal keys are the trust-policy set: a
+                    # canonical user ID is an Amazon S3 identifier and cannot
+                    # appear here. A Federated principal can and does, and
+                    # the reading's has_non_account_principals is discarded:
+                    # TrustPolicyAnalysis carries no field for it.
+                    #
+                    # The Federated gate above is not what makes that safe.
+                    # That gate is a literal membership test, so `sts:*`
+                    # clears _grants_assume_role, misses the gate, and leaves
+                    # no trace at all. What makes it safe is that this RCP
+                    # denies sts:AssumeRole alone and a federated identity
+                    # cannot call it, so the grant the RCP could break is not
+                    # one a Federated principal holds. See
+                    # spec/checks/rcps/deny_sts_third_party_assumerole.md.
+                    reading = read_principal(
+                        principal, TRUST_POLICY_PRINCIPAL_TYPES, f"Role '{role_name}'"
+                    )
+
+                    if reading.has_wildcard:
                         has_wildcard = True
                         # TODO: Check CloudTrail logs to find which accounts actually assume this role
 
-                    # Extract account IDs
-                    account_ids = _extract_account_ids_from_principal(principal)
-
                     # Filter to only third-party accounts (not in org)
-                    for account_id in account_ids:
+                    for account_id in reading.account_ids:
                         if account_id not in org_account_ids:
                             third_party_accounts.add(account_id)
 

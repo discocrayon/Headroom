@@ -5,11 +5,12 @@
 document_type: implementation_guide
 target_audience: [ai_assistant, experienced_developer]
 context_dependencies:
+  - spec/README.md
+  - spec/invariants.md
+  - spec/contracts/policy-model.md
   - headroom/checks/base.py
   - headroom/checks/registry.py
-  - documentation/POLICY_TAXONOMY.md
-version: 2.0
-last_updated: 2025-11-17
+normative_authority: spec/
 optimization: llm_first
 ```
 
@@ -37,7 +38,7 @@ optimization: llm_first
     }
   },
   "step_2_pattern": {
-    "reference": "documentation/POLICY_TAXONOMY.md",
+    "reference": "spec/contracts/policy-model.md",
     "common_patterns": {
       "Pattern_1": "Absolute Deny (no conditions)",
       "Pattern_2": "Conditional Deny (most common for SCPs)",
@@ -55,6 +56,20 @@ optimization: llm_first
 
 ```yaml
 execution_order:
+  phase_0_specification:
+    file: spec/checks/{scps|rcps}/{check_name}.md
+    action: write_first
+    why: |
+      The specification is the deliverable; the implementation expresses it.
+      Deciding the enforced statement, the decision table, and the accepted
+      limitations before writing code is what stops the scanner and the policy
+      from measuring different things.
+    contract: spec/checks/index.md
+    enforced_by: |
+      tests/test_spec_corpus.py fails if a registered check has no
+      specification, if its frontmatter is incomplete, or if it cites an
+      invariant that does not exist.
+
   phase_1_constants:
     file: headroom/constants.py
     action: add_constant
@@ -90,7 +105,7 @@ execution_order:
 
   phase_5_terraform_generation:
     file: headroom/terraform/generate_{scps|rcps}.py
-    scp: "add parameter generation logic to _build_scp_terraform_module"
+    scp: "add parameter generation logic to _build_<service>_terraform_parameters"
     rcp: |
       Add one RCP_TERRAFORM_VARIABLES entry naming the check's comment,
       enable variable, and allowlist variable. The renderer loops the table,
@@ -111,8 +126,10 @@ execution_order:
 
   phase_7_validation:
     commands:
+      - "pytest tests/test_spec_corpus.py"
       - "mypy headroom/ tests/"
-      - "pytest tests/ --cov=headroom"
+      - "coverage run --source=headroom,tests -m pytest tests/"
+      - "coverage report --include=headroom/* --show-missing --fail-under=100"
       - "tox"
     all_must_pass: true
 ```
@@ -120,6 +137,34 @@ execution_order:
 ---
 
 ## 🎯 File Templates
+
+Every template below obeys one rule about failure: a read that did not complete
+is never recorded as an absence of findings. Tolerate one benign condition
+whose meaning you know - "this resource carries no policy", "this resource was
+deleted between the list call and the read" - and re-raise everything else. One
+condition is not always one error code: AWS spells the deleted-queue case two
+ways, so `QUEUE_GONE_ERROR_CODES` in `headroom/aws/sqs.py:36-39` holds both.
+Match a frozenset of codes, not a single string, and put every code in it that
+means the same thing. Logging a warning and returning `[]`, or stepping over
+the failure with `continue`, reports an account as clean on the strength of
+resources nobody read. That is INV-01, absence of evidence is not evidence of
+safety, and INV-02, a run fails whole and never partially, both in
+[`spec/invariants.md`](spec/invariants.md).
+
+The shape to copy is `headroom/aws/s3.py`. `_read_bucket_policy` (`:175-203`)
+is the smallest function that makes the call: it returns `None` for
+`NoSuchBucketPolicy` and re-raises every other `ClientError`. Its caller
+materialises the bucket listing into a list first (`:247-254`, with a comment
+saying why) so that a listing failure is raised where it happened, outside the
+loop, instead of reaching the per-bucket handler and being reported as the
+wrong thing.
+
+The shape *not* to copy is the rest of `headroom/aws/sqs.py`. Its narrow
+handler is right about which codes to tolerate, but it sits inline at
+`:215-228`, lexically inside the region-wide `try:` at `:208` whose
+`except ClientError` is at `:246` - two handlers for one exception type, nested,
+which is what AP-003 warns about. It does not swallow, so nothing is unsafe; a
+per-queue failure is simply reported as a region-listing failure.
 
 ### Template: SCP Check Class (Pattern 2 - Conditional Deny)
 
@@ -155,7 +200,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         result: {DataModel}
     ) -> tuple[CheckCategory, JsonDict]:
         """Categorize single result."""
-        result_dict = {
+        result_dict: JsonDict = {
             # Map all dataclass fields:
             # "field_name": result.field_name,
         }
@@ -256,6 +301,7 @@ from typing import List
 import boto3
 import logging
 from botocore.exceptions import ClientError
+from mypy_boto3_{service}.type_defs import {ItemTypeDef}
 
 from .helpers import get_all_regions
 
@@ -310,31 +356,23 @@ def _analyze_{resource}_in_region(
     client = session.client("{service}", region_name=region)
     results = []
 
-    # Separate try/except for paginator setup
+    # Materialized rather than streamed, so a failure here is raised as the
+    # listing failure it is, and never mistaken for a per-item one. Re-raise:
+    # returning [] would report the region as holding nothing.
     try:
-        paginator = client.get_paginator("{operation}")
+        pages = list(client.get_paginator("{operation}").paginate())
     except ClientError as e:
-        logger.warning(f"Failed to get paginator in {region}: {e}")
-        return []
+        logger.error(f"Failed to list {resource} in {region}: {e}")
+        raise
 
-    # Process pages
-    for page in paginator.paginate():
-        items = page.get("{ItemsKey}", [])
-
-        for item in items:
-            # Separate try/except for per-item processing
-            try:
-                result = _analyze_single_item(item, region)
-                results.append(result)
-            except ClientError as e:
-                logger.warning(f"Failed to analyze item in {region}: {e}")
-                continue
+    for item in [item for page in pages for item in page.get("{ItemsKey}", [])]:
+        results.append(_analyze_single_item(item, region))
 
     return results
 
 
 def _analyze_single_item(
-    item: dict,
+    item: {ItemTypeDef},
     region: str
 ) -> {DataModel}:
     """Extract data from single item."""
@@ -351,6 +389,9 @@ def _analyze_single_item(
 - `{RESOURCE_TYPE}`: `RDS instances and clusters`
 - `{operation}`: `describe_db_instances`
 - `{ItemsKey}`: `DBInstances`
+- `{ItemTypeDef}`: `DBInstanceTypeDef`, from `mypy_boto3_rds.type_defs`. Take it
+  from the stubs rather than writing `dict`: a boto3 page item is a `TypedDict`,
+  and `mypy` rejects passing one where a bare `dict` is declared.
 
 ---
 
@@ -386,30 +427,63 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         account_id: str,
         results_dir: str,
         org_account_ids: Set[str],  # RCP-specific
+        org_id: str,                # RCP-specific
+        exclude_account_ids: bool = False,
         **kwargs: Any
     ) -> None:
-        """Initialize with organization account IDs."""
-        super().__init__(check_name, account_name, account_id, results_dir, **kwargs)
+        """Initialize with the organization's account IDs and its own ID."""
+        super().__init__(
+            check_name=check_name,
+            account_name=account_name,
+            account_id=account_id,
+            results_dir=results_dir,
+            exclude_account_ids=exclude_account_ids,
+            **kwargs,
+        )
         self.org_account_ids = org_account_ids
+        self.org_id = org_id
+        self.all_third_party_accounts: Set[str] = set()
 
     def analyze(self, session: boto3.Session) -> List[{DataModel}]:
-        """Analyze {RESOURCE_TYPE} policies."""
-        return analyze_{service}_{resource}_policies(
+        """Analyze {RESOURCE_TYPE} policies, keeping only those with a finding."""
+        all_results = analyze_{service}_{resource}_policies(
             session,
-            self.org_account_ids
+            self.org_account_ids,
+            self.org_id
         )
+        # Filter here, as five of the six shipped RCP checks do
+        # (deny_s3_third_party_access.py:84-88). A resource with none of the
+        # three is nothing the RCP would change, and counting it inflates
+        # total_{resources} and compliant with resources no check reports.
+        # deny_sts_third_party_assumerole.py:82-85 tests two of the three
+        # because TrustPolicyAnalysis carries no has_non_account_principals
+        # field; a data model carrying all three has no such excuse.
+        return [
+            result for result in all_results
+            if result.has_wildcard_principal
+            or result.has_non_account_principals
+            or result.third_party_account_ids
+        ]
 
     def categorize_result(
         self,
         result: {DataModel}
     ) -> tuple[CheckCategory, JsonDict]:
-        """Categorize based on third-party access."""
+        """Categorize on what no allowlist can express, not on third parties."""
         result_dict = {
             "resource_arn": result.resource_arn,
             "third_party_account_ids": sorted(result.third_party_account_ids),
+            "has_wildcard_principal": result.has_wildcard_principal,
+            "has_non_account_principals": result.has_non_account_principals,
         }
 
-        if result.third_party_account_ids:
+        # Accumulate before the branch, so the allowlist spans the compliant
+        # resources too. Third-party access is not itself a blocker; it is the
+        # thing the allowlist is built from - see the "RCP placement" section
+        # of spec/contracts/placement.md.
+        self.all_third_party_accounts.update(result.third_party_account_ids)
+
+        if result.has_wildcard_principal or result.has_non_account_principals:
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 
@@ -417,19 +491,21 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         self,
         check_result: CategorizedCheckResult
     ) -> JsonDict:
-        """Build summary with third-party allowlist."""
-        all_third_party_ids: Set[str] = set()
-        for violation in check_result.violations:
-            third_party_ids = violation.get("third_party_account_ids", [])
-            all_third_party_ids.update(third_party_ids)
-
+        """Build summary with the third-party allowlist Terraform reads."""
         return {
             "total_{resources}": len(check_result.violations) + len(check_result.compliant),
             "violations": len(check_result.violations),
             "compliant": len(check_result.compliant),
-            "third_party_account_ids_allowlist": sorted(all_third_party_ids),
+            "unique_third_party_accounts": sorted(self.all_third_party_accounts),
+            "third_party_account_count": len(self.all_third_party_accounts),
         }
 ```
+
+`unique_third_party_accounts` is the key, and it is not optional:
+`headroom/terraform/generate_rcps.py` raises on a summary that omits it rather
+than generating an empty allowlist, because an empty allowlist denies every
+third party. `violations` is the other key it requires, and a non-zero count is
+what marks the account as one the RCP cannot be deployed to.
 
 ---
 
@@ -441,18 +517,33 @@ class {CheckClass}(BaseCheck[{DataModel}]):
 
 """AWS {service} policy analysis for third-party access detection."""
 
-from dataclasses import dataclass
-from typing import List, Set
+from dataclasses import dataclass, field
+from typing import List, Optional, Set
 import boto3
 import json
 import logging
-import re
 from botocore.exceptions import ClientError
+from mypy_boto3_{service}.client import {ServiceClient}
 
 from .helpers import get_all_regions
-from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+from .policy_documents import (
+    RESOURCE_POLICY_PRINCIPAL_TYPES,
+    ServicePrincipalSource,
+    has_actionable_service_principal_source,
+    has_not_principal,
+    normalize_statements,
+    read_principal,
+    read_service_principal_sources,
+)
+from ..types import JsonDict
 
 logger = logging.getLogger(__name__)
+
+# The codes that mean there is nothing to read on this resource. One benign
+# condition, which a service may spell more than one way - so a frozenset,
+# never a single string. Every other ClientError is a read that did not
+# complete.
+NOTHING_TO_READ_ERROR_CODES = frozenset({"{BenignErrorCode}"})
 
 
 @dataclass
@@ -461,12 +552,16 @@ class {DataModel}:
     resource_arn: str
     all_account_ids: Set[str]
     third_party_account_ids: Set[str]
+    has_wildcard_principal: bool
+    has_non_account_principals: bool
     region: str
+    service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
 def analyze_{service}_{resource}_policies(
     session: boto3.Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[{DataModel}]:
     """
     Analyze {resource} policies for third-party access.
@@ -474,6 +569,8 @@ def analyze_{service}_{resource}_policies(
     Args:
         session: boto3 session
         org_account_ids: Set of organization account IDs
+        org_id: This organization's ID, deciding whether an
+            organization scope on a source guard names this organization
 
     Returns:
         List of policy analysis results
@@ -483,120 +580,231 @@ def analyze_{service}_{resource}_policies(
 
     for region in regions:
         logger.info(f"Analyzing {resource} policies in {region}")
-        regional_results = _analyze_policies_in_region(
+        all_results.extend(_analyze_policies_in_region(
             session,
             region,
-            org_account_ids
-        )
-        all_results.extend(regional_results)
+            org_account_ids,
+            org_id
+        ))
 
-    logger.info(f"Analyzed {len(all_results)} {resource} across {len(regions)} regions")
+    logger.info(
+        f"Analyzed {len(all_results)} {resource} with third-party access "
+        f"across {len(regions)} regions"
+    )
     return all_results
+
+
+def _read_policy(
+    client: {ServiceClient},
+    resource_id: str
+) -> Optional[JsonDict]:
+    """
+    Return the resource's policy document, or None if there is nothing to read.
+
+    Raises:
+        ClientError: If the policy cannot be read for any other reason
+    """
+    try:
+        policy_response = client.{get_policy_operation}(
+            {ResourceIdParam}=resource_id
+        )
+    except ClientError as e:
+        # Matched by code, because there is nothing here to find. Every other
+        # ClientError is a read that did not complete, and returning None for
+        # it would clear the account on the strength of a resource nobody read
+        # (INV-01).
+        if e.response["Error"]["Code"] in NOTHING_TO_READ_ERROR_CODES:
+            logger.debug(f"No policy to read on {resource_id}")
+            return None
+        raise
+
+    policy: JsonDict = json.loads(policy_response["{PolicyKey}"])
+    return policy
 
 
 def _analyze_policies_in_region(
     session: boto3.Session,
     region: str,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[{DataModel}]:
     """Analyze policies in specific region."""
-    client = session.client("{service}", region_name=region)
-    results = []
+    client: {ServiceClient} = session.client("{service}", region_name=region)
+    results: List[{DataModel}] = []
 
-    # Get resources with policies
+    # Materialized rather than streamed, so that a listing failure is raised
+    # here and reported as the listing failure it is. Left inside the loop it
+    # would reach _read_policy's caller as a per-resource failure and be
+    # logged as the wrong thing - and either way a region nobody listed must
+    # never pass for a region holding nothing.
     try:
-        paginator = client.get_paginator("{list_operation}")
+        pages = list(client.get_paginator("{list_operation}").paginate())
     except ClientError as e:
-        logger.warning(f"Failed to list {resource} in {region}: {e}")
-        return []
+        logger.error(f"Failed to list {resource} in {region}: {e}")
+        raise
 
-    for page in paginator.paginate():
-        resources = page.get("{ResourceKey}", [])
+    for item in [item for page in pages for item in page.get("{ResourceKey}", [])]:
+        policy = _read_policy(client, item["{ResourceIdKey}"])
+        if policy is None:
+            continue
 
-        for resource in resources:
-            try:
-                # Get policy for this resource
-                policy_response = client.{get_policy_operation}(
-                    {ResourceIdParam}=resource["{ResourceIdKey}"]
-                )
-                policy_str = policy_response.get("{PolicyKey}", "{}")
-                policy = json.loads(policy_str)
+        analysis = _analyze_policy(
+            policy=policy,
+            resource_arn=item["{ArnKey}"],
+            region=region,
+            org_account_ids=org_account_ids,
+            org_id=org_id,
+        )
 
-                # Extract account IDs from policy
-                all_account_ids = _extract_account_ids_from_policy(policy)
-
-                # Identify third-party (non-org) accounts
-                third_party_ids = all_account_ids - org_account_ids
-
-                result = {DataModel}(
-                    resource_arn=resource["{ArnKey}"],
-                    all_account_ids=all_account_ids,
-                    third_party_account_ids=third_party_ids,
-                    region=region,
-                )
-                results.append(result)
-
-            except ClientError as e:
-                logger.warning(f"Failed to get policy for resource: {e}")
-                continue
+        # Drop a resource with no finding before returning it. The service
+        # principal source is one of the findings: deny_service_confused_deputy
+        # reads it off this same analysis, so a resource whose only finding is
+        # a source guard must survive.
+        has_service_source = has_actionable_service_principal_source(analysis.service_principal_sources)
+        if analysis.third_party_account_ids or analysis.has_wildcard_principal or analysis.has_non_account_principals or has_service_source:
+            results.append(analysis)
 
     return results
 
 
-def _extract_account_ids_from_policy(policy: dict) -> Set[str]:
-    """
-    Extract all AWS account IDs from IAM policy.
+def _analyze_policy(
+    policy: JsonDict,
+    resource_arn: str,
+    region: str,
+    org_account_ids: Set[str],
+    org_id: str
+) -> {DataModel}:
+    """Read one policy document. Makes no AWS call, so it handles no ClientError."""
+    resource_description = f"policy on {resource_arn}"
+    all_account_ids: Set[str] = set()
+    has_wildcard = False
+    has_non_account_principals = False
+    sources: List[ServicePrincipalSource] = []
 
-    Handles various principal formats:
-    - String: "arn:aws:iam::111111111111:root"
-    - Dict: {"AWS": "arn:aws:iam::111111111111:root"}
-    - List: {"AWS": ["arn:aws:iam::111111111111:root"]}
-    """
-    account_ids = set()
+    # Read every Allow statement's Principal through the one shared reader.
+    # Do not write your own: see AP-007.
+    for statement in normalize_statements(policy, resource_description):
+        if statement.get("Effect") != "Allow":
+            continue
+        if has_not_principal(statement):
+            has_wildcard = True
+            continue
+        principal = statement.get("Principal")
+        if not principal:
+            continue
 
-    for statement in policy.get("Statement", []):
-        principal = statement.get("Principal", {})
+        sources.extend(read_service_principal_sources(
+            statement, org_account_ids, org_id, resource_description
+        ))
 
-        if isinstance(principal, str):
-            account_ids.update(_extract_from_string(principal))
-        elif isinstance(principal, dict):
-            for key, value in principal.items():
-                if isinstance(value, str):
-                    account_ids.update(_extract_from_string(value))
-                elif isinstance(value, list):
-                    for item in value:
-                        account_ids.update(_extract_from_string(item))
+        reading = read_principal(
+            principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description
+        )
+        all_account_ids.update(reading.account_ids)
+        has_wildcard = has_wildcard or reading.has_wildcard
+        has_non_account_principals = (
+            has_non_account_principals or reading.has_non_account_principals
+        )
 
-    return account_ids
-
-
-def _extract_from_string(principal: str) -> Set[str]:
-    """Extract account ID from principal string."""
-    account_ids = set()
-
-    # Match ARN format
-    arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
-    if arn_match:
-        account_ids.add(arn_match.group(1))
-
-    # Match raw account ID (12 digits)
-    elif re.match(r'^\d{12}$', principal):
-        account_ids.add(principal)
-
-    return account_ids
+    return {DataModel}(
+        resource_arn=resource_arn,
+        all_account_ids=all_account_ids,
+        # Identify third-party (non-org) accounts
+        third_party_account_ids=all_account_ids - org_account_ids,
+        has_wildcard_principal=has_wildcard,
+        has_non_account_principals=has_non_account_principals,
+        region=region,
+        service_principal_sources=sources,
+    )
 ```
 
-**Variables:**
-- `{service}`: `sqs`
-- `{resource}`: `queues`
-- `{DataModel}`: `SQSQueuePolicyAnalysis`
-- `{list_operation}`: `list_queues`
-- `{ResourceKey}`: `QueueUrls`
-- `{get_policy_operation}`: `get_queue_attributes`
-- `{ResourceIdParam}`: `QueueUrl`
-- `{ResourceIdKey}`: URL or ARN key
-- `{PolicyKey}`: `Policy`
-- `{ArnKey}`: `QueueArn`
+`has_wildcard_principal` and `has_non_account_principals` are two ways of saying
+the same thing, and the check must categorize either as a `VIOLATION`: an
+allowlist keyed on `aws:PrincipalAccount` can carry neither, so the RCP would
+deny a grant that exists today.
+
+The same facts are filtered on twice, and the templates do it in both places.
+Five of the six shipped analyzers drop a resource with no finding before
+returning it: `headroom/aws/ecr.py:248-264` names the predicate and applies it
+at `:380` and `:393`, and `kms.py:465`, `s3.py:313`, `secretsmanager.py:255`
+and `iam/roles.py:246` inline the same test. `analyze_sqs_queue_policies` is
+the sixth and appends every queue carrying a policy, which
+[`spec/checks/rcps/deny_sqs_third_party_access.md`](spec/checks/rcps/deny_sqs_third_party_access.md)
+records as that check's own accepted limitation rather than as the pattern to
+copy.
+
+The check's `analyze` filters again, and that is the filter that decides what
+gets counted: a resource whose only finding is one of the three - both flags
+and `third_party_account_ids` - is discarded before it is counted unless all
+three are tested. Five of the six shipped checks test all three
+(`deny_s3_third_party_access.py:84-88`).
+`deny_sts_third_party_assumerole.py:82-85` tests two, because
+`TrustPolicyAnalysis` (`headroom/aws/iam/roles.py:62-66`) carries no
+`has_non_account_principals` field at all;
+[`spec/checks/rcps/deny_sts_third_party_assumerole.md`](spec/checks/rcps/deny_sts_third_party_assumerole.md)
+owns why that principal is tolerated there and nowhere else.
+
+Let `UnknownPrincipalTypeError` propagate. Five of the six analyzers abort the
+run on a principal key AWS does not document, because catching it and moving on
+clears the account on the strength of a resource nobody read. `aws/sqs.py` is
+the one exception, and it is not a licence to copy: it catches the exception and
+records the queue as a read failure, which withholds the confused-deputy
+statement from the account rather than clearing it. A new analyzer propagates.
+See [`spec/contracts/policy-model.md`](spec/contracts/policy-model.md) and
+[`spec/checks/rcps/deny_sqs_third_party_access.md`](spec/checks/rcps/deny_sqs_third_party_access.md).
+
+`org_id` is the third argument every one of the six analyzers takes, and it is
+what `read_service_principal_sources` classifies an `aws:SourceOrgID` or
+`aws:SourceOrgPaths` guard against: a guard naming this organization needs no
+allowlist entry, and one naming any other organization names accounts no
+allowlist can carry. `deny_service_confused_deputy` is the check that reads the
+`service_principal_sources` the six analyzers record; the other six RCP checks
+ignore the field, and none of them has to thread anything of its own to get it.
+
+**Variables**, worked through Secrets Manager. Substituting these and running
+`mypy headroom/` on the result is the check that the template still holds; it
+is how the SQS worked example that stood here before was found to be broken.
+
+- `{service}`: `secretsmanager`
+- `{resource}`: `secrets`
+- `{DataModel}`: `SecretsPolicyAnalysis`
+- `{ServiceClient}`: `SecretsManagerClient`, from `mypy_boto3_secretsmanager.client`
+- `{list_operation}`: `list_secrets`
+- `{ResourceKey}`: `SecretList`
+- `{get_policy_operation}`: `get_resource_policy`
+- `{ResourceIdParam}`: `SecretId`
+- `{ResourceIdKey}`: `ARN`
+- `{PolicyKey}`: `ResourcePolicy`
+- `{ArnKey}`: `ARN`
+- `{BenignErrorCode}`: `ResourceNotFoundException`
+
+Two things the choice of service decides, and both bite:
+
+- **Whether the page items are objects.** `list_secrets` pages carry
+  `SecretList`, a list of objects with `ARN` and `Name`, so
+  `item["{ResourceIdKey}"]` reads. `list_queues` pages carry `QueueUrls`, a list
+  of **strings**, so the same line is a `str` subscript - `TypeError` at
+  runtime, `Invalid index type "str" for "str"` under `mypy`. For a service like
+  that, the item *is* the id, and `{ResourceIdKey}` and `{ArnKey}` do not apply.
+- **Whether the policy sits at the top of the response.**
+  `get_resource_policy` returns `ResourcePolicy` directly.
+  `get_queue_attributes` nests it, so the read there is
+  `policy_response["Attributes"]["Policy"]`.
+
+`{BenignErrorCode}` is the code that means there is nothing to read, and
+`NOTHING_TO_READ_ERROR_CODES` is a frozenset because one condition can have
+more than one code. Per service, from the tree:
+
+| Read | Codes |
+|---|---|
+| `secretsmanager.get_resource_policy` | `ResourceNotFoundException` (`secretsmanager.py:156`) |
+| `s3.get_bucket_policy` | `NoSuchBucketPolicy` (`s3.py:196`) |
+| `kms.get_key_policy` | `NotFoundException` (`kms.py:277`) |
+| `ecr.get_repository_policy` | `RepositoryPolicyNotFoundException` (`ecr.py:220`) |
+| `ecr.get_registry_policy` | `RegistryPolicyNotFoundException` (`ecr.py:304`) |
+| `sqs.get_queue_attributes` | `AWS.SimpleQueueService.NonExistentQueue` **and** `QueueDoesNotExist` - one condition, two spellings (`sqs.py:36-39`) |
+
+If you cannot name the codes and say what they mean, catch nothing.
 
 ---
 
@@ -632,7 +840,7 @@ fail_fast:
 
 test_coverage:
   requirement: 100%
-  verify: "pytest --cov=headroom --cov-report=term-missing"
+  verify: "coverage run --source=headroom,tests -m pytest tests/ && coverage report --include=headroom/* --show-missing --fail-under=100"
   scenarios:
     - mixed_compliance
     - all_compliant
@@ -650,7 +858,7 @@ test_coverage:
 mypy headroom/ tests/
 
 # Phase 2: Unit tests (must pass, 100% coverage)
-pytest tests/test_checks_{check_name}.py tests/test_aws_{service}.py -v --cov
+pytest tests/test_checks_{check_name}.py tests/test_aws_{service}.py -v
 
 # Phase 3: Integration tests (must pass)
 pytest tests/ -v
@@ -707,19 +915,38 @@ try:
 except ClientError:  # Outer same type
     pass
 
-# ✅ GOOD - Separate by operation
-try:
-    paginator = client.get_paginator("list")
-except ClientError as e:
-    logger.error(f"Failed to get paginator: {e}")
-    return []
+# ✅ GOOD - Separate by operation, and neither branch swallows
 
-for page in paginator.paginate():
+# The per-resource read lives in its own function. It tolerates the codes for
+# one benign condition and re-raises the rest.
+def _read_policy(client: ServiceClient, resource_id: str) -> Optional[JsonDict]:
     try:
-        process(page)
+        response = client.get_policy(ResourceId=resource_id)
     except ClientError as e:
-        logger.warning(f"Failed to process page: {e}")
-        continue
+        if e.response["Error"]["Code"] in NOTHING_TO_READ_ERROR_CODES:
+            logger.debug(f"No policy to read on {resource_id}")
+            return None
+        raise
+
+    policy: JsonDict = json.loads(response["Policy"])
+    return policy
+
+
+# The listing is materialized so that a listing failure is raised here and
+# reported as the listing failure it is. Re-raise: returning [] reports "no
+# findings" for resources nobody looked at, which is INV-01 exactly backwards.
+try:
+    pages = list(client.get_paginator("list").paginate())
+except ClientError as e:
+    logger.error(f"Failed to list: {e}")
+    raise
+
+# The loop runs outside that try, so the two handlers never nest - not
+# lexically and not at runtime. A failure inside _read_policy that is not one
+# of the tolerated codes propagates from where it happened, rather than being
+# caught here and logged as a listing failure.
+for page in pages:
+    process(page)
 ```
 
 ### AP-004: Defensive Empty Returns
@@ -785,9 +1012,13 @@ now pins.
 # ❌ BAD - Duplicated regex across files
 arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
 
-# ✅ GOOD - Use constant
-from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
-arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+# ❌ STILL BAD - your own walk over the Principal element
+if isinstance(principal, dict) and "AWS" in principal:
+    ...
+
+# ✅ GOOD - one reader, for every analyzer
+from .policy_documents import RESOURCE_POLICY_PRINCIPAL_TYPES, read_principal
+reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, description)
 ```
 
 The copies drift, and they drift narrower. `roles.py`, `kms.py` and `ecr.py`
@@ -795,6 +1026,14 @@ each carried `r'^arn:aws:iam::(\d{12}):'` while `s3.py`, `sqs.py` and
 `secretsmanager.py` used the constant. The three copies silently dropped every
 STS session principal and every non-commercial partition, so the accounts
 never reached the allowlist and the RCP denied them.
+
+The regex was the first half of that lesson and the whole `Principal` walk was
+the second. Six analyzers each carried their own, and they diverged on more than
+a pattern: which principal types they permitted, whether an unreadable one
+aborted the run or was skipped, and whether one carrying no account ID was a
+finding at all. Four answers to one question. `read_principal` in
+`headroom/aws/policy_documents.py` is now the only place a
+`Principal` element is interpreted; call it rather than writing the walk again.
 
 ---
 
@@ -821,43 +1060,30 @@ neither, should raise rather than be guessed at.
 
 ### AP-009: Scanning a Different Dimension Than the Policy Enforces
 
-```python
-# ❌ BAD - the SCP exempts by role tag; this reads the instance's tags
-for tag in instance.get('Tags', []):
-    if tag['Key'] == 'ExemptFromIMDSv2' and tag['Value'].lower() == 'true':
-        exemption_tag_present = True
+[INV-09](spec/invariants.md#inv-09--scan-the-dimension-the-policy-enforces) is
+the rule: read the dimension your statement conditions on, or declare the
+substitution and what it costs. This entry is the authoring habit behind it.
 
-# ✅ GOOD - read the dimension the condition key reads
-resolved = resolve_instance_profile_role(iam_client, profile_arn)
-role_exemption_tag_present = (
-    resolved.tags.get(IMDS_EXEMPTION_TAG_KEY) == IMDS_EXEMPTION_TAG_VALUE
-)
-```
-
-*Both halves of this example are historical, and the verdict was
-statement-specific.* The role tag was right for `DenyRoleDeliveryLessThan2`,
-which exempts on `aws:PrincipalTag`. That statement was later removed (AP-011),
-leaving only the launch-time one, which exempts on `aws:RequestTag` - and for
-*that* statement the instance's own tag is the correct thing to read, because
-`TagSpecifications` populates the request key and tags the instance in one
-act. The check reads instance tags again today.
-
-So do not read this entry as "instance tags are always wrong". Read it as: the
-dimension is a property of the statement, and it changes when the statement
-does. Re-derive it every time the policy moves.
-
-A check decides whether a policy is safe to attach. That answer is only as
-good as the match between what the scanner measures and what the policy
-evaluates. Three ways they drift apart, all observed in this repo:
+A check decides whether a policy is safe to attach. That answer is only as good
+as the match between what the scanner measures and what the policy evaluates.
+Four ways they drift apart, all observed in this repo:
 
 1. **Wrong dimension.** `aws:PrincipalTag/X`, `aws:RequestTag/X` and a tag on
    the resource are three different things wearing the same tag name. The
-   `deny_ec2_imds_v1` scanner read instance tags for a policy that exempts by
-   role tag, so accounts reported zero violations while enforcement would deny
-   every API call those instances made - the scan named the instances that
-   would break as its evidence the SCP was safe.
-2. **Wrong case sensitivity - in both directions at once.** A tag condition
-   key has two halves that match by opposite rules. IAM matches condition key
+   `deny_ec2_imds_v1` scanner once read instance tags for a statement that
+   exempted by *role* tag, so accounts reported zero violations while
+   enforcement would deny every API call those instances made - the scan named
+   the instances that would break as its evidence the SCP was safe. The role
+   tag was right for that statement. It is not right for the launch-time
+   statement that replaced it, which exempts on `aws:RequestTag`, and for which
+   the instance's own tag is a defensible proxy because `TagSpecifications`
+   populates the request key and tags the instance in one act. The dimension is
+   a property of the statement and changes when the statement does. Re-derive
+   it every time the policy moves; do not read this entry as "instance tags are
+   always wrong".
+
+2. **Wrong case sensitivity - in both directions at once.** A tag condition key
+   has two halves that match by opposite rules. IAM matches condition key
    *names* without regard to case, and the tag key in
    `aws:PrincipalTag/ExemptFromIMDSv2` is part of the name, so
    `exemptfromimdsv2` matches. `StringNotEquals` compares the *value*
@@ -866,32 +1092,36 @@ evaluates. Three ways they drift apart, all observed in this repo:
    against its own rule, and note that `StringEqualsIgnoreCase` exists when you
    want the other comparison. Where a principal could carry the key twice in
    cases that differ, AWS calls the result an unexpected condition failure -
-   raise rather than pick one.
+   raise rather than pick one. All three rules live in
+   `find_tag_value_as_iam_matches` in `headroom/aws/helpers.py`; call it rather
+   than writing the comparison again. Two checks reading the same kind of tag
+   by two different rules is a bug this repository has had once.
+
 3. **Request state vs. resource state.** A condition key on a create action is
    evaluated against the request, not against the object that results, so a
    scan of running resources is not automatically a scan of what enforcement
-   will see. Be careful about the inverse mistake too: "the request" is not the
-   same as "the literal parameters the caller typed".
-   `ec2:MetadataHttpTokens` was measured resolving from the effective
-   configuration - an AMI with `imds-support=v2.0` populates it as `required`
-   for a request that names no `MetadataOptions` - so the naive reading
-   overstated the gap. Where a scan genuinely cannot observe the enforced
-   dimension, say so in the check's docstring instead of implying the clean
-   scan covers it.
+   will see. The inverse mistake is just as easy: "the request" is not "the
+   literal parameters the caller typed". `ec2:MetadataHttpTokens` resolves from
+   the effective configuration - an AMI with `imds-support=v2.0` populates it
+   as `required` for a request naming no `MetadataOptions` - so the naive
+   reading overstated the gap.
 
-   **A docstring was not enough.** That remedy was applied here and the defect
-   survived it: the docstring said the clean scan did not cover the launch-time
-   statement, while the tool went on printing `100.0% - safe to deploy at root
-   level` for a fleet made entirely of IMDSv1 instances. Prose in a file the
-   operator is not reading does not correct a number the operator is reading.
-   A gap the scan cannot close has to change the verdict, or stop being part
-   of what the verdict licenses. See AP-011.
+   Two follow-ons, both learned the hard way here:
 
-   **And check whether the gap is real before designing around it.** "The scan
-   cannot observe a request in flight" was true and led straight to a wrong
-   conclusion, because an observable thing stood in for it: the request's tags
-   land on the resource it creates. A key you cannot read directly may still
-   have a proxy. Name the proxy, argue for it, measure it - AP-011 habit 3.
+   - **A docstring is not a remedy.** The docstring said the clean scan did not
+     cover the launch-time statement while the tool went on printing
+     `100.0% - safe to deploy at root level` for a fleet made entirely of
+     IMDSv1 instances. Prose in a file the operator is not reading does not
+     correct a number the operator is reading. A gap the scan cannot close has
+     to change the verdict, or stop being part of what the verdict licenses.
+     See AP-011 and
+     [INV-10](spec/invariants.md#inv-10--one-verdict-gates-one-statement).
+   - **Check whether the gap is real before designing around it.** "The scan
+     cannot observe a request in flight" was true and led straight to a wrong
+     conclusion, because an observable thing stood in for it: the request's
+     tags land on the resource it creates. A key you cannot read directly may
+     still have a proxy. Name the proxy, argue for it in the check's
+     specification, measure it - AP-011 habit 3.
 
    None of this is settleable from documentation. AWS's own guide says
    `HttpTokens` requires `HttpEndpoint=enabled`; `RunInstances` accepts the
@@ -899,21 +1129,16 @@ evaluates. Three ways they drift apart, all observed in this repo:
    generated policy, prove it with `run-instances --dry-run` under a throwaway
    role carrying the statement, with a control request that must be denied so a
    broken probe cannot pass as a clean result.
-4. **One key read two ways.** Every condition key a statement adds is a key
-   the scanner has to mirror, and a second key is where the two drift. Both
-   IMDS statements were briefly built around a `ec2:MetadataHttpEndpoint`
-   clause, on the theory that a launch disabling IMDS must stay possible; the
-   hop-limit statement never carried it, so the pair disagreed about the same
-   fleet. Dropping it left one key, `HttpTokens`, deciding in both the policy
-   and the check. Prefer the narrower statement whose extra permission the
-   operator can buy back for free - here, naming `HttpTokens=required` on a
-   launch with no metadata service, which changes no behaviour.
 
-Before writing the analyzer, read the statement and list every condition key
-in it. For each one, name what the scanner will read to model it. A key with
-no answer is a gap to document, not to approximate.
-
----
+4. **One key read two ways.** Every condition key a statement adds is a key the
+   scanner has to mirror, and a second key is where the two drift. Both IMDS
+   statements were briefly built around an `ec2:MetadataHttpEndpoint` clause,
+   on the theory that a launch disabling IMDS must stay possible; the hop-limit
+   statement never carried it, so the pair disagreed about the same fleet.
+   Dropping it left one key, `HttpTokens`, deciding in both the policy and the
+   check. Prefer the narrower statement whose extra permission the operator can
+   buy back for free - here, naming `HttpTokens=required` on a launch with no
+   metadata service, which changes no behaviour.
 
 ### AP-010: Judging a Target by Part of What It Governs
 
@@ -1108,12 +1333,25 @@ must_modify:
         }
       },
 
-  - path: headroom/terraform/generate_{type}.py
-    function: "_build_{type}_terraform_module"
+  - path: headroom/terraform/generate_scps.py
+    function: "_build_<service>_terraform_parameters"
     add_lines: |
+      parameters.append(TerraformComment("<Service>"))  # only when the service is new
       {check_name} = "{check_name}" in enabled_policies
-      terraform_content += f"  {check_name} = {{str({check_name}).lower()}}\n"
+      parameters.append(TerraformParameter("{check_name}", {check_name}))
+    location: "alphabetical by service, following the deny_lambda_auth_type_none shape"
+
+  - path: headroom/terraform/generate_rcps.py
+    table: "RCP_TERRAFORM_VARIABLES"
+    add_entry: |
+      {CHECK_CONSTANT}: RcpTerraformVars(
+          comment="<Service>",
+          enable_var="{check_name}",
+          allowlist_var="{allowlist_var}",
+      ),
     location: "alphabetical by service"
+    do_not: "Hand-write a renderer here. _build_rcp_terraform_module loops this table; a hand-written branch is what INV-13 forbids."
+    enforced_by: "test_table_covers_every_registered_rcp_check fails by name if the entry is missing."
 
 # A check whose SCP statement is scoped by an allowlist needs EVERY step
 # below. Stop short anywhere and the check still reports 100% compliance,
@@ -1178,7 +1416,10 @@ if_check_has_exemptions:
     must_read: |
       The dimension the condition key reads, not a same-named tag on a
       convenient object. aws:PrincipalTag reads the calling role's tags;
-      aws:RequestTag reads the create request's; neither reads the resource's.
+      aws:RequestTag reads the create request's. Neither is the resource's own
+      tag. Substituting one is allowed only where you can argue the proxy is
+      exact and write that argument into the check's specification, as
+      spec/checks/scps/deny_ec2_imds_v1.md does. See INV-09.
 
   - path: headroom/constants.py
     add_lines: |
@@ -1186,14 +1427,15 @@ if_check_has_exemptions:
       operator that compares them. StringNotEquals is case-sensitive, so the
       scanner must not lowercase what enforcement will not.
 
-  - path: headroom/checks/{type}/{check_name}.py
-    docstring: |
-      State which statements a clean scan clears and which it cannot. An
-      exemption the scan cannot observe - a launch-request tag, say - belongs
-      in the docstring, not in an implied guarantee.
+  - path: spec/checks/{type}/{check_name}.md
+    must_state: |
+      Which statements a clean scan clears and which it cannot, in the
+      accepted-limitations section. A gap the scan cannot close changes the
+      verdict or leaves the statement ungenerated; it is never carried by
+      prose alone. See AP-009 habit 3.
 
   - path: tests/test_aws_{service}.py
-    must_test: [right_dimension_exempts, wrong_dimension_does_not, value_case_is_exact]
+    must_test: [right_dimension_exempts, wrong_dimension_does_not, value_case_is_exact, key_case_is_ignored, key_twice_in_differing_cases_raises]
 
 optional_modify:
   - path: test_environment/test_{check_name}.tf
@@ -1233,25 +1475,34 @@ def get_analysis(session: boto3.Session) -> List[Model]:
 # USE: For paginated AWS API calls
 # COPY: This exact pattern
 
-# Setup paginator (separate try/except)
+# The per-item read, in its own function. The codes for one benign condition
+# are tolerated; everything else propagates.
+def _read_item(client: ServiceClient, item_id: str) -> Optional[JsonDict]:
+    try:
+        return client.get_item(ItemId=item_id)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in NOTHING_TO_READ_ERROR_CODES:
+            logger.debug(f"{item_id} is gone, skipping")
+            return None
+        raise
+
+
+# The listing, materialized and on its own: a failure here is a set of items
+# nobody read, so it aborts the run rather than shortening the results
+# (INV-01, INV-02).
 try:
-    paginator = client.get_paginator("operation")
+    pages = list(client.get_paginator("operation").paginate())
 except ClientError as e:
-    logger.warning(f"Failed to get paginator: {e}")
-    return []
+    logger.error(f"Failed to list items: {e}")
+    raise
 
-# Process pages
-for page in paginator.paginate():
-    items = page.get("Items", [])
-
-    for item in items:
-        # Per-item processing (separate try/except)
-        try:
-            result = process(item)
-            results.append(result)
-        except ClientError as e:
-            logger.warning(f"Failed to process item: {e}")
-            continue  # Skip item, continue with others
+# The walk runs outside that try, so a per-item failure is never caught by the
+# listing handler and mis-reported as a listing failure.
+for item in [item for page in pages for item in page.get("Items", [])]:
+    read = _read_item(client, item["Id"])
+    if read is None:
+        continue
+    results.append(process(read))
 ```
 
 ### Pattern: Exemption Categorization
@@ -1298,34 +1549,43 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict
 ```python
 # USE: For RCP checks analyzing IAM policies
 # COPY: This exact pattern
+# _read_policy and _analyze_policy are the two helpers from
+# "Template: RCP AWS Analysis (Policy Extraction)" above. _analyze_policy is
+# where read_principal does the work - never write your own walk (AP-007).
 
 def analyze_policies(
     session: boto3.Session,
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    org_id: str
 ) -> List[Result]:
     all_results = []
-    regions = get_all_regions(session)
 
-    for region in regions:
-        client = session.client("service", region_name=region)
+    for region in get_all_regions(session):
+        client: ServiceClient = session.client("service", region_name=region)
 
-        # Get resources with policies
-        for resource in _get_resources(client, region):
-            policy = _get_policy(client, resource)
+        # The listing on its own: a failure enumerating a region is a region
+        # nobody read, so it aborts the run.
+        try:
+            resources = list(_get_resources(client, region))
+        except ClientError as e:
+            logger.error(f"Failed to list resources in {region}: {e}")
+            raise
 
-            # Extract account IDs from principals
-            all_account_ids = _extract_account_ids(policy)
+        # Outside that try, so a per-resource failure propagates from where it
+        # happened instead of being logged as a listing failure. The codes for
+        # one benign condition are tolerated inside _read_policy.
+        for resource in resources:
+            policy = _read_policy(client, resource["Id"])
+            if policy is None:
+                continue
 
-            # Identify third-party (non-org) accounts
-            third_party_ids = all_account_ids - org_account_ids
-
-            result = Result(
+            all_results.append(_analyze_policy(
+                policy=policy,
                 resource_arn=resource["Arn"],
-                all_account_ids=all_account_ids,
-                third_party_account_ids=third_party_ids,
                 region=region,
-            )
-            all_results.append(result)
+                org_account_ids=org_account_ids,
+                org_id=org_id,
+            ))
 
     return all_results
 ```
@@ -1367,13 +1627,13 @@ error_tests_fail:
     - "Test all scenarios: mixed, all_compliant, all_violations, empty"
 
 error_coverage_below_100:
-  symptom: "pytest --cov shows <100%"
+  symptom: "coverage report shows <100%"
   causes:
     - "Missing edge case tests"
     - "Untested error paths"
     - "Missing categorization tests"
   fix:
-    - "Run pytest --cov-report=term-missing to see untested lines"
+    - "Run coverage report --include=headroom/* --show-missing to see untested lines"
     - "Add tests for all code paths"
 
 error_terraform_validation_fails:
@@ -1436,7 +1696,7 @@ test_data_standards:
     bug report, console screenshot, API response, or error message gets rewritten
     to its placeholder before it enters the repo -- including in the commit
     message.
-  applies_to: ["tests/", "documentation/", "docstrings", "sample_config.yaml", "commit messages", "PR descriptions"]
+  applies_to: ["headroom/", "spec/", "tests/", "test_environment/", "documentation/", "docstrings", "sample_config.yaml", "commit messages", "PR descriptions"]
   not_sensitive: ["region names", "service names", "AWS-owned owner aliases: amazon, aws-marketplace"]
 
   fake_account_ids:
@@ -1463,7 +1723,7 @@ test_data_standards:
     iam_access_key: "AKIAIOSFODNN7EXAMPLE"                   # AWS's own example key
     ipv4_address: "111.111.111.111"                          # every octet one repeated digit
     ipv4_second: "222.222.222.222"                           # when a test needs a second host
-    never_use: "AWS doc-style bodies such as i-1234567890abcdef0 or ami-0abcdef1234567890"
+    never_use_style: "AWS documentation's own hex bodies - the 1234567890abcdef0 and 0abcdef1234567890 its EC2 examples print"
     never_use_ip: "52.x and 54.x above all, which are live AWS EC2 ranges and read as a real instance's public IP"
     reason: "A plausible-looking body cannot be told from a real one on review"
 
@@ -1502,8 +1762,10 @@ step_1_gather_requirements:
   collect:
     - check_name: "deny_{service}_{descriptor}"
     - check_type: "SCP or RCP"
-    - aws_service: "ec2, rds, s3, iam, etc."
-    - pattern: "1-6 from POLICY_TAXONOMY.md"
+    - aws_service: "the service the check reads. headroom/aws/ holds an
+        adapter for ec2, ecr, eks, iam, kms, lambda, rds, s3, secretsmanager
+        and sqs today; anything else is a new module"
+    - pattern: "1-6 from spec/contracts/policy-model.md"
     - api_calls: ["list operation", "describe operation"]
     - condition_keys: "From AWS Service Authorization Reference"
 
@@ -1518,7 +1780,7 @@ step_3_create_tests:
   sequence:
     - Create tests/test_aws_{service}.py
     - Create tests/test_checks_{check_name}.py
-    - Run: "pytest tests/test_checks_{check_name}.py tests/test_aws_{service}.py -v --cov"
+    - Run: "pytest tests/test_checks_{check_name}.py tests/test_aws_{service}.py -v"
     - Verify: "100% coverage"
 
 step_4_update_terraform:
@@ -1531,7 +1793,8 @@ step_4_update_terraform:
 step_5_validate:
   sequence:
     - Run: "mypy headroom/ tests/"
-    - Run: "pytest tests/ --cov=headroom"
+    - Run: "coverage run --source=headroom,tests -m pytest tests/"
+    - Run: "coverage report --include=headroom/* --show-missing --fail-under=100"
     - Run: "tox"
     - All must pass with no errors
 
@@ -1539,7 +1802,7 @@ step_6_e2e_optional:
   if_needed:
     - Create test_environment/test_{check_name}.tf
     - Document in test_environment/test_{check_name}/README.md
-    - Run: "python -m headroom --config test_config.yaml"
+    - Run: "python -m headroom --config config.yaml"
     - Verify generated results and Terraform
 ```
 
@@ -1623,7 +1886,7 @@ base_class:
   methods:
     - analyze(session) -> List[T]
     - categorize_result(result: T) -> tuple[CheckCategory, JsonDict]
-    - build_summary_fields(result) -> JsonDict
+    - build_summary_fields(check_result: CategorizedCheckResult) -> JsonDict
   template_method: execute()  # Calls your methods
 
 registry:
@@ -1635,8 +1898,14 @@ type_aliases:
   file: headroom/types.py
   use:
     - JsonDict: "Instead of Dict[str, Any]"
+    - AccountThirdPartyMap: "Account ID to the third-party accounts it reaches"
+
+enums:
+  file: headroom/enums.py
+  use:
     - CheckCategory: "For categorization return values"
-    - PrincipalType: "For IAM principal parsing"
+    - CheckType: "SCPS or RCPS"
+    - PlacementLevel: "ROOT, OU, ACCOUNT or NONE"
 
 helpers:
   file: headroom/aws/helpers.py
@@ -1651,9 +1920,15 @@ constants:
   format: "UPPER_SNAKE_CASE"
 
 policy_patterns:
-  file: documentation/POLICY_TAXONOMY.md
+  file: spec/contracts/policy-model.md
   use: "Determine which pattern (1-6) applies"
   examples: "See existing checks as pattern examples"
+
+specification:
+  manifest: spec/README.md
+  invariants: spec/invariants.md
+  per_check: "spec/checks/scps/{check_name}.md or spec/checks/rcps/{check_name}.md"
+  enforced_by: tests/test_spec_corpus.py
 ```
 
 ---
@@ -1665,10 +1940,11 @@ before_completion:
   code_quality:
     - mypy_passes: "mypy headroom/ tests/"
     - tests_pass: "pytest tests/ -v"
-    - coverage_100: "pytest --cov=headroom"
+    - coverage_100: "coverage run --source=headroom,tests -m pytest tests/ && coverage report --include=headroom/* --show-missing --fail-under=100"
     - tox_passes: "tox"
 
   files_created:
+    - spec/checks/{type}/{check_name}.md: "Written first, before any code"
     - headroom/constants.py: "Added constant"
     - headroom/aws/{service}.py: "Created or updated"
     - headroom/checks/{type}/{check_name}.py: "Created with @register_check"
@@ -1681,6 +1957,7 @@ before_completion:
     - headroom/terraform/generate_{type}.py: "Added generation logic"
 
   verification:
+    - specification_valid: "pytest tests/test_spec_corpus.py"
     - check_registered: "Appears in get_check_names()"
     - terraform_validates: "terraform validate passes"
     - no_lint_errors: "No flake8 errors"
@@ -1698,6 +1975,6 @@ before_completion:
 
 For questions, reference:
 - Existing checks in `headroom/checks/scps/` and `headroom/checks/rcps/`
-- `documentation/POLICY_TAXONOMY.md` for policy patterns
+- `spec/contracts/policy-model.md` for policy patterns, and `spec/README.md` for which specification owns what
 - `headroom/checks/base.py` for BaseCheck interface
 - Test files in `tests/` for test examples

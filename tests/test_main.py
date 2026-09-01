@@ -1,4 +1,5 @@
 import io
+import logging
 import pytest
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch, mock_open
@@ -144,6 +145,33 @@ class TestParseCliArgs:
         help_text = " ".join(parser_output.getvalue().split())
 
         assert "default 16, maximum 32" in help_text
+
+    def test_the_help_text_prints_the_default_config_py_holds(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """
+        Move a directory default and the help text moves with it.
+
+        The three paths reached `--help` as English inside `help=` strings,
+        so `config.py` and `usage.py` each held the literal and the help
+        text went on advertising the old path after `config.py` changed.
+        `spec/contracts/configuration.md` gives a default one definition
+        site, and a help string stating the value is a second one.
+        """
+        monkeypatch.setattr("headroom.usage.DEFAULT_RESULTS_DIR", "elsewhere/results")
+        monkeypatch.setattr("headroom.usage.DEFAULT_SCPS_DIR", "elsewhere/scps")
+        monkeypatch.setattr("headroom.usage.DEFAULT_RCPS_DIR", "elsewhere/rcps")
+
+        with patch('sys.argv', ['headroom', '--help']):
+            with pytest.raises(SystemExit):
+                parse_cli_args()
+
+        printed = capsys.readouterr().out
+        assert "elsewhere/results" in printed
+        assert "elsewhere/scps" in printed
+        assert "elsewhere/rcps" in printed
 
 
 class TestMergeConfigs:
@@ -788,3 +816,81 @@ class TestEnsureOrgInfoSymlink:
 
             # Verify _create_org_info_symlink was called with correct args
             mock_create_symlink.assert_called_once_with(mock_rcps_path, "test_scps")
+
+
+class TestMain:
+    """Test main function."""
+
+    def test_a_missing_management_account_id_reaches_the_labeled_handler(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """
+        Discovery runs inside a reported scope, so its ValueError is labeled.
+
+        `get_management_account_session` raises this before any AWS call is
+        made. The existing coverage of that handler reached it only because
+        an autouse fixture patched the phase out, deleting the raise that
+        fires first - so the branch was covered and unreachable at once.
+        """
+        config = MagicMock()
+        config.management_account_id = None
+        config.model_dump.return_value = {}
+        config.scps_dir = "scps"
+        config.rcps_dir = "rcps"
+
+        with (
+            patch('headroom.main.parse_cli_args', return_value=MagicMock()),
+            patch('headroom.main.load_yaml_config', return_value={}),
+            patch('headroom.main.merge_configs', return_value=config),
+            patch('headroom.main.get_security_analysis_session', return_value=MagicMock()),
+            patch('sys.exit', side_effect=SystemExit(1)),
+        ):
+            with pytest.raises(SystemExit):
+                main()
+
+        assert (
+            "Configuration Error during organization discovery"
+            in capsys.readouterr().out
+        )
+
+    def test_a_scan_failure_is_not_logged_as_a_terraform_failure(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        The scan's own scope names the scan, not the stage after it.
+
+        One handler for the whole run put every RuntimeError the scan raises
+        behind a log line naming Terraform generation - a stage the run never
+        reached. A region that could not be read, a tag carried in two cases,
+        and an unrecognized account lifecycle state all reported themselves as
+        a generation failure.
+        """
+        config = MagicMock()
+        config.management_account_id = "111111111111"
+        config.model_dump.return_value = {}
+        config.scps_dir = "scps"
+        config.rcps_dir = "rcps"
+        scan_failure = RuntimeError(
+            "Failed to analyze EC2 instances in region us-east-1"
+        )
+
+        with (
+            patch('headroom.main.parse_cli_args', return_value=MagicMock()),
+            patch('headroom.main.load_yaml_config', return_value={}),
+            patch('headroom.main.merge_configs', return_value=config),
+            patch('headroom.main.get_security_analysis_session', return_value=MagicMock()),
+            patch('headroom.main.get_management_account_session', return_value=MagicMock()),
+            patch('headroom.main.discover_organization', return_value=MagicMock()),
+            patch('headroom.main.perform_analysis', side_effect=scan_failure),
+            patch('sys.exit', side_effect=SystemExit(1)),
+            caplog.at_level(logging.ERROR, logger="headroom.main"),
+        ):
+            with pytest.raises(SystemExit):
+                main()
+
+        assert caplog.messages == [
+            "Runtime error during the scan: "
+            "Failed to analyze EC2 instances in region us-east-1"
+        ]

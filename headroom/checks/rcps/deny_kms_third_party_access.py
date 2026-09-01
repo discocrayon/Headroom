@@ -77,8 +77,9 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
         """
         Analyze KMS key policies for third-party access.
 
-        Filters to only return keys with wildcards or third-party access.
-        Keys with neither are not relevant to this check.
+        Filters to only return keys with a wildcard principal, a principal
+        type carrying no account ID, or third-party account access.
+        Keys with none of the three are not relevant to this check.
 
         Args:
             session: boto3.Session for the target account
@@ -89,7 +90,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
         all_results = analyze_kms_key_policies(session, self.org_account_ids, self.org_id)
         return [
             result for result in all_results
-            if result.has_wildcard_principal or result.third_party_account_ids
+            if result.has_wildcard_principal or result.has_non_account_principals or result.third_party_account_ids
         ]
 
     def categorize_result(
@@ -115,6 +116,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
                 for account_id, actions in result.actions_by_account.items()
             },
             "has_wildcard_principal": result.has_wildcard_principal,
+            "has_non_account_principals": result.has_non_account_principals,
             "grants": [
                 {
                     "grant_id": grant.grant_id,
@@ -136,7 +138,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
                 self.all_actions_by_account[account_id] = set()
             self.all_actions_by_account[account_id].update(actions)
 
-        if result.has_wildcard_principal:
+        if result.has_wildcard_principal or result.has_non_account_principals:
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 

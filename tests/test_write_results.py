@@ -661,6 +661,36 @@ class TestRedactAccountIdsFromArns:
         assert result["s3_arn"] == "arn:aws:s3::REDACTED:bucket/MyBucket"
         assert result["ec2_arn"] == "arn:aws:ec2::REDACTED:instance/i-11111111111111111"
 
+    def test_redact_every_aws_partition(self) -> None:
+        """
+        An account ID leaks in whatever partition the operator runs in.
+
+        The pattern matched the literal arn:aws:, so a GovCloud or China
+        operator setting exclude_account_ids got a results directory that
+        disclosed exactly what the setting exists to withhold - and the setting
+        exists so those files can be committed.
+        """
+        data = {
+            "commercial": "arn:aws:iam::111111111111:role/MyRole",
+            "govcloud": "arn:aws-us-gov:iam::222222222222:role/MyRole",
+            "china": "arn:aws-cn:iam::333333333333:role/MyRole",
+            "isolated": "arn:aws-iso-b:iam::444444444444:role/MyRole",
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result["commercial"] == "arn:aws:iam::REDACTED:role/MyRole"
+        assert result["govcloud"] == "arn:aws-us-gov:iam::REDACTED:role/MyRole"
+        assert result["china"] == "arn:aws-cn:iam::REDACTED:role/MyRole"
+        assert result["isolated"] == "arn:aws-iso-b:iam::REDACTED:role/MyRole"
+
+    def test_redact_leaves_an_account_shaped_number_outside_an_arn(self) -> None:
+        """Widening the partition must not widen what counts as an ARN."""
+        data = {
+            "not_an_arn": "the account is 111111111111 today",
+            "wrong_scheme": "urn:aws:iam::111111111111:role/MyRole",
+        }
+        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        assert result == data
+
     def test_redact_arns_with_region(self) -> None:
         """Test redacting account IDs from ARNs with region field (e.g., RDS)."""
         data = {

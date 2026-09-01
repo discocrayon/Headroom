@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 from botocore.exceptions import ClientError
-from mypy_boto3_organizations.client import OrganizationsClient
 
 from .config import HeadroomConfig
 from .log_context import configure_logging
@@ -17,6 +16,7 @@ from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_place
 from .terraform.generate_org_info import generate_terraform_org_info
 from .terraform.models import TerraformPlan
 from .terraform.reconcile import reconcile_generated_terraform
+from .aws.organization import get_organizations_client
 from .aws.organization_snapshot import discover_organization
 from .types import OrganizationHierarchy
 from .constants import ORG_INFO_FILENAME
@@ -221,7 +221,7 @@ def main() -> None:
     with _failures_reported("organization discovery"):
         security_session = get_security_analysis_session(final_config)
         mgmt_session = get_management_account_session(final_config, security_session)
-        org_client: OrganizationsClient = mgmt_session.client("organizations")
+        org_client = get_organizations_client(mgmt_session)
         snapshot = discover_organization(final_config, org_client)
 
     with _failures_reported("the scan"):

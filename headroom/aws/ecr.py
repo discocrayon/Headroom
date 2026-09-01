@@ -10,44 +10,29 @@ access (RCP checks).
 
 import json
 import logging
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set
+from typing import Dict, List, Literal, NamedTuple, Optional, Set
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_ecr.client import ECRClient
 from mypy_boto3_ecr.type_defs import RepositoryTypeDef
 
-from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..types import JsonDict
 from .helpers import get_all_regions, memoize_per_session, paginate
 from .policy_documents import (
+    normalize_actions,
+    RESOURCE_POLICY_PRINCIPAL_TYPES,
     ServicePrincipalSource,
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
+    read_principal,
     read_service_principal_sources,
 )
 
 logger = logging.getLogger(__name__)
-
-
-class UnknownPrincipalTypeError(Exception):
-    """Raised when an unknown principal type is encountered in a repository policy."""
-
-
-class UnsupportedPrincipalTypeError(Exception):
-    """
-    Raised when a principal type would break RCP deployment.
-
-    This includes Federated principals or other types that the RCP cannot handle.
-    """
-
-
-ALLOWED_PRINCIPAL_TYPES = {"AWS", "Service"}
-FAIL_FAST_PRINCIPAL_TYPES = {"Federated"}
 
 
 PolicyScope = Literal["repository", "registry"]
@@ -75,6 +60,9 @@ class ECRPolicyAnalysis:
         has_wildcard_principal: True if the policy grants to principals the
             analyzer cannot enumerate - `Principal: "*"`, or an Allow with
             NotPrincipal, which reaches everyone it does not name
+        has_non_account_principals: True if the policy grants to a principal
+            type carrying no account ID - Federated or CanonicalUser - which
+            no allowlist keyed on aws:PrincipalAccount can preserve
         service_principal_sources: Service principals this policy trusts,
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
@@ -87,104 +75,8 @@ class ECRPolicyAnalysis:
     repository_arn: Optional[str] = None
     actions_by_account: Dict[str, List[str]] = field(default_factory=dict)
     has_wildcard_principal: bool = False
+    has_non_account_principals: bool = False
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
-
-
-def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
-    """
-    Extract AWS account IDs from an ECR policy principal.
-
-    Args:
-        principal: Principal field from policy statement (can be string, list, or dict)
-
-    Returns:
-        Set of extracted account IDs (12-digit strings)
-
-    Raises:
-        UnknownPrincipalTypeError: If an unknown principal type is encountered
-        UnsupportedPrincipalTypeError: If a principal type would break RCP deployment
-    """
-    account_ids: Set[str] = set()
-
-    if isinstance(principal, str):
-        if principal == "*":
-            return set()
-        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
-        if arn_match:
-            account_ids.add(arn_match.group(1))
-        else:
-            if re.match(r'^\d{12}$', principal):
-                account_ids.add(principal)
-    elif isinstance(principal, list):
-        for item in principal:
-            account_ids.update(_extract_account_ids_from_principal(item))
-    elif isinstance(principal, dict):
-        unknown_types = set(principal.keys()) - ALLOWED_PRINCIPAL_TYPES - FAIL_FAST_PRINCIPAL_TYPES
-        if unknown_types:
-            raise UnknownPrincipalTypeError(
-                f"Unknown principal type(s) found in ECR policy: {unknown_types}. "
-                f"Expected one of: {ALLOWED_PRINCIPAL_TYPES}"
-            )
-
-        fail_fast_types = set(principal.keys()) & FAIL_FAST_PRINCIPAL_TYPES
-        if fail_fast_types:
-            raise UnsupportedPrincipalTypeError(
-                f"ECR repository policy contains {fail_fast_types} principal type(s). "
-                f"These principal types would break if the RCP is deployed because the RCP "
-                f"restricts based on aws:PrincipalAccount, which does not apply to {fail_fast_types} principals. "
-                f"Remove these principals from the ECR policy before deploying the RCP."
-            )
-
-        if "AWS" in principal:
-            value = principal["AWS"]
-            if isinstance(value, str):
-                account_ids.update(_extract_account_ids_from_principal(value))
-            elif isinstance(value, list):
-                for item in value:
-                    account_ids.update(_extract_account_ids_from_principal(item))
-
-    return account_ids
-
-
-def _has_wildcard_principal(principal: Any) -> bool:
-    """
-    Check if principal contains a wildcard.
-
-    Args:
-        principal: Principal field from policy statement
-
-    Returns:
-        True if principal contains wildcard
-    """
-    if isinstance(principal, str):
-        return principal == "*"
-    elif isinstance(principal, list):
-        return any(_has_wildcard_principal(item) for item in principal)
-    elif isinstance(principal, dict):
-        for key, value in principal.items():
-            if key == "AWS":
-                if isinstance(value, str) and value == "*":
-                    return True
-                if isinstance(value, list) and any(item == "*" for item in value):
-                    return True
-    return False
-
-
-def _normalize_actions(action: Any) -> List[str]:
-    """
-    Normalize action field to list of strings.
-
-    Args:
-        action: Action field from policy statement (can be string or list)
-
-    Returns:
-        List of action strings
-    """
-    if isinstance(action, str):
-        return [action]
-    elif isinstance(action, list):
-        return action
-    return []
 
 
 class PolicyFindings(NamedTuple):
@@ -197,6 +89,9 @@ class PolicyFindings(NamedTuple):
         actions_by_account: ECR actions each of those accounts is allowed
         has_wildcard_principal: True if the policy grants to principals the
             analyzer cannot enumerate
+        has_non_account_principals: True if the policy grants to a principal
+            type carrying no account ID - Federated or CanonicalUser - which
+            no allowlist keyed on aws:PrincipalAccount can preserve
         service_principal_sources: Service principals this policy trusts,
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
@@ -205,6 +100,7 @@ class PolicyFindings(NamedTuple):
     third_party_account_ids: Set[str]
     actions_by_account: Dict[str, List[str]]
     has_wildcard_principal: bool
+    has_non_account_principals: bool
     service_principal_sources: List[ServicePrincipalSource]
 
 
@@ -231,13 +127,13 @@ def _analyze_policy_statements(
         PolicyFindings summarizing the policy's third-party grants
 
     Raises:
-        UnknownPrincipalTypeError: If an unknown principal type is encountered
-        UnsupportedPrincipalTypeError: If policy contains principals that would break RCP
-        MalformedPolicyError: If Statement is neither an object nor a list
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
     """
     third_party_accounts: Set[str] = set()
     actions_by_account: defaultdict[str, Set[str]] = defaultdict(set)
     has_wildcard = False
+    has_non_account_principals = False
     sources: List[ServicePrincipalSource] = []
 
     for statement in normalize_statements(policy, context):
@@ -258,12 +154,18 @@ def _analyze_policy_statements(
             read_service_principal_sources(statement, org_account_ids, org_id, context)
         )
 
-        if _has_wildcard_principal(principal):
+        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, context)
+
+        has_non_account_principals = (
+            has_non_account_principals or reading.has_non_account_principals
+        )
+
+        if reading.has_wildcard:
             has_wildcard = True
 
-        account_ids = _extract_account_ids_from_principal(principal)
+        account_ids = reading.account_ids
 
-        actions = _normalize_actions(statement.get("Action", []))
+        actions = normalize_actions(statement.get("Action", []))
 
         for account_id in account_ids:
             if account_id in org_account_ids:
@@ -279,6 +181,7 @@ def _analyze_policy_statements(
             for account_id, actions in actions_by_account.items()
         },
         has_wildcard_principal=has_wildcard,
+        has_non_account_principals=has_non_account_principals,
         service_principal_sources=sources,
     )
 
@@ -305,8 +208,8 @@ def _analyze_repository_in_region(
         ECRPolicyAnalysis result for this repository
 
     Raises:
-        UnsupportedPrincipalTypeError: If policy contains principals that would break RCP
-        MalformedPolicyError: If Statement is neither an object nor a list
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
     """
     repository_name = repository["repositoryName"]
     repository_arn = repository["repositoryArn"]
@@ -340,6 +243,7 @@ def _analyze_repository_in_region(
         repository_arn=repository_arn,
         actions_by_account=findings.actions_by_account,
         has_wildcard_principal=findings.has_wildcard_principal,
+        has_non_account_principals=findings.has_non_account_principals,
         service_principal_sources=findings.service_principal_sources,
     )
 
@@ -353,9 +257,12 @@ def _grants_third_party_access(analysis: ECRPolicyAnalysis) -> bool:
 
     Returns:
         True if the policy names a third-party account, a wildcard
-        principal, or a service principal source worth allowlisting
+        principal, a principal type carrying no account ID, or a service
+        principal source worth allowlisting
     """
     if bool(analysis.third_party_account_ids) or analysis.has_wildcard_principal:
+        return True
+    if analysis.has_non_account_principals:
         return True
     return has_actionable_service_principal_source(analysis.service_principal_sources)
 
@@ -387,8 +294,8 @@ def _analyze_registry_policy(
 
     Raises:
         ClientError: If the call fails for any reason other than a missing policy
-        UnsupportedPrincipalTypeError: If policy contains principals that would break RCP
-        MalformedPolicyError: If Statement is neither an object nor a list
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
     """
     try:
         response = ecr_client.get_registry_policy()
@@ -411,6 +318,7 @@ def _analyze_registry_policy(
         third_party_account_ids=findings.third_party_account_ids,
         actions_by_account=findings.actions_by_account,
         has_wildcard_principal=findings.has_wildcard_principal,
+        has_non_account_principals=findings.has_non_account_principals,
         service_principal_sources=findings.service_principal_sources,
     )
 
@@ -454,8 +362,6 @@ def analyze_ecr_policies(
 
     Raises:
         ClientError: If AWS API calls fail
-        UnsupportedPrincipalTypeError: If any policy contains principal types
-            that would break RCP deployment (like Federated)
     """
     results: List[ECRPolicyAnalysis] = []
 

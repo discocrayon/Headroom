@@ -330,8 +330,9 @@ class TestEveryStateIsClassified:
         Because an unrecognized state now aborts the run, a state AWS adds would
         break Headroom in production. This test moves that discovery to the point
         where boto3-stubs is upgraded: AccountStateType is the SDK's own
-        enumeration, so if AWS adds a sixth state this fails in CI and names it,
-        instead of a run failing at a customer.
+        enumeration, so if AWS adds a sixth state this fails when a human runs
+        `tox` and names it, instead of a run failing at a customer. Nothing runs
+        it automatically: the repository carries no CI configuration.
         """
         assert set(get_args(AccountStateType)) == {ACTIVE_ACCOUNT_STATE} | INACTIVE_ACCOUNT_STATES
 

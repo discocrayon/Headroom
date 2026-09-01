@@ -41,6 +41,14 @@ def get_iam_users_analysis(session: Session) -> List[IamUserAnalysis]:
 
     Returns:
         List of IamUserAnalysis for all IAM users
+
+    Raises:
+        KeyError: If a page carries no `Users` key. Indexed rather than
+            defaulted: botocore marks `Users` required on the response, so a
+            page without it is a shape the service model forbids, and reading
+            it as no users would clear the account on a listing nobody
+            read (INV-01). An account with none comes back as an empty list,
+            which is a different thing and passes through
     """
     iam_client: IAMClient = session.client("iam")
     results: List[IamUserAnalysis] = []
@@ -48,7 +56,7 @@ def get_iam_users_analysis(session: Session) -> List[IamUserAnalysis]:
     paginator = iam_client.get_paginator("list_users")
     try:
         for page in paginator.paginate():
-            for user in page.get("Users", []):
+            for user in page["Users"]:
                 user_name = user["UserName"]
                 user_arn = user["Arn"]
                 path = user["Path"]

@@ -7,7 +7,8 @@
 # ExemptFromIMDSv2 = "true". That tag is read off the INSTANCE as a proxy for
 # aws:RequestTag on its relaunch - the TagSpecifications entry that exempts
 # the launch is the same one that puts the tag here. No role tag is read.
-# See documentation/CHECKS.md for what the proxy costs and why it is accepted.
+# See spec/checks/scps/deny_ec2_imds_v1.md for what the proxy costs and why
+# it is accepted.
 
 # Instance 1: IMDSv1 enabled (should be flagged by the check)
 resource "aws_instance" "test_imdsv1_enabled" {

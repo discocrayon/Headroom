@@ -72,8 +72,9 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         """
         Analyze S3 bucket policies for third-party access.
 
-        Filters to only return buckets with wildcards or third-party access.
-        Buckets with neither are not relevant to this check.
+        Filters to only return buckets with a wildcard principal, a principal
+        type carrying no account ID, or third-party account access.
+        Buckets with none of the three are not relevant to this check.
 
         Args:
             session: boto3.Session for the target account

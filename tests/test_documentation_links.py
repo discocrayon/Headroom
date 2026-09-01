@@ -27,15 +27,9 @@ def test_ignores_links_that_leave_the_repository(tmp_path: Path) -> None:
     assert find_broken_links(tmp_path) == []
 
 
-def test_ignores_an_anchor_into_the_same_document(tmp_path: Path) -> None:
-    (tmp_path / "README.md").write_text("Jump to [setup](#setup).\n")
-
-    assert find_broken_links(tmp_path) == []
-
-
 def test_resolves_a_link_that_carries_an_anchor(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("[trust model](ARCHITECTURE.md#trust-model)\n")
-    (tmp_path / "ARCHITECTURE.md").write_text("# Architecture\n")
+    (tmp_path / "ARCHITECTURE.md").write_text("# Architecture\n\n## Trust model\n")
 
     assert find_broken_links(tmp_path) == []
 
@@ -63,8 +57,49 @@ def test_every_relative_link_in_the_repository_resolves() -> None:
 
 
 def test_checks_markdown_in_dot_directories_that_are_not_tool_output(tmp_path: Path) -> None:
-    cursor = tmp_path / ".cursor"
-    cursor.mkdir()
-    (cursor / "mental_model.md").write_text("[the guide](../CLAUDE.md)\n")
+    github = tmp_path / ".github"
+    github.mkdir()
+    (github / "PULL_REQUEST_TEMPLATE.md").write_text("[the guide](../CLAUDE.md)\n")
 
-    assert find_broken_links(tmp_path) == [".cursor/mental_model.md -> ../CLAUDE.md"]
+    assert find_broken_links(tmp_path) == [
+        ".github/PULL_REQUEST_TEMPLATE.md -> ../CLAUDE.md"
+    ]
+
+
+def test_reports_an_anchor_that_no_heading_defines(tmp_path: Path) -> None:
+    """
+    A link into a section that was renamed lands at the top of the page.
+
+    CLAUDE.md routes agents to a named section of the specification manifest,
+    so the anchor is load-bearing, not decoration.
+    """
+    (tmp_path / "CLAUDE.md").write_text("[routing](spec/README.md#routing-by-path)\n")
+    (tmp_path / "spec").mkdir()
+    (tmp_path / "spec" / "README.md").write_text("# Manifest\n\n## Routing: what to read\n")
+
+    assert find_broken_links(tmp_path) == ["CLAUDE.md -> spec/README.md#routing-by-path"]
+
+
+def test_resolves_an_anchor_a_heading_defines(tmp_path: Path) -> None:
+    """Slugs lowercase the heading, drop punctuation, and hyphenate spaces."""
+    (tmp_path / "CLAUDE.md").write_text(
+        "[routing](spec/README.md#routing-what-to-read-for-the-path-you-are-touching)\n"
+    )
+    (tmp_path / "spec").mkdir()
+    (tmp_path / "spec" / "README.md").write_text(
+        "# Manifest\n\n## Routing: what to read for the path you are touching\n"
+    )
+
+    assert find_broken_links(tmp_path) == []
+
+
+def test_resolves_an_anchor_into_the_same_document(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("Jump to [setup](#setup-and-install).\n\n## Setup and install\n")
+
+    assert find_broken_links(tmp_path) == []
+
+
+def test_reports_an_anchor_into_the_same_document_that_no_heading_defines(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("Jump to [setup](#setup).\n\n## Installation\n")
+
+    assert find_broken_links(tmp_path) == ["README.md -> #setup"]

@@ -12,13 +12,11 @@ from botocore.exceptions import ClientError
 from headroom.aws.ecr import (
     ECRPolicyAnalysis,
     analyze_ecr_policies,
-    _extract_account_ids_from_principal,
-    _has_wildcard_principal,
-    _normalize_actions,
-    UnknownPrincipalTypeError,
-    UnsupportedPrincipalTypeError,
 )
-from headroom.aws.policy_documents import MalformedPolicyError
+from headroom.aws.policy_documents import (
+    MalformedPolicyError,
+    UnknownPrincipalTypeError,
+)
 from tests.constants import ORG_ID
 
 
@@ -36,127 +34,43 @@ def _no_registry_policy(mock_ecr_client: MagicMock) -> None:
     )
 
 
-class TestExtractAccountIdsFromPrincipal:
-    """Test _extract_account_ids_from_principal function."""
-
-    def test_extract_from_arn_string(self) -> None:
-        """Test extracting account ID from ARN string."""
-        principal = "arn:aws:iam::111111111111:root"
-        account_ids = _extract_account_ids_from_principal(principal)
-        assert account_ids == {"111111111111"}
-
-    def test_extract_from_plain_account_id(self) -> None:
-        """Test extracting from plain 12-digit account ID."""
-        principal = "222222222222"
-        account_ids = _extract_account_ids_from_principal(principal)
-        assert account_ids == {"222222222222"}
-
-    def test_extract_from_wildcard(self) -> None:
-        """Test wildcard returns empty set."""
-        principal = "*"
-        account_ids = _extract_account_ids_from_principal(principal)
-        assert account_ids == set()
-
-    def test_extract_from_list(self) -> None:
-        """Test extracting from list of principals."""
-        principal = [
-            "arn:aws:iam::111111111111:root",
-            "222222222222",
-            "arn:aws:iam::333333333333:user/test"
-        ]
-        account_ids = _extract_account_ids_from_principal(principal)
-        assert account_ids == {"111111111111", "222222222222", "333333333333"}
-
-    def test_extract_from_aws_dict(self) -> None:
-        """Test extracting from AWS principal dict."""
-        principal = {
-            "AWS": [
-                "arn:aws:iam::111111111111:root",
-                "222222222222"
-            ]
-        }
-        account_ids = _extract_account_ids_from_principal(principal)
-        assert account_ids == {"111111111111", "222222222222"}
-
-    def test_extract_from_service_principal(self) -> None:
-        """Test service principal returns empty set."""
-        principal = {"Service": "lambda.amazonaws.com"}
-        account_ids = _extract_account_ids_from_principal(principal)
-        assert account_ids == set()
-
-    def test_unknown_principal_type_raises(self) -> None:
-        """Test unknown principal type raises error."""
-        principal = {"UnknownType": "something"}
-        with pytest.raises(UnknownPrincipalTypeError) as exc_info:
-            _extract_account_ids_from_principal(principal)
-        assert "UnknownType" in str(exc_info.value)
-
-    def test_federated_principal_raises(self) -> None:
-        """Test federated principal raises UnsupportedPrincipalTypeError."""
-        principal = {
-            "Federated": "arn:aws:iam::111111111111:saml-provider/TestProvider"
-        }
-        with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            _extract_account_ids_from_principal(principal)
-        assert "Federated" in str(exc_info.value)
-        assert "would break if the RCP is deployed" in str(exc_info.value)
-
-
-class TestHasWildcardPrincipal:
-    """Test _has_wildcard_principal function."""
-
-    def test_wildcard_string(self) -> None:
-        """Test wildcard string detection."""
-        assert _has_wildcard_principal("*") is True
-
-    def test_non_wildcard_string(self) -> None:
-        """Test non-wildcard string."""
-        assert _has_wildcard_principal("arn:aws:iam::111111111111:root") is False
-
-    def test_wildcard_in_list(self) -> None:
-        """Test wildcard in list."""
-        principal = ["arn:aws:iam::111111111111:root", "*"]
-        assert _has_wildcard_principal(principal) is True
-
-    def test_wildcard_in_aws_dict(self) -> None:
-        """Test wildcard in AWS principal dict."""
-        principal = {"AWS": "*"}
-        assert _has_wildcard_principal(principal) is True
-
-    def test_wildcard_in_aws_list(self) -> None:
-        """Test wildcard in AWS principal list."""
-        principal = {"AWS": ["arn:aws:iam::111111111111:root", "*"]}
-        assert _has_wildcard_principal(principal) is True
-
-    def test_no_wildcard(self) -> None:
-        """Test no wildcard present."""
-        principal = {"AWS": "arn:aws:iam::111111111111:root"}
-        assert _has_wildcard_principal(principal) is False
-
-
-class TestNormalizeActions:
-    """Test _normalize_actions function."""
-
-    def test_string_action(self) -> None:
-        """Test normalizing string action."""
-        assert _normalize_actions("ecr:GetDownloadUrlForLayer") == ["ecr:GetDownloadUrlForLayer"]
-
-    def test_list_actions(self) -> None:
-        """Test normalizing list of actions."""
-        actions = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"]
-        assert _normalize_actions(actions) == actions
-
-    def test_none_action(self) -> None:
-        """Test normalizing None."""
-        assert _normalize_actions(None) == []
-
-    def test_empty_list(self) -> None:
-        """Test normalizing empty list."""
-        assert _normalize_actions([]) == []
-
-
 class TestAnalyzeECRRepositoryPolicies:
     """Test analyze_ecr_policies function."""
+
+    def test_an_unparseable_policy_aborts_the_run(self) -> None:
+        """
+        A document AWS could not have stored means Headroom misread it.
+
+        Recording the repository as clean would let the RCP deploy over
+        whatever the policy actually grants, which is INV-01's case. The
+        analyzer catches nothing here, so the JSONDecodeError ends the run.
+        """
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {"repositories": [{
+                "repositoryName": "test-repo",
+                "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/test-repo",
+            }]}
+        ]
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+        mock_ecr_client.get_repository_policy.return_value = {"policyText": "{not json"}
+
+        with pytest.raises(json.JSONDecodeError):
+            analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_successful_analysis(self) -> None:
         """Test successful ECR repository policy analysis."""
@@ -716,21 +630,15 @@ class TestAnalyzeECRRepositoryPolicies:
         with pytest.raises(ClientError):
             analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
 
-    def test_federated_principal_fails_fast(self) -> None:
-        """Test that Federated principal causes immediate failure."""
-        mock_session = MagicMock()
-        mock_ec2_client = MagicMock()
-        mock_ecr_client = MagicMock()
-        _no_registry_policy(mock_ecr_client)
+    def test_a_federated_principal_blocks_the_repository_rather_than_the_run(self) -> None:
+        """
+        A Federated principal carries no account ID the allowlist can hold.
 
-        mock_session.client.side_effect = lambda service, **kwargs: {
-            "ec2": mock_ec2_client,
-            "ecr": mock_ecr_client,
-        }.get(service)
-
-        mock_ec2_client.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
+        The RCP restricts on aws:PrincipalAccount, which cannot express a
+        Federated principal, so the repository blocks the account for this
+        check and the other accounts' scans still finish.
+        """
+        mock_session, mock_ecr_client = self._single_region_session()
 
         repository_paginator = MagicMock()
         repository_paginator.paginate.return_value = [
@@ -743,33 +651,119 @@ class TestAnalyzeECRRepositoryPolicies:
                 ]
             }
         ]
-
         mock_ecr_client.get_paginator.return_value = repository_paginator
 
-        policy = {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {
-                        "Federated": "arn:aws:iam::111111111111:saml-provider/TestProvider"
-                    },
-                    "Action": "ecr:*"
-                }
-            ]
+        mock_ecr_client.get_repository_policy.return_value = {
+            "policyText": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Federated": "arn:aws:iam::111111111111:saml-provider/Example"
+                        },
+                        "Action": "ecr:*"
+                    }
+                ]
+            })
         }
+
+        results = analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        assert len(results) == 1
+        assert results[0].has_non_account_principals is True
+
+    def test_a_canonical_user_blocks_the_repository_rather_than_the_run(self) -> None:
+        """A canonical user ID maps to no account the allowlist can carry."""
+        mock_session, mock_ecr_client = self._single_region_session()
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {
+                "repositories": [
+                    {
+                        "repositoryName": "canonical-repo",
+                        "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/canonical-repo"
+                    }
+                ]
+            }
+        ]
+        mock_ecr_client.get_paginator.return_value = repository_paginator
 
         mock_ecr_client.get_repository_policy.return_value = {
-            "policyText": json.dumps(policy)
+            "policyText": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"CanonicalUser": "d" * 64},
+                        "Action": "ecr:*"
+                    }
+                ]
+            })
         }
 
-        org_account_ids = {"111111111111"}
+        results = analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
 
-        with pytest.raises(UnsupportedPrincipalTypeError) as exc_info:
-            analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
+        assert len(results) == 1
+        assert results[0].has_non_account_principals is True
 
-        assert "Federated" in str(exc_info.value)
-        assert "would break if the RCP is deployed" in str(exc_info.value)
+    def test_a_principal_key_aws_does_not_document_aborts(self) -> None:
+        """
+        An undocumented principal key still stops the run.
+
+        AWS validates the Principal element when it stores a repository
+        policy, so a key outside the documented four means the document was
+        misread or names a principal type nobody has modelled here.
+        """
+        mock_session, mock_ecr_client = self._single_region_session()
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {
+                "repositories": [
+                    {
+                        "repositoryName": "odd-repo",
+                        "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/odd-repo"
+                    }
+                ]
+            }
+        ]
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+
+        mock_ecr_client.get_repository_policy.return_value = {
+            "policyText": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Kerberos": "example"},
+                        "Action": "ecr:*"
+                    }
+                ]
+            })
+        }
+
+        with pytest.raises(UnknownPrincipalTypeError):
+            analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
+
+    @staticmethod
+    def _single_region_session() -> tuple[MagicMock, MagicMock]:
+        """Build a session mock wired to one region and return (session, ecr_client)."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+        _no_registry_policy(mock_ecr_client)
+        return mock_session, mock_ecr_client
 
     def test_a_second_caller_is_served_from_the_memo(self) -> None:
         """

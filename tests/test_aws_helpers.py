@@ -13,6 +13,7 @@ import pytest
 from headroom.aws.ecr import analyze_ecr_policies
 from headroom.aws.helpers import (
     _REGION_MEMO,
+    find_tag_value_as_iam_matches,
     get_all_regions,
     memoize_per_session,
     paginate,
@@ -339,3 +340,76 @@ class TestPaginate:
         assert list(pages) == []
 
         paginator.paginate.assert_called_once_with(MaxResults=50, Prefix="a")
+
+
+class TestFindTagValueAsIamMatches:
+    """
+    One rule for reading a tag an `aws:RequestTag` condition names.
+
+    Both tag checks call this. They used to read the same kind of tag by two
+    different rules - `deny_ec2_imds_v1` case-insensitively on the key,
+    `deny_eks_create_cluster_without_tag` exactly - and only one of them could
+    be right. The tests here pin the rule itself; each check's own tests pin
+    what it does with the answer.
+    """
+
+    def test_the_exact_key_returns_its_value(self) -> None:
+        assert find_tag_value_as_iam_matches(
+            {"PavedRoad": "true"}, "PavedRoad", "Cluster prod"
+        ) == "true"
+
+    @pytest.mark.parametrize("key", ["pavedroad", "PAVEDROAD", "pAvEdRoAd"])
+    def test_the_key_matches_without_regard_to_case(self, key: str) -> None:
+        """AWS matches a condition key name irrespective of its case."""
+        assert find_tag_value_as_iam_matches(
+            {key: "true"}, "PavedRoad", "Cluster prod"
+        ) == "true"
+
+    def test_the_value_is_returned_verbatim(self) -> None:
+        """
+        The caller compares the value, and must compare it exactly.
+
+        Normalizing it here would hide the case-sensitive half of the match
+        from every caller at once.
+        """
+        assert find_tag_value_as_iam_matches(
+            {"PavedRoad": "TRUE"}, "PavedRoad", "Cluster prod"
+        ) == "TRUE"
+
+    def test_an_absent_key_is_none_rather_than_empty(self) -> None:
+        """
+        None distinguishes "no such tag" from a tag whose value is "".
+
+        A caller comparing against "true" treats both as a violation, but the
+        two are different facts and the helper does not merge them.
+        """
+        assert find_tag_value_as_iam_matches(
+            {"Name": "prod"}, "PavedRoad", "Cluster prod"
+        ) is None
+
+    def test_an_empty_value_is_returned_as_itself(self) -> None:
+        assert find_tag_value_as_iam_matches(
+            {"PavedRoad": ""}, "PavedRoad", "Cluster prod"
+        ) == ""
+
+    def test_the_key_twice_in_differing_cases_raises(self) -> None:
+        """
+        Both spellings match the condition key; at most one value can.
+
+        Returning either would invent a verdict for a live workload, so there
+        is no answer to give.
+        """
+        with pytest.raises(RuntimeError, match=r"more than once in cases that differ"):
+            find_tag_value_as_iam_matches(
+                {"PavedRoad": "true", "pavedroad": "false"}, "PavedRoad", "Cluster prod"
+            )
+
+    def test_the_error_names_the_resource_and_every_spelling(self) -> None:
+        """The operator has to find the tags, so the message carries them."""
+        with pytest.raises(RuntimeError) as exc_info:
+            find_tag_value_as_iam_matches(
+                {"PavedRoad": "true", "pavedroad": "false"}, "PavedRoad", "Cluster prod"
+            )
+
+        assert "Cluster prod" in str(exc_info.value)
+        assert "PavedRoad, pavedroad" in str(exc_info.value)

@@ -1,0 +1,43 @@
+# Conventions
+
+Authoritative for code conventions in this repository. `CLAUDE.md` imports
+this file, so these rules are loaded on every change.
+
+- Never care about compatibility with historical callers
+- Always put data sources in a separate data.tf file
+- Never do except Exception, always catch the specific exceptions that the code can raise
+- Try and search online first rather than try to use the AWS CLI to figure something out.
+- Always add type annotations, ensuring mypy will be satisfied
+- Always add tests, and then run tox
+- Split docstrings over multiple lines for readability and PEP 257 compliance.
+- Wrap with statements in parentheses to avoid the backslash-newline continuation. Make sure to make sure to not put the patch right after the open parenthesis but instead make a newline, and dedent all the lines inside the parenthesis, add a trailing comma as well.
+- Never do dynamic imports, always try to import at the top of the file. If it is absolutely impossible to get away without a dynamic import, add a comment above the line of the import with justification. The one standing exception is check discovery: `headroom/checks/__init__.py` imports every module under `scps/` and `rcps/` so each `@register_check` decorator runs and a new check needs no edit to be discovered. Leave it as it is.
+- Do not define functions inside of functions. Prioritize keeping indentation to a minimum.
+- Per the E226 python linting rule, do not miss whitespace around arithmetic operators
+- Do not do imports inside of functions.
+- Top-level imports only
+- Use continue and return with if statements in order to reduce indentation
+- Think like the Clean Code guy
+- If you hardcode a default value, in `config.py`, do not hardcode it again within the codebase.
+- Command line arguments should be set once, including default values, and then used downstream. Never duplicate default values for something that is a CLI argument.
+- In Terraform, the syntax is "local." to access locals, not "locals."
+- You must not set a default value for something that is set via CLI except in `config.py`.
+- Never rename imported things with "as" ever
+- Do not add stray blank lines randomly
+- Never do an import inside of a function
+- Do not overengineer, for example, making new types with one attribute, or a new class with one function
+- Do not use the type of Any, if you change the existing code to Any, you are making it worse.
+- Never commit without asking me first.
+- Do not commit without asking me first.
+- Never commit a design or plan document. `design-docs/`, `docs/superpowers/` and `.superpowers/` are git-ignored scratch; anything durable belongs in the specification corpus, and nothing committed may cite a path they hold.
+- Be specific. Do not say, for example, "and other formats" list the formats explictly instead.
+- Always import at the top of the file.
+- Never use dynamic imports, apart from the check discovery exception above
+- Do not add extra defensive checks or try/catch blocks
+- Only specify the value of keyword arguments if the value being passed is different from the default
+- FAIL FAST: Never add defensive code that silently returns empty sets, empty lists, or default values when data is unexpected. If the data is wrong, let it fail with a clear error. Do not check "if isinstance" and then return empty set/list for the "else" case - just let the code crash.
+- FAIL FAST: Do not add "else: return set()" or "else: return []" branches after type checks. If the type is wrong, the code should raise an exception, not silently return empty.
+- FAIL FAST: Never add fallback branches like "return set()", "return []", or "return None" after checking expected types. Let Python raise TypeError/AttributeError naturally.
+- Never put a real AWS identifier in code, tests, docs, or commit messages. Rewrite every account ID, instance ID, AMI ID, ARN, KMS key ID, and Organizations root/OU/org ID to an obviously fake placeholder: real prefix, real length, body of one repeated digit, like 111111111111, i-11111111111111111, and ami-11111111111111111. See test_data_standards in HOW_TO_ADD_A_CHECK.md.
+- An identifier that arrives from a bug report, error message, console screenshot, or API response is a real identifier. Replace it before it enters the repo, including in the commit message.
+- Never put a real IP address in code, tests, or docs. Every octet is one repeated digit: 111.111.111.111, or 222.222.222.222 when a test needs a second host. Never 52.x or 54.x, which are live AWS EC2 ranges and read as a real instance's public IP.

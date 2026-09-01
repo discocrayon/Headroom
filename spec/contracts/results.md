@@ -1,0 +1,260 @@
+# Contract: results
+
+Owns the persisted result artifact: where a file goes, what it holds, how it is
+read back, and how a run resumes from one.
+
+Implementation: writer `headroom/write_results.py`, its single call site
+`BaseCheck.execute` in `headroom/checks/base.py`, readers
+`headroom/parse_results.py` (SCPs) and `headroom/terraform/generate_rcps.py`
+(RCPs). Tests: `tests/test_write_results.py`, `tests/test_parse_results.py`,
+`TestRunChecks` in `tests/test_analysis_extended.py`.
+
+**This artifact is a wire format** (INV-14). Both the JSON and the filenames are
+read back by a later run. A change to either can silently re-scan or silently
+skip accounts without any reader raising, because the readers glob `*.json` and
+take account identity from the file's own `summary`.
+
+## Layout
+
+```
+{results_dir}/{check_type}/{check_name}/{account_identifier}.json
+```
+
+- `check_type` is `scps` or `rcps`, taken from the registry, never from the
+  check name's spelling. An unregistered check name is an error, not a new
+  directory.
+- `account_identifier` is `{account_name}_{account_id}`, or `{account_name}`
+  alone when `exclude_account_ids` is set.
+
+## Filename compatibility
+
+Existence is tested against **both** filename forms — with and without the
+account ID — regardless of the current `exclude_account_ids` setting. Toggling
+that option must not orphan an existing results directory into a full re-scan.
+
+## Account names must survive becoming a filename
+
+The account name is interpolated into the filename, so a name that is not a
+usable filename is a run that cannot write results. Both guards run at
+discovery, in `headroom/aws/organization_snapshot.py`, before any account is
+scanned — the failure belongs before the expensive part, not after it.
+
+**A name that cannot become a filename aborts the run.** Four rejections, each
+reported with the account it belongs to, because they are unrelated and an
+operator reading one message about several accounts needs to know which account
+hit which:
+
+| Rejected | Why |
+|---|---|
+| Empty | Not a filename reason: the name is the account's identity in the result file, and an empty one is unresolvable at read time |
+| Holds a null byte | No filesystem accepts it |
+| Over 237 bytes UTF-8 | Both Linux and macOS cap a path component at 255 bytes, and the longest suffix spends eighteen: `_`, a twelve-digit account ID, and `.json` |
+| Reads as a path rather than a filename | The resolver hands the interpolated name to `Path`, which reads a separator as structure rather than as text |
+
+A leading dot is deliberately allowed. `pathlib.Path.glob` matches a dotfile,
+unlike a shell, and the reader takes account identity from inside the file, so
+`.Prod.json` is read back correctly.
+
+**With `exclude_account_ids` set, two accounts sharing a name abort the run.**
+That setting drops the account ID, which is the only guaranteed-unique component
+of the filename, so both accounts resolve to one path — and with a worker per
+account, that is two threads interleaving `json.dump` output into one file:
+either corrupt JSON, or a valid file holding two accounts' results spliced
+together, which then feeds policy generation. Organizations enforces uniqueness
+on account email, not on account name, so this is reachable rather than
+theoretical. The message names the colliding spellings and how many accounts
+carry each, never the account IDs — printing those would defeat the setting that
+created the collision.
+
+Names are compared the way a filesystem compares them, by **Unicode canonical
+caseless matching**: `NFD(casefold(NFD(x)))`, Unicode D145. Both axes matter and
+they must be folded together rather than in sequence.
+
+- Case alone is not enough. APFS resolves `café` composed (one U+00E9) and
+  decomposed (`e` + U+0301) to the same file, exactly as it does `Prod` and
+  `prod`.
+- Normalizing and then folding is not enough either, because the fold can undo
+  the normalization just performed. `ſ` (U+017F, long s) followed by U+0301 has
+  no precomposed form, so NFC returns it unchanged; casefold then maps U+017F to
+  `s`, producing `s` + U+0301 — the decomposition of `ś`, not `ś` itself. The two
+  names key differently while APFS stores them in one inode, verified by reading
+  the same `st_ino` back for both spellings. The trailing NFD is what closes
+  that.
+
+On a filesystem that folds neither axis the comparison is stricter than it needs
+to be, and two accounts that could coexist are rejected. That is the deliberate
+direction to err: the cost is a rename, and the cost of the other direction is
+two accounts' results in one file.
+
+## Document shape
+
+There are two shapes, and they do not divide by check type: one of the seven
+RCP checks writes the first. `summary` is the only key common to both, and it is
+the only key any reader parses; the rest is evidence for a human.
+
+### The base shape
+
+All nine SCP checks take `BaseCheck._build_results_data` unchanged, and so does
+one RCP check:
+
+| Key | Holds |
+|---|---|
+| `summary` | Account identity, check name, counts, and check-specific fields |
+| `violations` | One entry per resource the policy statement would deny |
+| `exemptions` | One entry per resource the statement's condition would spare |
+| `compliant_instances` | One entry per resource the statement would allow |
+
+`compliant_instances` is named for the first check written and is now generic.
+Renaming it is a wire-format migration.
+
+### The two-list shape
+
+Six of the seven RCP checks override `_build_results_data` and name their keys
+for what they scanned — the resource in five of them, and the policy in ECR's,
+whose analyzer reads the registry policy as well as each repository's. The
+seventh, `deny_service_confused_deputy`, scans six resource types rather than
+one, so it has nothing single to name keys for: it overrides nothing and writes
+the base shape above.
+
+| Check | Keys besides `summary` |
+|---|---|
+| `deny_ecr_third_party_access` | `policies_third_parties_can_access`, `policies_with_wildcards` |
+| `deny_kms_third_party_access` | `keys_third_parties_can_access`, `keys_with_wildcards` |
+| `deny_s3_third_party_access` | `buckets_third_parties_can_access`, `buckets_with_wildcards` |
+| `deny_secrets_manager_third_party_access` | `secrets_third_parties_can_access`, `secrets_with_wildcards` |
+| `deny_sqs_third_party_access` | `queues_third_parties_can_access`, `queues_with_wildcards` |
+| `deny_sts_third_party_assumerole` | `roles_third_parties_can_access`, `roles_with_wildcards` |
+| `deny_service_confused_deputy` | `violations`, `exemptions`, `compliant_instances` |
+
+`*_third_parties_can_access` is `violations + compliant`, so a wildcard finding
+appears in both lists. `*_with_wildcards` is `violations` alone. Renaming either
+key, in any of the six, is a wire-format migration (INV-14).
+
+A reader that expects a `*_third_parties_can_access` pair in every RCP file gets
+the seventh wrong; one that switches on `summary.check` does not. Beyond the
+common keys below, its `summary` adds `unique_third_party_accounts` and
+`third_party_account_count`, and the entry shape inside its three lists is
+specified in
+[`../checks/rcps/deny_service_confused_deputy.md`](../checks/rcps/deny_service_confused_deputy.md).
+
+### Summary keys every check writes
+
+| Key | Type | Notes |
+|---|---|---|
+| `account_name` | string | As resolved by `use_account_name_from_tags` |
+| `account_id` | string | **Absent** when `exclude_account_ids` is set |
+| `check` | string | The registered check name |
+| `violations` | integer | The count, written even when it is always zero |
+
+`violations` is the count every placement decision turns on, and it is written by
+all sixteen registered checks — nine SCP and seven RCP. A check whose every
+entry is compliant writes zero rather than omitting the key: a reader cannot
+tell an absent key from a genuine zero, and the two mean opposite things.
+
+Everything else in `summary` comes from the check's `build_summary_fields` and is
+specified in that check's document under [`../checks/`](../checks/index.md).
+
+### Summary keys a reader requires
+
+A reader raises rather than defaulting when one of these is missing, because the
+missing key and a legitimately empty value mean opposite things (INV-01).
+
+| Key | Required by | Missing means |
+|---|---|---|
+| `check` | RCP parsing | The file cannot be confirmed to belong to its directory |
+| `violations` | SCP and RCP parsing | Whether the account is safe is unknown, and defaulting answers it in the safest direction. `results_exist` skips an account whose result file already exists, so re-running without deleting the file repeats the same failure; both readers' errors name the file and prescribe exactly that. `ResultFilePathResolver.exists()` accepts either filename format, so the remedy also names the directory holding the other form — deleting only the file the reader tripped on leaves the skip in place when both are present |
+| `unique_third_party_accounts` | RCP parsing | The allowlist would render empty, which denies every third party (INV-06) |
+| `unique_ami_owners` | `deny_ec2_ami_owner` parsing | Indistinguishable from an account that ran no instances |
+
+RCP parsing additionally rejects a file whose `summary.check` disagrees with the
+directory it was found in: a result filed under the wrong check would be
+attributed to the wrong policy.
+
+SCP parsing defaulted `violations` to zero until
+`deny_iam_saml_provider_not_aws_sso` shipped without the key and had every
+account it rejected cleared for a root-level deny. The remaining SCP summary
+fields — `exemptions`, `compliant`, `compliance_percentage`, `total_instances` —
+are still defaulted, deliberately: no placement decision reads them, so a missing
+one costs accuracy in a report rather than safety in a policy.
+
+## Redaction
+
+When `exclude_account_ids` is set, before the file is written:
+
+1. Every 12-digit account ID inside an ARN, anywhere in the document, is
+   replaced with `REDACTED`. The match is on the ARN's account field
+   specifically — `arn:<partition>:<service>:<region>:<account>:` — so an
+   account-shaped number elsewhere in a string survives, and so does one in a
+   string that is not an ARN.
+2. `summary.account_id` is removed.
+
+**Every partition, not only `aws`.** GovCloud, China, and the isolated regions
+append hyphenated qualifiers to the partition — `aws-us-gov`, `aws-cn`,
+`aws-iso-b` — and an operator there sets `exclude_account_ids` for the same
+reason a commercial one does. The pattern once matched the literal `arn:aws:`,
+so those partitions kept their account IDs in a file written specifically to be
+committed. Nothing in `test_environment/` exercises a non-commercial partition,
+which is why it survived; `test_redact_every_aws_partition` pins it now.
+
+Redaction being partition-agnostic does not make Headroom runnable outside the
+commercial partition — the role ARNs it assumes are still hardcoded, per
+[`../architecture/aws-execution.md`](../architecture/aws-execution.md). This
+closes the leak ahead of that rather than after it.
+
+Redaction is not reversible in general. SCP parsing restores IAM user ARNs by
+substituting the account ID back in once the account has been identified, because
+the allowlist those ARNs feed must name real accounts.
+
+## Identifying the account a file describes
+
+Readers take account identity from the file, never from the filename:
+
+1. Use `summary.account_id` when present.
+2. Otherwise resolve `summary.account_name` against the organization hierarchy.
+3. A file with neither is an error.
+
+Name resolution is exact-match first. A name matching nothing exactly falls back
+to comparing names with case and separators ignored, because result files are
+written under the configured name — a slug such as `management-account` where
+Organizations reports `Management Account`. The fallback resolves only when
+exactly **one** account matches; zero or several is an error rather than a guess.
+A name consisting only of separators canonicalizes to the empty string and is
+left unresolved, so it cannot match every other such name.
+
+Organizations enforces uniqueness on account email, not on account name, so
+several accounts genuinely can share a name. That is an error at read time, not
+something to resolve arbitrarily.
+
+## Resume
+
+A check is skipped when its result file already exists for that account. There
+is no freshness check and no expiry: **delete the file to re-run the check.**
+
+Resume is evaluated at two granularities, and both must agree with the writer's
+naming or a run silently re-scans or silently skips:
+
+| Function | Question |
+|---|---|
+| `results_exist` | Does this one check have a result for this account? |
+| `all_check_results_exist` | Do *all* registered checks of this type have one? |
+
+`run_checks` skips an account entirely when both `scps` and `rcps` are complete;
+otherwise it assumes the account role and runs only the checks whose files are
+missing.
+
+**An aborted run is resumable at that same granularity.** A failure stops the
+scan (INV-02), and the files already written stay: each is complete and valid,
+because a check already inside `execute()` finishes rather than being killed
+mid-write. The re-run reads them and scans only what is left, which is why the
+abort reports how many accounts were never analyzed —
+[`../architecture/aws-execution.md`](../architecture/aws-execution.md#what-an-aborted-run-tells-the-operator)
+owns that report. Nothing marks a file as coming from an aborted run, and
+nothing needs to: a result file means that check ran to completion for that
+account.
+
+## Ordering and stability
+
+Result files are written with `indent=2` and a trailing newline so they can be
+committed and diffed. Two runs against unchanged infrastructure should produce
+files that differ only where the infrastructure differs; a check that emits
+unordered collections makes its own output churn and should sort them.

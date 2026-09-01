@@ -185,13 +185,17 @@ class RCPCheckResult(CheckResult):
             resource names a principal that no allowlist can express and
             the RCP is unsafe to deploy here. A wildcard principal is the
             one case every check flags this way. Federated and
-            CanonicalUser principals, which carry no account ID to
-            allowlist, are handled per check rather than uniformly: the S3
-            analyzer records them as violations, the ECR, KMS, Secrets
-            Manager and SQS analyzers raise on them, and the STS analyzer
-            raises on a CanonicalUser or on a Federated principal granted
-            sts:AssumeRole, so S3 is the only check those two principal
-            types can set this flag from
+            CanonicalUser principals carry no account ID to allowlist
+            either, and which answer they get depends on the policy type
+            reading them. All five resource-policy analyzers - ECR, KMS,
+            S3, Secrets Manager and SQS - accept both keys and record them
+            as violations, so any of the five can set this flag from them.
+            A role trust policy does not accept CanonicalUser at all, so
+            the STS analyzer aborts the run on one rather than blocking the
+            account, and it aborts too on a Federated principal granted the
+            literal sts:AssumeRole. See
+            `spec/architecture/aws-execution.md`, "What a policy document
+            may and may not stop the run over"
     """
     third_party_account_ids: List[str]
     blocks_rcp: bool

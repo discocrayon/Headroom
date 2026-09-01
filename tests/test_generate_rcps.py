@@ -491,6 +491,41 @@ class TestParseRcpResultFiles:
         with pytest.raises(RuntimeError, match="does not match"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
+    def test_every_missing_key_message_says_to_delete_the_file(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A missing summary key must name the one action that clears the skip.
+
+        `results_exist` makes a check skip any account whose result file is
+        already present, so "re-run the analysis" leaves the same broken file
+        in place and the next run fails identically. All three of the RCP
+        reader's missing-key errors must say to delete the file.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
+
+        for absent_key in ("check", "violations", "unique_third_party_accounts"):
+            summary: Dict[str, Any] = {
+                "check": DENY_S3_THIRD_PARTY_ACCESS,
+                "account_id": "111111111111",
+                "account_name": "test-account",
+                "violations": 0,
+                "unique_third_party_accounts": [],
+            }
+            del summary[absent_key]
+            with open(check_dir / "test-account.json", "w") as f:
+                json.dump({"summary": summary}, f)
+
+            with pytest.raises(RuntimeError) as raised:
+                parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+            message = str(raised.value)
+            assert "Delete " in message, absent_key
+            assert "skips any account whose result file already exists" in message, absent_key
+            assert "Re-run the analysis to regenerate it" not in message, absent_key
+
 
 class TestDetermineRcpPlacement:
     """Test determine_rcp_placement function."""
@@ -1675,6 +1710,55 @@ class TestGenerateRcpTerraform:
         # Should raise exception for missing account
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
             generate_rcp_terraform(recommendations, sample_org_hierarchy, temp_output_dir)
+
+    def test_generate_raises_when_an_account_collides_with_root(
+        self,
+        temp_output_dir: str,
+    ) -> None:
+        """
+        An account named `root` renders to root_rcps.tf, the root file's own name.
+
+        The RCP generator writes root before accounts, so root claims the
+        filename first and the account render is the one that raises -
+        otherwise the account would win, silently downgrading an
+        organization-wide RCP to one account's.
+        """
+        org = OrganizationHierarchy(
+            root_id="r-1111",
+            organizational_units={},
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="root",
+                    parent_ou_id=None,
+                    ou_path=["r-1111"]
+                )
+            }
+        )
+        recommendations = [
+            RCPPlacementRecommendations(
+                check_name="deny_sts_third_party_assumerole",
+                recommended_level="root",
+                target_ou_id=None,
+                affected_accounts=[],
+                third_party_account_ids=["999999999999"],
+                reasoning="Test root level"
+            ),
+            RCPPlacementRecommendations(
+                check_name="deny_sts_third_party_assumerole",
+                recommended_level="account",
+                target_ou_id=None,
+                affected_accounts=["111111111111"],
+                third_party_account_ids=["999999999999"],
+                reasoning="Test account level"
+            ),
+        ]
+
+        with pytest.raises(RuntimeError, match="root_rcps.tf"):
+            generate_rcp_terraform(recommendations, org, temp_output_dir)
+
+        output_path = Path(temp_output_dir)
+        assert not output_path.exists() or len(list(output_path.glob("*.tf"))) == 0
 
     def test_generate_no_recommendations(
         self,

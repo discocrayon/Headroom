@@ -17,115 +17,37 @@ from headroom.aws.iam import (
     InvalidFederatedPrincipalError,
     MalformedStatementError,
     SamlProviderAnalysis,
-    UnknownPrincipalTypeError,
     analyze_iam_roles_trust_policies,
     get_saml_providers_analysis,
 )
-from headroom.aws.iam.roles import (
-    _extract_account_ids_from_principal,
-    _has_wildcard_principal,
+from headroom.aws.iam.users import get_iam_users_analysis
+from headroom.aws.policy_documents import (
+    MalformedPolicyError,
+    UnknownPrincipalTypeError,
 )
-from headroom.aws.policy_documents import MalformedPolicyError
 from tests.constants import ORG_ID
-
-
-class TestExtractAccountIdsFromPrincipal:
-    """Test _extract_account_ids_from_principal function."""
-
-    def test_extract_from_arn_string(self) -> None:
-        """Test extracting account ID from ARN string."""
-        principal = "arn:aws:iam::333333333333:root"
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"333333333333"}
-
-    def test_extract_from_account_id_string(self) -> None:
-        """Test extracting from plain account ID string."""
-        principal = "333333333333"
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"333333333333"}
-
-    def test_extract_from_wildcard(self) -> None:
-        """Test wildcard returns empty set."""
-        principal = "*"
-        result = _extract_account_ids_from_principal(principal)
-        assert result == set()
-
-    def test_extract_from_list(self) -> None:
-        """Test extracting from list of principals."""
-        principal = [
-            "arn:aws:iam::111111111111:root",
-            "arn:aws:iam::222222222222:root"
-        ]
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"111111111111", "222222222222"}
-
-    def test_extract_from_dict_aws_key(self) -> None:
-        """Test extracting from dict with AWS key."""
-        principal = {"AWS": "arn:aws:iam::333333333333:root"}
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"333333333333"}
-
-    def test_extract_from_dict_aws_list(self) -> None:
-        """Test extracting from dict with AWS key containing list."""
-        principal = {
-            "AWS": [
-                "arn:aws:iam::111111111111:root",
-                "arn:aws:iam::222222222222:root"
-            ]
-        }
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"111111111111", "222222222222"}
-
-    def test_ignore_service_principal(self) -> None:
-        """Test that service principals are ignored."""
-        principal = {"Service": "ec2.amazonaws.com"}
-        result = _extract_account_ids_from_principal(principal)
-        assert result == set()
-
-    def test_mixed_principals(self) -> None:
-        """Test mixed principal types."""
-        principal = {
-            "AWS": ["arn:aws:iam::111111111111:root"],
-            "Service": "lambda.amazonaws.com"
-        }
-        result = _extract_account_ids_from_principal(principal)
-        assert result == {"111111111111"}
-
-
-class TestHasWildcardPrincipal:
-    """Test _has_wildcard_principal function."""
-
-    def test_wildcard_string(self) -> None:
-        """Test wildcard in string."""
-        assert _has_wildcard_principal("*") is True
-
-    def test_no_wildcard_string(self) -> None:
-        """Test no wildcard in string."""
-        assert _has_wildcard_principal("arn:aws:iam::333333333333:root") is False
-
-    def test_wildcard_in_list(self) -> None:
-        """Test wildcard in list."""
-        assert _has_wildcard_principal(["arn:aws:iam::333333333333:root", "*"]) is True
-
-    def test_no_wildcard_in_list(self) -> None:
-        """Test no wildcard in list."""
-        assert _has_wildcard_principal(["arn:aws:iam::111111111111:root", "arn:aws:iam::222222222222:root"]) is False
-
-    def test_wildcard_in_dict_aws(self) -> None:
-        """Test wildcard in dict AWS key."""
-        assert _has_wildcard_principal({"AWS": "*"}) is True
-
-    def test_wildcard_in_dict_aws_list(self) -> None:
-        """Test wildcard in dict AWS key list."""
-        assert _has_wildcard_principal({"AWS": ["arn:aws:iam::333333333333:root", "*"]}) is True
-
-    def test_no_wildcard_in_dict(self) -> None:
-        """Test no wildcard in dict."""
-        assert _has_wildcard_principal({"AWS": "arn:aws:iam::333333333333:root"}) is False
 
 
 class TestAnalyzeIamRolesTrustPolicies:
     """Test analyze_iam_roles_trust_policies function."""
+
+    def test_a_page_without_the_roles_key_raises(self) -> None:
+        """
+        A `ListRoles` page with no `Roles` key aborts rather than reading empty.
+
+        Botocore marks `Roles` required on `ListRolesResponse`. Defaulting a
+        page without it would report the account as trusting nobody and clear
+        it for the STS RCP, which is what INV-01 forbids.
+        """
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {"IsTruncated": False}
+        ]
+
+        with pytest.raises(KeyError):
+            analyze_iam_roles_trust_policies(mock_session, set(), ORG_ID)
 
     def test_role_with_third_party_account(self) -> None:
         """Test role with third-party account in trust policy."""
@@ -464,6 +386,54 @@ class TestAnalyzeIamRolesTrustPolicies:
         # No third-party accounts, no wildcards, so results should be empty
         assert len(results) == 0
 
+    def test_federated_with_wildcard_action_does_not_raise(self) -> None:
+        """
+        A Federated principal paired with a wildcard action is not flagged.
+
+        This is the exact case the comment above the Federated gate in
+        analyze_iam_roles_trust_policies defends: sts:* covers sts:AssumeRole
+        under the wildcard-aware gate above it (so this statement is a grant
+        the analyzer does examine), but the Federated gate itself is a
+        literal-membership test and does not fire on it. AWS will not let a
+        federated identity call plain AssumeRole regardless of what the
+        policy grants, so the broad grant is sloppy rather than the
+        unambiguous confusion the gate aborts the run over.
+        """
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        trust_policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Federated": "arn:aws:iam::111111111111:saml-provider/ExampleProvider"},
+                    "Action": "sts:*"
+                }
+            ]
+        }
+
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Roles": [
+                    {
+                        "RoleName": "WildcardFederatedRole",
+                        "Arn": "arn:aws:iam::111111111111:role/WildcardFederatedRole",
+                        "AssumeRolePolicyDocument": quote(json.dumps(trust_policy))
+                    }
+                ]
+            }
+        ]
+
+        org_account_ids = {"111111111111"}
+
+        # Should not raise; the literal-match gate does not fire on sts:*
+        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
+
+        # No third-party accounts, no wildcards, so results should be empty
+        assert len(results) == 0
+
     def test_role_without_principal_skipped(self) -> None:
         """Test that statements without Principal are skipped."""
         mock_session = MagicMock()
@@ -590,6 +560,26 @@ class TestAnalyzeIamRolesTrustPolicies:
 
 class TestGetIamUsersAnalysis:
     """Test get_iam_users_analysis function."""
+
+    def test_a_page_without_the_users_key_raises(self) -> None:
+        """
+        A `ListUsers` page with no `Users` key aborts rather than reading empty.
+
+        Botocore marks `Users` required on `ListUsersResponse`, so a page
+        without it is a response the service model says cannot happen -
+        not an account with no users, which comes back as an empty list.
+        Defaulting it would report the account as carrying no IAM users and
+        clear it for the deny_iam_user_creation SCP (INV-01).
+        """
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {"IsTruncated": False}
+        ]
+
+        with pytest.raises(KeyError):
+            get_iam_users_analysis(mock_session)
 
     def test_get_iam_users(self) -> None:
         """Test getting all IAM users."""
@@ -859,35 +849,36 @@ class TestTrustPolicyActionMatching:
         with pytest.raises(UnknownPrincipalTypeError):
             self.third_parties(statement)
 
+    def test_a_malformed_action_aborts_rather_than_reading_as_no_grant(self) -> None:
+        """
+        An Action element AWS could not have stored aborts, as it does elsewhere.
 
-class TestPrincipalArnCoverage:
-    """
-    Tests that principal ARNs outside arn:aws:iam:: yield their account ID.
+        Five resource-policy adapters route the element through
+        normalize_actions and abort on anything that is neither a string nor a
+        list. This one read it inline and reported the statement as not granting
+        sts:AssumeRole, which records a clean verdict on a grant nobody measured
+        (INV-01). aws-execution.md already specified the abort.
 
-    The trust policy analyzer matched only `^arn:aws:iam::(\\d{12}):`, so STS
-    session principals - which AWS documents as valid in a resource-based
-    policy, and a role trust policy is one - and every non-commercial
-    partition produced no account ID at all.
-    """
-    PARTNER = "999999999999"
+        Run through the public analyzer, like every other test in this class,
+        rather than calling the private _grants_assume_role directly - which
+        also pins that the TypeError is not swallowed by the surrounding
+        `except ClientError` in analyze_iam_roles_trust_policies and reaches
+        the caller instead.
+        """
+        with pytest.raises(TypeError, match="Unexpected action type: dict"):
+            self.third_parties(self.allow(Action={"unexpected": "dict"}))
 
-    @pytest.mark.parametrize("principal", [
-        "arn:aws:iam::999999999999:root",
-        "arn:aws:iam::999999999999:role/vendor",
-        "arn:aws:iam::999999999999:user/vendor",
-        "arn:aws:sts::999999999999:assumed-role/vendor/session",
-        "arn:aws:sts::999999999999:federated-user/vendor",
-        "arn:aws-us-gov:iam::999999999999:role/vendor",
-        "arn:aws-cn:iam::999999999999:role/vendor",
-        "999999999999",
-    ])
-    def test_principal_yields_account_id(self, principal: str) -> None:
-        """Each documented principal form resolves to its account."""
-        assert _extract_account_ids_from_principal(principal) == {self.PARTNER}
+    def test_a_malformed_not_action_aborts_too(self) -> None:
+        """
+        NotAction takes the same rule as Action.
 
-    def test_non_account_principal_yields_nothing(self) -> None:
-        """A service principal carries no account ID."""
-        assert _extract_account_ids_from_principal("ec2.amazonaws.com") == set()
+        An Allow with NotAction grants every action its patterns do not cover, so
+        an unreadable NotAction leaves the grant just as unmeasured - and it is
+        the branch that decides the verdict by negation, where a wrong answer is
+        the permissive one.
+        """
+        with pytest.raises(TypeError, match="Unexpected action type: dict"):
+            self.third_parties(self.allow(NotAction={"unexpected": "dict"}))
 
 
 class TestTrustPolicyGrammar:

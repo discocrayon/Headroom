@@ -463,9 +463,9 @@ def _verify_no_duplicate_account_names(
     Names are compared the way a filesystem compares them, by Unicode
     canonical caseless matching -- `NFD(casefold(NFD(x)))`, D145. It folds
     case and normal form together rather than in sequence, which is not the
-    same thing; "Account name validation" in `Headroom-Specification.md`
-    carries the worked example that rules out the cheaper orderings, and the
-    trade-off this makes on a filesystem that folds neither axis.
+    same thing; `spec/contracts/results.md` carries the worked example that
+    rules out the cheaper orderings, and the trade-off this makes on a
+    filesystem that folds neither axis.
 
     The message names the colliding spellings and how many accounts carry
     them, never the account IDs -- printing those would defeat the setting

@@ -56,7 +56,7 @@ terraform apply -target=aws_kms_key.third_party_vendor_crowdstrike \
 
 ```bash
 cd ..
-python -m headroom --config my_config.yaml
+python -m headroom --config config.yaml
 
 # Verify results
 cat test_environment/headroom_results/rcps/deny_kms_third_party_access/acme-co.json
