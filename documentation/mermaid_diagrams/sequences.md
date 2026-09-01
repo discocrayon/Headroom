@@ -30,10 +30,12 @@ sequenceDiagram
   Analysis-->>CLI: None (writes JSON results)
 
   CLI->>TFOrg: generate_terraform_org_info(snapshot.hierarchy, path)
-  TFOrg-->>CLI: grab_org_info.tf written
+  Note right of TFOrg: The hierarchy is passed in, not walked here
+  TFOrg-->>CLI: scps/grab_org_info.tf written
+  CLI->>CLI: ensure_org_info_symlink(rcps_dir, scps_dir)
 
   Note over CLI: SCP Workflow
-  CLI->>ParseSCP: parse_scp_results(config)
+  CLI->>ParseSCP: analyze_scp_compliance(config, org_hierarchy)
   ParseSCP->>ParseSCP: parse_scp_result_files()
   ParseSCP->>ParseSCP: determine_scp_placement()
   ParseSCP-->>CLI: List[SCPPlacementRecommendations]
@@ -48,6 +50,8 @@ sequenceDiagram
   CLI->>TFRCP: generate_rcp_terraform(recommendations, hierarchy)
   TFRCP-->>CLI: RCP Terraform files written
 
+  Note over CLI: Both workflows succeeded, so the plan is complete
+  CLI->>CLI: reconcile_generated_terraform(dirs, expected)
   CLI-->>User: Done
 ```
 
@@ -57,6 +61,7 @@ sequenceDiagram
 sequenceDiagram
   participant Main as headroom.main
   participant Analysis as headroom.analysis
+  participant Org as headroom.aws.organization
   participant STS as boto3 STS
   participant Orgs as boto3 Organizations
   participant Registry as headroom.checks.registry
@@ -72,8 +77,8 @@ sequenceDiagram
   Orgs-->>Main: OrganizationSnapshot
   Main->>Analysis: perform_analysis(config, security_session, snapshot)
   loop for each snapshot.analyzable_accounts entry (concurrently, max_account_workers at a time)
-    Analysis->>Analysis: all_check_results_exist("scps", account_info)
-    Analysis->>Analysis: all_check_results_exist("rcps", account_info)
+    Analysis->>Analysis: all_check_results_exist("scps", account_info, config)
+    Analysis->>Analysis: all_check_results_exist("rcps", account_info, config)
     opt if any results don't exist
       Analysis->>STS: assume Headroom role in account
       STS-->>Analysis: temp credentials
@@ -114,7 +119,6 @@ sequenceDiagram
   participant Results as headroom.parse_results
   participant FS as filesystem
   participant Hierarchy as HierarchyPlacementAnalyzer
-  participant Org as headroom.aws.organization
 
   Note over Results: Parse SCP results from disk
   Results->>FS: scan results_dir/scps/**/*.json
@@ -124,7 +128,7 @@ sequenceDiagram
 
   Note over Results: Determine placement using hierarchy
   Results->>Results: determine_scp_placement(results, org_hierarchy)
-  Results->>Hierarchy: determine_placement(check_results, safety_predicates)
+  Results->>Hierarchy: determine_placement(results, is_safe_for_root, is_safe_for_ou, get_account_id)
   Hierarchy->>Hierarchy: Check if safe for root (all violations = 0)
   Hierarchy->>Hierarchy: Group results by OU
   Hierarchy->>Hierarchy: Check if safe for each OU
@@ -140,7 +144,6 @@ sequenceDiagram
   participant GenRCP as headroom.terraform.generate_rcps
   participant FS as filesystem
   participant Hierarchy as HierarchyPlacementAnalyzer
-  participant Org as headroom.aws.organization
 
   Note over GenRCP: Parse RCP results from disk
   GenRCP->>FS: scan results_dir/rcps/{check_name}/*.json for each registered check
@@ -153,7 +156,7 @@ sequenceDiagram
   GenRCP->>GenRCP: determine_rcp_placement(parse_results, org_hierarchy)
   loop for each registered RCP check
     GenRCP->>GenRCP: _determine_check_rcp_placement(parse_result, org_hierarchy)
-    GenRCP->>Hierarchy: determine_placement(accounts, safety_predicates)
+    GenRCP->>Hierarchy: determine_placement(accounts, is_safe_for_root, is_safe_for_ou, get_account_id)
     Hierarchy->>Hierarchy: Check if safe for root (no account blocks this check)
     Hierarchy->>Hierarchy: Skip OUs holding an account blocked for this check
     Hierarchy->>Hierarchy: Check if safe for each OU

@@ -70,8 +70,9 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
         """
         Analyze Secrets Manager resource policies for third-party access.
 
-        Filters to only return secrets with wildcards or third-party access.
-        Secrets with neither are not relevant to this check.
+        Filters to only return secrets with a wildcard principal, a principal
+        type carrying no account ID, or third-party account access.
+        Secrets with none of the three are not relevant to this check.
 
         Args:
             session: boto3.Session for the target account

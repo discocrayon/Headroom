@@ -8,48 +8,32 @@ specifically for identifying third-party account access (RCP checks).
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, NamedTuple, Optional, Set
+from typing import Dict, List, NamedTuple, Optional, Set
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_s3.client import S3Client
 
-from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
-from .helpers import memoize_per_session
+from .helpers import memoize_per_session, paginate
 from .policy_documents import (
+    normalize_actions,
+    RESOURCE_POLICY_PRINCIPAL_TYPES,
     ServicePrincipalSource,
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
+    read_principal,
     read_service_principal_sources,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class UnknownPrincipalTypeError(Exception):
-    """Raised when an unknown principal type is encountered in a bucket policy."""
-
-
-class UnsupportedPrincipalTypeError(Exception):
-    """
-    Raised when a bucket policy contains principal types that can't be handled by RCP.
-
-    Federated and CanonicalUser principals don't have account IDs, so the RCP
-    (which uses aws:PrincipalAccount for allowlisting) would break their access.
-    """
-
-
 class UnknownGranteeTypeError(Exception):
     """Raised when an unknown grantee type or group is encountered in a bucket ACL."""
 
-
-# S3 bucket policies support CanonicalUser in addition to base types
-# Reference: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-bucket-user-policy-specifying-principal-intro.html
-ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES | {"CanonicalUser"}
 
 # ACL grantee groups, which name an audience rather than an account.
 # Reference: https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html
@@ -72,8 +56,8 @@ class AclGrantFindings(NamedTuple):
     Attributes:
         has_wildcard_grantee: True if the ACL grants to a public group, whose
             members the analyzer cannot enumerate
-        has_non_account_grantee: True if the ACL grants to a canonical user or
-            an email address, neither of which resolves to an account ID
+        has_non_account_grantee: True if the ACL grants to a canonical user,
+            which no API resolves to an account ID
     """
     has_wildcard_grantee: bool
     has_non_account_grantee: bool
@@ -96,7 +80,7 @@ class S3BucketPolicyAnalysis:
             grant to a public group
         has_non_account_principals: True if the policy names a Federated or
             CanonicalUser principal, or the ACL grants to a canonical user
-            other than the bucket owner, or to an email address
+            other than the bucket owner
         actions_by_account: Dict mapping account IDs to sets of allowed
             actions. Only the policy contributes: ACL permissions are not IAM
             actions, and an ACL grantee never reaches the allowlist
@@ -112,109 +96,6 @@ class S3BucketPolicyAnalysis:
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
-
-
-def _extract_account_ids_from_principal(principal: Any) -> Set[str]:
-    """
-    Extract AWS account IDs from an S3 policy principal.
-
-    Args:
-        principal: Principal field from S3 policy statement (can be string, list, or dict)
-
-    Returns:
-        Set of extracted account IDs (12-digit strings)
-    """
-    account_ids: Set[str] = set()
-
-    if isinstance(principal, str):
-        if principal == "*":
-            return set()
-        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
-        if arn_match:
-            account_ids.add(arn_match.group(1))
-        else:
-            if re.match(r'^\d{12}$', principal):
-                account_ids.add(principal)
-    elif isinstance(principal, list):
-        for item in principal:
-            account_ids.update(_extract_account_ids_from_principal(item))
-    elif isinstance(principal, dict):
-        unknown_types = set(principal.keys()) - ALLOWED_PRINCIPAL_TYPES
-        if unknown_types:
-            raise UnknownPrincipalTypeError(
-                f"Unknown principal type(s) found: {unknown_types}. "
-                f"Expected one of: {ALLOWED_PRINCIPAL_TYPES}"
-            )
-
-        if "AWS" in principal:
-            value = principal["AWS"]
-            if isinstance(value, str):
-                account_ids.update(_extract_account_ids_from_principal(value))
-            elif isinstance(value, list):
-                for item in value:
-                    account_ids.update(_extract_account_ids_from_principal(item))
-
-    return account_ids
-
-
-def _has_wildcard_principal(principal: Any) -> bool:
-    """
-    Check if principal contains a wildcard.
-
-    Args:
-        principal: Principal field from S3 policy statement
-
-    Returns:
-        True if principal contains wildcard
-    """
-    if isinstance(principal, str):
-        return principal == "*"
-    elif isinstance(principal, list):
-        return any(_has_wildcard_principal(item) for item in principal)
-    elif isinstance(principal, dict):
-        for key, value in principal.items():
-            if key == "AWS":
-                if isinstance(value, str) and value == "*":
-                    return True
-                if isinstance(value, list) and any(item == "*" for item in value):
-                    return True
-    return False
-
-
-def _has_non_account_principals(principal: Any) -> bool:
-    """
-    Check if principal contains Federated or CanonicalUser types.
-
-    These principal types cannot be represented as account IDs, so an RCP that
-    uses aws:PrincipalAccount for allowlisting would break their access.
-
-    Args:
-        principal: Principal field from S3 policy statement
-
-    Returns:
-        True if principal contains Federated or CanonicalUser types
-    """
-    if isinstance(principal, dict):
-        # Check if any non-account-based principal types are present
-        return "Federated" in principal or "CanonicalUser" in principal
-    return False
-
-
-def _normalize_actions(action: Any) -> Set[str]:
-    """
-    Normalize action field to a set of action strings.
-
-    Args:
-        action: Action field from policy statement (can be string or list)
-
-    Returns:
-        Set of action strings
-    """
-    if isinstance(action, str):
-        return {action}
-    elif isinstance(action, list):
-        return set(action)
-    return set()
 
 
 def _analyze_bucket_acl(s3_client: S3Client, bucket_name: str) -> AclGrantFindings:
@@ -264,8 +145,6 @@ def _analyze_bucket_acl(s3_client: S3Client, bucket_name: str) -> AclGrantFindin
             # Every bucket grants its own owner, which shares nothing
             if grantee.get("ID") != owner_id:
                 has_non_account = True
-        elif grantee_type == "AmazonCustomerByEmail":
-            has_non_account = True
         elif grantee_type == "Group":
             uri = grantee.get("URI")
             if uri in PUBLIC_ACL_GROUP_URIS:
@@ -336,7 +215,7 @@ def analyze_s3_bucket_policies(
     that breaks on apply with nothing in the scan to warn of it.
 
     Algorithm:
-    1. List all S3 buckets via list_buckets()
+    1. List all S3 buckets via list_buckets() (paginated)
     2. For each bucket:
        a. Get bucket ACL via get_bucket_acl() and classify its grantees
        b. Get bucket policy via get_bucket_policy(), if the bucket carries one
@@ -344,7 +223,8 @@ def analyze_s3_bucket_policies(
        d. Extract AWS principals from statements
        e. Identify third-party accounts (not in org)
        f. Track which actions each third-party account can perform
-    3. Return analysis results for buckets with third-party access
+       g. Detect wildcard principals, and principals carrying no account ID
+    3. Return analysis results for buckets with a finding
 
     Args:
         session: boto3 Session for the target account
@@ -356,20 +236,25 @@ def analyze_s3_bucket_policies(
         List of S3BucketPolicyAnalysis for buckets with third-party accounts or wildcards
 
     Raises:
-        MalformedPolicyError: If a Statement is neither an object nor a list
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
         UnknownGranteeTypeError: If an ACL grantee's type or group is unrecognized
+        UnknownPrincipalTypeError: If a bucket policy names a principal key
+            AWS does not document
     """
     s3_client: S3Client = session.client("s3")
     results: List[S3BucketPolicyAnalysis] = []
 
+    # Materialized rather than streamed so that a failure on any page is
+    # raised here, where it is reported as the listing failure it is, rather
+    # than inside the loop where the bucket-policy handler would catch it.
     try:
-        response = s3_client.list_buckets()
-        buckets = response.get("Buckets", [])
+        pages = list(paginate(s3_client, "list_buckets"))
     except ClientError as e:
         logger.error(f"Failed to list S3 buckets from AWS API: {e}")
         raise
 
-    for bucket in buckets:
+    for bucket in [bucket for page in pages for bucket in page.get("Buckets", [])]:
         bucket_name = bucket["Name"]
         bucket_arn = f"arn:aws:s3:::{bucket_name}"
 
@@ -407,14 +292,17 @@ def analyze_s3_bucket_policies(
                     read_service_principal_sources(statement, org_account_ids, org_id, f"Bucket '{bucket_name}'")
                 )
 
-                if _has_wildcard_principal(principal):
-                    has_wildcard = True
+                reading = read_principal(
+                    principal, RESOURCE_POLICY_PRINCIPAL_TYPES, f"Bucket '{bucket_name}'"
+                )
 
-                if _has_non_account_principals(principal):
-                    has_non_account_principals = True
+                has_wildcard = has_wildcard or reading.has_wildcard
+                has_non_account_principals = (
+                    has_non_account_principals or reading.has_non_account_principals
+                )
 
-                account_ids = _extract_account_ids_from_principal(principal)
-                actions = _normalize_actions(statement.get("Action", []))
+                account_ids = reading.account_ids
+                actions = normalize_actions(statement.get("Action", []))
 
                 for account_id in account_ids:
                     if account_id not in org_account_ids:

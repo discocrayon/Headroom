@@ -7,42 +7,27 @@ resource policies, specifically for identifying third-party account access (RCP 
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, List, Optional, Set
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_secretsmanager.client import SecretsManagerClient
 
-from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 from ..types import JsonDict
 from .helpers import get_all_regions, memoize_per_session
 from .policy_documents import (
+    normalize_actions,
+    RESOURCE_POLICY_PRINCIPAL_TYPES,
     ServicePrincipalSource,
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
+    read_principal,
     read_service_principal_sources,
 )
 
 logger = logging.getLogger(__name__)
-
-
-class UnknownPrincipalTypeError(Exception):
-    """Raised when an unknown principal type is encountered in a resource policy."""
-
-
-class UnsupportedPrincipalTypeError(Exception):
-    """
-    Raised when a resource policy contains principal types that can't be handled by RCP.
-
-    Federated and CanonicalUser principals don't have account IDs, so the RCP
-    (which uses aws:PrincipalAccount for allowlisting) would break their access.
-    """
-
-
-ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES
 
 
 @dataclass
@@ -73,114 +58,6 @@ class SecretsPolicyAnalysis:
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
-def _extract_account_ids_from_principal(
-    principal: Union[str, List[str], Dict[str, Union[str, List[str]]]]
-) -> Set[str]:
-    """
-    Extract AWS account IDs from a Secrets Manager policy principal.
-
-    Args:
-        principal: Principal field from policy statement (can be string, list, or dict)
-
-    Returns:
-        Set of extracted account IDs (12-digit strings)
-    """
-    account_ids: Set[str] = set()
-
-    if isinstance(principal, str):
-        if principal == "*":
-            return set()
-        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
-        if arn_match:
-            account_ids.add(arn_match.group(1))
-        else:
-            if re.match(r'^\d{12}$', principal):
-                account_ids.add(principal)
-    elif isinstance(principal, list):
-        for item in principal:
-            account_ids.update(_extract_account_ids_from_principal(item))
-    elif isinstance(principal, dict):
-        unknown_types = set(principal.keys()) - ALLOWED_PRINCIPAL_TYPES
-        if unknown_types:
-            raise UnknownPrincipalTypeError(
-                f"Unknown principal type(s) found: {unknown_types}. "
-                f"Expected one of: {ALLOWED_PRINCIPAL_TYPES}"
-            )
-
-        if "AWS" in principal:
-            value = principal["AWS"]
-            if isinstance(value, str):
-                account_ids.update(_extract_account_ids_from_principal(value))
-            elif isinstance(value, list):
-                for item in value:
-                    account_ids.update(_extract_account_ids_from_principal(item))
-
-    return account_ids
-
-
-def _has_wildcard_principal(
-    principal: Union[str, List[str], Dict[str, Union[str, List[str]]]]
-) -> bool:
-    """
-    Check if principal contains a wildcard.
-
-    Args:
-        principal: Principal field from policy statement
-
-    Returns:
-        True if principal contains wildcard
-    """
-    if isinstance(principal, str):
-        return principal == "*"
-    elif isinstance(principal, list):
-        return any(_has_wildcard_principal(item) for item in principal)
-    elif isinstance(principal, dict):
-        for key, value in principal.items():
-            if key == "AWS":
-                if isinstance(value, str) and value == "*":
-                    return True
-                if isinstance(value, list) and any(item == "*" for item in value):
-                    return True
-    return False
-
-
-def _has_non_account_principals(
-    principal: Union[str, List[str], Dict[str, Union[str, List[str]]]]
-) -> bool:
-    """
-    Check if principal contains Federated or CanonicalUser types.
-
-    These principal types cannot be represented as account IDs, so an RCP that
-    uses aws:PrincipalAccount for allowlisting would break their access.
-
-    Args:
-        principal: Principal field from policy statement
-
-    Returns:
-        True if principal contains Federated or CanonicalUser types
-    """
-    if isinstance(principal, dict):
-        return "Federated" in principal or "CanonicalUser" in principal
-    return False
-
-
-def _normalize_actions(action: Union[str, List[str]]) -> Set[str]:
-    """
-    Normalize action field to a set of action strings.
-
-    Args:
-        action: Action field from policy statement (can be string or list)
-
-    Returns:
-        Set of action strings
-    """
-    if isinstance(action, str):
-        return {action}
-    if isinstance(action, list):
-        return set(action)
-    raise TypeError(f"Unexpected action type: {type(action).__name__}. Expected str or list.")
-
-
 @memoize_per_session
 def analyze_secrets_manager_policies(
     session: Session,
@@ -202,7 +79,8 @@ def analyze_secrets_manager_policies(
        d. Extract AWS principals from statements
        e. Identify third-party accounts (not in org)
        f. Track which actions each third-party account can perform
-    3. Return analysis results for secrets with third-party access
+       g. Detect wildcard principals, and principals carrying no account ID
+    3. Return analysis results for secrets with a finding
 
     Args:
         session: boto3 Session for the target account
@@ -211,11 +89,13 @@ def analyze_secrets_manager_policies(
             organization scope on a source guard names this organization
 
     Returns:
-        List of SecretsPolicyAnalysis for secrets with third-party accounts or wildcards
+        List of SecretsPolicyAnalysis for secrets with third-party accounts,
+        wildcards, or principals carrying no account ID
 
     Raises:
         ClientError: If AWS API calls fail
-        UnsupportedPrincipalTypeError: If policy contains Federated/CanonicalUser principals
+        UnknownPrincipalTypeError: If a resource policy names a principal key
+            AWS does not document
     """
     results: List[SecretsPolicyAnalysis] = []
     regions = get_all_regions(session)
@@ -253,7 +133,8 @@ def _analyze_secrets_in_region(
 
     Raises:
         ClientError: If AWS API calls fail
-        UnsupportedPrincipalTypeError: If policy contains Federated/CanonicalUser principals
+        UnknownPrincipalTypeError: If a resource policy names a principal key
+            AWS does not document
     """
     sm_client: SecretsManagerClient = session.client("secretsmanager", region_name=region)
     results: List[SecretsPolicyAnalysis] = []
@@ -320,8 +201,10 @@ def _analyze_secret_policy(
         SecretsPolicyAnalysis if secret has third-party access, None otherwise
 
     Raises:
-        UnsupportedPrincipalTypeError: If policy contains Federated/CanonicalUser principals
-        MalformedPolicyError: If Statement is neither an object nor a list
+        UnknownPrincipalTypeError: If a statement names a principal key AWS
+            does not document
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
     """
     third_party_accounts: Set[str] = set()
     has_wildcard = False
@@ -349,18 +232,19 @@ def _analyze_secret_policy(
             read_service_principal_sources(statement, org_account_ids, org_id, f"Secret '{secret_name}'")
         )
 
-        if _has_wildcard_principal(principal):
-            has_wildcard = True
+        reading = read_principal(
+            principal,
+            RESOURCE_POLICY_PRINCIPAL_TYPES,
+            f"Secret '{secret_name}' ({secret_arn})",
+        )
 
-        if _has_non_account_principals(principal):
+        if reading.has_non_account_principals:
             has_non_account_principals = True
-            raise UnsupportedPrincipalTypeError(
-                f"Secret '{secret_name}' has Federated or CanonicalUser principal in resource policy. "
-                f"RCP deployment would break this access. Secret ARN: {secret_arn}"
-            )
 
-        account_ids = _extract_account_ids_from_principal(principal)
-        actions = _normalize_actions(statement.get("Action", []))
+        has_wildcard = has_wildcard or reading.has_wildcard
+
+        account_ids = reading.account_ids
+        actions = normalize_actions(statement.get("Action", []))
 
         for account_id in account_ids:
             if account_id not in org_account_ids:

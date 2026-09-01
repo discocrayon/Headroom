@@ -12,7 +12,6 @@ from .roles import (
     InvalidFederatedPrincipalError,
     MalformedStatementError,
     TrustPolicyAnalysis,
-    UnknownPrincipalTypeError,
     analyze_iam_roles_trust_policies,
 )
 
@@ -31,7 +30,6 @@ from .saml_providers import (
 __all__ = [
     # Roles (RCP)
     "TrustPolicyAnalysis",
-    "UnknownPrincipalTypeError",
     "InvalidFederatedPrincipalError",
     "MalformedStatementError",
     "analyze_iam_roles_trust_policies",

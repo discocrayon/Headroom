@@ -9,17 +9,25 @@ rules live here once rather than in each of them.
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, List, Optional, Set
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Union
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 
 __all__ = [
     "MalformedPolicyError",
+    "NON_ACCOUNT_PRINCIPAL_TYPES",
+    "PrincipalElement",
+    "PrincipalReading",
+    "RESOURCE_POLICY_PRINCIPAL_TYPES",
     "ServicePrincipalSource",
+    "TRUST_POLICY_PRINCIPAL_TYPES",
+    "UnknownPrincipalTypeError",
     "UnknownSourceConditionError",
     "has_actionable_service_principal_source",
     "has_not_principal",
+    "normalize_actions",
     "normalize_statements",
+    "read_principal",
     "read_service_principal_sources",
     "unreadable_service_principal_source",
 ]
@@ -41,9 +49,10 @@ ORG_SCOPE_CONDITION_KEYS = frozenset({
     SOURCE_ORG_PATHS_CONDITION_KEY,
 })
 
-# Operators that pin a source to a value. Anything else on a source key is
-# not a guard - a negated operator excludes rather than permits - and
-# reading one as a guard would put the wrong account in the allowlist.
+# The base operators that constrain a source to a value. A negated operator
+# excludes rather than permits, and reading one as a guard would put the wrong
+# account in the allowlist. This frozenset is not the whole rule for reading an
+# operator as a guard; spec/contracts/policy-model.md owns that rule.
 SOURCE_GUARD_OPERATORS = frozenset({
     "ArnEquals",
     "ArnEqualsIfExists",
@@ -55,11 +64,100 @@ SOURCE_GUARD_OPERATORS = frozenset({
     "StringLikeIfExists",
 })
 
+# The ...IfExists forms among them, named rather than matched on a suffix.
+# IfExists is satisfied when the key is absent, so a guard written with one
+# also matches a request that omits the key. The deployed statement exempts
+# that case for aws:SourceAccount alone, through its `Null aws:SourceAccount =
+# "false"` clause; on any other key the resource policy permits a call the RCP
+# denies, and the statement has to be withheld from the account instead.
+SOURCE_GUARD_IF_EXISTS_OPERATORS = frozenset({
+    "ArnEqualsIfExists",
+    "ArnLikeIfExists",
+    "StringEqualsIfExists",
+    "StringLikeIfExists",
+})
+
+# The two set operators AWS defines. A multivalued condition key - which
+# aws:SourceOrgPaths is - must carry one, so a guard written the way AWS
+# documents it reaches this parser as "ForAllValues:StringLike" rather than
+# as a bare operator.
+FOR_ANY_VALUE = "ForAnyValue"
+FOR_ALL_VALUES = "ForAllValues"
+SOURCE_GUARD_SET_OPERATORS = frozenset({FOR_ANY_VALUE, FOR_ALL_VALUES})
+
+# Null pins no value. `Null <key> = "false"` asserts the key is present, which
+# is the clause AWS pairs with ForAllValues to forbid the empty case.
+NULL_OPERATOR = "Null"
+
 ACCOUNT_ID_PATTERN = re.compile(r"\d{12}")
+
+# The keys AWS documents for the Principal element, split by the policy type
+# that accepts them. A canonical user ID is an Amazon S3 identifier and appears
+# only in the policies of services that accept one; a role trust policy does
+# not. Reference:
+# https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html
+RESOURCE_POLICY_PRINCIPAL_TYPES = frozenset({"AWS", "CanonicalUser", "Federated", "Service"})
+TRUST_POLICY_PRINCIPAL_TYPES = frozenset({"AWS", "Federated", "Service"})
+
+# The principal types that carry no account ID, so that no allowlist keyed on
+# aws:PrincipalAccount can preserve their access. A SAML provider ARN does hold
+# twelve digits, but they name the account hosting the provider rather than the
+# caller, and a canonical user ID maps to an account only through an API call
+# the scan does not make.
+NON_ACCOUNT_PRINCIPAL_TYPES = frozenset({"CanonicalUser", "Federated"})
+
+
+# A Principal element is a string, an array of them, or an object keyed by
+# principal type whose values are again strings or arrays.
+PrincipalElement = Union[str, List["PrincipalElement"], Dict[str, "PrincipalElement"]]
 
 
 class MalformedPolicyError(Exception):
-    """Raised when a policy document's Statement is neither an object nor a list."""
+    """
+    Raised when part of a policy document is not shaped like a policy.
+
+    Two elements raise it: a `Statement` that is neither an object nor a
+    list, and a `Principal` that is neither a string, a list, nor an object
+    keyed by principal type. Both name the resource, because a document
+    Headroom cannot read is worth nothing to an operator who cannot tell
+    which document it was.
+    """
+
+
+class UnknownPrincipalTypeError(Exception):
+    """
+    Raised when a Principal element names a key AWS does not document.
+
+    Five of the six analyzers let this abort the run: ECR, KMS, S3, Secrets
+    Manager, and IAM role trust policies. AWS validates the Principal element
+    when it stores a policy, so a key outside the documented set is a document
+    Headroom has misread or a principal type AWS has added since this was
+    written - not an ordinary fact about the account. Recording it as a
+    finding would state a verdict on a grant nobody has modelled.
+
+    SQS is the exception, and deliberately so. `_analyze_queues_in_region`
+    catches it and records the queue through `_unreadable_queue`, which
+    withholds the confused-deputy statement from the account instead of
+    letting the queue vanish on a log line.
+    `spec/checks/rcps/deny_sqs_third_party_access.md` owns that departure.
+    """
+
+
+@dataclass(frozen=True)
+class PrincipalReading:
+    """
+    What one Principal element grants, as far as an RCP allowlist can express it.
+
+    Attributes:
+        account_ids: Every account ID the element names
+        has_wildcard: True if it reaches principals the analyzer cannot
+            enumerate, which is `*` under `Principal` or under `AWS`
+        has_non_account_principals: True if it names a principal type that
+            carries no account ID, so no allowlist can preserve its access
+    """
+    account_ids: Set[str]
+    has_wildcard: bool
+    has_non_account_principals: bool
 
 
 def normalize_statements(policy: Mapping[str, Any], resource_description: str) -> List[Any]:
@@ -98,6 +196,36 @@ def normalize_statements(policy: Mapping[str, Any], resource_description: str) -
         )
 
     return statements
+
+
+def normalize_actions(action: Union[str, List[str]]) -> Set[str]:
+    """
+    Return a statement's Action element as a set of action strings.
+
+    IAM accepts a string or an array of strings and nothing else, so anything
+    else is a document AWS could not have stored - the same kind of trouble as
+    a principal key AWS does not document, and answered the same way. Reading
+    it as no actions would record the resource as granting nothing, which is a
+    verdict on a grant nobody measured.
+
+    Args:
+        action: The statement's Action element
+
+    Returns:
+        Every action the element names
+
+    Raises:
+        TypeError: If the element is neither a string nor a list
+    """
+    if isinstance(action, str):
+        return {action}
+
+    if isinstance(action, list):
+        return set(action)
+
+    raise TypeError(
+        f"Unexpected action type: {type(action).__name__}. Expected str or list."
+    )
 
 
 def has_not_principal(statement: Mapping[str, Any]) -> bool:
@@ -282,11 +410,15 @@ class _SourceGuards:
             aws:SourceOrgPaths
         names_foreign_org: True if any organization scope names an
             organization other than this one
+        permits_absent_source_key: True if an ...IfExists operator guards a
+            key other than aws:SourceAccount, so the guard also matches a
+            request that omits it
     """
     accounts: List[str]
     arns: List[str]
     has_org_scope: bool
     names_foreign_org: bool
+    permits_absent_source_key: bool
 
 
 def _names_this_organization(scope: str, org_id: str) -> bool:
@@ -314,6 +446,77 @@ def _names_this_organization(scope: str, org_id: str) -> bool:
     return scope.split("/")[0] == org_id
 
 
+def _asserts_key_present(value: object) -> bool:
+    """
+    Report whether one `Null` clause entry asserts its key carries a value.
+
+    `Null <key> = "false"` is the assertion, and IAM's grammar sanctions two
+    further spellings of the same thing: quotation marks are optional on a
+    Boolean value, and a condition value is a list whose brackets may be
+    dropped when it holds one entry. All three are stored, so reading only
+    the quoted string turns AWS's own recommended `aws:SourceOrgPaths` guard
+    into a wildcard whenever a generator emitted one of the others.
+
+    Anything else is read as no assertion: `"true"` asserts the opposite, a
+    capitalised `"False"` is not a form AWS documents for `Null`, which
+    defines no case-insensitive variant, and a list of several entries
+    asserts nothing coherent about one key. Each leaves the empty case open,
+    and the statement is withheld rather than deployed over a guess (INV-01).
+
+    Args:
+        value: One value from the statement's `Null` clause
+
+    Returns:
+        True if the entry asserts the key is present
+
+    """
+    if isinstance(value, list):
+        if len(value) != 1:
+            return False
+        value = value[0]
+    return value is False or value == "false"
+
+
+def _keys_asserted_present(
+    condition: Mapping[str, Any],
+    resource_description: str,
+) -> Set[str]:
+    """
+    Return the condition keys a Null clause asserts are present.
+
+    `Null <key> = "false"` requires the key to carry a value; the "true"
+    form requires the opposite and asserts nothing about a guard. Only the
+    "false" form closes the hole ForAllValues opens, and
+    `_asserts_key_present` owns which spellings of it IAM stores.
+
+    Args:
+        condition: The statement's Condition element
+        resource_description: The resource this policy belongs to
+
+    Returns:
+        The lowercased keys asserted present, empty if there is no Null block
+
+    Raises:
+        UnknownSourceConditionError: If the Null clause holds something
+            other than a mapping of condition keys to values
+    """
+    entries = condition.get(NULL_OPERATOR, {})
+    if not isinstance(entries, dict):
+        raise UnknownSourceConditionError(
+            f"{resource_description} guards a Service principal with a "
+            f"'{NULL_OPERATOR}' clause holding {type(entries).__name__}, "
+            "expected a mapping of condition keys to values. Reading it as "
+            "asserting nothing would guess a ForAllValues guard's "
+            "absent-key verdict elsewhere in this block instead of reading "
+            "what the policy actually asserts."
+        )
+    return {
+        key.lower()
+        for key, value in entries.items()
+        if _asserts_key_present(value)
+    }
+
+
 def _read_source_guards(
     condition: Any,
     org_id: str,
@@ -328,22 +531,35 @@ def _read_source_guards(
         resource_description: The resource this policy belongs to
 
     Returns:
-        The accounts, ARNs, and organization scopes the block pins
+        The accounts, ARNs, organization scopes, and whether an ...IfExists
+        operator guards a key other than aws:SourceAccount
 
     Raises:
         UnknownSourceConditionError: If a source key sits under an operator
-            that does not pin it to a value
+            that does not pin it to a value, or a Null clause does not hold
+            a mapping of condition keys to values
     """
     accounts: List[str] = []
     arns: List[str] = []
     org_scopes: List[str] = []
+    permits_absent_source_key = False
 
     if not isinstance(condition, dict):
-        return _SourceGuards(accounts, arns, False, False)
+        return _SourceGuards(
+            accounts=accounts,
+            arns=arns,
+            has_org_scope=False,
+            names_foreign_org=False,
+            permits_absent_source_key=False,
+        )
+
+    asserted_present = _keys_asserted_present(condition, resource_description)
 
     for operator, entries in condition.items():
         if not isinstance(entries, dict):
             continue
+
+        set_operator, _, base_operator = operator.rpartition(":")
 
         for key, value in entries.items():
             normalized = key.lower()
@@ -357,13 +573,33 @@ def _read_source_guards(
             else:
                 continue
 
-            if operator not in SOURCE_GUARD_OPERATORS:
+            # A Null clause pins no value, so it names no source to record.
+            # _keys_asserted_present has already read what it does assert.
+            if base_operator == NULL_OPERATOR:
+                continue
+
+            if set_operator and set_operator not in SOURCE_GUARD_SET_OPERATORS:
+                raise UnknownSourceConditionError(
+                    f"{resource_description} guards a Service principal with "
+                    f"'{key}' under set operator '{set_operator}', which is "
+                    "neither ForAnyValue nor ForAllValues. Reading it as a "
+                    "guard would put the wrong account in the allowlist."
+                )
+
+            if base_operator not in SOURCE_GUARD_OPERATORS:
                 raise UnknownSourceConditionError(
                     f"{resource_description} guards a Service principal with "
                     f"'{key}' under operator '{operator}', which does not pin "
                     "the source to a value. Reading it as a guard would put "
                     "the wrong account in the allowlist."
                 )
+
+            uses_an_if_exists_operator = base_operator in SOURCE_GUARD_IF_EXISTS_OPERATORS
+            is_satisfied_by_an_absent_key = set_operator == FOR_ALL_VALUES and normalized not in asserted_present
+            permits_the_key_to_be_absent = uses_an_if_exists_operator or is_satisfied_by_an_absent_key
+            guards_a_key_other_than_source_account = normalized != SOURCE_ACCOUNT_CONDITION_KEY
+            if permits_the_key_to_be_absent and guards_a_key_other_than_source_account:
+                permits_absent_source_key = True
 
             target.extend(_as_condition_values(value, key, resource_description))
 
@@ -374,6 +610,7 @@ def _read_source_guards(
         names_foreign_org=any(
             not _names_this_organization(scope, org_id) for scope in org_scopes
         ),
+        permits_absent_source_key=permits_absent_source_key,
     )
 
 
@@ -443,6 +680,15 @@ def _read_service_principal_sources(
     turn a withheld statement into a deployed one, and this analysis errs
     toward withholding.
 
+    A guard written with an ...IfExists operator is also a wildcard, unless
+    the key it guards is aws:SourceAccount. IfExists is satisfied when the
+    key is absent, so such a guard also matches a request that omits the
+    key. The deployed statement exempts that case for aws:SourceAccount
+    alone, through its `Null aws:SourceAccount = "false"` clause; on any
+    other key the resource policy permits a call the RCP denies, and no
+    allowlist can express that, so the statement is withheld from the
+    account instead.
+
     Args:
         statement: One statement from a resource policy or trust policy
         org_account_ids: Every account ID in the organization
@@ -465,7 +711,7 @@ def _read_service_principal_sources(
     )
 
     resolved: Set[str] = set()
-    has_wildcard = guards.names_foreign_org
+    has_wildcard = guards.names_foreign_org or guards.permits_absent_source_key
 
     for account in guards.accounts:
         if "*" in account or "?" in account:
@@ -548,4 +794,115 @@ def has_actionable_service_principal_source(
     return any(
         source.source_account_ids or source.has_wildcard_source or source.read_failure
         for source in sources
+    )
+
+
+def _account_ids_in_string(principal: str) -> Set[str]:
+    """
+    Return the account ID a principal string names, if it names one.
+
+    A wildcard, a service principal, and a canonical user ID all name none.
+
+    Args:
+        principal: One principal string from a Principal element
+
+    Returns:
+        The account ID as a one-element set, or an empty set
+    """
+    arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+    if arn_match:
+        return {arn_match.group(1)}
+
+    if ACCOUNT_ID_PATTERN.fullmatch(principal):
+        return {principal}
+
+    return set()
+
+
+def read_principal(
+    principal: PrincipalElement,
+    permitted_types: FrozenSet[str],
+    resource_description: str,
+) -> PrincipalReading:
+    """
+    Read one Principal element into the three facts an RCP allowlist turns on.
+
+    An allowlist keyed on `aws:PrincipalAccount` can preserve exactly one kind
+    of grant: one naming accounts. This reports which accounts a principal
+    names, and the two ways it can name something no allowlist can carry - a
+    wildcard, and a principal type that has no account ID.
+
+    The two are one verdict, not two mechanisms: both mean the RCP would deny
+    a grant that exists today, so both must block the account. Which of them
+    it was is reported, not acted on differently.
+
+    An undocumented principal key is the separate case, and raises. See
+    `UnknownPrincipalTypeError`.
+
+    Args:
+        principal: The Principal element's value, as a string, a list, or an
+            object keyed by principal type
+        permitted_types: The principal keys this policy type accepts, either
+            `RESOURCE_POLICY_PRINCIPAL_TYPES` or `TRUST_POLICY_PRINCIPAL_TYPES`
+        resource_description: The resource this policy belongs to, named in
+            the error message
+
+    Returns:
+        What the element names
+
+    Raises:
+        UnknownPrincipalTypeError: If it names a key AWS does not document,
+            or one this policy type does not accept
+    """
+    if isinstance(principal, str):
+        return PrincipalReading(
+            account_ids=_account_ids_in_string(principal),
+            has_wildcard=principal == "*",
+            has_non_account_principals=False,
+        )
+
+    if isinstance(principal, list):
+        readings = [
+            read_principal(item, permitted_types, resource_description)
+            for item in principal
+        ]
+        account_ids: Set[str] = set()
+        for reading in readings:
+            account_ids.update(reading.account_ids)
+        return PrincipalReading(
+            account_ids=account_ids,
+            has_wildcard=any(reading.has_wildcard for reading in readings),
+            has_non_account_principals=any(
+                reading.has_non_account_principals for reading in readings
+            ),
+        )
+
+    if not isinstance(principal, dict):
+        raise MalformedPolicyError(
+            f"{resource_description} has a Principal of type "
+            f"{type(principal).__name__}, which is neither a string, a list, "
+            "nor an object keyed by principal type. Reading it as naming no "
+            "principal would report the statement as granting nothing, which "
+            "is not a safe guess (INV-01)."
+        )
+
+    unknown_types = set(principal.keys()) - permitted_types
+    if unknown_types:
+        raise UnknownPrincipalTypeError(
+            f"{resource_description} names principal type(s) "
+            f"{sorted(unknown_types)}, which this policy type does not accept. "
+            f"Expected one of: {sorted(permitted_types)}. AWS validates the "
+            f"Principal element when it stores a policy, so this is a document "
+            f"Headroom has misread or a principal type it does not model, and "
+            f"either way it cannot say whether the RCP is safe to attach here."
+        )
+
+    named = read_principal(principal.get("AWS", []), permitted_types, resource_description)
+
+    return PrincipalReading(
+        account_ids=named.account_ids,
+        has_wildcard=named.has_wildcard,
+        has_non_account_principals=bool(
+            set(principal.keys()) & NON_ACCOUNT_PRINCIPAL_TYPES
+        ),
     )

@@ -24,7 +24,7 @@ An IMDSv1 instance counts against the account unless it carries
 `ExemptFromIMDSv2 = "true"` on the **instance**. That tag stands in for
 `aws:RequestTag/ExemptFromIMDSv2` on the relaunch: the `TagSpecifications`
 entry that exempts a launch is what puts the tag here. The proxy is imperfect
-and accepted - see `documentation/CHECKS.md`.
+and accepted - see `../../spec/checks/scps/deny_ec2_imds_v1.md`.
 
 ## Test Instances
 

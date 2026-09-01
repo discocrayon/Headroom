@@ -8,6 +8,8 @@ from boto3.session import Session
 
 from headroom.aws.iam import IamUserAnalysis
 from headroom.checks.scps.deny_iam_user_creation import DenyIamUserCreationCheck
+from headroom.parse_results import parse_scp_result_files
+from headroom.types import AccountOrgPlacement, OrganizationHierarchy
 
 
 class TestCheckDenyIamUserCreation:
@@ -129,3 +131,52 @@ class TestCheckDenyIamUserCreation:
         assert "path" in compliant
         assert compliant["user_name"] == "admin"
         assert compliant["path"] == "/"
+
+
+class TestWhatThisCheckWritesCanBeParsedBack:
+    """
+    The check's own output has to survive the reader that consumes it.
+
+    Nothing drove this round trip, so the check could write a summary the
+    parser rejects and the suite stay green. That is how it went unnoticed that
+    every entry being compliant left the summary with no violations count at
+    all - fine while the reader defaulted a missing key, fatal once it stopped.
+    """
+
+    def test_a_written_result_parses(self, tmp_path: Path) -> None:
+        check = DenyIamUserCreationCheck(
+            check_name="deny_iam_user_creation",
+            account_name="test-account",
+            account_id="111111111111",
+            results_dir=str(tmp_path),
+        )
+        user = IamUserAnalysis(
+            user_name="breakglass",
+            user_arn="arn:aws:iam::111111111111:user/breakglass",
+            path="/",
+        )
+
+        with patch(
+            "headroom.checks.scps.deny_iam_user_creation.get_iam_users_analysis"
+        ) as mock_get_users:
+            mock_get_users.return_value = [user]
+            check.execute(MagicMock(spec=Session))
+
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1111",
+            organizational_units={},
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="test-account",
+                    parent_ou_id=None,
+                    ou_path=["Root"],
+                )
+            },
+        )
+        parsed = parse_scp_result_files(str(tmp_path), hierarchy)
+
+        assert [result.violations for result in parsed] == [0]
+        assert [result.iam_user_arns for result in parsed] == [
+            ["arn:aws:iam::111111111111:user/breakglass"]
+        ]

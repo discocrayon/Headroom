@@ -7,7 +7,6 @@ specifically for identifying third-party account access (RCP checks).
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Set, Union
 
@@ -17,13 +16,16 @@ from mypy_boto3_sqs.client import SQSClient
 
 from .helpers import get_all_regions, memoize_per_session
 from .policy_documents import (
+    normalize_actions,
+    RESOURCE_POLICY_PRINCIPAL_TYPES,
     ServicePrincipalSource,
+    UnknownPrincipalTypeError,
     has_not_principal,
     normalize_statements,
+    read_principal,
     read_service_principal_sources,
     unreadable_service_principal_source,
 )
-from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN, BASE_PRINCIPAL_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -39,24 +41,7 @@ QUEUE_GONE_ERROR_CODES = frozenset({
 })
 
 
-PrincipalType = Union[str, List["PrincipalType"], Dict[str, Union[str, List[str]]]]
 ActionsType = Union[str, List[str]]
-
-
-class UnknownPrincipalTypeError(Exception):
-    """Raised when an unknown principal type is encountered in a queue policy."""
-
-
-class UnsupportedPrincipalTypeError(Exception):
-    """
-    Raised when a queue policy contains principal types that can't be handled by RCP.
-
-    Federated principals don't have account IDs, so the RCP
-    (which uses aws:PrincipalAccount for allowlisting) would break their access.
-    """
-
-
-ALLOWED_PRINCIPAL_TYPES = BASE_PRINCIPAL_TYPES
 
 
 @dataclass
@@ -72,7 +57,8 @@ class SQSQueuePolicyAnalysis:
         has_wildcard_principal: True if the policy grants to principals the
             analyzer cannot enumerate - `Principal: "*"`, or an Allow with
             NotPrincipal, which reaches everyone it does not name
-        has_non_account_principals: True if policy has Federated principals
+        has_non_account_principals: True if the policy grants to a principal
+            type carrying no account ID, which no allowlist can preserve
         actions_by_account: Dict mapping account IDs to sets of allowed actions
         service_principal_sources: Service principals this policy trusts,
             with the cross-service source guard on each, or a single entry
@@ -90,106 +76,6 @@ class SQSQueuePolicyAnalysis:
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
-
-
-def _extract_account_ids_from_principal(principal: PrincipalType) -> Set[str]:
-    """
-    Extract AWS account IDs from an SQS policy principal.
-
-    Args:
-        principal: Principal field from SQS policy statement (can be string, list, or dict)
-
-    Returns:
-        Set of extracted account IDs (12-digit strings)
-    """
-    account_ids: Set[str] = set()
-
-    if isinstance(principal, str):
-        if principal == "*":
-            return set()
-        arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
-        if arn_match:
-            account_ids.add(arn_match.group(1))
-        else:
-            if re.match(r'^\d{12}$', principal):
-                account_ids.add(principal)
-    elif isinstance(principal, list):
-        for item in principal:
-            account_ids.update(_extract_account_ids_from_principal(item))
-    elif isinstance(principal, dict):
-        unknown_types = set(principal.keys()) - ALLOWED_PRINCIPAL_TYPES
-        if unknown_types:
-            raise UnknownPrincipalTypeError(
-                f"Unknown principal type(s) found: {unknown_types}. "
-                f"Expected one of: {ALLOWED_PRINCIPAL_TYPES}"
-            )
-
-        if "AWS" in principal:
-            value = principal["AWS"]
-            if isinstance(value, str):
-                account_ids.update(_extract_account_ids_from_principal(value))
-            elif isinstance(value, list):
-                for item in value:
-                    account_ids.update(_extract_account_ids_from_principal(item))
-
-    return account_ids
-
-
-def _check_for_wildcard_principal(principal: PrincipalType) -> bool:
-    """
-    Check if principal contains wildcard (*) access.
-
-    Args:
-        principal: Principal field from policy statement
-
-    Returns:
-        True if wildcard principal found
-    """
-    if isinstance(principal, str):
-        return principal == "*"
-    if isinstance(principal, list):
-        return any(_check_for_wildcard_principal(item) for item in principal)
-    if isinstance(principal, dict):
-        if "AWS" in principal:
-            value = principal["AWS"]
-            if isinstance(value, str):
-                return value == "*"
-            if isinstance(value, list):
-                return "*" in value
-    return False
-
-
-def _check_for_non_account_principals(principal: PrincipalType) -> bool:
-    """
-    Check if principal contains Federated or other non-account principal types.
-
-    These principals don't have aws:PrincipalAccount values, so an RCP using
-    aws:PrincipalAccount for allowlisting would break their access.
-
-    Args:
-        principal: Principal field from policy statement
-
-    Returns:
-        True if Federated or other non-account principals found
-    """
-    if isinstance(principal, dict):
-        return bool({"Federated"} & set(principal.keys()))
-    return False
-
-
-def _normalize_actions(actions: ActionsType) -> Set[str]:
-    """
-    Normalize action field to a set of action strings.
-
-    Args:
-        actions: Action field from policy statement (string or list)
-
-    Returns:
-        Set of action strings
-    """
-    if isinstance(actions, str):
-        return {actions}
-    return set(actions)
 
 
 def _analyze_queue_policy(
@@ -216,12 +102,14 @@ def _analyze_queue_policy(
         SQSQueuePolicyAnalysis result
 
     Raises:
-        UnknownPrincipalTypeError: If unknown principal type encountered
-        UnsupportedPrincipalTypeError: If Federated principals found
-        MalformedPolicyError: If Statement is neither an object nor a list
+        json.JSONDecodeError: If the policy is not valid JSON
+        UnknownPrincipalTypeError: If a statement names a principal key AWS
+            does not document
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
     """
     policy = json.loads(policy_json)
-    all_account_ids: Set[str] = set()
+    third_party_account_ids: Set[str] = set()
     actions_by_account: Dict[str, Set[str]] = {}
     has_wildcard_principal = False
     has_non_account_principals = False
@@ -247,28 +135,24 @@ def _analyze_queue_policy(
             read_service_principal_sources(statement, org_account_ids, org_id, f"Queue {queue_arn}")
         )
 
-        if _check_for_wildcard_principal(principal):
-            has_wildcard_principal = True
+        reading = read_principal(
+            principal, RESOURCE_POLICY_PRINCIPAL_TYPES, f"Queue {queue_arn} in {region}"
+        )
 
-        if _check_for_non_account_principals(principal):
+        if reading.has_non_account_principals:
             has_non_account_principals = True
-            raise UnsupportedPrincipalTypeError(
-                f"Queue {queue_arn} has Federated principal(s) in policy. "
-                "RCP deployment would break this access because Federated principals "
-                "don't have aws:PrincipalAccount values."
-            )
 
-        account_ids = _extract_account_ids_from_principal(principal)
-        all_account_ids.update(account_ids)
+        has_wildcard_principal = has_wildcard_principal or reading.has_wildcard
 
-        actions = _normalize_actions(statement.get("Action", []))
+        actions = normalize_actions(statement.get("Action", []))
 
-        for account_id in account_ids:
+        for account_id in reading.account_ids:
+            if account_id in org_account_ids:
+                continue
+            third_party_account_ids.add(account_id)
             if account_id not in actions_by_account:
                 actions_by_account[account_id] = set()
             actions_by_account[account_id].update(actions)
-
-    third_party_account_ids = all_account_ids - org_account_ids
 
     return SQSQueuePolicyAnalysis(
         queue_url=queue_url,
@@ -366,7 +250,6 @@ def _analyze_queues_in_region(
     Raises:
         ClientError: If listing queues, or reading a queue's attributes for any
             reason other than the queue having been deleted mid-scan, fails
-        UnsupportedPrincipalTypeError: If Federated principals are found
     """
     sqs_client: SQSClient = session.client("sqs", region_name=region)
     results: List[SQSQueuePolicyAnalysis] = []
@@ -410,8 +293,6 @@ def _analyze_queues_in_region(
                         org_id=org_id
                     )
                     results.append(result)
-                except UnsupportedPrincipalTypeError:
-                    raise
                 except (json.JSONDecodeError, UnknownPrincipalTypeError) as e:
                     logger.warning(f"Failed to analyze queue {queue_url} in {region}: {e}")
                     results.append(_unreadable_queue(queue_url, queue_arn, region, e))
@@ -441,9 +322,11 @@ def analyze_sqs_queue_policies(
        d. Parse policy JSON
        e. Extract principal account IDs
        f. Identify wildcard principals
-       g. Identify Federated principals (fail-fast if found)
-       h. Map actions to account IDs
-       i. Filter to third-party accounts (not in org)
+       g. Identify principals carrying no account ID, which no allowlist can
+          preserve and which therefore block the account
+       h. Record third-party accounts (not in org) and the actions each may
+          take, admitting an account to both in one step so the two cannot
+          disagree
     3. Return all results with third-party access or wildcards
 
     Args:
@@ -457,7 +340,6 @@ def analyze_sqs_queue_policies(
 
     Raises:
         ClientError: If any region's queues cannot be read
-        UnsupportedPrincipalTypeError: If Federated principals found in any queue
     """
     all_results: List[SQSQueuePolicyAnalysis] = []
     regions = get_all_regions(session)

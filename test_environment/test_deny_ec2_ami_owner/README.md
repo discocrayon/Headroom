@@ -20,7 +20,7 @@ Neither instance records a numeric account. The check records the value
 `ec2:Owner` will hold on a relaunch, which is the AMI's `ImageOwnerAlias`
 whenever it has one - and both of these do. Only the commented-out custom-AMI
 instance would exercise the alias-free branch, so as written this environment
-covers half the rule. See `documentation/CHECKS.md` for the dry-run
+covers half the rule. See `../../spec/checks/scps/deny_ec2_ami_owner.md` for the dry-run
 measurements behind that.
 
 ## Usage

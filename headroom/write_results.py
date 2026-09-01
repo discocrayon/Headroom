@@ -20,6 +20,11 @@ from .utils import format_account_identifier
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# The account field of an ARN, in any partition. `aws` alone is the commercial
+# one; GovCloud, China, and the isolated regions append hyphenated qualifiers,
+# and an operator there sets exclude_account_ids for the same reason.
+_ARN_ACCOUNT_FIELD = re.compile(r'(arn:aws(?:-[a-z0-9]+)*:[^:]+:[^:]*:)(\d{12})(:)')
+
 
 @dataclass
 class ResultFilePathResolver:
@@ -126,10 +131,12 @@ def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, An
     """
     Recursively redact account IDs from ARNs in data structures.
 
-    Replaces 12-digit account IDs in ARNs with "REDACTED".
+    Replaces 12-digit account IDs in ARNs with "REDACTED", in every partition.
     ARN formats:
     - arn:aws:service::111111111111:resource -> arn:aws:service::REDACTED:resource
     - arn:aws:service:region:111111111111:resource -> arn:aws:service:region:REDACTED:resource
+    - arn:aws-us-gov:service::111111111111:resource, and likewise aws-cn and
+      the aws-iso partitions
 
     Args:
         data: Data structure to process (dict, list, str, or primitive)
@@ -142,7 +149,7 @@ def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, An
     elif isinstance(data, list):
         return [_redact_account_ids_from_arns(item) for item in data]
     elif isinstance(data, str):
-        return re.sub(r'(arn:aws:[^:]+:[^:]*:)(\d{12})(:)', r'\1REDACTED\3', data)
+        return re.sub(_ARN_ACCOUNT_FIELD, r'\1REDACTED\3', data)
     else:
         return data
 

@@ -48,7 +48,7 @@ terraform apply -target=aws_secretsmanager_secret.third_party_vendor_a \
 
 ```bash
 cd ..
-python -m headroom --config my_config.yaml
+python -m headroom --config config.yaml
 
 # Verify results
 cat test_environment/headroom_results/rcps/deny_secrets_manager_third_party_access/acme-co.json

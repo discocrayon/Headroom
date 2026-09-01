@@ -44,7 +44,7 @@ terraform apply
 
 ```bash
 cd ../..
-python -m headroom.main --config my_config.yaml
+python -m headroom.main --config config.yaml
 ```
 
 ### Clean Up (IMPORTANT)
