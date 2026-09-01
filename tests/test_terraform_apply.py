@@ -5,6 +5,7 @@ Covers which files Headroom claims as its own, which it must never touch, and
 that a preflight conflict anywhere stops every mutation everywhere.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Dict, Tuple
@@ -201,6 +202,46 @@ def test_stale_marked_files_are_deleted(tmp_path: Path) -> None:
 
     assert not stale.exists()
     assert kept.exists()
+
+
+def test_a_deleted_stale_file_is_named_in_the_log(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    The deletion log line is an operator's only record of what a run just
+    destroyed. A message that stops naming the path would still satisfy "some
+    INFO record exists" without that record being any use after the fact.
+    """
+    scps, rcps = dirs(tmp_path)
+    stale = scps / "retired_ou_scps.tf"
+    stale.write_text(generated())
+
+    with caplog.at_level(logging.INFO, logger="headroom.terraform.apply"):
+        apply_terraform_plan(plan_for(scps, rcps, {}))
+
+    assert str(stale) in caplog.text
+
+
+def test_a_converged_apply_produces_no_info_record(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A no-op run must stay silent at INFO. The unchanged-file line logs at
+    DEBUG precisely so a converged run does not read like one that just did
+    work; this pins the level, not merely that some message exists.
+    """
+    scps, rcps = dirs(tmp_path)
+    plan = plan_for(scps, rcps, {
+        scps / "payments_scps.tf": generated("# payments\n"),
+    })
+    apply_terraform_plan(plan)
+
+    with caplog.at_level(logging.INFO, logger="headroom.terraform.apply"):
+        apply_terraform_plan(plan)
+
+    assert caplog.text == ""
 
 
 def test_unmanaged_files_are_never_deleted(tmp_path: Path) -> None:
