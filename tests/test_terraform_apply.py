@@ -43,11 +43,18 @@ def plan_for(
     rcps: Path,
     files: Dict[Path, str],
 ) -> TerraformPlan:
-    """A plan holding the given files plus the reserved link."""
+    """
+    A plan holding the given files, plus the org-info file and reserved link.
+
+    The compiler writes the organization data sources on every run, so a plan
+    without them is one it could never produce -- and the link now has to
+    point at a file the same plan writes. A caller naming that path itself
+    still wins, so a test can put whatever content it needs there.
+    """
     return TerraformPlan(
         managed_directories=(scps, rcps),
-        files=files,
-        symlinks={rcps / ORG_INFO_FILENAME: f"../{scps.name}/{ORG_INFO_FILENAME}"},
+        files={scps / ORG_INFO_FILENAME: generated("# org info\n"), **files},
+        symlinks={rcps / ORG_INFO_FILENAME: scps / ORG_INFO_FILENAME},
     )
 
 
@@ -153,6 +160,31 @@ def test_one_unowned_destination_prevents_every_other_mutation(
     assert not (rcps / ORG_INFO_FILENAME).exists()
 
 
+def test_a_plan_that_does_not_validate_is_refused_before_preflight(
+    tmp_path: Path
+) -> None:
+    """
+    Applying revalidates rather than trusting its argument.
+
+    The compiler is the only thing that builds a plan, and it validates what
+    it builds -- but `TerraformPlan` is a public dataclass and applying is the
+    one function that mutates the disk, so the guarantee has to hold for the
+    plan actually handed over, not for the plan the compiler would have made.
+    """
+    scps, rcps = dirs(tmp_path)
+    plan = TerraformPlan(
+        managed_directories=(scps, rcps),
+        files={scps / ORG_INFO_FILENAME: generated("# org info\n")},
+        symlinks={rcps / ORG_INFO_FILENAME: tmp_path / "elsewhere.tf"},
+    )
+
+    with pytest.raises(RuntimeError, match="only file it may point at"):
+        apply_terraform_plan(plan)
+
+    assert not (scps / ORG_INFO_FILENAME).exists()
+    assert not (rcps / ORG_INFO_FILENAME).exists()
+
+
 def test_an_unmarked_file_at_the_link_path_survives(tmp_path: Path) -> None:
     scps, rcps = dirs(tmp_path)
     theirs = rcps / ORG_INFO_FILENAME
@@ -196,6 +228,36 @@ def test_an_incorrect_link_gets_the_relative_target(tmp_path: Path) -> None:
     apply_terraform_plan(plan_for(scps, rcps, {}))
 
     assert os.readlink(link) == f"../{scps.name}/{ORG_INFO_FILENAME}"
+
+
+def test_the_reserved_link_resolves_when_the_rcp_directory_is_a_symlink(
+    tmp_path: Path
+) -> None:
+    """
+    The link text is relative to where the link really lives, not to how the
+    RCP directory was spelled.
+
+    A relative target computed lexically from the spelled rcps_dir is wrong
+    the moment that spelling is a symlink: the link is created inside the
+    directory the spelling points at, and resolves from there. Nothing
+    catches it afterwards either -- the next run reads the same wrong text
+    back, agrees with it, and leaves it -- so the link dangles forever while
+    every run reports success.
+    """
+    scps = Path(os.path.abspath(tmp_path / "scps"))
+    scps.mkdir()
+    real_rcps = Path(os.path.abspath(tmp_path / "elsewhere" / "rcps"))
+    real_rcps.mkdir(parents=True)
+    rcps = Path(os.path.abspath(tmp_path / "rcps"))
+    rcps.symlink_to(real_rcps, target_is_directory=True)
+
+    apply_terraform_plan(plan_for(scps, rcps, {
+        scps / ORG_INFO_FILENAME: generated("# org info\n"),
+    }))
+
+    link = rcps / ORG_INFO_FILENAME
+    assert link.is_symlink()
+    assert link.read_text() == generated("# org info\n")
 
 
 def test_an_unrelated_symlink_is_left_alone(tmp_path: Path) -> None:
@@ -277,6 +339,10 @@ def test_a_converged_apply_produces_no_info_record(
     apply_terraform_plan(plan)
 
     with caplog.at_level(logging.INFO, logger="headroom.terraform.apply"):
+        # The converging run above logged a line per file it created. Those
+        # records reach caplog's handler too, and only the ambient root level
+        # keeps them out of caplog.text -- which no test here controls.
+        caplog.clear()
         apply_terraform_plan(plan)
 
     assert caplog.text == ""
@@ -321,12 +387,35 @@ def test_a_planned_destination_that_is_a_symlink_aborts(tmp_path: Path) -> None:
         apply_terraform_plan(plan_for(scps, rcps, {scps / "root_scps.tf": generated()}))
 
 
-def test_an_undecodable_planned_destination_aborts(tmp_path: Path) -> None:
-    scps, rcps = dirs(tmp_path)
-    (scps / "root_scps.tf").write_bytes(b"\xff\xfe\x00\x01")
+@pytest.mark.parametrize("filler", [b"", b"x" * 20000], ids=["short", "long"])
+def test_an_undecodable_planned_destination_says_so_at_any_length(
+    tmp_path: Path, filler: bytes
+) -> None:
+    """
+    An undecodable destination reports being unreadable, whatever its size.
 
-    with pytest.raises(RuntimeError, match="first line is not"):
-        apply_terraform_plan(plan_for(scps, rcps, {scps / "root_scps.tf": generated()}))
+    Reading a first line reads a whole buffer's worth. Bad bytes past that
+    first chunk surface later, when the content is compared; bad bytes inside
+    it surface immediately, and reporting the failure as a missing first line
+    then tells the operator to go and look at a line that may be perfectly
+    good. Two files with the same defect got two different explanations,
+    decided by which side of an 8K boundary the bytes landed on.
+    """
+    scps, rcps = dirs(tmp_path)
+    destination = scps / "root_scps.tf"
+    destination.write_bytes(GENERATED_MARKER.encode() + b"\n" + filler + b"\xff\xfe")
+
+    with pytest.raises(RuntimeError, match="cannot be read to compare"):
+        apply_terraform_plan(plan_for(scps, rcps, {destination: generated()}))
+
+
+def test_an_undecodable_file_at_the_link_path_says_so(tmp_path: Path) -> None:
+    """The reserved link's destination reads its first line the same way."""
+    scps, rcps = dirs(tmp_path)
+    (rcps / ORG_INFO_FILENAME).write_bytes(b"\xff\xfe\x00\x01")
+
+    with pytest.raises(RuntimeError, match="cannot be read to compare"):
+        apply_terraform_plan(plan_for(scps, rcps, {}))
 
 
 def test_every_conflict_is_reported_at_once(tmp_path: Path) -> None:
@@ -420,6 +509,39 @@ def test_a_marked_file_whose_content_changed_is_rewritten(tmp_path: Path) -> Non
     assert changed.read_text() == generated("# new\n")
 
 
+def test_a_write_that_cannot_complete_leaves_the_previous_content(
+    tmp_path: Path
+) -> None:
+    """
+    Writing is replace-a-temp, not truncate-in-place.
+
+    Opening the destination for write truncates it before a single byte
+    arrives, so a write that dies in between leaves a 0-byte file carrying no
+    marker -- which every later run then refuses as a file Headroom does not
+    own. The run wedges itself, permanently, until somebody deletes the
+    leftover by hand.
+
+    A read-only output directory is the portable way to fail a write that
+    preflight has already passed: replacing needs to create a sibling temp
+    file, which the directory refuses, while truncating the existing file
+    would need nothing but the file's own write bit and would succeed.
+    """
+    scps, rcps = dirs(tmp_path)
+    (scps / ORG_INFO_FILENAME).write_text(generated("# org info\n"))
+    destination = scps / "payments_scps.tf"
+    destination.write_text(generated("# previous\n"))
+    scps.chmod(0o500)
+
+    try:
+        with pytest.raises(OSError):
+            apply_terraform_plan(
+                plan_for(scps, rcps, {destination: generated("# next\n")})
+            )
+        assert destination.read_text() == generated("# previous\n")
+    finally:
+        scps.chmod(0o700)
+
+
 def test_a_directory_at_the_link_path_aborts(tmp_path: Path) -> None:
     scps, rcps = dirs(tmp_path)
     theirs = rcps / ORG_INFO_FILENAME
@@ -466,6 +588,12 @@ def test_a_to_delete_candidate_that_is_really_a_planned_write_survives(
     cannot see that aliasing. Two names hard-linked to one inode pin the
     same failure deterministically, regardless of whether this test's own
     filesystem happens to be case- or normalization-insensitive.
+
+    Surviving means keeping its own content, not merely keeping its name.
+    Truncating the planned destination in place reached the shared inode and
+    gave the retained name the new content too, leaving two files declaring
+    one Terraform module -- a clean run by Headroom's account and a rejected
+    one by terraform's.
     """
     scps, rcps = dirs(tmp_path)
     on_disk_name = scps / "existing_scps.tf"
@@ -476,7 +604,7 @@ def test_a_to_delete_candidate_that_is_really_a_planned_write_survives(
     apply_terraform_plan(plan_for(scps, rcps, {planned_name: generated("# new\n")}))
 
     assert planned_name.read_text() == generated("# new\n")
-    assert on_disk_name.exists()
+    assert on_disk_name.read_text() == generated("# old\n")
 
 
 def test_two_names_for_one_output_directory_abort_with_both_named(
@@ -572,16 +700,21 @@ def test_a_failed_write_leaves_stale_files_undeleted(tmp_path: Path) -> None:
     Deleting last is what makes a stale file's removal conditional on the
     desired writes having succeeded: pins the ordering itself, not merely
     the end state of a run where nothing goes wrong.
+
+    The stale file sits in the RCP directory, which stays writable, so its
+    survival says the deletion never ran rather than that it could not.
     """
     scps, rcps = dirs(tmp_path)
-    stale = scps / "retired_ou_scps.tf"
+    stale = rcps / "retired_ou_rcps.tf"
     stale.write_text(generated())
-    unwritable = scps / "missing_parent" / "broken_scps.tf"
+    scps.chmod(0o500)
 
-    with pytest.raises(OSError):
-        apply_terraform_plan(plan_for(scps, rcps, {unwritable: generated()}))
-
-    assert stale.exists()
+    try:
+        with pytest.raises(OSError):
+            apply_terraform_plan(plan_for(scps, rcps, {}))
+        assert stale.exists()
+    finally:
+        scps.chmod(0o700)
 
 
 # End-to-end convergence: compile, then apply what was compiled, twice. These

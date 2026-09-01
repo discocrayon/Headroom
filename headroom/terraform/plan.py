@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "TerraformPlan",
     "compile_terraform_plan",
+    "validate_plan",
 ]
 
 
@@ -41,14 +42,17 @@ class TerraformPlan:
 
     Attributes:
         managed_directories: The directories this plan owns, canonical and
-            absolute. Nothing outside them may be written or deleted.
+            absolute. Exactly two, SCP then RCP; nothing outside them may be
+            written or deleted.
         files: Destination path -> complete rendered content.
-        symlinks: Destination path -> the exact relative link text
-            `os.readlink` must return for the link to be considered correct.
+        symlinks: Destination path -> the file the link must point at, as a
+            canonical absolute path. Not the link text: the relative text an
+            `os.readlink` has to return depends on where the two directories
+            really live, which only `terraform.apply` is allowed to find out.
     """
-    managed_directories: Tuple[Path, ...]
+    managed_directories: Tuple[Path, Path]
     files: Mapping[Path, str]
-    symlinks: Mapping[Path, str]
+    symlinks: Mapping[Path, Path]
 
 
 def _canonical(path: Path) -> Path:
@@ -74,7 +78,7 @@ def _canonical(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
-def _validate_plan(plan: TerraformPlan) -> None:
+def validate_plan(plan: TerraformPlan) -> None:
     """
     Refuse a plan that cannot be applied safely.
 
@@ -88,9 +92,11 @@ def _validate_plan(plan: TerraformPlan) -> None:
         plan: The compiled plan
 
     Raises:
-        RuntimeError: On equal managed directories, an unexpected symlink, a
-            destination outside the managed directories, two destinations
-            that canonicalize alike, or content missing GENERATED_MARKER
+        RuntimeError: On equal managed directories, a symlink anywhere but the
+            reserved path, a reserved link pointing at anything but the
+            organization data sources this run writes, a destination outside
+            the managed directories, two destinations that canonicalize alike,
+            or content missing GENERATED_MARKER
     """
     scps, rcps = plan.managed_directories
     if scps == rcps:
@@ -102,12 +108,27 @@ def _validate_plan(plan: TerraformPlan) -> None:
         )
 
     reserved_link = rcps / ORG_INFO_FILENAME
-    for destination in plan.symlinks:
+    reserved_source = scps / ORG_INFO_FILENAME
+    canonical_files = {_canonical(destination) for destination in plan.files}
+    for destination, source in plan.symlinks.items():
         if _canonical(destination) != reserved_link:
             raise RuntimeError(
                 f"{destination} is planned as a symlink. The only symlink "
                 f"Headroom maintains is {reserved_link}, which points at the "
                 "shared organization data sources in the SCP directory."
+            )
+        if _canonical(source) != reserved_source:
+            raise RuntimeError(
+                f"{destination} is planned to point at {source}. The only file "
+                f"it may point at is {reserved_source}, the shared organization "
+                "data sources."
+            )
+        if _canonical(source) not in canonical_files:
+            raise RuntimeError(
+                f"{destination} is planned to point at {source}, which this run "
+                "does not write. Applying links last so the file is already "
+                "there; a link to a file no plan produces dangles from the "
+                "moment it is created."
             )
 
     managed = set(plan.managed_directories)
@@ -189,14 +210,12 @@ def compile_terraform_plan(
     ).items():
         claim_plan_path(files, destination, content, "an RCP file")
 
-    symlinks = {
-        rcps / ORG_INFO_FILENAME: os.path.relpath(scps / ORG_INFO_FILENAME, rcps)
-    }
+    symlinks = {rcps / ORG_INFO_FILENAME: scps / ORG_INFO_FILENAME}
 
     plan = TerraformPlan(
         managed_directories=(scps, rcps),
         files=files,
         symlinks=symlinks,
     )
-    _validate_plan(plan)
+    validate_plan(plan)
     return plan

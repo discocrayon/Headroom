@@ -3582,6 +3582,29 @@ rather than being overwritten, the same as any other ownership conflict.
 Non-`.tf` files and subdirectories (`.terraform/`, modules) are never
 candidates.
 
+The plan carries the file the link must point at, not the text the link must
+hold. The text is a relative path, and a relative path is relative to where
+the link really lives: computing it lexically from the configured `rcps_dir`
+is wrong as soon as that spelling is a symlink to somewhere else, because the
+link is created inside the directory the spelling points at and resolves from
+there. `_preflight_symlink` computes it with `os.path.realpath` on both sides,
+which reads the filesystem and is therefore apply's to do, not the compiler's.
+Nothing downstream would have caught the lexical version: the next run reads
+the same wrong text back, finds it equal to the same wrong expectation, and
+leaves a dangling link in place while reporting a converged run.
+
+**Replacing, not truncating:** a planned write is a fully written sibling
+temp file renamed over the destination. Opening the destination itself
+truncates it before any content arrives, so a write that dies in between
+leaves a 0-byte file carrying no marker - which the next run's ownership
+check then refuses as a file Headroom does not own, wedging every subsequent
+run until a human deletes the leftover. Replacing also splits any inode the
+destination shares, so a hardlinked stale file that the identity guard
+retains keeps its own content instead of silently acquiring the planned
+file's. The temp file is a sibling, so the rename stays within one
+filesystem, and is deliberately not named `*.tf`, so an orphan left by a
+failed write is invisible to Terraform and to the stale-file scan alike.
+
 **Two names for one output directory:** `scps_dir` and `rcps_dir` pointing at
 one directory would generate every RCP file over the SCP file of the same
 name and reduce `grab_org_info.tf` to a symlink to itself. Compilation

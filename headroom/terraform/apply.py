@@ -8,14 +8,18 @@ first mkdir. What it proves is ownership: Headroom writes over a file only
 when that file's first line is GENERATED_MARKER, and deletes only a regular
 .tf file carrying the same line.
 
-The one thing preflight cannot decide is whether the two output directories
-are really one directory, when neither exists yet and creating them is what
-makes the alias. That is checked again once they exist, which is still ahead
-of the first write, link, or unlink.
+Two things cannot be decided by reading alone, and both are settled here
+rather than at compile time, which reads nothing on purpose. Whether the two
+output directories are really one directory is invisible while neither
+exists, so it is checked again once they do -- still ahead of the first
+write, link, or unlink. And the reserved symlink's target is a relative path
+from where the link really lives to the file it really points at, which
+depends on whether either directory is itself a symlink.
 
 This is not a transaction. Nothing before the mutation phase changes the
-filesystem, but an OS failure partway through the mutation phase can still
-leave a partial apply.
+filesystem, and each individual file is replaced atomically rather than
+truncated and refilled, but an OS failure partway through the mutation phase
+can still leave a partial apply: some files replaced and others not.
 """
 
 import logging
@@ -25,7 +29,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from .plan import TerraformPlan
+from .plan import TerraformPlan, validate_plan
 from ..constants import GENERATED_MARKER, ORG_INFO_FILENAME
 
 logger = logging.getLogger(__name__)
@@ -73,9 +77,12 @@ def _is_marked_regular_file(path: Path) -> bool:
     marker and deletes a link Headroom never wrote.
 
     A file we cannot read is a file we cannot prove is ours, so it is not a
-    deletion candidate. Note that a planned *destination* we cannot read is
-    handled the other way round -- see `_preflight_file` -- because there we
-    are about to overwrite it. The two must not be unified.
+    deletion candidate: the run carries on and leaves it alone. A planned
+    *destination* we cannot read ends the whole run instead -- see
+    `_preflight_file` -- because there we are about to replace its contents.
+    Both are conservative; they differ in what they cost, and unifying them
+    would either delete a file nobody proved was ours or abandon a run over
+    one Headroom was never going to touch.
 
     Args:
         path: Candidate file, already known to end in .tf
@@ -103,12 +110,13 @@ def _filesystem_identity(path: Path) -> Optional[Tuple[int, int]]:
         path: Any path, possibly gone by the time this runs
 
     Returns:
-        (st_dev, st_ino), or None if the path cannot be stat'd -- including
-        simply not existing, which cannot be aliased to anything
+        (st_dev, st_ino), or None if the path is not there, which cannot be
+        aliased to anything. Any other stat failure is raised, not swallowed:
+        a candidate we cannot look at is not a candidate we may rule safe.
     """
     try:
         info = path.lstat()
-    except OSError:
+    except FileNotFoundError:
         return None
     return (info.st_dev, info.st_ino)
 
@@ -127,12 +135,14 @@ def _directory_identity(path: Path) -> Optional[Tuple[int, int]]:
         path: A managed directory, which need not exist yet
 
     Returns:
-        (st_dev, st_ino), or None if the directory cannot be stat'd --
-        including simply not existing, which cannot be aliased to anything
+        (st_dev, st_ino), or None if the directory is not there yet, which
+        cannot be aliased to anything. Any other stat failure is raised: this
+        is the check that stops one directory under two names from generating
+        every RCP file over an SCP file, and it must not pass by default.
     """
     try:
         info = path.stat()
-    except OSError:
+    except FileNotFoundError:
         return None
     return (info.st_dev, info.st_ino)
 
@@ -195,6 +205,35 @@ def _protected_identities(result: _Preflight) -> Set[Tuple[int, int]]:
     }
 
 
+def _write_file(destination: Path, content: str) -> None:
+    """
+    Put content at a destination without ever truncating what is there.
+
+    Opening the destination for write truncates it before a single byte
+    arrives. A write that dies in between leaves a 0-byte file carrying no
+    marker, which every later run then refuses as a file Headroom does not
+    own -- a wedge the run inflicted on itself and cannot undo. Renaming a
+    fully written sibling over the destination makes the replacement atomic:
+    the destination holds the old content or the new one, never neither.
+
+    Replacing also splits any inode the destination shares, so a hardlinked
+    sibling keeps the content it had rather than silently acquiring this
+    file's.
+
+    The temp file is a sibling, so the rename stays inside one filesystem,
+    and is deliberately not named `*.tf`: an orphan left behind by a failed
+    write is then invisible to Terraform and to the stale-file scan alike.
+
+    Args:
+        destination: Where the file belongs
+        content: What it should hold
+    """
+    temporary = destination.with_name(f".{destination.name}.headroom-tmp")
+    with open(temporary, 'w') as handle:
+        handle.write(content)
+    os.replace(temporary, destination)
+
+
 def _preflight_file(destination: Path, content: str, result: _Preflight) -> None:
     """
     Decide what to do with one planned regular-file destination.
@@ -216,7 +255,11 @@ def _preflight_file(destination: Path, content: str, result: _Preflight) -> None
         result.conflicts.append(f"{destination}: is a directory or other non-file")
         return
 
-    if _first_line(destination) != GENERATED_MARKER:
+    first_line = _first_line(destination)
+    if first_line is None:
+        result.conflicts.append(f"{destination}: cannot be read to compare")
+        return
+    if first_line != GENERATED_MARKER:
         result.conflicts.append(
             f"{destination}: first line is not {GENERATED_MARKER!r}"
         )
@@ -233,9 +276,17 @@ def _preflight_file(destination: Path, content: str, result: _Preflight) -> None
     result.to_write[destination] = content
 
 
-def _preflight_symlink(destination: Path, target: str, result: _Preflight) -> None:
+def _preflight_symlink(destination: Path, source: Path, result: _Preflight) -> None:
     """
     Decide what to do with the one reserved symlink.
+
+    The link text is computed here, not carried in the plan, because it is the
+    one value in a run that cannot be known without reading the filesystem: a
+    relative path is relative to where the link really lives, and either
+    output directory may be spelled as a symlink to somewhere else. Computing
+    it lexically at compile time produces a link that dangles from the moment
+    it is created, and that every later run reads back, agrees with, and
+    leaves.
 
     A correct link is left exactly as it is, so an unchanged run preserves its
     lstat metadata. A marked regular file at the path is a previous Headroom
@@ -243,9 +294,13 @@ def _preflight_symlink(destination: Path, target: str, result: _Preflight) -> No
 
     Args:
         destination: rcps/grab_org_info.tf
-        target: The exact relative link text it must hold
+        source: The file the link must point at, absolute
         result: Accumulator for decisions and conflicts
     """
+    target = os.path.relpath(
+        os.path.realpath(source), os.path.realpath(destination.parent)
+    )
+
     if destination.is_symlink():
         if os.readlink(destination) == target:
             return
@@ -265,7 +320,11 @@ def _preflight_symlink(destination: Path, target: str, result: _Preflight) -> No
         )
         return
 
-    if _first_line(destination) != GENERATED_MARKER:
+    first_line = _first_line(destination)
+    if first_line is None:
+        result.conflicts.append(f"{destination}: cannot be read to compare")
+        return
+    if first_line != GENERATED_MARKER:
         result.conflicts.append(
             f"{destination}: first line is not {GENERATED_MARKER!r}"
         )
@@ -298,8 +357,8 @@ def _preflight(plan: TerraformPlan) -> _Preflight:
     for destination, content in sorted(plan.files.items()):
         _preflight_file(destination, content, result)
 
-    for destination, target in sorted(plan.symlinks.items()):
-        _preflight_symlink(destination, target, result)
+    for destination, source in sorted(plan.symlinks.items()):
+        _preflight_symlink(destination, source, result)
 
     planned = set(plan.files) | set(plan.symlinks)
     for directory in plan.managed_directories:
@@ -320,9 +379,11 @@ def _preflight(plan: TerraformPlan) -> _Preflight:
         raise RuntimeError(
             f"Refusing to apply: {len(result.conflicts)} destination(s) or "
             f"output directory(ies) are not this run's to write:\n  {listing}\n"
-            "Ownership of a file is the marker on its first line; a file "
-            "Headroom does not own must be moved aside or renamed. Nothing "
-            "was changed."
+            "Ownership of a file is the marker on its first line. A file "
+            "Headroom does not own must be moved aside or renamed; output "
+            "from a Headroom old enough to predate the marker is not "
+            "recognizable as ours, and has to be deleted so this run can "
+            "write it again. Nothing was changed."
         )
 
     return result
@@ -341,12 +402,17 @@ def apply_terraform_plan(plan: TerraformPlan) -> None:
     lstat metadata.
 
     Args:
-        plan: A validated whole-run plan
+        plan: A whole-run plan, revalidated here rather than trusted: the
+            compiler is the only thing that builds one, but nothing in the
+            type stops a caller from assembling a `TerraformPlan` by hand and
+            handing it straight to the one function that mutates the disk.
 
     Raises:
-        RuntimeError: If preflight finds any destination Headroom does not
-            own, or the output directories turn out to be one directory
+        RuntimeError: If the plan does not validate, if preflight finds any
+            destination Headroom does not own, or if the output directories
+            turn out to be one directory
     """
+    validate_plan(plan)
     decided = _preflight(plan)
 
     for directory in plan.managed_directories:
@@ -365,8 +431,7 @@ def apply_terraform_plan(plan: TerraformPlan) -> None:
         )
 
     for destination in sorted(decided.to_write):
-        with open(destination, 'w') as handle:
-            handle.write(decided.to_write[destination])
+        _write_file(destination, decided.to_write[destination])
         logger.info(f"Generated Terraform file: {destination}")
 
     for destination in decided.unchanged:

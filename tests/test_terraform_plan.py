@@ -17,7 +17,7 @@ from headroom.terraform.generate_org_info import render_terraform_org_info
 from headroom.terraform.generate_rcps import render_rcp_terraform
 from headroom.terraform.generate_scps import render_scp_terraform
 from headroom.terraform.models import RenderedTerraformFiles
-from headroom.terraform.plan import TerraformPlan, compile_terraform_plan, _validate_plan
+from headroom.terraform.plan import TerraformPlan, compile_terraform_plan, validate_plan
 from headroom.types import (
     AccountOrgPlacement,
     OrganizationHierarchy,
@@ -131,7 +131,9 @@ def test_compile_covers_org_info_both_policy_files_the_link_and_both_dirs(
         scps / "root_scps.tf",
         rcps / "root_rcps.tf",
     }
-    assert plan.symlinks == {rcps / "grab_org_info.tf": "../scps/grab_org_info.tf"}
+    assert plan.symlinks == {
+        rcps / "grab_org_info.tf": scps / "grab_org_info.tf"
+    }
     assert plan.managed_directories == (scps, rcps)
 
 
@@ -154,6 +156,10 @@ def test_two_spellings_of_one_directory_are_rejected_before_the_collision(
     file and the reserved symlink claim one path. That collision is real, but
     reporting it would send the operator looking for a naming clash instead of
     at the two configuration values that caused it.
+
+    A trailing slash is what gets past the configuration's own check, which
+    compares the two settings as the operator wrote them. Canonicalizing is
+    the compiler's job, and it is the compiler that then sees one directory.
     """
     config = HeadroomConfig(
         management_account_id="111111111111",
@@ -162,7 +168,7 @@ def test_two_spellings_of_one_directory_are_rejected_before_the_collision(
             environment="Env", name="Name", owner="Owner"
         ),
         scps_dir=str(tmp_path / "out"),
-        rcps_dir=str(tmp_path / "sub" / ".." / "out"),
+        rcps_dir=f"{tmp_path / 'out'}/",
     )
 
     with pytest.raises(RuntimeError, match="same directory"):
@@ -202,7 +208,9 @@ def test_two_components_claiming_one_destination_are_rejected(
         )
 
 
-def _plan(tmp_path: Path, files: Dict[Path, str], symlinks: Dict[Path, str]) -> TerraformPlan:
+def _plan(
+    tmp_path: Path, files: Dict[Path, str], symlinks: Dict[Path, Path]
+) -> TerraformPlan:
     return TerraformPlan(
         managed_directories=(
             Path(os.path.abspath(tmp_path / "scps")),
@@ -221,10 +229,40 @@ def test_a_symlink_anywhere_but_the_reserved_path_is_rejected(tmp_path: Path) ->
     Headroom maintains, and would otherwise replace an operator's own link.
     """
     scps = Path(os.path.abspath(tmp_path / "scps"))
-    plan = _plan(tmp_path, {}, {scps / "shortcut.tf": "../elsewhere.tf"})
+    plan = _plan(tmp_path, {}, {scps / "shortcut.tf": scps / "elsewhere.tf"})
 
     with pytest.raises(RuntimeError, match="only symlink Headroom maintains"):
-        _validate_plan(plan)
+        validate_plan(plan)
+
+
+def test_the_reserved_link_pointing_somewhere_else_is_rejected(tmp_path: Path) -> None:
+    """
+    The applier computes the link text from this path and reads no other
+    source for it, so an unchecked value here is a symlink Headroom creates
+    to wherever the value says.
+    """
+    scps = Path(os.path.abspath(tmp_path / "scps"))
+    rcps = Path(os.path.abspath(tmp_path / "rcps"))
+    plan = _plan(tmp_path, {}, {rcps / "grab_org_info.tf": scps / "secrets.tf"})
+
+    with pytest.raises(RuntimeError, match="only file it may point at"):
+        validate_plan(plan)
+
+
+def test_a_reserved_link_to_a_file_the_run_does_not_write_is_rejected(
+    tmp_path: Path
+) -> None:
+    """
+    Applying links after writing, so that the file the link points at is
+    already there. That ordering only guarantees anything if the plan says
+    the run writes it.
+    """
+    scps = Path(os.path.abspath(tmp_path / "scps"))
+    rcps = Path(os.path.abspath(tmp_path / "rcps"))
+    plan = _plan(tmp_path, {}, {rcps / "grab_org_info.tf": scps / "grab_org_info.tf"})
+
+    with pytest.raises(RuntimeError, match="which this run does not write"):
+        validate_plan(plan)
 
 
 def test_a_destination_outside_the_managed_directories_is_rejected(
@@ -243,7 +281,7 @@ def test_a_destination_outside_the_managed_directories_is_rejected(
     )
 
     with pytest.raises(RuntimeError, match="outside the directories"):
-        _validate_plan(plan)
+        validate_plan(plan)
 
 
 def test_two_destinations_that_normalize_alike_are_rejected(tmp_path: Path) -> None:
@@ -264,7 +302,7 @@ def test_two_destinations_that_normalize_alike_are_rejected(tmp_path: Path) -> N
     )
 
     with pytest.raises(RuntimeError, match="Two destinations resolve to"):
-        _validate_plan(plan)
+        validate_plan(plan)
 
 
 def test_a_file_planned_without_the_marker_is_rejected(tmp_path: Path) -> None:
@@ -277,4 +315,4 @@ def test_a_file_planned_without_the_marker_is_rejected(tmp_path: Path) -> None:
     plan = _plan(tmp_path, {scps / "root_scps.tf": 'module "x" {}\n'}, {})
 
     with pytest.raises(RuntimeError, match="does not open with"):
-        _validate_plan(plan)
+        validate_plan(plan)

@@ -28,8 +28,9 @@ Reasoning: All accounts under this OU allow the same third-party accounts with n
 INFO:headroom.parse_results:[-] SCP placement analysis completed
 INFO:headroom.parse_results:[-] RCP placement analysis completed
 INFO:headroom.aws.organization:[-] Found organization root: r-1111
-INFO:headroom.terraform.generate_scps:[-] Generated SCP Terraform file: test_environment/scps/root_scps.tf
-INFO:headroom.terraform.generate_rcps:[-] Generated RCP Terraform file: test_environment/rcps/acme_acquisition_ou_rcps.tf
+INFO:headroom.terraform.apply:[-] Generated Terraform file: test_environment/scps/root_scps.tf
+INFO:headroom.terraform.apply:[-] Generated Terraform file: test_environment/rcps/acme_acquisition_ou_rcps.tf
+INFO:headroom.terraform.apply:[-] Created symlink: test_environment/rcps/grab_org_info.tf -> ../scps/grab_org_info.tf
 ```
 
 The bracket after the logger name is the account the line belongs to. Accounts are

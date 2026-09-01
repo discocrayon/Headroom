@@ -135,11 +135,15 @@ maintains - is never touched. A run that reads no result files aborts rather
 than emptying the directories.
 
 Nothing is written until the whole run has been rendered and checked: results
-are parsed, policies placed, every file rendered, and the plan validated
-before the first file is touched, so a failure anywhere in generation leaves
-the previous run's output exactly as it was. `rcps/grab_org_info.tf` is the
-one symlink Headroom maintains, pointing at the shared data sources in the SCP
-directory; every other symlink is left alone.
+are parsed, policies placed, every file rendered, the plan validated, and
+every destination proven to be Headroom's before the first file is touched.
+A failure in any of that leaves the previous run's output exactly as it was.
+Past that point the guarantee is per-file rather than whole-run: each file is
+replaced by renaming a fully written temporary over it, so no file is ever
+left half-written, but an I/O failure partway through can leave some files
+replaced and others not. Re-running finishes the job. `rcps/grab_org_info.tf`
+is the one symlink Headroom maintains, pointing at the shared data sources in
+the SCP directory; every other symlink is left alone.
 
 See [full examples](documentation/EXAMPLES.md).
 
