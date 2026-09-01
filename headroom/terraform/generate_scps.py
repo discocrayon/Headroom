@@ -15,7 +15,6 @@ from .models import (
     TerraformElement,
     TerraformModule,
     TerraformParameter,
-    TerraformPlan,
 )
 from .utils import (
     account_id_local_name,
@@ -25,7 +24,6 @@ from .utils import (
     make_safe_variable_name,
     ou_id_local_name,
     ou_path_names,
-    write_terraform_plan,
 )
 from ..enums import PlacementLevel
 from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlacementRecommendations
@@ -433,8 +431,8 @@ def render_scp_terraform(
     Render every SCP file this run's recommendations call for.
 
     Nothing is written here. A target absent from the returned plan is a target
-    this run does not want a file for, which is what lets reconciliation delete
-    the file a previous run left behind.
+    this run does not want a file for, which is what lets applying the plan
+    delete the file a previous run left behind.
 
     Args:
         recommendations: List of SCP placement recommendations
@@ -463,7 +461,7 @@ def render_scp_terraform(
         if rec.recommended_level == "root":
             root_recommendations.append(rec)
 
-    plan: TerraformPlan = {}
+    plan: RenderedTerraformFiles = {}
 
     for account_id, account_recs in account_recommendations.items():
         filepath, content = _render_account_scp_terraform(
@@ -482,42 +480,5 @@ def render_scp_terraform(
             root_recommendations, organization_hierarchy, output_path
         )
         claim_plan_path(plan, filepath, content, "the organization root")
-
-    return plan
-
-
-def generate_scp_terraform(
-    recommendations: List[SCPPlacementRecommendations],
-    organization_hierarchy: OrganizationHierarchy,
-    output_dir: str = "test_environment/scps"
-) -> TerraformPlan:
-    """
-    Generate Terraform files for SCP deployment based on recommendations.
-
-    An empty recommendation list is a plan for an empty directory, not a
-    no-op. The caller reconciles against the returned plan, so a policy that no
-    longer has a placement loses the file that deploys it.
-
-    Args:
-        recommendations: List of SCP placement recommendations
-        organization_hierarchy: Organization structure information
-        output_dir: Directory to write Terraform files to
-
-    Returns:
-        The files this run wants the directory to hold, keyed by path
-
-    Raises:
-        RuntimeError: If a recommendation names a target the organization
-            hierarchy does not have, or is not a placement at all
-    """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Rendered in full first: a raise here has written nothing, leaving the
-    # previous run's output complete rather than half replaced.
-    plan = render_scp_terraform(
-        recommendations, organization_hierarchy, output_path
-    )
-    write_terraform_plan(plan, "SCP")
 
     return plan

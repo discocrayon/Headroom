@@ -482,6 +482,45 @@ class TestMainDiscoversOnce:
 
         scan.assert_called_once_with(config, security_session, snapshot)
 
+    def test_terraform_compiles_the_exact_hierarchy_discovery_captured(self) -> None:
+        """
+        Identity, not equality. A consumer that rebuilt an equal hierarchy
+        would satisfy an == assertion while having read Organizations a second
+        time -- which is the inconsistency the single snapshot removed.
+        """
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1111", organizational_units={}, accounts={}
+        )
+        snapshot = OrganizationSnapshot(
+            organization_id=ORG_ID,
+            member_account_ids=frozenset({"111111111111"}),
+            analyzable_accounts=(),
+            hierarchy=hierarchy,
+        )
+        config = HeadroomConfig(
+            management_account_id="111111111111",
+            security_analysis_account_id="222222222222",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="env", name="name", owner="owner"
+            ),
+        )
+
+        with patch("headroom.main.get_security_analysis_session"), \
+             patch("headroom.main.get_management_account_session"), \
+             patch("headroom.main.discover_organization", return_value=snapshot), \
+             patch("headroom.main.perform_analysis"), \
+             patch("headroom.main.parse_cli_args"), \
+             patch("headroom.main.load_yaml_config"), \
+             patch("headroom.main.setup_configuration", return_value=config), \
+             patch("headroom.main.handle_scp_workflow", return_value=[]), \
+             patch("headroom.main.handle_rcp_workflow", return_value=[]), \
+             patch("headroom.main.apply_terraform_plan"), \
+             patch("headroom.main.compile_terraform_plan") as compile_plan:
+            main()
+
+        assert compile_plan.call_args.args[1] is hierarchy
+
 
 class TestHandleScpWorkflow:
     """Test handle_scp_workflow function."""

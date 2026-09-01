@@ -6,7 +6,6 @@ to support SCP/RCP deployment targeting.
 """
 
 import logging
-from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .utils import (
@@ -43,35 +42,6 @@ def render_terraform_org_info(organization_hierarchy: OrganizationHierarchy) -> 
         f"{len(organization_hierarchy.accounts)} accounts"
     )
     return _generate_terraform_content(organization_hierarchy)
-
-
-def generate_terraform_org_info(
-    organization_hierarchy: OrganizationHierarchy,
-    output_path: str
-) -> None:
-    """
-    Generate grab_org_info.tf from an already-captured hierarchy.
-
-    This used to run a hierarchy traversal of its own, which was the second
-    of two in a single run. The two were independent reads, so the data
-    sources written here could describe a different organization from the one
-    placement had just used. It now renders the hierarchy the run captured.
-
-    Args:
-        organization_hierarchy: The run's captured organization hierarchy
-        output_path: Path to write the Terraform file
-
-    Raises:
-        IOError: If the file write fails
-    """
-    terraform_content = render_terraform_org_info(organization_hierarchy)
-
-    output_file = Path(output_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_file, 'w') as f:
-        f.write(terraform_content)
-    logger.info(f"Successfully generated Terraform file: {output_path}")
 
 
 def _generate_terraform_header() -> List[str]:

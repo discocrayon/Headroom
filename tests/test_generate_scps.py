@@ -20,7 +20,7 @@ from headroom.terraform.generate_scps import (
     _render_account_scp_terraform,
     _render_ou_scp_terraform,
     _render_root_scp_terraform,
-    generate_scp_terraform,
+    render_scp_terraform,
 )
 
 
@@ -28,20 +28,20 @@ def make_org_empty() -> OrganizationHierarchy:
     return OrganizationHierarchy(root_id="r-root", organizational_units={}, accounts={})
 
 
-def test_generate_scp_terraform_no_recommendations(tmp_path: Path) -> None:
+def test_render_scp_terraform_no_recommendations(tmp_path: Path) -> None:
     """
     Nothing to place is a plan for an empty directory, not a no-op.
 
-    The caller reconciles against this empty plan and deletes whatever a
-    previous run left behind.
+    The caller applies this empty plan and deletes whatever a previous run
+    left behind.
     """
     org = make_org_empty()
 
-    assert generate_scp_terraform([], org, str(tmp_path)) == {}
+    assert render_scp_terraform([], org, tmp_path) == {}
     assert not any(tmp_path.iterdir())
 
 
-def test_generate_scp_terraform_warn_missing_account(tmp_path: Path) -> None:
+def test_render_scp_terraform_warn_missing_account(tmp_path: Path) -> None:
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-ec2-imds-v1",
@@ -54,10 +54,10 @@ def test_generate_scp_terraform_warn_missing_account(tmp_path: Path) -> None:
 
     # Should raise exception for missing account
     with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
-        generate_scp_terraform([rec], org, str(tmp_path))
+        render_scp_terraform([rec], org, tmp_path)
 
 
-def test_generate_scp_terraform_warn_missing_ou(tmp_path: Path) -> None:
+def test_render_scp_terraform_warn_missing_ou(tmp_path: Path) -> None:
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-ec2-imds-v1",
@@ -70,7 +70,7 @@ def test_generate_scp_terraform_warn_missing_ou(tmp_path: Path) -> None:
 
     # Should raise exception for missing OU
     with pytest.raises(RuntimeError, match="OU ou-unknown not found in organization hierarchy"):
-        generate_scp_terraform([rec], org, str(tmp_path))
+        render_scp_terraform([rec], org, tmp_path)
 
 
 def test_make_safe_variable_name_edge_cases() -> None:
@@ -607,7 +607,7 @@ def test_plan_omits_root_when_nothing_is_placed_there(tmp_path: Path) -> None:
     )
     rec = make_rec(level="ou", target_ou_id="ou-test")
 
-    plan = generate_scp_terraform([rec], org, str(tmp_path))
+    plan = render_scp_terraform([rec], org, tmp_path)
 
     assert set(plan) == {tmp_path / "test_ou_ou_scps.tf"}
     assert not (tmp_path / "root_scps.tf").exists()
@@ -643,34 +643,26 @@ def test_an_account_named_root_does_not_take_the_root_policy_file(tmp_path: Path
     ]
 
     with pytest.raises(RuntimeError, match="root_scps.tf"):
-        generate_scp_terraform(recommendations, org, str(tmp_path))
+        render_scp_terraform(recommendations, org, tmp_path)
 
 
-def test_generate_scp_terraform_returns_what_it_wrote(tmp_path: Path) -> None:
+def test_render_scp_terraform_returns_the_rendered_content_by_destination(
+    tmp_path: Path
+) -> None:
     org = make_org_empty()
 
-    plan = generate_scp_terraform([make_rec()], org, str(tmp_path))
+    rendered = render_scp_terraform([make_rec()], org, tmp_path)
 
-    assert set(plan) == {tmp_path / "root_scps.tf"}
-    assert (tmp_path / "root_scps.tf").read_text() == plan[tmp_path / "root_scps.tf"]
-
-
-def test_identical_consecutive_runs_change_nothing_on_disk(tmp_path: Path) -> None:
-    org = make_org_empty()
-    generate_scp_terraform([make_rec()], org, str(tmp_path))
-    before = (tmp_path / "root_scps.tf").stat().st_mtime_ns
-
-    generate_scp_terraform([make_rec()], org, str(tmp_path))
-
-    assert (tmp_path / "root_scps.tf").stat().st_mtime_ns == before
+    assert set(rendered) == {tmp_path / "root_scps.tf"}
+    assert "deny_ec2_imds_v1 = true" in rendered[tmp_path / "root_scps.tf"]
 
 
-def test_a_failed_render_leaves_the_previous_output_intact(tmp_path: Path) -> None:
+def test_a_failed_render_raises_before_any_file_is_produced(tmp_path: Path) -> None:
     """
-    A raise partway through generation must not half-replace the directory.
+    A late failure must not leave a partial mapping for the caller to apply.
 
     The plan is rendered in full before anything is written, so the OU whose
-    render succeeds never reaches disk when a later one fails.
+    render succeeds never reaches the returned mapping when a later one fails.
     """
     org = OrganizationHierarchy(
         root_id="r-root",
@@ -689,9 +681,7 @@ def test_a_failed_render_leaves_the_previous_output_intact(tmp_path: Path) -> No
     doomed = make_rec(level="account", affected_accounts=["999999999999"])
 
     with pytest.raises(RuntimeError, match="not found in organization hierarchy"):
-        generate_scp_terraform([good, doomed], org, str(tmp_path))
-
-    assert not any(tmp_path.iterdir())
+        render_scp_terraform([good, doomed], org, tmp_path)
 
 
 def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners() -> None:

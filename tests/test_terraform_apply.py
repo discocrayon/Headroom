@@ -11,9 +11,16 @@ from typing import Dict, Tuple
 
 import pytest
 
+from headroom.config import AccountTagLayout, HeadroomConfig
 from headroom.constants import GENERATED_MARKER, ORG_INFO_FILENAME
 from headroom.terraform.apply import apply_terraform_plan
-from headroom.terraform.plan import TerraformPlan
+from headroom.terraform.plan import TerraformPlan, compile_terraform_plan
+from headroom.types import (
+    AccountOrgPlacement,
+    OrganizationHierarchy,
+    OrganizationalUnit,
+    SCPPlacementRecommendations,
+)
 
 
 def generated(body: str = 'module "x" {}\n') -> str:
@@ -41,6 +48,65 @@ def plan_for(
         files=files,
         symlinks={rcps / ORG_INFO_FILENAME: f"../{scps.name}/{ORG_INFO_FILENAME}"},
     )
+
+
+def org_with_one_ou() -> OrganizationHierarchy:
+    """One OU holding one account, enough to place at every level."""
+    return OrganizationHierarchy(
+        root_id="r-1111",
+        organizational_units={
+            "ou-1111-11111111": OrganizationalUnit(
+                ou_id="ou-1111-11111111",
+                name="Test OU",
+                parent_ou_id="r-1111",
+                child_ous=[],
+                accounts=["111111111111"],
+            )
+        },
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="payments",
+                parent_ou_id="ou-1111-11111111",
+                ou_path=["r-1111", "ou-1111-11111111"],
+            )
+        },
+    )
+
+
+def config_at(scps: Path, rcps: Path) -> HeadroomConfig:
+    """A configuration pointing at two already-canonical directories."""
+    return HeadroomConfig(
+        management_account_id="111111111111",
+        use_account_name_from_tags=False,
+        account_tag_layout=AccountTagLayout(
+            environment="Env", name="Name", owner="Owner"
+        ),
+        scps_dir=str(scps),
+        rcps_dir=str(rcps),
+    )
+
+
+def scp_rec(
+    level: str,
+    target_ou_id: str | None = None,
+    affected_accounts: list[str] | None = None,
+) -> SCPPlacementRecommendations:
+    return SCPPlacementRecommendations(
+        check_name="deny-ec2-imds-v1",
+        recommended_level=level,
+        target_ou_id=target_ou_id,
+        affected_accounts=affected_accounts if affected_accounts is not None else [],
+        compliance_percentage=100.0,
+        reasoning="test",
+    )
+
+
+def converge(recommendations: list, scps: Path, rcps: Path) -> None:
+    """Compile SCP recommendations into a plan, then apply it."""
+    apply_terraform_plan(compile_terraform_plan(
+        config_at(scps, rcps), org_with_one_ou(), recommendations, [],
+    ))
 
 
 def test_one_unowned_destination_prevents_every_other_mutation(
@@ -349,3 +415,32 @@ def test_a_failed_write_leaves_stale_files_undeleted(tmp_path: Path) -> None:
         apply_terraform_plan(plan_for(scps, rcps, {unwritable: generated()}))
 
     assert stale.exists()
+
+
+# End-to-end convergence: compile, then apply what was compiled, twice. These
+# are the scenarios that motivated reconciliation - each one leaves a file
+# deploying a policy the current run did not ask for.
+def test_moving_a_policy_from_root_to_an_account_drops_the_root_attachment(
+    tmp_path: Path
+) -> None:
+    scps, rcps = dirs(tmp_path)
+    converge([scp_rec("root")], scps, rcps)
+    assert (scps / "root_scps.tf").exists()
+
+    converge([scp_rec("account", affected_accounts=["111111111111"])], scps, rcps)
+
+    assert not (scps / "root_scps.tf").exists()
+    assert "deny_ec2_imds_v1 = true" in (scps / "payments_scps.tf").read_text()
+
+
+def test_an_ou_losing_its_recommendation_loses_its_file(tmp_path: Path) -> None:
+    # The check moves down to the account, which is what happens when another
+    # account under the OU starts violating it. The OU-wide attachment must go,
+    # or it keeps denying the account that just proved it cannot take the policy.
+    scps, rcps = dirs(tmp_path)
+    converge([scp_rec("ou", target_ou_id="ou-1111-11111111")], scps, rcps)
+    assert (scps / "test_ou_ou_scps.tf").exists()
+
+    converge([scp_rec("account", affected_accounts=["111111111111"])], scps, rcps)
+
+    assert not (scps / "test_ou_ou_scps.tf").exists()
