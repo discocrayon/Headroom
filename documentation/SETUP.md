@@ -425,9 +425,9 @@ policy targets -- is named from the account name reduced to a Terraform identifi
 that reduction folds much wider than a filename does. Case, spaces, hyphens and every
 other non-alphanumeric all become one underscore, runs of underscores collapse, and
 leading and trailing underscores are stripped, so `Prod-US`, `Prod US`, `Prod_US`,
-`prod.us` and `PROD+US` are one identifier. Two accounts reducing alike would have the
-second's policy file written over the first's, so generation aborts instead, naming both
-accounts and the identifier they share. Rename one.
+`prod.us` and `PROD+US` are one identifier. Two accounts reducing alike cannot both be
+generated, so generation aborts, naming both accounts and the identifier they share.
+Rename one.
 
 A second form of the collision names a file rather than two accounts:
 

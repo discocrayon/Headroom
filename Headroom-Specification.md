@@ -291,11 +291,17 @@ are stripped. `Prod-US`, `Prod US`, `Prod_US`, `prod.us` and `PROD+US` are one i
 
 `make_account_base_names` claims one identifier per account and aborts when two accounts
 claim the same one, exactly as `make_ou_base_names` has always done for OUs. Without it
-the SCP and RCP plans, which are dictionaries keyed on the destination path, silently
-drop the first account's file when the second is rendered -- render-before-mutate never
-sees a conflict, because the conflict happened while the plan was being built. The
-account locals in `grab_org_info.tf` fail more loudly, declaring the same
-`<name>_account_id` twice, but only at `terraform apply`.
+the collision is still caught in the common case, but later and less usefully. Both
+renderers add every file through `claim_plan_path`, so two accounts that each receive a
+policy file claim one destination path and the second claim aborts -- naming the filename
+and whichever account claimed it second, which is a matter of render order rather than of
+fault, and leaving the operator to go and find the other one.
+
+What `claim_plan_path` cannot see is a collision in which one of the two accounts renders
+no policy file at all, because it has no placement or is in `skip_account_ids`. Nothing
+then claims a path twice, and what is left is `grab_org_info.tf` declaring the same
+`<name>_account_id` local twice -- which fails at `terraform apply`, outside Headroom
+entirely.
 
 The guard reads every account in the organization rather than the analyzed subset,
 because `_generate_account_locals` declares a local for every account the hierarchy
