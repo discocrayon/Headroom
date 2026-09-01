@@ -5,14 +5,19 @@ These tests verify the complete integration flow from CLI arguments through
 configuration loading, merging, validation, and analysis execution.
 """
 
+import json
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 from typing import Dict, Any, Generator
 from headroom.main import main
 from pathlib import Path
 
-from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, ORG_INFO_FILENAME
+from headroom.checks.registry import get_check_names
+from headroom.config import AccountTagLayout, HeadroomConfig
+from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, GENERATED_MARKER, ORG_INFO_FILENAME
 from headroom.types import (
+    AccountOrgPlacement,
     RCPCheckParseResult,
     RCPPlacementRecommendations,
     OrganizationHierarchy,
@@ -101,12 +106,13 @@ class TestMainIntegration:
             patch('headroom.main.perform_analysis') as mock_perform_analysis,
             patch('builtins.print') as mock_print,
             patch('sys.exit') as mock_exit,
-            # Terraform generation and reconciliation touch the filesystem and
-            # delete files. No integration test should reach either for real.
-            patch('headroom.main.generate_scp_terraform', return_value={}),
-            patch('headroom.main.generate_rcp_terraform', return_value={}),
+            # Terraform generation touches the filesystem and deletes files.
+            # No integration test in this class should reach it for real; the
+            # ones that must are in TestGenerationLeavesTheTreeWholeOnFailure,
+            # which is outside this fixture's reach.
             patch('headroom.main.determine_rcp_placement', return_value=[]),
-            patch('headroom.main.reconcile_generated_terraform') as mock_reconcile,
+            patch('headroom.main.compile_terraform_plan') as mock_compile,
+            patch('headroom.main.apply_terraform_plan') as mock_apply,
         ):
             yield {
                 'parse': mock_parse,
@@ -115,7 +121,8 @@ class TestMainIntegration:
                 'perform_analysis': mock_perform_analysis,
                 'print': mock_print,
                 'exit': mock_exit,
-                'reconcile': mock_reconcile,
+                'compile': mock_compile,
+                'apply': mock_apply,
             }
 
     # Success path tests
@@ -147,9 +154,7 @@ class TestMainIntegration:
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
-             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.discover_organization'), \
-             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
             main()
@@ -193,9 +198,7 @@ class TestMainIntegration:
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
-             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.discover_organization'), \
-             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
             main()
@@ -244,9 +247,7 @@ class TestMainIntegration:
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
-             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.discover_organization'), \
-             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
             main()
@@ -569,9 +570,7 @@ class TestMainIntegration:
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
-             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.discover_organization'), \
-             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
             main()
@@ -612,9 +611,7 @@ class TestMainIntegration:
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
-             patch('headroom.main.generate_terraform_org_info'), \
              patch('headroom.main.discover_organization'), \
-             patch('headroom.main.ensure_org_info_symlink'), \
              patch('headroom.main.parse_rcp_result_files') as mock_parse_rcp:
             mock_parse_rcp.return_value = rcp_evidence()
             main()
@@ -651,7 +648,8 @@ class TestMainIntegration:
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
-        Placing nothing still reconciles, rather than leaving the directory be.
+        Placing nothing still compiles and applies, rather than leaving the
+        directory be.
 
         This used to return early. Returning early is what let a previous run's
         policy files stay deployed after their placement disappeared.
@@ -670,19 +668,18 @@ class TestMainIntegration:
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
             patch('headroom.main.get_management_account_session'),
             patch('headroom.main.parse_rcp_result_files', return_value=rcp_evidence()),
-            patch('headroom.main.generate_terraform_org_info'),
-            patch('headroom.main.discover_organization'),
-            patch('headroom.main.ensure_org_info_symlink')
+            patch('headroom.main.discover_organization') as mock_discover,
         ):
             main()
 
         mock_get_sess.assert_called_once_with(mock_final_config)
 
-        # Both directories are reconciled, and the only file the run accounts
-        # for is grab_org_info.tf - everything else generated is stale.
-        directories, expected = mocks['reconcile'].call_args[0]
-        assert directories == [Path("test_scps"), Path("test_rcps")]
-        assert expected == {Path("test_scps") / ORG_INFO_FILENAME}
+        # Both recommendation lists are empty, and the plan is still compiled
+        # and applied rather than the run returning early.
+        mocks['compile'].assert_called_once_with(
+            mock_final_config, mock_discover.return_value.hierarchy, [], []
+        )
+        mocks['apply'].assert_called_once_with(mocks['compile'].return_value)
 
     def test_main_early_return_when_no_management_account_id(
         self,
@@ -702,8 +699,7 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
-             patch('headroom.main.get_security_analysis_session') as mock_get_sess, \
-             patch('headroom.main.ensure_org_info_symlink'):
+             patch('headroom.main.get_security_analysis_session') as mock_get_sess:
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
@@ -742,8 +738,7 @@ class TestMainIntegration:
 
         with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess, \
-             patch('headroom.main.discover_organization'), \
-             patch('headroom.main.ensure_org_info_symlink'):
+             patch('headroom.main.discover_organization'):
             # cause sts.assume_role to raise
             mock_get_sess.return_value.client.return_value.assume_role.side_effect = err
             with pytest.raises(SystemExit) as exc_info:
@@ -797,8 +792,7 @@ class TestMainIntegration:
 
         with patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
-             patch('headroom.main.discover_organization', side_effect=err), \
-             patch('headroom.main.ensure_org_info_symlink'):
+             patch('headroom.main.discover_organization', side_effect=err):
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
@@ -826,20 +820,64 @@ class TestMainIntegration:
         mock_final_config.management_account_id = "111111111111"
         mocks['merge'].return_value = mock_final_config
 
-        with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
+        # Compiling the plan is what can fail on bad input; make it do so.
+        mocks['compile'].side_effect = RuntimeError("Failed to generate Terraform")
+
+        with patch('headroom.main.handle_scp_workflow', return_value=[]), \
+             patch('headroom.main.handle_rcp_workflow', return_value=[]), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
-             patch('headroom.main.discover_organization'), \
-             patch('headroom.main.ensure_org_info_symlink'), \
-             patch('headroom.main.generate_terraform_org_info') as mock_generate_org:
-            # Cause generate_terraform_org_info to raise RuntimeError
-            mock_generate_org.side_effect = RuntimeError("Failed to generate Terraform")
+             patch('headroom.main.discover_organization'):
             with pytest.raises(SystemExit) as exc_info:
                 main()
             assert exc_info.value.code == 1
 
         printed = [c.args[0] for c in mocks['print'].call_args_list]
         assert any("Runtime Error" in msg for msg in printed)
+
+    def test_main_reports_a_filesystem_failure_instead_of_a_raw_traceback(
+        self,
+        mock_cli_args: MagicMock,
+        valid_yaml_config: Dict[str, Any],
+        mock_dependencies: Dict[str, MagicMock]
+    ) -> None:
+        """
+        Generation is the phase that touches the disk, and the disk is the one
+        thing it cannot prove anything about in advance.
+
+        Preflight decides every mutation by reading, but reading proves only
+        what was true when it read: a directory that cannot be created, a
+        filesystem that fills up, a file whose permissions changed since. Those
+        arrive as OSError, which no other arm catches, so the run ended on a
+        traceback -- the only failure mode that never says which phase it came
+        from.
+        """
+        mocks = mock_dependencies
+        mocks['parse'].return_value = mock_cli_args
+        mocks['load'].return_value = valid_yaml_config
+        mock_final_config = MagicMock()
+        mock_final_config.model_dump.return_value = valid_yaml_config
+        mock_final_config.scps_dir = "test_scps"
+        mock_final_config.rcps_dir = "test_rcps"
+        mock_final_config.management_account_id = "111111111111"
+        mocks['merge'].return_value = mock_final_config
+
+        mocks['apply'].side_effect = PermissionError(13, "Permission denied")
+
+        with patch('headroom.main.handle_scp_workflow', return_value=[]), \
+             patch('headroom.main.handle_rcp_workflow', return_value=[]), \
+             patch('headroom.main.get_security_analysis_session'), \
+             patch('headroom.main.get_management_account_session'), \
+             patch('headroom.main.discover_organization'):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+        printed = [c.args[0] for c in mocks['print'].call_args_list]
+        assert any(
+            "Filesystem Error during Terraform generation" in msg
+            for msg in printed
+        )
 
     def test_main_reports_a_scan_failure_instead_of_a_raw_traceback(
         self,
@@ -933,7 +971,6 @@ class TestMainIntegration:
                     accounts_with_blockers=set(),
                 )
             ]),
-            patch('headroom.main.generate_terraform_org_info'),
             patch('headroom.main.discover_organization', return_value=OrganizationSnapshot(
                 organization_id=ORG_ID,
                 member_account_ids=frozenset({"111111111111", "222222222222"}),
@@ -941,9 +978,6 @@ class TestMainIntegration:
                 hierarchy=mock_org_hierarchy,
             )),
             patch('headroom.main.determine_rcp_placement', return_value=[mock_rcp_rec]),
-            patch('headroom.main.generate_rcp_terraform') as mock_gen_rcp,
-            patch('headroom.main.generate_scp_terraform'),
-            patch('headroom.main.ensure_org_info_symlink')
         ):
             mock_session = MagicMock()
             mock_get_sess.return_value = mock_session
@@ -956,4 +990,221 @@ class TestMainIntegration:
         assert any("Affected Accounts: 2" in msg for msg in printed)
         assert any("Third-Party Accounts: 1" in msg for msg in printed)
         assert any("Reasoning: Test reasoning" in msg for msg in printed)
-        mock_gen_rcp.assert_called_once()
+        mocks['compile'].assert_called_once()
+
+
+class TestGenerationLeavesTheTreeWholeOnFailure:
+    """
+    A failure anywhere in generation leaves the previous run's output whole.
+
+    main() used to write grab_org_info.tf, replace the RCP symlink, and write
+    every SCP file before RCP results were read at all. A late RCP failure
+    therefore left this run's org-info and SCP output beside the previous
+    run's RCP output -- two descriptions of different organizations, which
+    Terraform will happily apply.
+    """
+
+    def _seed(self, tmp_path: Path) -> Dict[str, Path]:
+        """Lay down a complete previous run, plus files Headroom does not own."""
+        scps = tmp_path / "scps"
+        rcps = tmp_path / "rcps"
+        scps.mkdir()
+        rcps.mkdir()
+
+        org_info = scps / ORG_INFO_FILENAME
+        org_info.write_text(f"{GENERATED_MARKER}\n# previous run\n")
+        scp_file = scps / "payments_scps.tf"
+        scp_file.write_text(f"{GENERATED_MARKER}\nmodule \"scp_payments\" {{}}\n")
+        stale = scps / "retired_ou_scps.tf"
+        stale.write_text(f"{GENERATED_MARKER}\nmodule \"scp_retired\" {{}}\n")
+        unmanaged = scps / "custom.tf"
+        unmanaged.write_text('provider "aws" {}\n')
+
+        link = rcps / ORG_INFO_FILENAME
+        link.symlink_to(Path("..") / "scps" / ORG_INFO_FILENAME)
+        rcp_file = rcps / "payments_rcps.tf"
+        rcp_file.write_text(f"{GENERATED_MARKER}\nmodule \"rcp_payments\" {{}}\n")
+
+        return {
+            "org_info": org_info,
+            "scp_file": scp_file,
+            "stale": stale,
+            "unmanaged": unmanaged,
+            "link": link,
+            "rcp_file": rcp_file,
+        }
+
+    def _seed_results(self, tmp_path: Path) -> Path:
+        """
+        SCP results that parse, RCP check directories that hold nothing.
+
+        parse_rcp_result_files rejects a check whose directory is missing, so
+        present-and-empty is what reaches the zero-evidence guard in
+        handle_rcp_workflow -- after SCP parsing, placement, and printing have
+        all succeeded. No mock is involved: this is a real production failure.
+        """
+        results = tmp_path / "headroom_results"
+        scp_check = results / "scps" / "deny_ec2_imds_v1"
+        scp_check.mkdir(parents=True)
+        (scp_check / "payments_111111111111.json").write_text(json.dumps({
+            "summary": {
+                "account_name": "payments",
+                "account_id": "111111111111",
+                "check": "deny_ec2_imds_v1",
+                "total_instances": 3,
+                "violations": 0,
+                "exemptions": 0,
+                "compliant": 3,
+                "compliance_percentage": 100.0,
+            },
+            "violations": [],
+            "exemptions": [],
+            "compliant_instances": [],
+        }))
+
+        for check_name in get_check_names("rcps"):
+            (results / "rcps" / check_name).mkdir(parents=True)
+
+        return results
+
+    def test_a_late_rcp_failure_changes_nothing_on_disk(self, tmp_path: Path) -> None:
+        seeded = self._seed(tmp_path)
+        results = self._seed_results(tmp_path)
+
+        before = {
+            name: (path.read_bytes(), path.lstat().st_mtime_ns)
+            for name, path in seeded.items()
+            if name != "link"
+        }
+        link_before = (
+            os.readlink(seeded["link"]),
+            seeded["link"].lstat().st_mtime_ns,
+        )
+
+        config = HeadroomConfig(
+            management_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Env", name="Name", owner="Owner"
+            ),
+            results_dir=str(results),
+            scps_dir=str(tmp_path / "scps"),
+            rcps_dir=str(tmp_path / "rcps"),
+        )
+        snapshot = OrganizationSnapshot(
+            organization_id=ORG_ID,
+            member_account_ids=frozenset({"111111111111"}),
+            analyzable_accounts=(),
+            hierarchy=OrganizationHierarchy(
+                root_id="r-1111",
+                organizational_units={},
+                accounts={
+                    "111111111111": AccountOrgPlacement(
+                        account_id="111111111111",
+                        account_name="payments",
+                        parent_ou_id=None,
+                        ou_path=["r-1111"],
+                    )
+                },
+            ),
+        )
+
+        with patch("headroom.main.parse_cli_args"), \
+             patch("headroom.main.load_yaml_config"), \
+             patch("headroom.main.setup_configuration", return_value=config), \
+             patch("headroom.main.get_security_analysis_session"), \
+             patch("headroom.main.get_management_account_session"), \
+             patch("headroom.main.discover_organization", return_value=snapshot), \
+             patch("headroom.main.perform_analysis"), \
+             pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+
+        after = {
+            name: (path.read_bytes(), path.lstat().st_mtime_ns)
+            for name, path in seeded.items()
+            if name != "link"
+        }
+        assert after == before
+        assert os.readlink(seeded["link"]) == link_before[0]
+        assert seeded["link"].lstat().st_mtime_ns == link_before[1]
+        assert sorted(p.name for p in (tmp_path / "scps").iterdir()) == [
+            "custom.tf", "grab_org_info.tf", "payments_scps.tf", "retired_ou_scps.tf",
+        ]
+        assert sorted(p.name for p in (tmp_path / "rcps").iterdir()) == [
+            "grab_org_info.tf", "payments_rcps.tf",
+        ]
+
+    def test_an_rcp_rendering_failure_after_scp_rendering_changes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        Rendering, not just parsing, happens before the first write.
+
+        An RCP recommendation naming a target the hierarchy does not hold
+        makes the RCP renderer raise -- after the SCP renderer has produced a
+        complete, valid result. Compiling both before applying either is what
+        keeps that from leaving new SCP files beside old RCP files.
+        """
+        seeded = self._seed(tmp_path)
+        before = {
+            name: (path.read_bytes(), path.lstat().st_mtime_ns)
+            for name, path in seeded.items()
+            if name != "link"
+        }
+
+        config = HeadroomConfig(
+            management_account_id="111111111111",
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Env", name="Name", owner="Owner"
+            ),
+            scps_dir=str(tmp_path / "scps"),
+            rcps_dir=str(tmp_path / "rcps"),
+        )
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1111",
+            organizational_units={},
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="payments",
+                    parent_ou_id=None,
+                    ou_path=["r-1111"],
+                )
+            },
+        )
+        snapshot = OrganizationSnapshot(
+            organization_id=ORG_ID,
+            member_account_ids=frozenset({"111111111111"}),
+            analyzable_accounts=(),
+            hierarchy=hierarchy,
+        )
+        unknown_ou = RCPPlacementRecommendations(
+            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            recommended_level="ou",
+            target_ou_id="ou-1111-99999999",
+            affected_accounts=[],
+            third_party_account_ids=[],
+            reasoning="test",
+        )
+
+        with patch("headroom.main.parse_cli_args"), \
+             patch("headroom.main.load_yaml_config"), \
+             patch("headroom.main.setup_configuration", return_value=config), \
+             patch("headroom.main.get_security_analysis_session"), \
+             patch("headroom.main.get_management_account_session"), \
+             patch("headroom.main.discover_organization", return_value=snapshot), \
+             patch("headroom.main.perform_analysis"), \
+             patch("headroom.main.handle_scp_workflow", return_value=[]), \
+             patch("headroom.main.handle_rcp_workflow", return_value=[unknown_ou]), \
+             pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        assert {
+            name: (path.read_bytes(), path.lstat().st_mtime_ns)
+            for name, path in seeded.items()
+            if name != "link"
+        } == before

@@ -4,10 +4,13 @@ Owns what a run writes to the SCP and RCP directories, what it deletes, and the
 interface between the generated files and the policy modules.
 
 Implementation: `headroom/terraform/` — `generate_scps.py`, `generate_rcps.py`,
-`generate_org_info.py`, `models.py`, `utils.py`, `reconcile.py`. Modules:
-`test_environment/modules/scps/`, `test_environment/modules/rcps/`. Tests:
-`tests/test_generate_scps.py`, `tests/test_generate_rcps.py`,
-`tests/test_generate_org_info.py`, `tests/test_terraform_reconcile.py`,
+`generate_org_info.py`, `plan.py`, `apply.py`, `models.py`, `utils.py`. The
+three `generate_*` modules render and write nothing, `plan.py` merges and
+validates what they rendered, and `apply.py` is the only one that touches the
+filesystem. Modules: `test_environment/modules/scps/`,
+`test_environment/modules/rcps/`. Tests: `tests/test_generate_scps.py`,
+`tests/test_generate_rcps.py`, `tests/test_generate_org_info.py`,
+`tests/test_terraform_plan.py`, `tests/test_terraform_apply.py`,
 `tests/test_terraform_utils.py`, `tests/test_terraform_models.py`,
 `tests/test_nested_ou_hierarchy.py`, `tests/test_committed_terraform_examples.py`.
 
@@ -108,9 +111,15 @@ marker travels with the file, so the file and the claim on it cannot disagree.
 - Matched as a **whole first line**, never as a substring. `scps/README.md`
   quotes the marker inside an indented code block while explaining it, so a
   substring scan deletes the document that describes the convention.
-- A **symlink is never claimed**, checked before the file is even read.
-  `rcps/grab_org_info.tf` points at the real file in `scps/`, so reading through
-  the link finds the marker and would delete a link Headroom maintains.
+- An **unrelated symlink is never claimed**, checked before the file is even
+  read. Reading through a link finds whatever the target holds, and a marker
+  found that way says nothing about the link.
+  `rcps/grab_org_info.tf` is the one exception, because it is Headroom's own:
+  the reserved link this run plans. Apply creates it when it is absent, leaves
+  it exactly as it is when it already resolves to the right file, and replaces
+  it when it points somewhere else. A marked regular file at that path — the
+  shape an older layout left on disk — is migrated into the link; an unmarked
+  file or a directory there aborts the run, like any other ownership conflict.
 - A file that cannot be read is not claimed. A file we cannot read is a file we
   cannot prove is ours.
 - The scan does **not** recurse. `.terraform/` and any module directory below
@@ -118,32 +127,92 @@ marker travels with the file, so the file and the claim on it cannot disagree.
 
 ## Render before mutate
 
-Generation builds the whole plan — a mapping of destination path to rendered
-content — before touching disk. A failure during rendering has written nothing
-and leaves the previous output whole.
+The boundary is the whole run, not one directory. `compile_terraform_plan`
+renders the organization data sources, every SCP file, every RCP file, and the
+reserved `rcps/grab_org_info.tf` symlink into one `TerraformPlan`, validates it,
+and touches the filesystem nowhere. `apply_terraform_plan` is the only code in
+Headroom that writes, links, or deletes. Both policy workflows parse, place, and
+print but write nothing, so a failure in either — or in rendering, or in
+validation — leaves the previous output whole and deployable.
 
-Writing is then two steps:
+The compiler merges the three renderers' output through `claim_plan_path` rather
+than by assignment. Each renderer keeps its own namespace collision-free and
+none can see the others, so an ordinary dictionary update would silently drop
+one component's file and hand validation a plan already missing it
+([File names](#file-names)).
 
-1. Write each planned file, **skipping any whose content is already identical**.
-   These directories are committed; rewriting identical bytes turns every run
-   into apparent churn.
-2. Delete every marked file in either directory that the plan does not name.
+Applying is preflight, then mutation. Apply revalidates the plan it was handed
+rather than trusting it: the compiler is the only thing that builds one, but
+nothing in the type stops a caller from assembling a `TerraformPlan` by hand and
+passing it straight to the one function that mutates the disk. A complete
+read-only pass then proves Headroom owns every destination before the first
+`mkdir`, and reports every conflict it found at once rather than the first — an
+operator who fixes one ownership conflict per run learns of the next one only by
+running again.
 
-Reconciliation runs once, after **both** the SCP and RCP workflows have
-succeeded, over both directories against the combined plan. A raise in either
-workflow skips it entirely.
+The mutation order is directories, then the changed files, then the link, then
+the stale deletions. Deleting last is what makes a stale file's removal
+conditional on the desired writes having succeeded. A file whose content already
+matches is never opened for write and a correct link is never recreated, so two
+identical applications leave file mtimes and symlink `lstat` metadata untouched:
+these directories are committed, and rewriting identical bytes turns every run
+into apparent churn.
+
+A planned write is a fully written sibling temp file renamed over the
+destination, never a truncation in place. Opening the destination itself
+truncates it before any content arrives, so a write that dies in between leaves
+a 0-byte file carrying no marker — which the next run's ownership check then
+refuses as a file Headroom does not own, wedging every later run until a human
+deletes the leftover. Renaming also splits any inode the destination shares, so
+a hardlinked stale file that the identity guard deliberately retains keeps its
+own content instead of silently acquiring the planned file's. The temp file is a
+sibling, so the rename stays within one filesystem, and is deliberately not
+named `*.tf`, so an orphan left by a failed write is invisible to Terraform and
+to the stale-file scan alike.
+
+This is not a transaction and must not be described as one. Parsing, rendering,
+validation, and preflight failures mutate nothing; an OS failure partway through
+the mutation phase can still leave a partial apply.
 
 An empty recommendation list is a plan for an empty directory, not a no-op. That
 is what removes the attachment for a policy that no longer has a placement — and
 it is why a run that parsed zero results aborts first (INV-01).
 
+## Two names for one output directory
+
+`scps_dir` and `rcps_dir` pointing at one directory would generate every RCP
+file over the SCP file of the same name and reduce `grab_org_info.tf` to a
+symlink to itself. Three checks sit at three distances from the mistake, because
+no one of them can see what the next one sees.
+
+`HeadroomConfig` rejects the two settings being written identically, which
+catches a plain typo at the point it is made rather than on the far side of a
+scan of every account in the organization. It rejects a `..` component in either
+setting for the same reason the compiler can afford to be lexical: Headroom
+folds `..` away without reading anything and the operating system does not, so
+the two disagree about where a file goes the moment a component of the path is a
+symlink.
+
+Compilation compares the two paths lexically, which is what keeps it free of
+filesystem access and what makes the same plan validate identically on every
+machine. It therefore catches only two spellings of one path — not a symlink,
+and not a case variant on a case-insensitive filesystem, both of which reach one
+inode under two names.
+
+`apply_terraform_plan` compares them by device and inode instead, twice: in
+preflight, where the alias joins the one aggregated ownership report, and again
+immediately after the directories are created, which is the only point at which
+an alias that `mkdir` itself produced first becomes observable. Both abort
+naming both configured paths, and neither has written, linked, or deleted
+anything.
+
 ## `grab_org_info.tf`
 
-Written outside both policy workflows, before either runs, into `scps_dir`. It
-carries the ownership marker, so reconciliation must count it as expected or it
-would be deleted on every run.
+Rendered alongside everything else and written by apply into `scps_dir`. It
+carries the ownership marker, so the plan must name it or the stale-file pass
+would delete it on every run.
 
-`generate_terraform_org_info` takes `snapshot.hierarchy`, the
+`render_terraform_org_info` takes `snapshot.hierarchy`, the
 `OrganizationHierarchy` that `discover_organization` built with its one call to
 `build_organization_hierarchy` — the same object `handle_scp_workflow` and
 `handle_rcp_workflow` receive. A second, independent walk here once fed only
@@ -178,8 +247,17 @@ declaration, and neither could see the mismatch between them.
 the naming route to the plan-time failure INV-12 prevents; the second-walk route
 at the top of this section reaches the same failure from the other side.
 
-`rcps_dir` gets a **relative symlink** to it rather than a copy, recreated on
-every run.
+`rcps_dir` gets a **relative symlink** to it rather than a copy. The plan
+carries the file the link must point at, not the text the link must hold. The
+text is a relative path, and a relative path is relative to where the link
+really lives: computing it lexically from the configured `rcps_dir` is wrong as
+soon as that spelling is a symlink to somewhere else, because the link is
+created inside the directory the spelling points at and resolves from there.
+Apply computes it with `os.path.realpath` on both sides, which reads the
+filesystem and is therefore apply's to do rather than the compiler's. Nothing
+downstream would have caught the lexical version: the next run reads the same
+wrong text back, finds it equal to the same wrong expectation, and leaves a
+dangling link in place while reporting a converged run.
 
 ## Module interface
 

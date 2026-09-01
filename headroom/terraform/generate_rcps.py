@@ -5,18 +5,17 @@ Generates Terraform files for RCP deployment based on third-party account analys
 """
 
 import logging
-import os
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from .models import (
+    RenderedTerraformFiles,
     TerraformComment,
     TerraformElement,
     TerraformModule,
     TerraformParameter,
-    TerraformPlan,
 )
 from .utils import (
     account_id_local_name,
@@ -25,7 +24,6 @@ from .utils import (
     make_ou_base_names,
     ou_id_local_name,
     ou_path_names,
-    write_terraform_plan,
 )
 from ..utils import delete_and_rerun_remedy
 from ..checks.registry import get_check_names
@@ -37,7 +35,6 @@ from ..types import (
     RCPPlacementRecommendations,
 )
 from ..constants import (
-    ORG_INFO_FILENAME,
     DENY_STS_THIRD_PARTY_ASSUMEROLE,
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
@@ -742,45 +739,17 @@ def _render_root_rcp_terraform(
     return filepath, terraform_content
 
 
-def _create_org_info_symlink(rcps_output_path: Path, scps_dir: str) -> None:
-    """
-    Create symlink to scps/grab_org_info.tf in RCP directory.
-
-    The grab_org_info.tf file contains shared organization structure data sources
-    needed by both SCP and RCP modules. Rather than duplicating the file, we create
-    a symlink from rcps/ to scps/grab_org_info.tf using a relative path.
-
-    Args:
-        rcps_output_path: RCP output directory where symlink should be created
-        scps_dir: SCP directory path (used to compute relative path to grab_org_info.tf)
-    """
-    symlink_path = rcps_output_path / ORG_INFO_FILENAME
-
-    # Compute relative path from RCP directory to SCP grab_org_info.tf
-    scps_grab_org_info = Path(scps_dir) / ORG_INFO_FILENAME
-    target_path = os.path.relpath(scps_grab_org_info, rcps_output_path)
-
-    # Remove existing file or symlink if present
-    if symlink_path.exists() or symlink_path.is_symlink():
-        symlink_path.unlink()
-        logger.debug(f"Removed existing file/symlink at {symlink_path}")
-
-    # Create symlink
-    os.symlink(target_path, symlink_path)
-    logger.info(f"Created symlink: {symlink_path} -> {target_path}")
-
-
-def _render_rcp_terraform_plan(
+def render_rcp_terraform(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path
-) -> TerraformPlan:
+) -> RenderedTerraformFiles:
     """
     Render every RCP file this run's recommendations call for.
 
     Nothing is written here. A target absent from the returned plan is a target
-    this run does not want a file for, which is what lets reconciliation delete
-    the file a previous run left behind.
+    this run does not want a file for, which is what lets applying the plan
+    delete the file a previous run left behind.
 
     Args:
         recommendations: List of RCP placement recommendations
@@ -788,7 +757,8 @@ def _render_rcp_terraform_plan(
         output_path: Directory the files belong in
 
     Returns:
-        Rendered file contents, keyed by destination path
+        Rendered file contents, keyed by destination path. Nothing is
+        written; the caller compiles these into the run's plan.
     """
     account_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     ou_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
@@ -807,7 +777,7 @@ def _render_rcp_terraform_plan(
         if rec.recommended_level == "root":
             root_recommendations.append(rec)
 
-    plan: TerraformPlan = {}
+    plan: RenderedTerraformFiles = {}
 
     if root_recommendations:
         filepath, content = _render_root_rcp_terraform(root_recommendations, output_path)
@@ -824,42 +794,5 @@ def _render_rcp_terraform_plan(
             ou_id, recs, organization_hierarchy, output_path
         )
         claim_plan_path(plan, filepath, content, f"OU {organization_hierarchy.organizational_units[ou_id].name!r}")
-
-    return plan
-
-
-def generate_rcp_terraform(
-    recommendations: List[RCPPlacementRecommendations],
-    organization_hierarchy: OrganizationHierarchy,
-    output_dir: str
-) -> TerraformPlan:
-    """
-    Generate Terraform files for RCP deployment based on recommendations.
-
-    An empty recommendation list is a plan for an empty directory, not a
-    no-op. The caller reconciles against the returned plan, so a policy that no
-    longer has a placement loses the file that deploys it.
-
-    Args:
-        recommendations: List of RCP placement recommendations
-        organization_hierarchy: Organization structure information
-        output_dir: Directory to write Terraform files to
-
-    Returns:
-        The files this run wants the directory to hold, keyed by path
-
-    Raises:
-        RuntimeError: If a recommendation names a target the organization
-            hierarchy does not have
-    """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Rendered in full first: a raise here has written nothing, leaving the
-    # previous run's output complete rather than half replaced.
-    plan = _render_rcp_terraform_plan(
-        recommendations, organization_hierarchy, output_path
-    )
-    write_terraform_plan(plan, "RCP")
 
     return plan

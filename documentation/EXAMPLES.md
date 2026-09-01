@@ -184,13 +184,15 @@ locals {
 The file is generated once, into the SCP directory, and shared by every module
 call in both directories. The RCP directory does not get a second copy: it gets
 a relative **symlink** to the SCP directory's file, created by
-`ensure_org_info_symlink` in `headroom/main.py`.
+`apply_terraform_plan` in `headroom/terraform/apply.py`.
 
-That is load-bearing rather than tidy. Reconciliation deletes marked files the
-current run did not plan, and a real second file would be a second thing for it
-to claim. A symlink is never claimed, and the check happens before the file is
-read. [`spec/contracts/terraform.md`](../spec/contracts/terraform.md) owns the
-rule.
+That is load-bearing rather than tidy. Deleting marked files the current run did
+not plan is what keeps the directory a projection of this run, and a real second
+copy would be a second thing to claim, keep marked, and keep in step. An
+unrelated symlink is never claimed at all, and this one is the reserved link
+Headroom itself maintains, so the plan names it and apply leaves it alone when
+it already resolves to the right file.
+[`spec/contracts/terraform.md`](../spec/contracts/terraform.md) owns the rule.
 
 ## JSON results
 

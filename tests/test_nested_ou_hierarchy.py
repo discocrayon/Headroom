@@ -27,9 +27,9 @@ from headroom.placement.hierarchy import (
 from headroom.terraform.generate_org_info import _generate_terraform_content
 from headroom.terraform.generate_rcps import (
     _should_skip_ou_for_rcp,
-    generate_rcp_terraform,
+    render_rcp_terraform,
 )
-from headroom.terraform.generate_scps import generate_scp_terraform
+from headroom.terraform.generate_scps import render_scp_terraform
 from headroom.terraform.utils import make_ou_base_names, ou_id_local_name
 from headroom.types import (
     AccountOrgPlacement,
@@ -576,21 +576,21 @@ class TestGeneratedTerraformResolves:
         org = make_nested_hierarchy()
         recommendations = determine_scp_placement(self.make_results(), org)
 
-        generate_scp_terraform(recommendations, org, output_dir=str(tmp_path))
+        rendered = render_scp_terraform(recommendations, org, tmp_path)
 
         declared = declared_locals(_generate_terraform_content(org))
-        for generated in tmp_path.glob("*.tf"):
-            missing = referenced_locals(generated.read_text()) - declared
-            assert not missing, f"{generated.name} reads undeclared {missing}"
+        for path, content in rendered.items():
+            missing = referenced_locals(content) - declared
+            assert not missing, f"{path.name} reads undeclared {missing}"
 
     def test_nested_ou_policy_file_is_named_for_its_path(self, tmp_path: Path) -> None:
         """Two OUs of the same name in different branches cannot share a file."""
         org = make_nested_hierarchy()
         recommendations = determine_scp_placement(self.make_results(), org)
 
-        generate_scp_terraform(recommendations, org, output_dir=str(tmp_path))
+        rendered = render_scp_terraform(recommendations, org, tmp_path)
 
-        assert (tmp_path / "production_payments_ou_scps.tf").exists()
+        assert tmp_path / "production_payments_ou_scps.tf" in rendered
 
     def test_nested_rcp_references_only_declared_locals(self, tmp_path: Path) -> None:
         """The RCP generator resolves against the same org info the SCPs do."""
@@ -614,13 +614,13 @@ class TestGeneratedTerraformResolves:
             ),
         ]
 
-        generate_rcp_terraform(recommendations, org, output_dir=str(tmp_path))
+        rendered = render_rcp_terraform(recommendations, org, tmp_path)
 
         declared = declared_locals(_generate_terraform_content(org))
-        generated = sorted(path.name for path in tmp_path.glob("*.tf"))
+        generated = sorted(path.name for path in rendered)
         assert generated == ["prod_app_rcps.tf", "production_payments_ou_rcps.tf"]
-        for path in tmp_path.glob("*.tf"):
-            missing = referenced_locals(path.read_text()) - declared
+        for path, content in rendered.items():
+            missing = referenced_locals(content) - declared
             assert not missing, f"{path.name} reads undeclared {missing}"
 
 

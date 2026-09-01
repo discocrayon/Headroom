@@ -1,5 +1,7 @@
+import os
+from pathlib import Path
 from typing import List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # Centralized defaults for directories
@@ -68,3 +70,49 @@ class HeadroomConfig(BaseModel):
         ge=1,
         le=MAX_ACCOUNT_WORKERS,
     )
+
+    @model_validator(mode="after")
+    def _check_output_directories(self) -> "HeadroomConfig":
+        """
+        Reject the two output-directory settings Terraform generation cannot
+        honour, at the point they are set rather than after a full scan.
+
+        A `..` component makes the configured path and the written path two
+        different places as soon as any component of the path is a symlink.
+        Generation folds `..` away lexically, on purpose -- it reads nothing,
+        so the same configuration compiles to the same plan everywhere -- but
+        the OS resolves the same spelling by walking each component in turn.
+        Rather than teach the compiler to read the filesystem, forbid the one
+        spelling on which the two disagree.
+
+        One directory for both policy types is the other. Generation rejects
+        it too, and has to: only it can see two different spellings that
+        reach one directory. What a plain typo does not deserve is to be
+        found out on the far side of a scan of every account.
+
+        Returns:
+            This configuration, unchanged
+
+        Raises:
+            ValueError: If either directory traverses a parent, or both name
+                one directory
+        """
+        for field_name in ("scps_dir", "rcps_dir"):
+            value = getattr(self, field_name)
+            if os.pardir in Path(value).parts:
+                raise ValueError(
+                    f"{field_name} ({value!r}) must not contain {os.pardir!r}. "
+                    "Headroom folds it away lexically and the operating system "
+                    "does not, so the two disagree about where the file goes "
+                    "the moment a component of the path is a symlink. Spell the "
+                    "directory out."
+                )
+
+        if self.scps_dir == self.rcps_dir:
+            raise ValueError(
+                f"scps_dir and rcps_dir are the same directory: {self.scps_dir!r}. "
+                "Every RCP file would be generated over an SCP file of the same "
+                "name. Set them to different directories."
+            )
+
+        return self

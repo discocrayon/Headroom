@@ -12,8 +12,8 @@ configuration
       → checks
          → result artifacts
             → placement
-               → Terraform generation
-                  → reconciliation
+               → Terraform compilation
+                  → Terraform application
 ```
 
 There is no loop and no second pass. Every stage reads the artifact the previous
@@ -37,8 +37,8 @@ prevent, reached by a different route than a naming mismatch.
 | Checks | `checks/`, `aws/<service>.py` | Per-resource verdicts | [`check-framework.md`](check-framework.md) |
 | Result artifacts | `write_results.py` | One JSON per check per account | [`../contracts/results.md`](../contracts/results.md) |
 | Placement | `parse_results.py`, `placement/`, `generate_rcps.py` | Recommendations naming a target | [`../contracts/placement.md`](../contracts/placement.md) |
-| Terraform generation | `terraform/` | A rendered plan | [`../contracts/terraform.md`](../contracts/terraform.md) |
-| Reconciliation | `terraform/reconcile.py` | Deletions | [`../contracts/terraform.md`](../contracts/terraform.md) |
+| Terraform compilation | `terraform/generate_*.py`, `terraform/plan.py` | One validated whole-run plan, written nowhere | [`../contracts/terraform.md`](../contracts/terraform.md) |
+| Terraform application | `terraform/apply.py` | The files, the reserved link, and the stale deletions | [`../contracts/terraform.md`](../contracts/terraform.md) |
 
 The entry point that sequences them is `headroom/main.py`.
 
@@ -76,7 +76,8 @@ headroom/
 ├── write_results.py     the result writer, and result path resolution
 ├── parse_results.py     SCP result reading and SCP placement
 ├── placement/           hierarchy traversal, policy-agnostic
-├── terraform/           rendering, org info, reconciliation
+├── terraform/           rendering and org info, the compiled plan, and the
+│                     one applier that writes, links, and deletes
 ├── constants.py         check names, the ownership marker, shared patterns
 ├── enums.py             CheckType, CheckCategory, PlacementLevel
 ├── types.py             shared dataclasses

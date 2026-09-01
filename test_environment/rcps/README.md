@@ -7,8 +7,10 @@ longer places a policy on that target. Edits do not survive; make them in
 `../modules/rcps/` or in a file of your own.
 
 This README is not marked, and neither is anything else you add. Unmarked
-files, non-`.tf` files, and symlinks are never touched - a hand-written
-`custom_rcps.tf` beside the generated ones is safe.
+files and non-`.tf` files are never touched - a hand-written `custom_rcps.tf`
+beside the generated ones is safe. The one exception is `grab_org_info.tf`
+itself: here, it is a symlink Headroom maintains, pointing at the real file
+in `../scps/`. Every other symlink is left alone.
 
 Deleting a file here is the point rather than a side effect: Terraform loads
 the whole directory, so a policy file left behind after its placement

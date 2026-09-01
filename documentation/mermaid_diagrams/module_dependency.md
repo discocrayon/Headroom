@@ -29,14 +29,13 @@ graph TD
   headroom.main --> headroom.config
   headroom.main --> headroom.analysis
   headroom.main --> headroom.parse_results
-  headroom.main --> headroom.terraform.generate_scps
+  headroom.main --> headroom.terraform.plan
+  headroom.main --> headroom.terraform.apply
   headroom.main --> headroom.terraform.generate_rcps
-  headroom.main --> headroom.terraform.generate_org_info
-  headroom.main --> headroom.terraform.models
-  headroom.main --> headroom.terraform.reconcile
+  headroom.main --> headroom.aws.organization
   headroom.main --> headroom.aws.organization_snapshot
+  headroom.main --> headroom.log_context
   headroom.main --> headroom.types
-  headroom.main --> headroom.constants
   headroom.main --> headroom.output
 
   headroom.analysis --> headroom.config
@@ -81,9 +80,24 @@ graph TD
   headroom.placement --> headroom.placement.hierarchy
   headroom.placement.hierarchy --> headroom.types
 
+  headroom.terraform --> headroom.terraform.apply
   headroom.terraform --> headroom.terraform.generate_org_info
+  headroom.terraform --> headroom.terraform.generate_rcps
   headroom.terraform --> headroom.terraform.generate_scps
+  headroom.terraform --> headroom.terraform.plan
   headroom.terraform --> headroom.terraform.utils
+
+  headroom.terraform.plan --> headroom.terraform.generate_org_info
+  headroom.terraform.plan --> headroom.terraform.generate_scps
+  headroom.terraform.plan --> headroom.terraform.generate_rcps
+  headroom.terraform.plan --> headroom.terraform.models
+  headroom.terraform.plan --> headroom.terraform.utils
+  headroom.terraform.plan --> headroom.config
+  headroom.terraform.plan --> headroom.constants
+  headroom.terraform.plan --> headroom.types
+
+  headroom.terraform.apply --> headroom.terraform.plan
+  headroom.terraform.apply --> headroom.constants
 
   headroom.terraform.generate_scps --> headroom.terraform.models
   headroom.terraform.generate_scps --> headroom.terraform.utils
@@ -109,7 +123,6 @@ graph TD
   headroom.terraform.utils --> headroom.types
   headroom.terraform.utils --> headroom.utils
   headroom.terraform.models --> headroom.constants
-  headroom.terraform.reconcile --> headroom.constants
 
   headroom.aws.organization --> headroom.aws.helpers
   headroom.aws.organization_snapshot --> headroom.aws.helpers

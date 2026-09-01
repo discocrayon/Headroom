@@ -19,7 +19,7 @@ from headroom.parse_results import (
     analyze_scp_compliance,
     print_policy_recommendations,
 )
-from headroom.terraform.generate_scps import generate_scp_terraform
+from headroom.terraform.generate_scps import render_scp_terraform
 from headroom.types import (
     OrganizationHierarchy,
     OrganizationalUnit,
@@ -778,7 +778,7 @@ class TestParseResultsIntegration:
 class TestGenerateSCPTerraform:
     """Test SCP Terraform generation functionality."""
 
-    def test_generate_scp_terraform_account_level(self) -> None:
+    def test_render_scp_terraform_account_level(self) -> None:
         """Test generating Terraform files for account-level SCP recommendations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
@@ -803,26 +803,25 @@ class TestGenerateSCPTerraform:
                 )
             ]
 
-            # Generate Terraform files
-            generate_scp_terraform(recommendations, hierarchy, temp_dir)
+            # Render Terraform files
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
 
-            # Check that files were created
+            # Check that files were rendered
             output_path = Path(temp_dir)
             fort_knox_file = output_path / "fort_knox_scps.tf"
             prod_account_file = output_path / "prod_account_scps.tf"
 
-            assert fort_knox_file.exists()
-            assert prod_account_file.exists()
+            assert fort_knox_file in rendered
+            assert prod_account_file in rendered
 
             # Check content of fort-knox file
-            with open(fort_knox_file, 'r') as f:
-                content = f.read()
-                assert "fort-knox" in content
-                assert "deny_ec2_imds_v1" in content
-                assert "deny_ec2_imds_v1 = true" in content
-                assert "local.fort_knox_account_id" in content
+            content = rendered[fort_knox_file]
+            assert "fort-knox" in content
+            assert "deny_ec2_imds_v1" in content
+            assert "deny_ec2_imds_v1 = true" in content
+            assert "local.fort_knox_account_id" in content
 
-    def test_generate_scp_terraform_account_level_enables_the_policy(self) -> None:
+    def test_render_scp_terraform_account_level_enables_the_policy(self) -> None:
         """
         Each safe account's file enables the policy the recommendation names.
 
@@ -853,21 +852,20 @@ class TestGenerateSCPTerraform:
                 )
             ]
 
-            generate_scp_terraform(recommendations, hierarchy, temp_dir)
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
 
             output_path = Path(temp_dir)
             fort_knox_file = output_path / "fort_knox_scps.tf"
 
-            assert fort_knox_file.exists()
+            assert fort_knox_file in rendered
 
-            with open(fort_knox_file, 'r') as f:
-                content = f.read()
-                assert "fort-knox" in content
-                assert "deny_ec2_imds_v1 = true" in content
-                # A check with no recommendation for this account stays off.
-                assert "deny_rds_unencrypted = false" in content
+            content = rendered[fort_knox_file]
+            assert "fort-knox" in content
+            assert "deny_ec2_imds_v1 = true" in content
+            # A check with no recommendation for this account stays off.
+            assert "deny_rds_unencrypted = false" in content
 
-    def test_generate_scp_terraform_ou_level(self) -> None:
+    def test_render_scp_terraform_ou_level(self) -> None:
         """Test generating Terraform files for OU-level SCP recommendations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
@@ -893,24 +891,23 @@ class TestGenerateSCPTerraform:
                 )
             ]
 
-            # Generate Terraform files
-            generate_scp_terraform(recommendations, hierarchy, temp_dir)
+            # Render Terraform files
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
 
-            # Check that OU file was created
+            # Check that the OU file was rendered
             output_path = Path(temp_dir)
             production_ou_file = output_path / "production_ou_scps.tf"
 
-            assert production_ou_file.exists()
+            assert production_ou_file in rendered
 
             # Check content of production OU file
-            with open(production_ou_file, 'r') as f:
-                content = f.read()
-                assert "Production" in content
-                assert "deny_ec2_imds_v1" in content
-                assert "deny_ec2_imds_v1 = true" in content
-                assert "local.production_ou_id" in content
+            content = rendered[production_ou_file]
+            assert "Production" in content
+            assert "deny_ec2_imds_v1" in content
+            assert "deny_ec2_imds_v1 = true" in content
+            assert "local.production_ou_id" in content
 
-    def test_generate_scp_terraform_root_level(self) -> None:
+    def test_render_scp_terraform_root_level(self) -> None:
         """Test generating Terraform files for root-level SCP recommendations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
@@ -935,24 +932,23 @@ class TestGenerateSCPTerraform:
                 )
             ]
 
-            # Generate Terraform files
-            generate_scp_terraform(recommendations, hierarchy, temp_dir)
+            # Render Terraform files
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
 
-            # Check that root file was created
+            # Check that the root file was rendered
             output_path = Path(temp_dir)
             root_file = output_path / "root_scps.tf"
 
-            assert root_file.exists()
+            assert root_file in rendered
 
             # Check content of root file
-            with open(root_file, 'r') as f:
-                content = f.read()
-                assert "Organization Root" in content
-                assert "deny_ec2_imds_v1" in content
-                assert "deny_ec2_imds_v1 = true" in content
-                assert "local.root_ou_id" in content
+            content = rendered[root_file]
+            assert "Organization Root" in content
+            assert "deny_ec2_imds_v1" in content
+            assert "deny_ec2_imds_v1 = true" in content
+            assert "local.root_ou_id" in content
 
-    def test_generate_scp_terraform_mixed_levels(self) -> None:
+    def test_render_scp_terraform_mixed_levels(self) -> None:
         """Test generating Terraform files for mixed account, OU, and root level recommendations."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create mock organization hierarchy
@@ -996,24 +992,22 @@ class TestGenerateSCPTerraform:
                 )
             ]
 
-            # Generate Terraform files
-            generate_scp_terraform(recommendations, hierarchy, temp_dir)
+            # Render Terraform files
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
 
-            # Check that all files were created
+            # Check that all files were rendered
             output_path = Path(temp_dir)
             fort_knox_file = output_path / "fort_knox_scps.tf"
             production_ou_file = output_path / "production_ou_scps.tf"
             root_file = output_path / "root_scps.tf"
 
-            assert fort_knox_file.exists()
-            assert production_ou_file.exists()
-            assert root_file.exists()
+            assert fort_knox_file in rendered
+            assert production_ou_file in rendered
+            assert root_file in rendered
 
             # Check that all files contain the SCP flag
             for file_path in [fort_knox_file, production_ou_file, root_file]:
-                with open(file_path, 'r') as f:
-                    content = f.read()
-                    assert "deny_ec2_imds_v1 = true" in content
+                assert "deny_ec2_imds_v1 = true" in rendered[file_path]
 
 
 class TestPrintPolicyRecommendations:
@@ -1237,11 +1231,11 @@ class TestRootParentedAccountPlacement:
 
         assert all(r.target_ou_id != self.ROOT_ID for r in recommendations)
 
-    def test_generate_scp_terraform_does_not_raise_for_root_parented_account(
+    def test_render_scp_terraform_does_not_raise_for_root_parented_account(
         self
     ) -> None:
         """
-        Regression: generating Terraform used to raise RuntimeError.
+        Regression: rendering Terraform used to raise RuntimeError.
 
         The root ID reached _generate_ou_scp_terraform, which looked it up in
         organizational_units and failed.
@@ -1250,9 +1244,9 @@ class TestRootParentedAccountPlacement:
         recommendations = determine_scp_placement(self.make_results(), hierarchy)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            generate_scp_terraform(recommendations, hierarchy, output_dir=tmp_dir)
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(tmp_dir))
 
-            generated = {path.name for path in Path(tmp_dir).iterdir()}
+            generated = {path.name for path in rendered}
             assert generated == {"workloads_ou_scps.tf", "sandbox_scps.tf"}
 
 
