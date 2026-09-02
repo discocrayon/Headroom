@@ -6,17 +6,11 @@ Generates Terraform files for RCP deployment based on third-party account analys
 
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from .models import (
-    RenderedTerraformFiles,
-    TerraformComment,
-    TerraformElement,
-    TerraformModule,
-    TerraformParameter,
-)
+from .models import RenderedTerraformFiles, TerraformModule
+from .parameters import render_check_parameters
 from .utils import (
     account_id_local_name,
     claim_plan_path,
@@ -26,7 +20,7 @@ from .utils import (
     ou_path_names,
 )
 from ..utils import delete_and_rerun_remedy
-from ..checks.registry import get_check_names
+from ..checks.registry import get_allowlist, get_check_definitions, get_check_names
 from ..types import (
     AccountThirdPartyMap,
     OrganizationHierarchy,
@@ -34,17 +28,8 @@ from ..types import (
     RCPCheckResult,
     RCPPlacementRecommendations,
 )
-from ..constants import (
-    DENY_STS_THIRD_PARTY_ASSUMEROLE,
-    DENY_ECR_THIRD_PARTY_ACCESS,
-    DENY_KMS_THIRD_PARTY_ACCESS,
-    DENY_S3_THIRD_PARTY_ACCESS,
-    DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
-    DENY_SERVICE_CONFUSED_DEPUTY,
-    DENY_SQS_THIRD_PARTY_ACCESS,
-)
 from ..write_results import get_results_dir
-from ..parse_results import _load_result_file_json, _extract_account_id_from_result
+from ..parse_results import _extract_account_id_from_result, _load_result_file_json, _read_declared_allowlist
 from ..placement import HierarchyPlacementAnalyzer
 from ..placement.hierarchy import PlacementCandidate, accounts_under_ou
 
@@ -104,13 +89,13 @@ def _parse_single_rcp_result_file(
             f"{delete_and_rerun_remedy(result_file, check_name)}"
         )
 
-    if "unique_third_party_accounts" not in summary:
-        raise RuntimeError(
-            f"Result file {result_file} has no 'unique_third_party_accounts' "
-            "list in its summary, so the third parties this account must keep "
-            "reaching cannot be determined. An empty allowlist is not the same "
-            f"answer: it denies every third party. {delete_and_rerun_remedy(result_file, check_name)}"
-        )
+    third_party_account_ids = _read_declared_allowlist(
+        summary,
+        check_name,
+        get_allowlist(check_name),
+        account_id,
+        result_file
+    )
 
     blocks_rcp = summary["violations"] > 0
 
@@ -126,7 +111,7 @@ def _parse_single_rcp_result_file(
         account_id=account_id,
         account_name=summary.get("account_name", ""),
         check_name=check_name,
-        third_party_account_ids=summary["unique_third_party_accounts"],
+        third_party_account_ids=third_party_account_ids,
         blocks_rcp=blocks_rcp,
     )
 
@@ -150,7 +135,8 @@ def parse_rcp_result_files(
 
     Raises:
         RuntimeError: If any registered RCP check has no results directory,
-            or if a result file cannot be parsed
+            a directory under rcps/ names no registered RCP check, or a
+            result file cannot be parsed
     """
     parse_results: List[RCPCheckParseResult] = []
     missing_check_dirs: List[str] = []
@@ -192,6 +178,25 @@ def parse_rcp_result_files(
             "A check absent from the results is indistinguishable from one that "
             "found nothing, and this output gates RCP deployment. Re-run the "
             "analysis."
+        )
+
+    # Every registered directory exists by here, so rcps/ does. The loop above
+    # visits registered names only, and a directory it never visits holds
+    # results nobody reads, which is indistinguishable from results that were
+    # read: the SCP reader aborts on the same directory (INV-01).
+    registered_check_names = get_check_names("rcps")
+    unregistered_check_dirs = sorted(
+        str(check_dir)
+        for check_dir in (Path(results_dir) / "rcps").iterdir()
+        if check_dir.is_dir() and check_dir.name not in registered_check_names
+    )
+    if unregistered_check_dirs:
+        raise RuntimeError(
+            f"{', '.join(unregistered_check_dirs)} names no registered RCP check. "
+            "The results directory outlives the code that wrote it, so a renamed "
+            "or removed check leaves its directory behind, and nothing can say "
+            "which policy those results would feed. Delete the directory if the "
+            "check is gone, or register a check under that name if it is not."
         )
 
     return parse_results
@@ -505,114 +510,49 @@ def determine_rcp_placement(
     return recommendations
 
 
-@dataclass(frozen=True)
-class RcpTerraformVars:
-    """
-    Terraform variables the RCP module exposes for one check.
-
-    Attributes:
-        comment: Section header rendered above the check's parameters
-        enable_var: Boolean variable that includes or omits the RCP statement
-        allowlist_var: List variable naming permitted third-party accounts
-    """
-    comment: str
-    enable_var: str
-    allowlist_var: str
-
-
-# Ordered alphabetically by service, which fixes the order parameters are
-# rendered in. A registered RCP check absent from this table is parsed and
-# then silently dropped at render time, so
-# test_table_covers_every_registered_rcp_check holds it in sync with the
-# registry.
-RCP_TERRAFORM_VARIABLES: Dict[str, RcpTerraformVars] = {
-    DENY_ECR_THIRD_PARTY_ACCESS: RcpTerraformVars(
-        comment="ECR",
-        enable_var="deny_ecr_third_party_access",
-        allowlist_var="ecr_third_party_access_account_ids_allowlist",
-    ),
-    DENY_KMS_THIRD_PARTY_ACCESS: RcpTerraformVars(
-        comment="KMS",
-        enable_var="deny_kms_third_party_access",
-        allowlist_var="kms_third_party_access_account_ids_allowlist",
-    ),
-    DENY_S3_THIRD_PARTY_ACCESS: RcpTerraformVars(
-        comment="S3",
-        enable_var="deny_s3_third_party_access",
-        allowlist_var="s3_third_party_access_account_ids_allowlist",
-    ),
-    DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS: RcpTerraformVars(
-        comment="Secrets Manager",
-        # No `_access_` segment. Two counts are in play here and they
-        # differ: three of the seven allowlist variables lack that
-        # substring - this one, STS, and the confused-deputy check - while
-        # only two depart from the derivation rule, the check name without
-        # `deny_` plus `_account_ids_allowlist`. STS's check name carries
-        # no `_access_` either, so its variable follows that rule exactly;
-        # this one and the confused-deputy check are the two departures
-        # `spec/contracts/policy-model.md` counts. The Terraform module
-        # defines the variable this way; do not "fix" it here.
-        enable_var="deny_secrets_manager_third_party_access",
-        allowlist_var="secrets_manager_third_party_account_ids_allowlist",
-    ),
-    DENY_SQS_THIRD_PARTY_ACCESS: RcpTerraformVars(
-        comment="SQS",
-        enable_var="deny_sqs_third_party_access",
-        allowlist_var="sqs_third_party_access_account_ids_allowlist",
-    ),
-    DENY_STS_THIRD_PARTY_ASSUMEROLE: RcpTerraformVars(
-        comment="STS",
-        enable_var="deny_sts_third_party_assumerole",
-        allowlist_var="sts_third_party_assumerole_account_ids_allowlist",
-    ),
-    DENY_SERVICE_CONFUSED_DEPUTY: RcpTerraformVars(
-        # Not a service, so it sits after the alphabetical run rather than
-        # inside it. One statement covers every service the other six do.
-        comment="Service confused deputy",
-        enable_var="deny_service_confused_deputy",
-        allowlist_var="service_confused_deputy_source_account_ids_allowlist",
-    ),
-}
-
-
 def _build_rcp_terraform_module(
     module_name: str,
     target_id_reference: str,
     recommendations: List[RCPPlacementRecommendations],
-    comment: str
+    comment: str,
+    organization_hierarchy: OrganizationHierarchy,
 ) -> str:
     """
     Build Terraform module call for RCP deployment.
+
+    Every registered RCP check renders here, enabled where a recommendation
+    names it and disabled where none does, so registering a check is the
+    whole of wiring it into the generated module (INV-13).
 
     Args:
         module_name: Name of the Terraform module instance (e.g., "rcps_root")
         target_id_reference: Reference to the target ID (e.g., "local.root_ou_id")
         recommendations: List of RCP recommendations for this target
         comment: Comment line describing the configuration (e.g., "Organization Root")
+        organization_hierarchy: Organization structure, forwarded to the
+            shared renderer so an ARN allowlist can be rewritten to
+            generated locals. No RCP allowlist declares
+            `restores_account_ids` today, so the rewrite is a no-op for
+            every RCP module
 
     Returns:
         Complete Terraform module block as a string
+
+    Raises:
+        RuntimeError: If a recommendation names a check no registered
+            definition describes, which would otherwise render as a module
+            silently missing that statement
     """
-    recs_by_check: Dict[str, RCPPlacementRecommendations] = {
-        rec.check_name: rec for rec in recommendations
+    allowlists = {
+        rec.check_name: rec.third_party_account_ids for rec in recommendations
     }
 
-    parameters: List[TerraformElement] = []
-
-    for index, (check_name, tf_vars) in enumerate(RCP_TERRAFORM_VARIABLES.items()):
-        if index:
-            parameters.append(TerraformComment(""))
-        parameters.append(TerraformComment(tf_vars.comment))
-
-        rec = recs_by_check.get(check_name)
-        if rec is None:
-            parameters.append(TerraformParameter(tf_vars.enable_var, False))
-            continue
-
-        parameters.append(TerraformParameter(tf_vars.enable_var, True))
-        parameters.append(
-            TerraformParameter(tf_vars.allowlist_var, rec.third_party_account_ids)
-        )
+    parameters = render_check_parameters(
+        get_check_definitions("rcps"),
+        allowlists,
+        module_name,
+        organization_hierarchy,
+    )
 
     module = TerraformModule(
         name=module_name,
@@ -661,7 +601,8 @@ def _render_account_rcp_terraform(
         module_name=f"rcps_{account_name}",
         target_id_reference=f"local.{account_id_local_name(account_name)}",
         recommendations=recs,
-        comment=account_info.account_name
+        comment=account_info.account_name,
+        organization_hierarchy=organization_hierarchy,
     )
 
     return filepath, terraform_content
@@ -707,7 +648,8 @@ def _render_ou_rcp_terraform(
         module_name=f"rcps_{base_name}_ou",
         target_id_reference=f"local.{ou_id_local_name(base_name)}",
         recommendations=recs,
-        comment=f"OU {path_label}"
+        comment=f"OU {path_label}",
+        organization_hierarchy=organization_hierarchy,
     )
 
     return filepath, terraform_content
@@ -715,6 +657,7 @@ def _render_ou_rcp_terraform(
 
 def _render_root_rcp_terraform(
     recs: List[RCPPlacementRecommendations],
+    organization_hierarchy: OrganizationHierarchy,
     output_path: Path
 ) -> tuple[Path, str]:
     """
@@ -722,6 +665,11 @@ def _render_root_rcp_terraform(
 
     Args:
         recs: List of RCP recommendations for root level
+        organization_hierarchy: Organization structure, forwarded to the
+            shared renderer so an ARN allowlist can be rewritten to
+            generated locals. No RCP allowlist declares
+            `restores_account_ids` today, so the rewrite is a no-op for
+            every RCP module
         output_path: Directory the file belongs in
 
     Returns:
@@ -733,7 +681,8 @@ def _render_root_rcp_terraform(
         module_name="rcps_root",
         target_id_reference="local.root_ou_id",
         recommendations=recs,
-        comment="Organization Root"
+        comment="Organization Root",
+        organization_hierarchy=organization_hierarchy,
     )
 
     return filepath, terraform_content
@@ -780,7 +729,9 @@ def render_rcp_terraform(
     plan: RenderedTerraformFiles = {}
 
     if root_recommendations:
-        filepath, content = _render_root_rcp_terraform(root_recommendations, output_path)
+        filepath, content = _render_root_rcp_terraform(
+            root_recommendations, organization_hierarchy, output_path
+        )
         claim_plan_path(plan, filepath, content, "the organization root")
 
     for account_id, recs in account_recommendations.items():

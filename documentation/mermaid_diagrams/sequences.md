@@ -13,6 +13,7 @@ sequenceDiagram
   participant Snapshot as headroom.aws.organization_snapshot
   participant TFSCP as headroom.terraform.generate_scps
   participant TFRCP as headroom.terraform.generate_rcps
+  participant TFParams as headroom.terraform.parameters
   participant TFOrg as headroom.terraform.generate_org_info
   participant TFPlan as headroom.terraform.plan
   participant TFApply as headroom.terraform.apply
@@ -45,7 +46,9 @@ sequenceDiagram
   CLI->>TFPlan: compile_terraform_plan(config, hierarchy, scp_recs, rcp_recs)
   TFPlan->>TFOrg: render_terraform_org_info(hierarchy)
   TFPlan->>TFSCP: render_scp_terraform(scp_recs, hierarchy, scps)
+  TFSCP->>TFParams: render_check_parameters(definitions, allowlists, module_name, hierarchy)
   TFPlan->>TFRCP: render_rcp_terraform(rcp_recs, hierarchy, rcps)
+  TFRCP->>TFParams: render_check_parameters(definitions, allowlists, module_name, hierarchy)
   TFPlan-->>CLI: validated TerraformPlan
   CLI->>TFApply: apply_terraform_plan(plan)
   TFApply-->>CLI: files written, link updated, stale files deleted

@@ -11,13 +11,21 @@ from boto3.session import Session
 
 from ...aws.sqs import SQSQueuePolicyAnalysis, analyze_sqs_queue_policies
 from ...constants import DENY_SQS_THIRD_PARTY_ACCESS
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
-from ..registry import register_check
+from ..registry import Allowlist, register_check
 
 
-@register_check("rcps", DENY_SQS_THIRD_PARTY_ACCESS)
+@register_check(
+    "rcps",
+    DENY_SQS_THIRD_PARTY_ACCESS,
+    terraform_section=TerraformSection.SQS,
+    allowlist=Allowlist(
+        summary_key="unique_third_party_accounts",
+        terraform_variable="sqs_third_party_access_account_ids_allowlist",
+    ),
+)
 class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
     """
     Check for SQS queues that allow third-party account access.

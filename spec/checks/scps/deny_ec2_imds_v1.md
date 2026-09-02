@@ -9,6 +9,7 @@ applies_to:
 depends_on:
   - INV-02
   - INV-09
+  - INV-13
   - INV-16
 verification:
   - tests/test_checks_deny_ec2_imds_v1.py
@@ -174,7 +175,7 @@ Terraform variable `deny_ec2_imds_v1`, a boolean. No allowlist.
 
 ## Referenced invariants
 
-INV-02, INV-09, INV-16.
+INV-02, INV-09, INV-13, INV-16.
 
 ## Implementation
 

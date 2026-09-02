@@ -26,9 +26,9 @@ from ...aws.s3 import analyze_s3_bucket_policies
 from ...aws.secretsmanager import analyze_secrets_manager_policies
 from ...aws.sqs import analyze_sqs_queue_policies
 from ...constants import DENY_SERVICE_CONFUSED_DEPUTY
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ..base import BaseCheck, CategorizedCheckResult
-from ..registry import register_check
+from ..registry import Allowlist, register_check
 
 
 @dataclass
@@ -94,7 +94,17 @@ def _findings_for_resource(
     ]
 
 
-@register_check("rcps", DENY_SERVICE_CONFUSED_DEPUTY)
+@register_check(
+    "rcps",
+    DENY_SERVICE_CONFUSED_DEPUTY,
+    # Not a service, so it renders after the alphabetical run rather than
+    # inside it. One statement covers every service the other six do.
+    terraform_section=TerraformSection.SERVICE_CONFUSED_DEPUTY,
+    allowlist=Allowlist(
+        summary_key="unique_third_party_accounts",
+        terraform_variable="service_confused_deputy_source_account_ids_allowlist",
+    ),
+)
 class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
     """
     Check for cross-service confused deputy exposure.

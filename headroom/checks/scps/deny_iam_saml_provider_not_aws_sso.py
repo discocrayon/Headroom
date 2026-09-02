@@ -13,7 +13,7 @@ import boto3
 
 from ...aws.iam import SamlProviderAnalysis, get_saml_providers_analysis
 from ...constants import DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
@@ -32,7 +32,7 @@ def _is_awssso_provider(provider_name: str) -> bool:
     return provider_name.startswith("AWSSSO_")
 
 
-@register_check("scps", DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO)
+@register_check("scps", DENY_IAM_SAML_PROVIDER_NOT_AWS_SSO, terraform_section=TerraformSection.IAM)
 class DenySamlProviderNotAwsSsoCheck(BaseCheck[SamlProviderAnalysis]):
     """
     Check for IAM SAML providers that would violate deny_iam_saml_provider_not_aws_sso.

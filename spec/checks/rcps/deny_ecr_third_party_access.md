@@ -148,12 +148,13 @@ above describes the code and not those files.
 
 Nothing fails today, because nothing reads either key. There is one reader of an
 RCP result file, `parse_rcp_result_files` in
-`headroom/terraform/generate_rcps.py`; `headroom/parse_results.py` has none, its
-one parse entry point being `parse_scp_result_files`. That reader takes five
-summary keys and nothing outside `summary`: `account_id`, `account_name`,
-`check`, `violations`, and `unique_third_party_accounts`. A missing
-`account_id` falls back to `account_name`, and through it to the organization
-hierarchy.
+`headroom/terraform/generate_rcps.py`, which loads each file and reads its
+allowlist through the helpers `headroom/parse_results.py` shares with SCP
+parsing (`_load_result_file_json`, `_extract_account_id_from_result`,
+`_read_declared_allowlist`). That reader takes five summary keys and nothing
+outside `summary`: `account_id`, `account_name`, `check`, `violations`, and
+`unique_third_party_accounts`. A missing `account_id` falls back to
+`account_name`, and through it to the organization hierarchy.
 
 It still matters, because that directory is the default `results_dir`
 ([`../../contracts/configuration.md`](../../contracts/configuration.md)) rather

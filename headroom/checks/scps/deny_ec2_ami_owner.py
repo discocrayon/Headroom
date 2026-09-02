@@ -6,12 +6,32 @@ from boto3.session import Session
 
 from ...aws.ec2 import DenyEc2AmiOwner, get_ec2_ami_owner_analysis
 from ...constants import DENY_EC2_AMI_OWNER
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ..base import BaseCheck, CategorizedCheckResult
-from ..registry import register_check
+from ..registry import Allowlist, register_check
 
 
-@register_check("scps", DENY_EC2_AMI_OWNER)
+@register_check(
+    "scps",
+    DENY_EC2_AMI_OWNER,
+    terraform_section=TerraformSection.EC2,
+    allowlist=Allowlist(
+        summary_key="unique_ami_owners",
+        terraform_variable="ec2_allowed_ami_owners",
+        # An empty allowlist denies every ec2:RunInstances call rather than
+        # none of them, so it is never rendered (INV-06). Covered accounts
+        # observing no AMI owner at all is what an account running no
+        # instances does - a fact about those accounts rather than a broken
+        # run, so the policy stays off and the rest of the organization
+        # still generates. A result file predating owner collection is the
+        # other cause, and parsing rejects that outright.
+        empty_allowlist_comment=(
+            "deny_ec2_ami_owner stays off here: no instance in the accounts this "
+            "module covers had a resolvable AMI owner, so the allowlist would be "
+            "empty - and an empty allowlist denies every launch, not none."
+        ),
+    ),
+)
 class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
     """
     Check for EC2 instances using AMIs from untrusted owners.

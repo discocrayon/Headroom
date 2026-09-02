@@ -183,7 +183,7 @@ INV-01, INV-02, INV-04, INV-06, INV-13, INV-16.
 - `headroom/checks/rcps/deny_secrets_manager_third_party_access.py`
 - `headroom/aws/secretsmanager.py` — `analyze_secrets_manager_policies`
 - `headroom/aws/policy_documents.py` — `read_principal`
-- `headroom/terraform/generate_rcps.py` — `RCP_TERRAFORM_VARIABLES`
+- `headroom/terraform/parameters.py` — `render_check_parameters`
 - `test_environment/modules/rcps/locals.tf`
 - Tests: `tests/test_checks_deny_secrets_manager_third_party_access.py`,
   `tests/test_aws_secretsmanager.py`, `tests/test_aws_policy_documents.py`

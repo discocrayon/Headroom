@@ -42,8 +42,14 @@ Concretely, each of these aborts rather than continuing:
 - A generation run that parsed zero SCP result files, or whose RCP parse found
   neither a cleared account nor a blocked one.
 - A registered RCP check with no results directory.
-- A `deny_ec2_ami_owner` result whose summary omits `unique_ami_owners`, which
-  reads identically to an account that ran no instances.
+- A result for a check that feeds an allowlist whose summary omits the key its
+  definition names — `unique_ami_owners` for `deny_ec2_ami_owner`, `users` for
+  `deny_iam_user_creation` — or holds anything but a list under it. An absent
+  key reads identically to an account that observed nothing, and `null` was
+  dropped by the placement union as though the check declared no allowlist.
+- A results directory, or a placement recommendation, naming a check the
+  registry does not know — under `scps/` and `rcps/` alike. Results nobody
+  reads are indistinguishable from results that were read.
 - A `skip_account_ids` entry matching no account in the organization.
 - An account whose lifecycle state cannot be classified (see INV-03).
 
@@ -157,8 +163,11 @@ aborts.
 
 ## INV-07 — An allowlist round trip is complete or the check does not ship
 
-A check that feeds an allowlist must carry its values the whole way: summary key
-→ result dataclass field → placement union → module parameter.
+A check that feeds an allowlist must carry its values the whole way:
+`summary_key` → `SCPCheckResult.allowlist_values` → the placement union →
+`terraform_variable`. The first and last links are declared once, on the
+`Allowlist` the check registers with, and the two between are generic, so a
+check declares the chain rather than building it.
 
 Break the chain anywhere and the check still reports 100% compliance while its
 allowlist arrives empty, and what that costs splits by shape. Where INV-06's
@@ -268,42 +277,63 @@ locals they name, and the plan-time failure a second implementation produces.
 ## INV-13 — Every stage is registry-driven
 
 Between check collection and Terraform generation, no stage may branch on a
-hardcoded check name. A check registers itself with `@register_check` and every
-stage discovers it from the registry.
+hardcoded check name. A check registers itself with `@register_check`, which
+records a frozen `CheckDefinition` — class, name, type, the `TerraformSection`
+its parameters render under, and the `Allowlist` its statement is scoped by,
+if any — and every stage reads that definition rather than naming the check.
 
-Collection, result writing, and placement hold to this. Parsing and Terraform
-generation do not, and the three departures fail differently:
+What each stage reads:
 
-- **Parsing** branches on a check name in three places in
-  `headroom/parse_results.py`, across two checks. Two of the three compare
-  against `deny_ec2_ami_owner` — one to require `unique_ami_owners` in the
-  summary, one to union the observed owners across the accounts a
-  recommendation covers — and the third compares against the string literal
-  `"deny_iam_user_creation"` to union its IAM user ARNs. The three are not
-  equally protected. Only the `unique_ami_owners` branch is pinned: stop it
-  discriminating on the name and six tests fail, across
-  `tests/test_parse_results.py`,
-  `tests/test_checks_deny_iam_user_creation.py`, and
-  `tests/test_checks_deny_iam_saml_provider_not_aws_sso.py`. Do the same to
-  either of the other two and the suite stays green. What parsing has no
-  equivalent of is the registry-coverage guard both generators have, so a
-  branch on a third check name fails no test at all.
-- **RCPs** are rendered from `RCP_TERRAFORM_VARIABLES`, a hand-maintained table.
-  It is guarded: `test_table_covers_every_registered_rcp_check` fails by name
-  when an entry is missing. Five RCP checks were once collected against every
-  account on every run and rendered as disabled, which is indistinguishable in
-  the output from a check that found nothing.
-- **SCPs** are rendered by `_build_scp_terraform_module`, which names all nine
-  checks in straight-line code and imports nothing from the registry.
-  `test_every_registered_scp_check_is_rendered` is the guard added after this
-  gap was found; before it, a tenth SCP check would have been collected,
-  written, parsed, and placed, then dropped at render with no test failing.
+| Stage | Reads from the definition |
+|---|---|
+| Collection, result writing, resume | Class, name, type; result writing resolves the check's directory through the name-to-type mirror `register_check` fills in `headroom/constants.py` |
+| SCP parsing | `allowlist.summary_key`, and whether to restore redacted account IDs. An unregistered check name aborts: the one the file's `summary.check` declares, or the directory's when the file declares none |
+| RCP parsing | `allowlist.summary_key`, through the same reader SCP parsing uses. A registered check with no results directory aborts, and so does a directory under `rcps/` naming no registered check |
+| SCP placement | Nothing. It unions whatever `allowlist_values` the results carry |
+| Both generators | `get_check_definitions(check_type)`: every definition of that type in render order, with its section, its boolean, and its allowlist variable. A recommendation naming an unregistered check aborts |
 
-Closing the SCP half — driving the renderer from the registry, as the RCP half
-almost is — and lifting parsing's two check names out of straight-line code are
-both standing intent. Until then a guard is the invariant's enforcement wherever
-one exists, neither generator may grow a *second* hand-maintained list, and
-parsing may not grow a branch on a third check name.
+One rule reads a declared allowlist for both policy types:
+`parse_results._read_declared_allowlist` takes the key the definition names,
+aborts when it is absent, and restores the owning account ID when the
+definition says so. A change to that abort or that restoration is a change to
+SCP and RCP parsing together.
+
+Render order is `(TerraformSection rank, check name)`, so neither import order
+nor registration order can move a parameter. `TerraformSection` in
+`headroom/enums.py` is the one remaining central declaration: it names
+services, not checks, and its declaration order is the render order. A new
+check in an existing service touches only its own module; a new service adds
+one member there.
+
+A definition is validated as it registers, before it is inserted: a duplicate
+name, a class already registered under another name, an unknown type or a
+`CheckType` member in place of its string value, an RCP check with no allowlist,
+an allowlist with an empty summary key, Terraform variable, or empty-allowlist
+comment, or a name or allowlist variable colliding with another definition's
+fails at import time. [`architecture/check-framework.md`](architecture/check-framework.md#discovery)
+states each rule.
+
+Five named guards enforce this. `test_generic_pipeline_modules_name_no_check`
+fails when the orchestrator, check discovery, or any collection, result-writing,
+parsing, placement, or rendering module names a registered check or a
+`DENY_`-prefixed constant outside a `#` comment.
+`test_every_registered_scp_check_is_rendered` and
+`test_every_registered_rcp_check_is_rendered` fail by name when a registered
+check does not reach its module.
+`test_every_registered_check_is_declared_by_its_module` fails by name when the
+module's `variables.tf` does not declare a check name or allowlist variable the
+generator will pass — the step after reaching the module, which `terraform plan`
+would otherwise refuse at the operator's desk.
+`test_render_order_is_independent_of_registration_order` reverses the registry
+and pins the order both generators render from.
+
+This was not always so. Parsing once branched on two check names in three
+places, RCPs rendered from a hand-maintained table, and SCPs from straight-line
+code naming all nine checks. Five RCP checks were once collected against every
+account on every run and rendered as disabled, which is indistinguishable in
+the output from a check that found nothing, and a tenth SCP check would have
+been collected, written, parsed, and placed, then dropped at render with no
+test failing.
 
 ## INV-14 — Persisted results keep wire compatibility
 
@@ -315,12 +345,18 @@ accounts without any reader failing.
 account-name-plus-ID filename forms, so an existing results directory still
 resumes after `exclude_account_ids` changes.
 
-**One deliberate break.** SCP parsing once defaulted a missing `summary.violations`
+**Two deliberate breaks.** SCP parsing once defaulted a missing `summary.violations`
 to zero and now raises. A results directory written before every check emitted the
 key no longer parses, and the error names the check to re-run. The invariant is
 about not changing a format silently; this changes one loudly, on purpose, because
 the tolerance it replaces was reading an unanswered safety question as a pass
 (INV-01).
+
+The second is the same shape. SCP parsing once read a missing `summary.users`
+on a `deny_iam_user_creation` result as no users and left the policy off. It
+now raises, like every other allowlist key: the check has written `users`
+since it shipped, so no file it wrote is affected, and one rule — an absent
+allowlist key aborts — replaces two.
 
 ## INV-15 — AWS identifiers in the repository are obviously fake
 

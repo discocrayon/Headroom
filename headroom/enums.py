@@ -14,6 +14,34 @@ class CheckType(str, Enum):
     RCPS = "rcps"
 
 
+class TerraformSection(Enum):
+    """
+    The section comment a check's module parameters render under.
+
+    Declaration order is render order, for SCP and RCP modules alike: a
+    module's parameters are grouped by section in this order and sorted by
+    check name within a section, so neither import order nor registration
+    order can change generated Terraform (INV-13). Services run
+    alphabetically; a cross-service statement sits after that run rather
+    than inside it.
+
+    A new check in an existing service touches only its own module. A new
+    service adds one member here, in alphabetical position.
+    """
+    EC2 = "EC2"
+    ECR = "ECR"
+    EKS = "EKS"
+    IAM = "IAM"
+    KMS = "KMS"
+    LAMBDA = "Lambda"
+    RDS = "RDS"
+    S3 = "S3"
+    SECRETS_MANAGER = "Secrets Manager"
+    SQS = "SQS"
+    STS = "STS"
+    SERVICE_CONFUSED_DEPUTY = "Service confused deputy"
+
+
 class PlacementLevel(str, Enum):
     """Policy placement levels in organization hierarchy."""
     ROOT = "root"

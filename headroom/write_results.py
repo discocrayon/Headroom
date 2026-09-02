@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Union, cast
 
-from .constants import get_check_type_map
+from .constants import REDACTED_ACCOUNT_ID, get_check_type_map
 from .utils import format_account_identifier
 
 # Set up logging
@@ -23,7 +23,14 @@ logger = logging.getLogger(__name__)
 # The account field of an ARN, in any partition. `aws` alone is the commercial
 # one; GovCloud, China, and the isolated regions append hyphenated qualifiers,
 # and an operator there sets exclude_account_ids for the same reason.
-_ARN_ACCOUNT_FIELD = re.compile(r'(arn:aws(?:-[a-z0-9]+)*:[^:]+:[^:]*:)(\d{12})(:)')
+_ARN_ACCOUNT_FIELD_PREFIX = r'(arn:aws(?:-[a-z0-9]+)*:[^:]+:[^:]*:)'
+_ARN_ACCOUNT_FIELD = re.compile(_ARN_ACCOUNT_FIELD_PREFIX + r'(\d{12})(:)')
+# The same field once redacted, for the reader that puts the ID back. Built
+# from the same prefix so the two cannot drift: what one blanks, the other
+# restores, and nothing else.
+_REDACTED_ARN_ACCOUNT_FIELD = re.compile(
+    _ARN_ACCOUNT_FIELD_PREFIX + re.escape(REDACTED_ACCOUNT_ID) + r'(:)'
+)
 
 
 @dataclass
@@ -36,7 +43,7 @@ class ResultFilePathResolver:
     results_exist() functions.
 
     Attributes:
-        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
+        check_name: The check's registered name
         results_base_dir: Base directory for results
         account_name: Account name (optional, defaults to empty string)
         account_id: Account ID (optional, defaults to empty string)
@@ -149,9 +156,29 @@ def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, An
     elif isinstance(data, list):
         return [_redact_account_ids_from_arns(item) for item in data]
     elif isinstance(data, str):
-        return re.sub(_ARN_ACCOUNT_FIELD, r'\1REDACTED\3', data)
+        return re.sub(_ARN_ACCOUNT_FIELD, rf'\g<1>{REDACTED_ACCOUNT_ID}\g<3>', data)
     else:
         return data
+
+
+def restore_account_id_in_arns(value: str, account_id: str) -> str:
+    """
+    Put an account ID back into the ARN account fields redaction blanked.
+
+    The inverse of `_redact_account_ids_from_arns` for one value, anchored
+    the same way: only the account field of an ARN is touched, so a user or
+    role whose name carries the literal `REDACTED` keeps its name. A reader
+    calls this for an allowlist whose definition sets `restores_account_ids`,
+    once it knows which account the file describes.
+
+    Args:
+        value: One allowlist value as the file carries it
+        account_id: The account the file describes
+
+    Returns:
+        The value with the account ID in every redacted ARN account field
+    """
+    return re.sub(_REDACTED_ARN_ACCOUNT_FIELD, rf'\g<1>{account_id}\g<2>', value)
 
 
 def write_check_results(
@@ -169,7 +196,7 @@ def write_check_results(
     standardized format that can be parsed by parse_results.py.
 
     Args:
-        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
+        check_name: The check's registered name
         account_name: Account name
         account_id: Account ID
         results_data: Dictionary containing summary, violations, exemptions, etc.
@@ -215,11 +242,12 @@ def get_results_dir(check_name: str, results_base_dir: str) -> str:
     Results are organized by check type (scps/rcps) and then by check name.
 
     Args:
-        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
+        check_name: The check's registered name
         results_base_dir: Base directory for results
 
     Returns:
-        Path to the check's results directory (e.g., '{results_base_dir}/scps/deny_ec2_imds_v1')
+        Path to the check's results directory:
+        {results_base_dir}/{check_type}/{check_name}
     """
     results_resolver = ResultFilePathResolver(
         check_name=check_name,
@@ -241,14 +269,16 @@ def get_results_path(
     Results are organized by check type, then check name, then account.
 
     Args:
-        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
+        check_name: The check's registered name
         account_name: Account name
         account_id: Account ID
         results_base_dir: Base directory for results
         exclude_account_ids: If True, use only account name in filename
 
     Returns:
-        Path object for the results file (e.g., '{results_base_dir}/scps/deny_ec2_imds_v1/account.json')
+        Path object for the results file:
+        {results_base_dir}/{check_type}/{check_name}/{account_name}_{account_id}.json
+        or {results_base_dir}/{check_type}/{check_name}/{account_name}.json if exclude_account_ids=True
     """
     results_resolver = ResultFilePathResolver(
         check_name=check_name,
@@ -273,7 +303,7 @@ def results_exist(
     Checks for both filename formats to handle backward compatibility.
 
     Args:
-        check_name: Name of the check (e.g., 'deny_ec2_imds_v1')
+        check_name: The check's registered name
         account_name: Account name
         account_id: Account ID
         results_base_dir: Base directory for results

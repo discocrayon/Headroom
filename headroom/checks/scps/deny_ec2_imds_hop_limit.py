@@ -6,7 +6,7 @@ import boto3
 
 from ...aws.ec2 import DenyEc2ImdsHopLimit, get_ec2_imds_hop_limit_analysis
 from ...constants import DENY_EC2_IMDS_HOP_LIMIT
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -14,7 +14,7 @@ from ..registry import register_check
 MAX_ALLOWED_HOP_LIMIT = 1
 
 
-@register_check("scps", DENY_EC2_IMDS_HOP_LIMIT)
+@register_check("scps", DENY_EC2_IMDS_HOP_LIMIT, terraform_section=TerraformSection.EC2)
 class DenyEc2ImdsHopLimitCheck(BaseCheck[DenyEc2ImdsHopLimit]):
     """
     Check for EC2 instances that would be blocked by deny_ec2_imds_hop_limit SCP.

@@ -9,11 +9,13 @@ depends_on:
   - INV-02
   - INV-06
   - INV-07
+  - INV-13
 verification:
   - tests/test_checks_deny_iam_user_creation.py
   - tests/test_aws_iam.py
   - tests/test_parse_results.py
   - tests/test_generate_scps.py
+  - tests/test_terraform_parameters.py
 ---
 
 # deny_iam_user_creation
@@ -114,10 +116,10 @@ The allowlist round trip (INV-07):
 1. `summary.users` — ARNs, with the account ID replaced by `REDACTED` when
    `exclude_account_ids` is set.
 2. SCP parsing restores the account ID into each ARN once the account is
-   identified.
-3. `SCPCheckResult.iam_user_arns`.
+   identified, because this check's `Allowlist` sets `restores_account_ids`.
+3. `SCPCheckResult.allowlist_values`.
 4. The sorted union across the accounts a placement covers.
-5. `SCPPlacementRecommendations.allowed_iam_user_arns`.
+5. `SCPPlacementRecommendations.allowlist_values`.
 6. The `iam_allowed_users` Terraform variable, with each ARN's account field
    rewritten to `${local.<account_name>_account_id}` where the account is in the
    hierarchy. An ARN naming an account the hierarchy does not have is emitted
@@ -161,13 +163,14 @@ ordinary fact about that account, not a broken run.
 
 ## Referenced invariants
 
-INV-02, INV-06, INV-07.
+INV-02, INV-06, INV-07, INV-13.
 
 ## Implementation
 
 - `headroom/checks/scps/deny_iam_user_creation.py`
 - `headroom/aws/iam/users.py` — `get_iam_users_analysis`
-- `headroom/terraform/generate_scps.py` — `_build_iam_terraform_parameters`,
+- `headroom/parse_results.py` — `_read_declared_allowlist`, `_union_allowlist_values`
+- `headroom/terraform/parameters.py` — `render_check_parameters`,
   `_replace_account_id_in_arn`
 - Tests: `tests/test_checks_deny_iam_user_creation.py`, `tests/test_aws_iam.py`,
   `tests/test_parse_results.py`, `tests/test_generate_scps.py`

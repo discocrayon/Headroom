@@ -266,22 +266,33 @@ account ID, an `ou-` prefixed OU ID, or an `r-` prefixed root ID.
 
 ### SCP module
 
-One boolean per check, named exactly for the check. Two allowlist variables,
-each rendered **only when its check is enabled**:
+One boolean per check, named exactly for the check. An allowlist variable for
+each check whose definition declares one, rendered **only when its check is
+enabled**; today two:
 
 | Allowlist variable | Fed by |
 |---|---|
 | `ec2_allowed_ami_owners` | `deny_ec2_ami_owner` |
 | `iam_allowed_users` | `deny_iam_user_creation` |
 
+Both names come from the check's `Allowlist` in its own module; nothing in
+`generate_scps.py` names either.
+
 `iam_allowed_users` entries have their account ID rewritten to
 `${local.<account_name>_account_id}` so the ARN resolves through the same
-generated locals as everything else.
+generated locals as everything else. The rewrite belongs to the
+`restores_account_ids` flag, not to IAM: it reads the ARN's account field
+whatever service the ARN names, so a future KMS or SQS allowlist declaring the
+flag renders locals rather than the accounts' real IDs. An ARN naming an account
+outside the hierarchy, or one with no account field, is emitted literally.
 
-`deny_ec2_ami_owner` is forced **off**, with a rendered comment saying why, when
-the covered accounts observed no AMI owner at all (INV-06).
+A check whose `Allowlist` declares an `empty_allowlist_comment` — both of these
+do — is forced **off**, with that comment rendered, when the covered accounts
+observed no value at all (INV-06).
 [`../invariants.md`](../invariants.md#inv-06--an-empty-allowlist-is-never-rendered-as-an-empty-list)
-owns what an empty allowlist would do were it rendered.
+owns what an empty allowlist would do were it rendered. The renderer logs the
+same comment at warning level as `Module <module name>: <comment>`, so the run's
+log names the module and the reason together.
 
 The module assembles one policy from the enabled statements and attaches it. If
 no statement is enabled, no policy resource is created. A root target
@@ -291,11 +302,11 @@ existing workload.
 
 ### RCP module
 
-One boolean and one allowlist variable per check, named by
-`RCP_TERRAFORM_VARIABLES` in `generate_rcps.py`. A registered RCP check absent
-from that table is parsed and then silently dropped at render time, so
-`test_table_covers_every_registered_rcp_check` holds it in sync with the registry
-(INV-13).
+One boolean and one allowlist variable per check. The boolean is the check
+name; the allowlist variable is the `terraform_variable` the check's
+`Allowlist` declares in its own module. Both generators render from
+`get_check_definitions`, so a registered check cannot be dropped at render;
+`test_every_registered_rcp_check_is_rendered` pins it (INV-13).
 
 Every check appears in every rendered module call: enabled with its allowlist, or
 explicitly `false`. Variable names are listed in
@@ -303,6 +314,19 @@ explicitly `false`. Variable names are listed in
 
 Unlike the SCP module, the RCP module creates and attaches its policy
 unconditionally.
+
+### Parameter order
+
+Both module calls render their parameters in one order: sections in the
+declaration order of `TerraformSection` in `headroom/enums.py`, each headed by
+its comment and separated from the next by a blank line, and checks by name
+within a section. Import order and registration order play no part, so two
+runs over one registry render identically. `headroom/terraform/parameters.py`
+is the one renderer both generators call. It aborts the run on a
+recommendation naming a check no definition of that module's policy type
+describes, and on a recommendation for an allowlist check that carries no list
+at all — an observed-empty allowlist is `[]`, and `None` there is lost data
+(INV-01).
 
 ### Policy size
 
@@ -380,3 +404,14 @@ no default, reads every generated module call under `test_environment/scps/`
 and `test_environment/rcps/` for the variables it assigns, and fails by name
 when a call omits one. A variable added to a module without being added to
 every committed call that uses it fails the suite.
+
+`test_every_registered_check_is_declared_by_its_module` closes the same gap from
+the registry's side. Every registered check name is passed as its module's
+boolean, and every allowlist's `terraform_variable` alongside it when the check
+is enabled, so each must be a variable the module declares; a check registered
+without its `variable` block passed every test and failed at the operator's
+`terraform plan` with an unsupported argument. The guard reads each module's
+`variables.tf` for every declaration, with or without a default, and fails by
+name when a definition names something the module does not declare. It cannot
+see the module's `main.tf`: a declared variable no statement reads is still
+undetected, and is the check specification's `verification` list to catch.

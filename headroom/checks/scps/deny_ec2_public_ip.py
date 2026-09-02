@@ -6,12 +6,12 @@ import boto3
 
 from ...aws.ec2 import DenyEc2PublicIp, get_ec2_public_ip_analysis
 from ...constants import DENY_EC2_PUBLIC_IP
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
 
-@register_check("scps", DENY_EC2_PUBLIC_IP)
+@register_check("scps", DENY_EC2_PUBLIC_IP, terraform_section=TerraformSection.EC2)
 class DenyEc2PublicIpCheck(BaseCheck[DenyEc2PublicIp]):
     """
     Check for EC2 instances that would be blocked by deny_ec2_public_ip SCP.

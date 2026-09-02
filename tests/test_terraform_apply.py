@@ -117,7 +117,7 @@ def scp_rec(
     affected_accounts: list[str] | None = None,
 ) -> SCPPlacementRecommendations:
     return SCPPlacementRecommendations(
-        check_name="deny-ec2-imds-v1",
+        check_name="deny_ec2_imds_v1",
         recommended_level=level,
         target_ou_id=target_ou_id,
         affected_accounts=affected_accounts if affected_accounts is not None else [],

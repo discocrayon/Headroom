@@ -53,7 +53,7 @@ def org_with_one_ou() -> OrganizationHierarchy:
 
 def scp_rec(level: str = "root") -> SCPPlacementRecommendations:
     return SCPPlacementRecommendations(
-        check_name="deny-ec2-imds-v1",
+        check_name="deny_ec2_imds_v1",
         recommended_level=level,
         target_ou_id=None,
         affected_accounts=[],
@@ -64,7 +64,10 @@ def scp_rec(level: str = "root") -> SCPPlacementRecommendations:
 
 def rcp_rec(level: str = "root") -> RCPPlacementRecommendations:
     return RCPPlacementRecommendations(
-        check_name="deny-sts-third-party-assumerole",
+        # The registered name, not a hyphenated spelling of it: RCP
+        # placement carries the registry's own check names, and rendering
+        # rejects a recommendation for a check no definition describes.
+        check_name="deny_sts_third_party_assumerole",
         recommended_level=level,
         target_ou_id=None,
         affected_accounts=[],

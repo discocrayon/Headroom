@@ -8,6 +8,7 @@ applies_to:
 depends_on:
   - INV-01
   - INV-02
+  - INV-13
   - INV-16
 verification:
   - tests/test_checks_deny_lambda_auth_type_none.py
@@ -114,7 +115,7 @@ Standard SCP placement at zero violations. Terraform variable
 
 ## Referenced invariants
 
-INV-01, INV-02, INV-16.
+INV-01, INV-02, INV-13, INV-16.
 
 ## Implementation
 

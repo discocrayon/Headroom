@@ -95,7 +95,8 @@ files that import it. Two test files cover neither a `headroom/` module nor a
 helper, because what they check is a repository convention rather than code:
 `tests/test_pytest_configuration.py`, that pytest reads the settings `pytest.ini`
 declares, and `tests/test_committed_terraform_examples.py`, that the committed
-Terraform under `test_environment/` still plans.
+Terraform under `test_environment/` still plans and that each module declares
+every variable the registry will make the generator pass.
 
 Four cases depart from that, each deliberate:
 
@@ -139,9 +140,12 @@ replacing it removes an invariant's only enforcement.
 | `test_only_the_aws_package_constructs_a_client` | The boundary [`../architecture/overview.md`](../architecture/overview.md) states — nothing outside `aws/` builds a boto3 client, the orchestrator included |
 | `test_only_enabled_regions_are_requested` | INV-16 — `describe_regions` takes no arguments |
 | `test_every_state_aws_defines_is_classified` | INV-03 — a new AWS lifecycle state fails the pin when a human runs `tox` |
-| `test_table_covers_every_registered_rcp_check` | INV-13 — `RCP_TERRAFORM_VARIABLES` matches the registry |
-| `test_every_registered_scp_check_is_rendered` | INV-13 — the SCP counterpart above; reads `<check> = true` in the rendered module, not just the parameter's presence, so a check hardwired to `false` cannot pass as rendered |
+| `test_every_registered_rcp_check_is_rendered` | INV-13 — every registered RCP check reaches the module with `<check> = true` and its allowlist variable; reading the value, not just the parameter's presence, means a check hardwired to `false` cannot pass as rendered |
+| `test_every_registered_scp_check_is_rendered` | INV-13 — the SCP counterpart of the row above: every registered SCP check reaches the module with `<check> = true` |
+| `test_generic_pipeline_modules_name_no_check` | INV-13 — no stage from collection through rendering branches on a check name. Reads the orchestrator, check discovery, and every stage module from collection to rendering as source, reporting any registered name, or any `DENY_`-prefixed constant, outside a `#` comment, so the historical note `parse_results.py` carries stays legal and a comparison hidden in a docstring does not |
+| `test_render_order_is_independent_of_registration_order` | INV-13 — a reversed registry yields the same definition order, which is what both generators render from |
 | `test_every_committed_module_call_passes_every_required_variable` | The committed worked examples still plan — a module variable with no default is passed by every generated call under `test_environment/` |
+| `test_every_registered_check_is_declared_by_its_module` | INV-13 — the other direction: every registered check name and allowlist variable is a variable its module's `variables.tf` declares, so the argument the generator passes is one `terraform plan` accepts |
 | `tests/test_spec_corpus.py` | Every registered check has exactly one specification |
 | `test_the_conflict_register_and_the_check_documents_agree` | The conflict register and the per-check documents name the same checks |
 | `test_every_named_guard_resolves_to_a_real_test` | This table itself — every guard named below or above resolves to a test that exists. The table named `test_only_the_aws_package_constructs_a_client` for as long as no such test did |

@@ -6,13 +6,13 @@ from boto3.session import Session
 
 from ...aws.rds import DenyRdsUnencrypted, get_rds_unencrypted_analysis
 from ...constants import DENY_RDS_UNENCRYPTED
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
 
-@register_check("scps", DENY_RDS_UNENCRYPTED)
+@register_check("scps", DENY_RDS_UNENCRYPTED, terraform_section=TerraformSection.RDS)
 class DenyRdsUnencryptedCheck(BaseCheck[DenyRdsUnencrypted]):
     """
     Check for RDS databases that would be blocked by deny_rds_unencrypted SCP.

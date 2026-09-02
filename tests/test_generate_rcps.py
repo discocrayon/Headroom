@@ -12,6 +12,7 @@ import pytest
 from pathlib import Path
 from typing import Any, Dict, List, Set, Generator
 from headroom.constants import (
+    _CHECK_TYPE_MAP,
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
@@ -29,9 +30,16 @@ from headroom.terraform.generate_rcps import (
     _create_root_level_rcp_recommendation,
     _create_ou_level_rcp_recommendations,
     _create_account_level_rcp_recommendations,
-    RCP_TERRAFORM_VARIABLES
 )
-from headroom.checks.registry import get_check_names
+from headroom.checks.registry import (
+    _CHECK_REGISTRY,
+    Allowlist,
+    CheckDefinition,
+    get_allowlist,
+    get_check_names,
+)
+from headroom.checks.scps.deny_ec2_public_ip import DenyEc2PublicIpCheck
+from headroom.enums import TerraformSection
 from headroom.placement.hierarchy import PlacementCandidate
 from headroom.types import (
     AccountThirdPartyMap,
@@ -41,6 +49,10 @@ from headroom.types import (
     RCPCheckParseResult,
     RCPPlacementRecommendations
 )
+
+
+def make_org_empty() -> OrganizationHierarchy:
+    return OrganizationHierarchy(root_id="r-1111", organizational_units={}, accounts={})
 
 
 def write_rcp_result(
@@ -359,6 +371,30 @@ class TestParseRcpResultFiles:
         with pytest.raises(RuntimeError, match=DENY_S3_THIRD_PARTY_ACCESS):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
+    def test_parse_aborts_on_a_results_directory_for_an_unregistered_check(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A directory under rcps/ naming no registered check aborts the run.
+
+        The results directory outlives the code that wrote it, so a renamed
+        or removed check leaves its directory behind. Reading only the
+        registered names would step over it, and results nobody reads are
+        indistinguishable from results that were read: the SCP reader aborts
+        on the same directory, and INV-01 says both readers do.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        stale_dir = Path(temp_results_dir) / "rcps" / "deny_old_check"
+        stale_dir.mkdir()
+
+        with pytest.raises(
+            RuntimeError,
+            match=re.escape(f"{stale_dir} names no registered RCP check"),
+        ):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
     def test_parse_aborts_when_violations_field_is_absent(
         self,
         temp_results_dir: str,
@@ -395,6 +431,10 @@ class TestParseRcpResultFiles:
         Defaulting the allowlist to empty would read a malformed file as an
         account that trusts nobody, which renders the check enabled with an
         empty allowlist and denies every third-party integration it has.
+
+        SCP and RCP results are read by one rule, built from the check's
+        registry definition, so the message names the allowlist the values
+        would have filled rather than describing one policy type.
         """
         seed_all_rcp_check_dirs(temp_results_dir)
         check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
@@ -407,8 +447,61 @@ class TestParseRcpResultFiles:
                 }
             }, f)
 
-        with pytest.raises(RuntimeError, match="test-account.json.*unique_third_party_accounts"):
+        with pytest.raises(
+            RuntimeError,
+            match="test-account.json.*unique_third_party_accounts"
+        ) as exc_info:
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        assert "sts_third_party_assumerole_account_ids_allowlist" in str(exc_info.value)
+
+    def test_parse_reads_the_summary_key_the_check_declares(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        Parsing must read each check's own summary key, not one fixed name.
+
+        A check whose observed values are written under a different key
+        parses as a malformed file, so a run with complete results aborts and
+        no policy is generated at all (INV-13).
+        """
+        monkeypatch.setitem(
+            _CHECK_REGISTRY,
+            "deny_kms_custom_key",
+            CheckDefinition(
+                check_class=DenyEc2PublicIpCheck,
+                check_name="deny_kms_custom_key",
+                check_type="rcps",
+                terraform_section=TerraformSection.KMS,
+                allowlist=Allowlist(
+                    "unique_partners",
+                    "kms_custom_key_account_ids_allowlist",
+                ),
+            ),
+        )
+        monkeypatch.setitem(_CHECK_TYPE_MAP, "deny_kms_custom_key", "rcps")
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / "deny_kms_custom_key"
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "account_name": "test-account",
+                    "check": "deny_kms_custom_key",
+                    "violations": 0,
+                    "unique_partners": ["333333333333"],
+                }
+            }, f)
+
+        parse_results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        by_check = {result.check_name: result for result in parse_results}
+        assert by_check["deny_kms_custom_key"].account_third_party_map == {
+            "111111111111": {"333333333333"}
+        }
 
     def test_parse_aborts_when_summary_check_field_is_absent(
         self,
@@ -1774,30 +1867,60 @@ class TestRenderRcpTerraform:
         assert rendered == {}
 
 
-class TestRcpTerraformVariableTable:
-    """Test the table that maps RCP checks to Terraform variables."""
-
-    def test_table_covers_every_registered_rcp_check(self) -> None:
-        """
-        Every registered RCP check must have Terraform variables declared.
-
-        A check missing from the table is collected on every run and then
-        dropped at render time, emitting no module parameters at all, so the
-        omission surfaces as a Terraform plan failure instead of here.
-        """
-        assert set(RCP_TERRAFORM_VARIABLES) == set(get_check_names("rcps"))
-
-    def test_table_declares_distinct_variables_per_check(self) -> None:
-        """Each check must own its enable flag and allowlist variable."""
-        enable_vars = [v.enable_var for v in RCP_TERRAFORM_VARIABLES.values()]
-        allowlist_vars = [v.allowlist_var for v in RCP_TERRAFORM_VARIABLES.values()]
-
-        assert len(set(enable_vars)) == len(enable_vars)
-        assert len(set(allowlist_vars)) == len(allowlist_vars)
-
-
 class TestBuildRcpTerraformModule:
     """Test _build_rcp_terraform_module helper function."""
+
+    def test_a_registered_rcp_check_renders_without_a_generator_edit(
+        self,
+        monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        A newly registered RCP check must render from its definition alone.
+
+        A generator that names its checks by hand emits nothing at all for a
+        check it has never heard of: the statement is collected, written,
+        parsed, and placed, and then vanishes at render time, which surfaces
+        as a policy missing a statement rather than as a failure (INV-13).
+        """
+        monkeypatch.setitem(
+            _CHECK_REGISTRY,
+            "deny_kms_unrendered",
+            CheckDefinition(
+                check_class=DenyEc2PublicIpCheck,
+                check_name="deny_kms_unrendered",
+                check_type="rcps",
+                terraform_section=TerraformSection.KMS,
+                allowlist=Allowlist(
+                    "unique_third_party_accounts",
+                    "kms_unrendered_account_ids_allowlist",
+                ),
+            ),
+        )
+        recommendation = RCPPlacementRecommendations(
+            check_name="deny_kms_unrendered",
+            recommended_level="root",
+            target_ou_id=None,
+            affected_accounts=["111111111111"],
+            third_party_account_ids=["333333333333"],
+            reasoning="test",
+        )
+
+        result = _build_rcp_terraform_module(
+            module_name="rcps_root",
+            target_id_reference="local.root_ou_id",
+            recommendations=[recommendation],
+            comment="Organization Root",
+            organization_hierarchy=make_org_empty(),
+        )
+
+        assert 'kms_unrendered_account_ids_allowlist = [\n    "333333333333",\n  ]' in result
+        # Checks are ordered by name within a section, so the new KMS check
+        # renders directly under the KMS check already registered.
+        assert """  deny_kms_third_party_access = false
+  deny_kms_unrendered = true
+  kms_unrendered_account_ids_allowlist = [
+    "333333333333",
+  ]""" in result
 
     def test_build_module_with_third_party_accounts(self) -> None:
         """Should generate module with third-party account allowlist."""
@@ -1813,7 +1936,8 @@ class TestBuildRcpTerraformModule:
             module_name="rcps_test_account",
             target_id_reference="local.test_account_account_id",
             recommendations=[rec],
-            comment="Test Account"
+            comment="Test Account",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert 'module "rcps_test_account"' in result
@@ -1822,6 +1946,42 @@ class TestBuildRcpTerraformModule:
         assert '"111111111111"' in result
         assert '"222222222222"' in result
         assert "deny_sts_third_party_assumerole = true" in result
+
+    def test_every_registered_rcp_check_is_rendered(self) -> None:
+        """
+        Every registered RCP check must reach the module call.
+
+        A check the renderer never emits parameters for is collected,
+        written, parsed, and placed, and then dropped: the module renders,
+        Terraform validates, and the operator gets a policy quietly missing
+        one statement (INV-13).
+        """
+        recommendations = [
+            RCPPlacementRecommendations(
+                check_name=check_name,
+                recommended_level="root",
+                target_ou_id=None,
+                affected_accounts=["111111111111"],
+                third_party_account_ids=["333333333333"],
+                reasoning="test",
+            )
+            for check_name in get_check_names("rcps")
+        ]
+
+        result = _build_rcp_terraform_module(
+            module_name="rcps_root",
+            target_id_reference="local.root_ou_id",
+            recommendations=recommendations,
+            comment="Organization Root",
+            organization_hierarchy=make_org_empty(),
+        )
+
+        for check_name in get_check_names("rcps"):
+            # The value, not just the parameter: a check dropped between
+            # placement and rendering and one rendered `false` are the same
+            # missing statement in the deployed policy.
+            assert f"{check_name} = true" in result
+            assert f"{get_allowlist(check_name).terraform_variable} = [" in result
 
     def test_build_module_includes_comment(self) -> None:
         """Should include comment in generated content."""
@@ -1837,7 +1997,8 @@ class TestBuildRcpTerraformModule:
             module_name="rcps_root",
             target_id_reference="local.root_ou_id",
             recommendations=[rec],
-            comment="Organization Root"
+            comment="Organization Root",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert "# Auto-generated RCP Terraform configuration for Organization Root" in result
@@ -1863,7 +2024,8 @@ class TestBuildRcpTerraformModule:
             module_name="rcps_test",
             target_id_reference="local.test_ou_id",
             recommendations=[assume_role_rec],
-            comment="Test OU"
+            comment="Test OU",
+            organization_hierarchy=make_org_empty(),
         )
 
         expected = '''# Code generated by Headroom. DO NOT EDIT.
@@ -1915,7 +2077,8 @@ module "rcps_test" {
             module_name="rcps_test_account",
             target_id_reference="local.test_account_account_id",
             recommendations=[s3_rec],
-            comment="Test Account"
+            comment="Test Account",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert 'module "rcps_test_account"' in result
@@ -1930,7 +2093,8 @@ module "rcps_test" {
             module_name="rcps_test",
             target_id_reference="local.test_id",
             recommendations=[],
-            comment="Test"
+            comment="Test",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert 'module "rcps_test"' in result
@@ -1951,7 +2115,8 @@ module "rcps_test" {
             module_name="rcps_test",
             target_id_reference="local.test_id",
             recommendations=[ecr_rec],
-            comment="Test"
+            comment="Test",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert "ecr_third_party_access_account_ids_allowlist" in result
@@ -1974,7 +2139,8 @@ module "rcps_test" {
             module_name="rcps_test",
             target_id_reference="local.test_id",
             recommendations=[kms_rec],
-            comment="Test"
+            comment="Test",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert "kms_third_party_access_account_ids_allowlist" in result
@@ -1996,7 +2162,8 @@ module "rcps_test" {
             module_name="rcps_test",
             target_id_reference="local.test_id",
             recommendations=[secrets_manager_rec],
-            comment="Test"
+            comment="Test",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert "secrets_manager_third_party_account_ids_allowlist" in result
@@ -2025,7 +2192,8 @@ module "rcps_test" {
             module_name="rcps_test",
             target_id_reference="local.test_id",
             recommendations=[ecr_rec, iam_rec],
-            comment="Test"
+            comment="Test",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert "ecr_third_party_access_account_ids_allowlist" in result
@@ -2053,7 +2221,11 @@ module "rcps_test" {
         )
 
         rendered = _build_rcp_terraform_module(
-            "rcps_root", "local.root_ou_id", [recommendation], "Organization Root"
+            "rcps_root",
+            "local.root_ou_id",
+            [recommendation],
+            "Organization Root",
+            make_org_empty(),
         )
 
         assert "deny_service_confused_deputy" in rendered
@@ -2255,7 +2427,9 @@ class TestRenderRootRcpTerraform:
         """Should render Terraform content under root_rcps.tf."""
         output_path = Path("/nonexistent")
 
-        filepath, content = _render_root_rcp_terraform([sample_root_rec], output_path)
+        filepath, content = _render_root_rcp_terraform(
+            [sample_root_rec], make_org_empty(), output_path
+        )
 
         assert filepath == output_path / "root_rcps.tf"
         assert "rcps_root" in content
@@ -2278,7 +2452,8 @@ class TestRenderRootRcpTerraform:
             module_name="test_module",
             target_id_reference="local.account_id",
             recommendations=[sqs_rec],
-            comment="Test Account"
+            comment="Test Account",
+            organization_hierarchy=make_org_empty(),
         )
 
         assert "test_module" in terraform
@@ -2373,9 +2548,9 @@ class TestEveryRcpCheckReachesTerraform:
 
         content = rendered[Path(temp_output_dir) / "root_rcps.tf"]
 
-        for tf_vars in RCP_TERRAFORM_VARIABLES.values():
-            assert f"{tf_vars.enable_var} = true" in content
-            assert tf_vars.allowlist_var in content
+        for check_name in get_check_names("rcps"):
+            assert f"{check_name} = true" in content
+            assert get_allowlist(check_name).terraform_variable in content
         assert '"999999999999"' in content
 
     def test_parse_returns_one_result_per_registered_check(

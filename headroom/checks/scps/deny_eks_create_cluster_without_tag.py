@@ -9,13 +9,13 @@ from ...aws.eks import (
     get_eks_cluster_tag_analysis,
 )
 from ...constants import DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
 
-@register_check("scps", DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG)
+@register_check("scps", DENY_EKS_CREATE_CLUSTER_WITHOUT_TAG, terraform_section=TerraformSection.EKS)
 class DenyEksCreateClusterWithoutTagCheck(BaseCheck[DenyEksCreateClusterWithoutTag]):
     """
     Check for EKS clusters without required PavedRoad tag.

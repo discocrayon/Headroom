@@ -12,12 +12,20 @@ from boto3.session import Session
 
 from ...aws.kms import KMSKeyPolicyAnalysis, analyze_kms_key_policies
 from ...constants import DENY_KMS_THIRD_PARTY_ACCESS
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ..base import BaseCheck, CategorizedCheckResult
-from ..registry import register_check
+from ..registry import Allowlist, register_check
 
 
-@register_check("rcps", DENY_KMS_THIRD_PARTY_ACCESS)
+@register_check(
+    "rcps",
+    DENY_KMS_THIRD_PARTY_ACCESS,
+    terraform_section=TerraformSection.KMS,
+    allowlist=Allowlist(
+        summary_key="unique_third_party_accounts",
+        terraform_variable="kms_third_party_access_account_ids_allowlist",
+    ),
+)
 class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
     """
     Check for KMS keys that allow third-party account access.
