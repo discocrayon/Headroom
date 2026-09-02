@@ -12,6 +12,22 @@ from headroom.parse_results import parse_scp_result_files
 from headroom.types import AccountOrgPlacement, OrganizationHierarchy
 
 
+def make_single_account_hierarchy() -> OrganizationHierarchy:
+    """Build a one-account hierarchy naming 111111111111 as test-account."""
+    return OrganizationHierarchy(
+        root_id="r-1111",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="test-account",
+                parent_ou_id=None,
+                ou_path=["Root"],
+            )
+        },
+    )
+
+
 class TestCheckDenyIamUserCreation:
     """Test deny_iam_user_creation check."""
 
@@ -162,21 +178,51 @@ class TestWhatThisCheckWritesCanBeParsedBack:
             mock_get_users.return_value = [user]
             check.execute(MagicMock(spec=Session))
 
-        hierarchy = OrganizationHierarchy(
-            root_id="r-1111",
-            organizational_units={},
-            accounts={
-                "111111111111": AccountOrgPlacement(
-                    account_id="111111111111",
-                    account_name="test-account",
-                    parent_ou_id=None,
-                    ou_path=["Root"],
-                )
-            },
-        )
+        hierarchy = make_single_account_hierarchy()
         parsed = parse_scp_result_files(str(tmp_path), hierarchy)
 
         assert [result.violations for result in parsed] == [0]
-        assert [result.iam_user_arns for result in parsed] == [
+        assert [result.allowlist_values for result in parsed] == [
+            ["arn:aws:iam::111111111111:user/breakglass"]
+        ]
+
+    def test_a_redacted_result_parses_back_to_the_real_arn(self, tmp_path: Path) -> None:
+        """
+        The writer's redaction and the reader's restoration are one round trip.
+
+        `write_check_results` scrubs the account ID from every ARN when
+        `exclude_account_ids` is set; `_read_declared_allowlist` has to
+        restore exactly that account ID, or the allowlist names a
+        placeholder rather than the account that actually observed the user.
+        """
+        check = DenyIamUserCreationCheck(
+            check_name="deny_iam_user_creation",
+            account_name="test-account",
+            account_id="111111111111",
+            results_dir=str(tmp_path),
+            exclude_account_ids=True,
+        )
+        user = IamUserAnalysis(
+            user_name="breakglass",
+            user_arn="arn:aws:iam::111111111111:user/breakglass",
+            path="/",
+        )
+
+        with patch(
+            "headroom.checks.scps.deny_iam_user_creation.get_iam_users_analysis"
+        ) as mock_get_users:
+            mock_get_users.return_value = [user]
+            check.execute(MagicMock(spec=Session))
+
+        written_files = list((tmp_path / "scps" / "deny_iam_user_creation").glob("*.json"))
+        assert len(written_files) == 1
+        written = written_files[0].read_text()
+        assert "arn:aws:iam::REDACTED:user/breakglass" in written
+        assert "111111111111" not in written
+
+        hierarchy = make_single_account_hierarchy()
+        parsed = parse_scp_result_files(str(tmp_path), hierarchy)
+
+        assert [result.allowlist_values for result in parsed] == [
             ["arn:aws:iam::111111111111:user/breakglass"]
         ]

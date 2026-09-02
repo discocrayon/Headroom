@@ -75,6 +75,11 @@ DENY_SQS_THIRD_PARTY_ACCESS = "deny_sqs_third_party_access"
 # STS
 DENY_STS_THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 
+# The token `_redact_account_ids_from_arns` writes into an ARN's account
+# field when `exclude_account_ids` is set, and `_read_declared_allowlist`
+# restores the owning account ID over.
+REDACTED_ACCOUNT_ID = "REDACTED"
+
 # Terraform file generation constants
 ORG_INFO_FILENAME = "grab_org_info.tf"
 

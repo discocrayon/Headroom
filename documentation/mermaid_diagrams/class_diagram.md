@@ -1,10 +1,10 @@
 # Class Model Diagram
 
 Field lists are read from the dataclasses themselves. Most of these live in
-`headroom/types.py`; three do not, and the exceptions are marked in the diagram:
-`AccountInfo` is defined in `headroom/analysis.py`, `CategorizedCheckResult` in
-`headroom/checks/base.py`, and `PlacementCandidate` in
-`headroom/placement/hierarchy.py`.
+`headroom/types.py`; four do not, and the exceptions are marked in the diagram:
+`CategorizedCheckResult` is defined in `headroom/checks/base.py`,
+`CheckDefinition` and `Allowlist` in `headroom/checks/registry.py`, and
+`PlacementCandidate` in `headroom/placement/hierarchy.py`.
 
 ```mermaid
 classDiagram
@@ -27,7 +27,6 @@ classDiagram
   }
 
   class AccountInfo {
-    <<headroom.analysis>>
     +str account_id
     +str environment
     +str name
@@ -77,8 +76,7 @@ classDiagram
     +int compliant
     +float compliance_percentage
     +int? total_instances
-    +List~str~? iam_user_arns
-    +List~str~? ami_owners
+    +List~str~? allowlist_values
   }
 
   class RCPCheckResult {
@@ -96,8 +94,7 @@ classDiagram
     +List~str~ affected_accounts
     +float compliance_percentage
     +str reasoning
-    +List~str~? allowed_iam_user_arns
-    +List~str~? ec2_allowed_ami_owners
+    +List~str~? allowlist_values
   }
 
   class RCPPlacementRecommendations {
@@ -139,6 +136,23 @@ classDiagram
     +Dict summary
   }
 
+  class CheckDefinition {
+    <<headroom.checks.registry>>
+    +Type~BaseCheck~ check_class
+    +str check_name
+    +str check_type
+    +TerraformSection terraform_section
+    +Allowlist? allowlist
+  }
+
+  class Allowlist {
+    <<headroom.checks.registry>>
+    +str summary_key
+    +str terraform_variable
+    +bool restores_account_ids
+    +str? empty_allowlist_comment
+  }
+
   class PlacementCandidate {
     <<headroom.placement.hierarchy>>
     +str level
@@ -164,6 +178,8 @@ classDiagram
   CheckResult <|-- SCPCheckResult
   CheckResult <|-- RCPCheckResult
   BaseCheck ..> CategorizedCheckResult
+  CheckDefinition --> Allowlist
+  CheckDefinition ..> BaseCheck
   HierarchyPlacementAnalyzer ..> PlacementCandidate
   HierarchyPlacementAnalyzer --> OrganizationHierarchy
 ```

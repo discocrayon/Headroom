@@ -436,6 +436,19 @@ A configuration error is caught earlier, and separately, in
 `setup_configuration`: a `ValueError` or `TypeError` raised by `merge_configs`
 prints a labeled error and exits before the `try` is ever entered.
 
+A malformed check registration fails earlier still, and outside every handler.
+`_validate_registration` in `headroom/checks/registry.py` raises `ValueError`
+when the `@register_check` decorator runs, which is when `headroom.checks` is
+imported — before `main` is entered, before any configuration is read, and
+outside the three `_failures_reported` scopes — so the run aborts on an
+unlabelled traceback naming the check and the rule it broke. That is the right
+shape for this failure, not a gap to close in `main`: it is a developer's error
+in the source tree rather than an operator's in the configuration or the
+organization, no run on a tree that imports can meet it, and a handler labeling
+it `Invalid configuration` would send the operator to the wrong file.
+[`check-framework.md`](check-framework.md#discovery) owns the rules the
+validator applies.
+
 ## Required permissions
 
 The `Headroom` role needs read-only access to the services its checks call; each

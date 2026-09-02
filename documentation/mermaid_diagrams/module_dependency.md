@@ -48,6 +48,7 @@ graph TD
 
   headroom.checks.registry --> headroom.checks.base
   headroom.checks.registry --> headroom.constants
+  headroom.checks.registry --> headroom.enums
 
   headroom.checks.base --> headroom.write_results
   headroom.checks.base --> headroom.output
@@ -71,6 +72,7 @@ graph TD
 
   headroom.parse_results --> headroom.config
   headroom.parse_results --> headroom.aws.organization
+  headroom.parse_results --> headroom.checks.registry
   headroom.parse_results --> headroom.placement
   headroom.parse_results --> headroom.types
   headroom.parse_results --> headroom.constants
@@ -100,7 +102,9 @@ graph TD
   headroom.terraform.apply --> headroom.constants
 
   headroom.terraform.generate_scps --> headroom.terraform.models
+  headroom.terraform.generate_scps --> headroom.terraform.parameters
   headroom.terraform.generate_scps --> headroom.terraform.utils
+  headroom.terraform.generate_scps --> headroom.checks.registry
   headroom.terraform.generate_scps --> headroom.types
   headroom.terraform.generate_scps --> headroom.enums
 
@@ -109,11 +113,18 @@ graph TD
   headroom.terraform.generate_rcps --> headroom.placement
   headroom.terraform.generate_rcps --> headroom.placement.hierarchy
   headroom.terraform.generate_rcps --> headroom.terraform.models
+  headroom.terraform.generate_rcps --> headroom.terraform.parameters
   headroom.terraform.generate_rcps --> headroom.terraform.utils
   headroom.terraform.generate_rcps --> headroom.write_results
   headroom.terraform.generate_rcps --> headroom.types
-  headroom.terraform.generate_rcps --> headroom.constants
   headroom.terraform.generate_rcps --> headroom.utils
+
+  headroom.terraform.parameters --> headroom.terraform.models
+  headroom.terraform.parameters --> headroom.terraform.utils
+  headroom.terraform.parameters --> headroom.checks.registry
+  headroom.terraform.parameters --> headroom.enums
+  headroom.terraform.parameters --> headroom.types
+  headroom.terraform.parameters --> headroom.utils
 
   headroom.terraform.generate_org_info --> headroom.terraform.utils
   headroom.terraform.generate_org_info --> headroom.types

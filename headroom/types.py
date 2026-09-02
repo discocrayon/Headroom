@@ -141,12 +141,11 @@ class SCPCheckResult(CheckResult):
     organizational policies. They track violations, exemptions, and
     compliant resources.
 
-    Checks that inform an allowlist carry the values they observed:
-    `iam_user_arns` for deny_iam_user_creation, `ami_owners` for
-    deny_ec2_ami_owner. A check whose allowlist variable exists in the
-    Terraform module but has no field here cannot populate it, and the
-    module is enabled with an empty list - which for a Deny statement
-    denies everything rather than nothing.
+    `allowlist_values` holds the values a check's allowlist observed, read
+    from the summary key its `Allowlist` declares. None for a check whose
+    statement takes no allowlist; an empty list for one that observed
+    nothing, which is a fact about the account rather than a missing
+    observation (INV-01, INV-07).
 
     TODO: As more SCP checks are added, consider moving check-specific
     fields (like total_instances) to per-check subclasses if the fields
@@ -157,21 +156,25 @@ class SCPCheckResult(CheckResult):
     compliant: int
     compliance_percentage: float
     total_instances: Optional[int] = None
-    iam_user_arns: Optional[List[str]] = None
-    ami_owners: Optional[List[str]] = None
+    allowlist_values: Optional[List[str]] = None
 
 
 @dataclass
 class SCPPlacementRecommendations:
-    """SCP placement recommendation for a specific check."""
+    """
+    SCP placement recommendation for a specific check.
+
+    `allowlist_values` is the sorted union of `SCPCheckResult.allowlist_values`
+    over the accounts this recommendation covers. None for a check with no
+    allowlist; an empty list when the covered accounts observed nothing.
+    """
     check_name: str
     recommended_level: str  # "root", "ou", or "account"
     target_ou_id: Optional[str]
     affected_accounts: List[str]
     compliance_percentage: float
     reasoning: str
-    allowed_iam_user_arns: Optional[List[str]] = None
-    ec2_allowed_ami_owners: Optional[List[str]] = None
+    allowlist_values: Optional[List[str]] = None
 
 
 @dataclass

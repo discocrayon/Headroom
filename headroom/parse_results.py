@@ -16,10 +16,11 @@ from .types import (
     SCPPlacementRecommendations, RCPPlacementRecommendations
 )
 from .aws.organization import lookup_account_id_by_name
-from .constants import DENY_EC2_AMI_OWNER
+from .checks.registry import Allowlist, CheckDefinition, get_check_definition, get_check_names
 from .placement import HierarchyPlacementAnalyzer
 from .output import OutputHandler
 from .utils import delete_and_rerun_remedy
+from .write_results import restore_account_id_in_arns
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -88,47 +89,101 @@ def _extract_account_id_from_result(
     )
 
 
-def _extract_ami_owners(
+def _read_declared_allowlist(
     summary: Dict[str, Any],
     check_name: str,
+    allowlist: Allowlist,
+    account_id: str,
     result_file: Path
-) -> Optional[List[str]]:
+) -> List[str]:
     """
-    Read the AMI owners a deny_ec2_ami_owner result observed.
+    Read the values one result observed under the allowlist it declares.
 
-    A file with no `unique_ami_owners` key at all predates AMI owner
-    collection. Once parsed it is indistinguishable from an account that ran
-    no instances - both produce an empty allowlist - and the two need opposite
-    handling: one is a stale artifact to re-run, the other is a fact about the
-    account that leaves the policy off. The distinction only exists while the
-    file is in hand, so it is drawn here.
+    The one rule both result readers apply, SCP and RCP alike: the values
+    come from the summary key the check's own definition names, the key is
+    required and must hold a list, and a definition saying its values carry
+    the owning account's ID has `REDACTED` replaced by that ID in each ARN's
+    account field, undoing what `exclude_account_ids` did on write. One rule
+    rather than two is what keeps the two policy types from drifting on which
+    absent key is fatal, and an absent key is fatal for both: the values are
+    what the allowlist is built from, so a file that never recorded them
+    cannot be told from an account that had none to record (INV-01). A key
+    holding anything but a list is fatal for the same reason: `null` is
+    neither an observation nor an absence, and carrying it forward either
+    crashed on the restore or was dropped by the placement union as though
+    the check declared no allowlist.
 
     Args:
         summary: The result file's summary block
         check_name: Check the result belongs to, taken from the file itself
+        allowlist: The allowlist that check's statement is scoped by
+        account_id: Account the result belongs to
         result_file: Path to the file, used in the error
 
     Returns:
-        The observed owners for deny_ec2_ami_owner, else None
+        The values the account observed, empty when it observed none
 
     Raises:
-        RuntimeError: If a deny_ec2_ami_owner result predates AMI owner
-            collection
+        RuntimeError: If the file's summary has no such key, or holds
+            anything but a list under it
     """
-    if check_name != DENY_EC2_AMI_OWNER:
-        return None
-
-    if "unique_ami_owners" not in summary:
+    if allowlist.summary_key not in summary:
         raise RuntimeError(
-            f"{result_file} predates AMI owner collection: its summary has no "
-            f"unique_ami_owners. Placement cannot tell that apart from an "
-            f"account running no instances, and would build the allowlist from "
-            f"whatever the other accounts happened to observe. Re-run the "
-            f"{DENY_EC2_AMI_OWNER} check for this account."
+            f"{result_file} has no {allowlist.summary_key} in its summary. "
+            f"{check_name} populates {allowlist.terraform_variable} "
+            f"from that key, and an absent key cannot be told apart "
+            f"from an account that observed nothing: one is a stale result to "
+            f"re-run, the other is an observation the allowlist must carry. "
+            f"{delete_and_rerun_remedy(result_file, check_name)}"
         )
 
-    owners: Optional[List[str]] = summary["unique_ami_owners"]
-    return owners
+    values = summary[allowlist.summary_key]
+    if not isinstance(values, list):
+        raise RuntimeError(
+            f"{result_file} has {allowlist.summary_key} = {values!r} in its summary, "
+            f"which is not a list. {check_name} populates {allowlist.terraform_variable} "
+            f"from that key, and a value that is not a list is neither an observation "
+            f"nor an absent key: an account that observed nothing writes []. "
+            f"{delete_and_rerun_remedy(result_file, check_name)}"
+        )
+    if not allowlist.restores_account_ids:
+        return values
+
+    return [restore_account_id_in_arns(value, account_id) for value in values]
+
+
+def _read_allowlist_values(
+    summary: Dict[str, Any],
+    definition: CheckDefinition,
+    account_id: str,
+    result_file: Path
+) -> Optional[List[str]]:
+    """
+    Read the allowlist values one result observed, if its check declares one.
+
+    Args:
+        summary: The result file's summary block
+        definition: Registry definition of the check the file belongs to
+        account_id: Account the result belongs to
+        result_file: Path to the file, used in the error
+
+    Returns:
+        The observed values, or None when the check declares no allowlist
+
+    Raises:
+        RuntimeError: If the check declares an allowlist and the file's
+            summary has no such key
+    """
+    if definition.allowlist is None:
+        return None
+
+    return _read_declared_allowlist(
+        summary,
+        definition.check_name,
+        definition.allowlist,
+        account_id,
+        result_file
+    )
 
 
 def _parse_single_scp_result_file(
@@ -148,7 +203,8 @@ def _parse_single_scp_result_file(
         SCPCheckResult object with compliance data
 
     Raises:
-        RuntimeError: If JSON parsing fails or required fields are missing
+        RuntimeError: If JSON parsing fails, the file names a check that is
+            not a registered SCP check, or required fields are missing
     """
     data = _load_result_file_json(result_file)
     summary = data.get("summary", {})
@@ -159,12 +215,22 @@ def _parse_single_scp_result_file(
         result_file
     )
 
-    # Un-redact IAM user ARNs if they were redacted
-    iam_user_arns = summary.get("users")
-    if iam_user_arns and account_id:
-        iam_user_arns = [arn.replace("REDACTED", account_id) for arn in iam_user_arns]
-
     resolved_check_name = summary.get("check", check_name)
+    # Resolved before any key is required of the file: a stale directory is
+    # stale throughout, and the registry's own error names neither the file
+    # nor a remedy. Deleting the directory would also be the wrong remedy for
+    # a file misfiled under a live check's directory, so the file comes first.
+    if resolved_check_name not in get_check_names("scps"):
+        raise RuntimeError(
+            f"{result_file} names check {resolved_check_name!r}, which is not a "
+            f"registered SCP check. The results directory outlives the code that "
+            f"wrote it, so a renamed or removed check leaves its files behind, and "
+            f"nothing can say which keys those files must carry or which policy "
+            f"their placement would feed. Delete the file, and the rest of "
+            f"{result_file.parent} when it holds only that check's results, or "
+            f"register a check under that name."
+        )
+    definition = get_check_definition(resolved_check_name)
 
     # Placement clears an account when this count is zero, so defaulting it
     # would answer an unanswerable question in the safest possible direction
@@ -180,6 +246,13 @@ def _parse_single_scp_result_file(
             f"the run. {delete_and_rerun_remedy(result_file, resolved_check_name)}"
         )
 
+    allowlist_values = _read_allowlist_values(
+        summary,
+        definition,
+        account_id,
+        result_file
+    )
+
     return SCPCheckResult(
         account_id=account_id,
         account_name=summary.get("account_name", ""),
@@ -189,8 +262,7 @@ def _parse_single_scp_result_file(
         compliant=summary.get("compliant", 0),
         total_instances=summary.get("total_instances"),
         compliance_percentage=summary.get("compliance_percentage", 0.0),
-        iam_user_arns=iam_user_arns,
-        ami_owners=_extract_ami_owners(summary, resolved_check_name, result_file)
+        allowlist_values=allowlist_values
     )
 
 
@@ -298,49 +370,34 @@ def _create_no_deployment_recommendation(
     )
 
 
-def _build_iam_user_arns_for_recommendation(
-    check_name: str,
+def _union_allowlist_values(
     check_results: List[SCPCheckResult],
     affected_accounts: List[str]
-) -> List[str]:
+) -> Optional[List[str]]:
     """
-    Build list of allowed IAM user ARNs for deny_iam_user_creation check.
+    Union the allowlist values the accounts a recommendation covers observed.
 
-    Returns a sorted list of unique IAM user ARNs from all affected accounts.
-    Returns empty list if check is not deny_iam_user_creation or no ARNs found.
+    An empty union and no union at all are distinct: covered accounts that
+    observed nothing leave the check's policy off (INV-06), while a check
+    with no allowlist renders its statement unconditionally.
+
+    Args:
+        check_results: Results for the check being placed
+        affected_accounts: Accounts the recommendation covers
+
+    Returns:
+        The sorted union over the covered accounts, or None when no covered
+        account carried an allowlist
     """
-    if check_name != "deny_iam_user_creation":
-        return []
+    observed = [
+        result.allowlist_values
+        for result in check_results
+        if result.account_id in affected_accounts and result.allowlist_values is not None
+    ]
+    if not observed:
+        return None
 
-    iam_user_arns_set = set()
-    for result in check_results:
-        if result.account_id in affected_accounts and result.iam_user_arns:
-            iam_user_arns_set.update(result.iam_user_arns)
-
-    return sorted(list(iam_user_arns_set)) if iam_user_arns_set else []
-
-
-def _build_ami_owners_for_recommendation(
-    check_name: str,
-    check_results: List[SCPCheckResult],
-    affected_accounts: List[str]
-) -> List[str]:
-    """
-    Build list of allowed AMI owners for the deny_ec2_ami_owner check.
-
-    Returns a sorted list of the unique AMI owners observed across all
-    affected accounts. Returns empty list if check is not deny_ec2_ami_owner
-    or no owners were observed.
-    """
-    if check_name != DENY_EC2_AMI_OWNER:
-        return []
-
-    ami_owners_set = set()
-    for result in check_results:
-        if result.account_id in affected_accounts and result.ami_owners:
-            ami_owners_set.update(result.ami_owners)
-
-    return sorted(list(ami_owners_set)) if ami_owners_set else []
+    return sorted({value for values in observed for value in values})
 
 
 def _build_root_recommendation(
@@ -352,36 +409,16 @@ def _build_root_recommendation(
     Build root-level placement recommendation.
 
     Creates recommendation for deploying SCP at organization root level.
-    Includes allowed IAM user ARNs if applicable.
     """
-    allowed_iam_user_arns = _build_iam_user_arns_for_recommendation(
-        check_name,
-        check_results,
-        affected_accounts
-    )
-
-    recommendation = SCPPlacementRecommendations(
+    return SCPPlacementRecommendations(
         check_name=check_name,
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
-        reasoning="All accounts in organization have zero violations - safe to deploy at root level"
+        reasoning="All accounts in organization have zero violations - safe to deploy at root level",
+        allowlist_values=_union_allowlist_values(check_results, affected_accounts)
     )
-
-    if allowed_iam_user_arns:
-        recommendation.allowed_iam_user_arns = allowed_iam_user_arns
-
-    ec2_allowed_ami_owners = _build_ami_owners_for_recommendation(
-        check_name,
-        check_results,
-        affected_accounts
-    )
-
-    if ec2_allowed_ami_owners:
-        recommendation.ec2_allowed_ami_owners = ec2_allowed_ami_owners
-
-    return recommendation
 
 
 def _build_ou_recommendation(
@@ -395,7 +432,7 @@ def _build_ou_recommendation(
     Build OU-level placement recommendation.
 
     Creates recommendation for deploying SCP at organizational unit level.
-    Includes OU name in reasoning and allowed IAM user ARNs if applicable.
+    Includes OU name in reasoning.
 
     Raises:
         RuntimeError: If the target OU is not present in the hierarchy
@@ -405,18 +442,6 @@ def _build_ou_recommendation(
         raise RuntimeError(f"OU {target_ou_id} not found in organization hierarchy")
 
     ou_name = ou_info.name
-
-    allowed_iam_user_arns = _build_iam_user_arns_for_recommendation(
-        check_name,
-        check_results,
-        affected_accounts
-    )
-
-    ec2_allowed_ami_owners = _build_ami_owners_for_recommendation(
-        check_name,
-        check_results,
-        affected_accounts
-    )
 
     return SCPPlacementRecommendations(
         check_name=check_name,
@@ -429,8 +454,7 @@ def _build_ou_recommendation(
             "including those in its child OUs, have zero violations - safe to "
             "deploy at OU level"
         ),
-        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None,
-        ec2_allowed_ami_owners=ec2_allowed_ami_owners if ec2_allowed_ami_owners else None
+        allowlist_values=_union_allowlist_values(check_results, affected_accounts)
     )
 
 
@@ -454,18 +478,6 @@ def _build_account_recommendation(
     """
     affected_accounts = [r.account_id for r in safe_check_results]
 
-    allowed_iam_user_arns = _build_iam_user_arns_for_recommendation(
-        check_name,
-        safe_check_results,
-        affected_accounts
-    )
-
-    ec2_allowed_ami_owners = _build_ami_owners_for_recommendation(
-        check_name,
-        safe_check_results,
-        affected_accounts
-    )
-
     return SCPPlacementRecommendations(
         check_name=check_name,
         recommended_level="account",
@@ -473,8 +485,7 @@ def _build_account_recommendation(
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
         reasoning=f"Only {len(safe_check_results)} out of {total_results} accounts have zero violations - deploy at individual account level",
-        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns else None,
-        ec2_allowed_ami_owners=ec2_allowed_ami_owners if ec2_allowed_ami_owners else None
+        allowlist_values=_union_allowlist_values(safe_check_results, affected_accounts)
     )
 
 

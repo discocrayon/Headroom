@@ -9,6 +9,7 @@ applies_to:
 depends_on:
   - INV-02
   - INV-09
+  - INV-13
   - INV-16
 verification:
   - tests/test_checks_deny_eks_create_cluster_without_tag.py
@@ -139,7 +140,7 @@ Standard SCP placement at zero violations. Terraform variable
 
 ## Referenced invariants
 
-INV-02, INV-09, INV-16.
+INV-02, INV-09, INV-13, INV-16.
 
 ## Implementation
 

@@ -11,13 +11,21 @@ from boto3.session import Session
 
 from ...aws.iam.roles import TrustPolicyAnalysis, analyze_iam_roles_trust_policies
 from ...constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
-from ..registry import register_check
+from ..registry import Allowlist, register_check
 
 
-@register_check("rcps", DENY_STS_THIRD_PARTY_ASSUMEROLE)
+@register_check(
+    "rcps",
+    DENY_STS_THIRD_PARTY_ASSUMEROLE,
+    terraform_section=TerraformSection.STS,
+    allowlist=Allowlist(
+        summary_key="unique_third_party_accounts",
+        terraform_variable="sts_third_party_assumerole_account_ids_allowlist",
+    ),
+)
 class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
     """
     Check for IAM roles that allow third-party account AssumeRole access.

@@ -8,6 +8,7 @@ applies_to:
 depends_on:
   - INV-02
   - INV-07
+  - INV-13
 verification:
   - tests/test_checks_deny_iam_saml_provider_not_aws_sso.py
   - tests/test_aws_iam.py
@@ -144,7 +145,7 @@ repeats the omission stops the run instead of silently clearing every account.
 
 ## Referenced invariants
 
-INV-02, INV-07 (see limitation 4).
+INV-02, INV-07 (see limitation 4), INV-13.
 
 ## Implementation
 

@@ -1,5 +1,5 @@
 """
-The committed Terraform under test_environment/ must still plan.
+The generated Terraform and the module it calls must agree in both directions.
 
 test_environment/scps/ and rcps/ are committed as worked examples of what a
 run produces. Nothing compared them to the module they call, so they drifted:
@@ -8,12 +8,21 @@ three committed calls - last written before those variables existed - went on
 omitting them. A module call missing a variable with no default is a call
 `terraform plan` refuses, so the committed example could not be planned at
 all.
+
+The other direction is the registry's: every check name and allowlist variable
+a definition declares is an argument the generator passes, and a module that
+does not declare it is a module `terraform plan` refuses with an unsupported
+argument - after every test has passed, at the operator's desk.
 """
 import re
 from pathlib import Path
-from typing import Set
+from typing import List, Set
 
 import pytest
+
+from headroom.checks.registry import _CHECK_REGISTRY, Allowlist, CheckDefinition, get_check_definitions
+from headroom.checks.scps.deny_ec2_public_ip import DenyEc2PublicIpCheck
+from headroom.enums import TerraformSection
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 TEST_ENVIRONMENT = REPOSITORY_ROOT / "test_environment"
@@ -95,3 +104,81 @@ def test_every_committed_module_call_passes_every_required_variable(policy_type:
     }
 
     assert missing == {}
+
+
+def declared_module_variables(variables_tf: Path) -> Set[str]:
+    """
+    Return every variable a module declares, with or without a default.
+
+    Args:
+        variables_tf: A module's variables.tf
+
+    Returns:
+        The names the module accepts as arguments
+    """
+    return set(re.findall(r'^variable\s+"([^"]+)"\s*\{', variables_tf.read_text(), re.MULTILINE))
+
+
+def undeclared_module_variables(policy_type: str) -> List[str]:
+    """
+    Report the registry's names for one policy type that its module does not declare.
+
+    Every registered check name is passed as the module's boolean, and every
+    allowlist's terraform_variable alongside it when the check is enabled, so
+    each must be a variable the module declares. In render order, so the
+    failure reads the way the module would.
+
+    Args:
+        policy_type: scps or rcps
+
+    Returns:
+        Check names and allowlist variables the module does not declare
+    """
+    declared = declared_module_variables(
+        TEST_ENVIRONMENT / "modules" / policy_type / "variables.tf"
+    )
+    passed: List[str] = []
+    for definition in get_check_definitions(policy_type):
+        passed.append(definition.check_name)
+        if definition.allowlist is not None:
+            passed.append(definition.allowlist.terraform_variable)
+    return [name for name in passed if name not in declared]
+
+
+@pytest.mark.parametrize("policy_type", ["scps", "rcps"])
+def test_every_registered_check_is_declared_by_its_module(policy_type: str) -> None:
+    """
+    A check the module does not declare is an argument terraform plan refuses.
+
+    Registering a check is meant to be the whole of wiring it into the
+    pipeline (INV-13), and the render guards prove the name reaches the
+    module call. This is the step after: the module has to accept it. A
+    check registered without its variable block passed every test and failed
+    at the operator's terraform plan with an unsupported argument.
+    """
+    assert undeclared_module_variables(policy_type) == []
+
+
+def test_the_declaration_guard_names_an_undeclared_check_and_its_allowlist(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The guard reports both names a definition would pass, in render order.
+
+    A registered check whose variable block was never written is the case
+    the guard exists for, and it cannot be reproduced against the committed
+    module without breaking it, so a definition is registered here instead.
+    """
+    monkeypatch.setitem(
+        _CHECK_REGISTRY,
+        "deny_ec2_undeclared",
+        CheckDefinition(
+            check_class=DenyEc2PublicIpCheck,
+            check_name="deny_ec2_undeclared",
+            check_type="scps",
+            terraform_section=TerraformSection.EC2,
+            allowlist=Allowlist("unique_widgets", "ec2_allowed_widgets"),
+        ),
+    )
+
+    assert undeclared_module_variables("scps") == ["deny_ec2_undeclared", "ec2_allowed_widgets"]

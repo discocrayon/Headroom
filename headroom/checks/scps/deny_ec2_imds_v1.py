@@ -6,13 +6,13 @@ from boto3.session import Session
 
 from ...aws.ec2 import DenyEc2ImdsV1, get_ec2_imds_v1_analysis
 from ...constants import DENY_EC2_IMDS_V1
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
 
-@register_check("scps", DENY_EC2_IMDS_V1)
+@register_check("scps", DENY_EC2_IMDS_V1, terraform_section=TerraformSection.EC2)
 class DenyEc2ImdsV1Check(BaseCheck[DenyEc2ImdsV1]):
     """
     Decide whether an account can take the deny_ec2_imds_v1 SCP.

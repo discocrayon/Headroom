@@ -10,6 +10,7 @@ depends_on:
   - INV-02
   - INV-06
   - INV-10
+  - INV-13
 verification:
   - tests/test_checks_deny_service_confused_deputy.py
   - tests/test_aws_policy_documents.py
@@ -169,7 +170,8 @@ than the calling principals. The naming pattern would predict
 `service_confused_deputy_account_ids_allowlist`. Do not normalize it; the
 Terraform module defines it this way.
 
-`RCP_TERRAFORM_VARIABLES` places it after the alphabetical run of the six
+Its `TerraformSection` is `SERVICE_CONFUSED_DEPUTY`, declared last in
+`headroom/enums.py`, so it renders after the alphabetical run of the six
 services rather than inside it, because it names no single service.
 
 ## Accepted limitations
@@ -240,7 +242,7 @@ that procedure.
 
 ## Referenced invariants
 
-INV-01, INV-02, INV-06, INV-10.
+INV-01, INV-02, INV-06, INV-10, INV-13.
 
 ## Implementation
 
@@ -248,7 +250,7 @@ INV-01, INV-02, INV-06, INV-10.
   `DenyServiceConfusedDeputyCheck`, dataclass `ServicePrincipalSourceFinding`
 - `headroom/aws/policy_documents.py` — `read_service_principal_sources`,
   `has_actionable_service_principal_source`, `unreadable_service_principal_source`
-- `headroom/terraform/generate_rcps.py` — `RCP_TERRAFORM_VARIABLES`
+- `headroom/terraform/parameters.py` — `render_check_parameters`
 - `test_environment/modules/rcps/locals.tf` — the rendered statement
 - Tests: `tests/test_checks_deny_service_confused_deputy.py`,
   `tests/test_aws_policy_documents.py`

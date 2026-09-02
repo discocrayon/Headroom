@@ -163,12 +163,30 @@ missing key and a legitimately empty value mean opposite things (INV-01).
 |---|---|---|
 | `check` | RCP parsing | The file cannot be confirmed to belong to its directory |
 | `violations` | SCP and RCP parsing | Whether the account is safe is unknown, and defaulting answers it in the safest direction. `results_exist` skips an account whose result file already exists, so re-running without deleting the file repeats the same failure; both readers' errors name the file and prescribe exactly that. `ResultFilePathResolver.exists()` accepts either filename format, so the remedy also names the directory holding the other form — deleting only the file the reader tripped on leaves the skip in place when both are present |
-| `unique_third_party_accounts` | RCP parsing | The allowlist would render empty, which denies every third party (INV-06) |
-| `unique_ami_owners` | `deny_ec2_ami_owner` parsing | Indistinguishable from an account that ran no instances |
+| `unique_third_party_accounts` | RCP parsing, as the `summary_key` every RCP definition declares | The allowlist would render empty, which denies every third party (INV-06) |
+| The `summary_key` an SCP check's `Allowlist` declares — `unique_ami_owners` for `deny_ec2_ami_owner`, `users` for `deny_iam_user_creation` | SCP parsing | Indistinguishable from an account that observed nothing, which would leave the policy off rather than flag a stale result |
+
+A key that is present but holds anything other than a list aborts the same way,
+naming the file and the key: `null` is neither an observation nor an absent key,
+and carrying it forward crashed on the account-ID restore or was dropped by the
+placement union as though the check declared no allowlist.
 
 RCP parsing additionally rejects a file whose `summary.check` disagrees with the
 directory it was found in: a result filed under the wrong check would be
 attributed to the wrong policy.
+
+Both readers reject a check the registry does not hold, and resolve the name
+before requiring any key of the file: a stale directory is stale throughout, and
+reporting its first absent key would send the operator to re-run a check that no
+longer exists. SCP parsing rejects a file whose `summary.check` — or whose
+directory, when the file declares none — is not a registered SCP check, naming
+the file and saying to delete it, and the directory with it when the directory
+holds only that check's results. RCP parsing rejects a directory under `rcps/`
+naming no registered RCP check, naming the directory and saying to delete it.
+Both say to register a check under that name instead if the check is not gone.
+Neither error is the registry's own `Unknown check`, which names no file and no
+remedy, and which `main` would label a configuration error — which a stale
+results directory is not.
 
 SCP parsing defaulted `violations` to zero until
 `deny_iam_saml_provider_not_aws_sso` shipped without the key and had every
@@ -201,9 +219,14 @@ commercial partition — the role ARNs it assumes are still hardcoded, per
 [`../architecture/aws-execution.md`](../architecture/aws-execution.md). This
 closes the leak ahead of that rather than after it.
 
-Redaction is not reversible in general. SCP parsing restores IAM user ARNs by
-substituting the account ID back in once the account has been identified, because
-the allowlist those ARNs feed must name real accounts.
+Redaction is not reversible in general. SCP parsing restores the account ID into
+the values of an allowlist whose definition sets `restores_account_ids` — today
+`deny_iam_user_creation`'s user ARNs — once the account has been identified,
+because the allowlist those ARNs feed must name real accounts. The restore
+matches the same account field the redaction did — `restore_account_id_in_arns`
+in `headroom/write_results.py` is built from the same pattern — so a user or
+role whose name carries the literal `REDACTED` keeps its name. It once replaced
+the token wherever it appeared in the string.
 
 ## Identifying the account a file describes
 

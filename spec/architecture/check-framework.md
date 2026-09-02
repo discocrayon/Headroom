@@ -14,27 +14,42 @@ Implementation: `headroom/checks/registry.py`, `headroom/checks/base.py`,
 A check registers itself:
 
 ```python
-@register_check("scps", "deny_ec2_public_ip")
-class DenyEc2PublicIpCheck(BaseCheck[DenyEc2PublicIp]):
+@register_check(
+    "scps",
+    "deny_ec2_ami_owner",
+    terraform_section=TerraformSection.EC2,
+    allowlist=Allowlist(
+        summary_key="unique_ami_owners",
+        terraform_variable="ec2_allowed_ami_owners",
+        empty_allowlist_comment="deny_ec2_ami_owner stays off here: ...",
+    ),
+)
+class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
 ```
 
-The decorator records the class under its name, stamps `CHECK_NAME` and
-`CHECK_TYPE` onto it, and registers the name-to-type mapping that the result
-writer resolves directories through.
+The decorator records a frozen `CheckDefinition` under the check's name — the
+class, the name and type, the `TerraformSection` its parameters render under,
+and the `Allowlist` its statement is scoped by, if any — stamps `CHECK_NAME`
+and `CHECK_TYPE` onto the class, and registers the name-to-type mapping that
+the result writer resolves directories through. It validates first: a
+duplicate name, a class already registered under another name, an unknown type,
+an RCP check with no allowlist, an empty allowlist key or variable, an
+empty-string `empty_allowlist_comment`, or a name or allowlist variable another
+definition already claims fails at import time and inserts nothing. So does a `CheckType`
+member passed as the type: it is a `str` and compares equal to its value, but it
+formats as `CheckType.SCPS`, and the result writer builds a check's directory by
+formatting the type, so the check would write under `results/CheckType.SCPS/`
+while the parser reads `results/scps/`.
 
 `headroom/checks/__init__.py` imports every module under `scps/` and `rcps/` so
 each decorator runs. **This is the repository's one sanctioned dynamic import.**
 Everywhere else, imports are at the top of the file. It exists so that
-registering a check is the whole of wiring it into discovery: collection, result
-writing, and placement iterate the registry rather than a hardcoded list.
-
-Not every later stage does. Parsing and Terraform generation still branch on a
-hardcoded check name, and INV-13 records the three departures and how each
-fails. So a new check does take edits outside its own module: the framework's
-own minimum is the list under "Adding a check" below, and a check carrying an
-allowlist also takes edits to `headroom/types.py`, `headroom/parse_results.py`,
-and `headroom/terraform/generate_scps.py`, which
-[`../../HOW_TO_ADD_A_CHECK.md`](../../HOW_TO_ADD_A_CHECK.md) enumerates.
+registering a check is the whole of wiring it into the pipeline: collection,
+result writing, parsing, and both Terraform generators read the registry rather
+than a hardcoded list, and placement consumes what parsing read from it without
+a lookup of its own (INV-13). The one thing a check's module
+cannot declare is a new `TerraformSection`; `headroom/enums.py` declares those,
+in render order.
 
 `check_type` is `scps` or `rcps`. It is the directory the results go in and the
 policy type generated from them; nothing infers it from the check's name.
@@ -124,13 +139,17 @@ itself requires only:
 
 1. A module under `headroom/checks/scps/` or `headroom/checks/rcps/`, so
    discovery imports it.
-2. `@register_check` with a type and a name.
+2. `@register_check` with a type, a name, a `terraform_section`, and — where
+   the statement is scoped by an allowlist — an `Allowlist` naming the summary
+   key it writes and the module variable it fills. A check whose empty
+   allowlist must leave the statement off states why as
+   `empty_allowlist_comment` (INV-06); one whose values are ARNs sets
+   `restores_account_ids`.
 3. The three abstract methods.
 4. A specification under [`../checks/`](../checks/index.md) — enforced by
    `tests/test_spec_corpus.py`.
-5. For an RCP check, an entry in `RCP_TERRAFORM_VARIABLES` — enforced by
-   `test_table_covers_every_registered_rcp_check`.
 
-Steps 4 and 5 are the two in this list the registry cannot wire up on its own.
-They are the framework's minimum, not the whole cost of adding a check —
-Discovery above names the rest.
+Step 4 is the one in this list the registry cannot wire up on its own. The
+list is the framework's minimum, not the whole cost of adding a check: the
+Terraform module still needs its variable and its statement, and the
+walkthrough linked above enumerates the rest.

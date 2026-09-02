@@ -11,12 +11,14 @@ depends_on:
   - INV-06
   - INV-07
   - INV-08
+  - INV-13
   - INV-16
 verification:
   - tests/test_checks_deny_ec2_ami_owner.py
   - tests/test_aws_ec2.py
   - tests/test_parse_results.py
   - tests/test_generate_scps.py
+  - tests/test_terraform_parameters.py
 ---
 
 # deny_ec2_ami_owner
@@ -172,19 +174,21 @@ Entry shape: `instance_id`, `region`, `ami_id`, `ami_owner`, `ami_owner_alias`,
 `unique_ami_owners` is the field that feeds the allowlist, and it holds whichever
 of the two `ec2:Owner` would carry.
 
-**`unique_ami_owners` is required on read** (INV-01). A result file lacking it
-predates AMI owner collection, and parsing raises and names the check to re-run
-rather than reading the file at all.
+**`unique_ami_owners` is required on read** (INV-01). It is the `summary_key`
+this check's `Allowlist` declares, so a result file lacking it makes parsing
+raise, naming the file and the check to re-run, rather than read the file at
+all.
 [`../../invariants.md`](../../invariants.md#inv-01--absence-of-evidence-is-not-evidence-of-safety)
 owns why a missing key here cannot be read as a genuine zero.
 
 ## Placement and generated policy
 
 Standard SCP placement at zero violations, plus the allowlist round trip
-(INV-07): `summary.unique_ami_owners` → `SCPCheckResult.ami_owners` → the sorted
-union across the accounts a placement covers →
-`SCPPlacementRecommendations.ec2_allowed_ami_owners` → the
-`ec2_allowed_ami_owners` Terraform variable.
+(INV-07): `summary.unique_ami_owners` → `SCPCheckResult.allowlist_values` → the
+sorted union across the accounts a placement covers →
+`SCPPlacementRecommendations.allowlist_values` → the `ec2_allowed_ami_owners`
+Terraform variable. The first and last links are the `Allowlist` declared on
+this check's `@register_check`; the two between are generic.
 
 Terraform variables: `deny_ec2_ami_owner` (boolean) and
 `ec2_allowed_ami_owners` (list, rendered only when the boolean is true).
@@ -237,14 +241,14 @@ of the organization still generates.
 
 ## Referenced invariants
 
-INV-01, INV-02, INV-06, INV-07, INV-08, INV-16.
+INV-01, INV-02, INV-06, INV-07, INV-08, INV-13, INV-16.
 
 ## Implementation
 
 - `headroom/checks/scps/deny_ec2_ami_owner.py`
 - `headroom/aws/ec2.py` — `get_ec2_ami_owner_analysis`
 - `headroom/enums.py` — `AmiOwnerUnknownReason`
-- `headroom/parse_results.py` — `_extract_ami_owners`
-- `headroom/terraform/generate_scps.py` — `_build_ec2_terraform_parameters`
+- `headroom/parse_results.py` — `_read_declared_allowlist`, `_union_allowlist_values`
+- `headroom/terraform/parameters.py` — `render_check_parameters`
 - Tests: `tests/test_checks_deny_ec2_ami_owner.py`, `tests/test_aws_ec2.py`,
   `tests/test_parse_results.py`, `tests/test_generate_scps.py`

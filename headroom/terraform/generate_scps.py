@@ -4,66 +4,31 @@ SCPs Terraform Generation Module
 Generates Terraform files for SCP deployment based on compliance analysis recommendations.
 """
 
-import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
-from .models import (
-    RenderedTerraformFiles,
-    TerraformComment,
-    TerraformElement,
-    TerraformModule,
-    TerraformParameter,
-)
+from .models import RenderedTerraformFiles, TerraformModule
+from .parameters import render_check_parameters
 from .utils import (
     account_id_local_name,
     claim_plan_path,
     make_account_base_names,
     make_ou_base_names,
-    make_safe_variable_name,
     ou_id_local_name,
     ou_path_names,
 )
+from ..checks.registry import get_check_definitions
 from ..enums import PlacementLevel
 from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlacementRecommendations
-
-# Set up logging
-logger = logging.getLogger(__name__)
-
-
-def _replace_account_id_in_arn(
-    arn: str,
-    organization_hierarchy: OrganizationHierarchy
-) -> str:
-    """
-    Replace account ID in ARN with Terraform local variable reference.
-
-    Args:
-        arn: IAM user ARN (e.g., "arn:aws:iam::111111111111:user/path/username")
-        organization_hierarchy: Organization structure for account ID lookups
-
-    Returns:
-        ARN with account ID replaced by local variable reference
-        (e.g., "arn:aws:iam::${local.account_name_account_id}:user/path/username")
-    """
-    parts = arn.split(":")
-    if len(parts) >= 5 and parts[0] == "arn" and parts[2] == "iam":
-        account_id = parts[4]
-        account_info = organization_hierarchy.accounts.get(account_id)
-        if account_info:
-            safe_account_name = make_safe_variable_name(account_info.account_name)
-            parts[4] = f"${{local.{account_id_local_name(safe_account_name)}}}"
-            return ":".join(parts)
-    return arn
 
 
 def _get_safe_to_enable_policies(
     module_name: str,
     recommendations: List[SCPPlacementRecommendations]
-) -> set[str]:
+) -> Dict[str, Optional[List[str]]]:
     """
-    Get the policies to enable for one module, from its recommendations.
+    Map the checks to enable for one module to their allowlist values.
 
     A recommendation reaching a module is itself the signal to enable the
     policy: `affected_accounts` holds the zero-violation subset at every
@@ -82,12 +47,14 @@ def _get_safe_to_enable_policies(
         recommendations: Placement recommendations targeting this module
 
     Returns:
-        Terraform variable names, converted from kebab-case to snake_case
+        Each recommended check's registered name, mapped to the allowlist
+        values placement unioned for it - None where the check declares no
+        allowlist
 
     Raises:
         RuntimeError: If a "none" recommendation reaches a module
     """
-    enabled_policies = set()
+    allowlists: Dict[str, Optional[List[str]]] = {}
     for rec in recommendations:
         if rec.recommended_level == PlacementLevel.NONE.value:
             raise RuntimeError(
@@ -97,182 +64,8 @@ def _get_safe_to_enable_policies(
                 f"grouping drops it before any module is built. Enabling it here "
                 f"would deny actions the covered accounts rely on."
             )
-        check_name_terraform = rec.check_name.replace("-", "_")
-        enabled_policies.add(check_name_terraform)
-    return enabled_policies
-
-
-def _get_ec2_allowed_ami_owners(
-    recommendations: List[SCPPlacementRecommendations]
-) -> List[str]:
-    """Extract allowed AMI owners from deny_ec2_ami_owner recommendations."""
-    for rec in recommendations:
-        if rec.check_name.replace("-", "_") == "deny_ec2_ami_owner" and rec.ec2_allowed_ami_owners:
-            return rec.ec2_allowed_ami_owners
-    return []
-
-
-def _get_allowed_iam_user_arns(
-    recommendations: List[SCPPlacementRecommendations]
-) -> List[str]:
-    """Extract allowed IAM user ARNs from deny_iam_user_creation recommendations."""
-    for rec in recommendations:
-        if rec.check_name.replace("-", "_") == "deny_iam_user_creation" and rec.allowed_iam_user_arns:
-            return rec.allowed_iam_user_arns
-    return []
-
-
-def _build_ec2_terraform_parameters(
-    module_name: str,
-    enabled_policies: set[str],
-    recommendations: List[SCPPlacementRecommendations]
-) -> List[TerraformElement]:
-    """
-    Build EC2 parameters for Terraform configuration.
-
-    Returns:
-        List of TerraformElement objects for EC2 policies
-    """
-    parameters: List[TerraformElement] = []
-
-    parameters.append(TerraformComment("EC2"))
-    deny_ec2_ami_owner = "deny_ec2_ami_owner" in enabled_policies
-    ec2_allowed_ami_owners = (
-        _get_ec2_allowed_ami_owners(recommendations) if deny_ec2_ami_owner else []
-    )
-
-    # An empty allowlist denies every ec2:RunInstances call rather than none
-    # of them, so it is never rendered. Reaching here means the covered
-    # accounts observed no AMI owner at all, which an account running no
-    # instances does - a fact about those accounts rather than a broken run,
-    # so the policy stays off and the rest of the organization still
-    # generates. The other cause, a result file predating AMI owner
-    # collection, is rejected during parsing.
-    if deny_ec2_ami_owner and not ec2_allowed_ami_owners:
-        logger.warning(
-            f"Module {module_name}: leaving deny_ec2_ami_owner off because no "
-            f"instance in the accounts it covers had a resolvable AMI owner, so "
-            f"the allowlist would be empty."
-        )
-        parameters.append(TerraformComment(
-            "deny_ec2_ami_owner stays off here: no instance in the accounts this "
-            "module covers had a resolvable AMI owner, so the allowlist would be "
-            "empty - and an empty allowlist denies every launch, not none."
-        ))
-        deny_ec2_ami_owner = False
-
-    parameters.append(TerraformParameter("deny_ec2_ami_owner", deny_ec2_ami_owner))
-    if deny_ec2_ami_owner:
-        parameters.append(TerraformParameter("ec2_allowed_ami_owners", ec2_allowed_ami_owners))
-
-    deny_ec2_imds_hop_limit = "deny_ec2_imds_hop_limit" in enabled_policies
-    parameters.append(TerraformParameter("deny_ec2_imds_hop_limit", deny_ec2_imds_hop_limit))
-
-    deny_ec2_imds_v1 = "deny_ec2_imds_v1" in enabled_policies
-    parameters.append(TerraformParameter("deny_ec2_imds_v1", deny_ec2_imds_v1))
-
-    deny_ec2_public_ip = "deny_ec2_public_ip" in enabled_policies
-    parameters.append(TerraformParameter("deny_ec2_public_ip", deny_ec2_public_ip))
-
-    return parameters
-
-
-def _build_eks_terraform_parameters(enabled_policies: set[str]) -> List[TerraformElement]:
-    """
-    Build EKS parameters for Terraform configuration.
-
-    Returns:
-        List of TerraformElement objects for EKS policies
-    """
-    parameters: List[TerraformElement] = []
-
-    parameters.append(TerraformComment("EKS"))
-    deny_eks_create_cluster_without_tag = "deny_eks_create_cluster_without_tag" in enabled_policies
-    parameters.append(TerraformParameter("deny_eks_create_cluster_without_tag", deny_eks_create_cluster_without_tag))
-
-    return parameters
-
-
-def _build_iam_terraform_parameters(
-    module_name: str,
-    enabled_policies: set[str],
-    recommendations: List[SCPPlacementRecommendations],
-    organization_hierarchy: OrganizationHierarchy
-) -> List[TerraformElement]:
-    """
-    Build IAM parameters for Terraform configuration.
-
-    Returns:
-        List of TerraformElement objects for IAM policies
-    """
-    parameters: List[TerraformElement] = []
-
-    parameters.append(TerraformComment("IAM"))
-    deny_iam_saml_provider_not_aws_sso = "deny_iam_saml_provider_not_aws_sso" in enabled_policies
-    parameters.append(TerraformParameter("deny_iam_saml_provider_not_aws_sso", deny_iam_saml_provider_not_aws_sso))
-
-    deny_iam_user_creation = "deny_iam_user_creation" in enabled_policies
-    transformed_arns = [
-        _replace_account_id_in_arn(arn, organization_hierarchy)
-        for arn in (_get_allowed_iam_user_arns(recommendations) if deny_iam_user_creation else [])
-    ]
-
-    # An empty allowlist renders NotResource: [], and a policy array takes one
-    # or more values, so Organizations rejects the document and the entire SCP
-    # fails to attach - every other statement in this module with it. Reaching
-    # here means the covered accounts hold no IAM user at all, which is an
-    # ordinary fact about them rather than a broken run, so the policy stays
-    # off and the rest of the organization still generates (INV-06).
-    if deny_iam_user_creation and not transformed_arns:
-        logger.warning(
-            f"Module {module_name}: leaving deny_iam_user_creation off because no "
-            f"IAM user exists in the accounts it covers, so the allowlist would "
-            f"be empty."
-        )
-        parameters.append(TerraformComment(
-            "deny_iam_user_creation stays off here: no IAM user in the accounts "
-            "this module covers, so the allowlist would be empty - and "
-            "NotResource: [] is rejected as a malformed policy."
-        ))
-        deny_iam_user_creation = False
-
-    parameters.append(TerraformParameter("deny_iam_user_creation", deny_iam_user_creation))
-    if deny_iam_user_creation:
-        parameters.append(TerraformParameter("iam_allowed_users", transformed_arns))
-
-    return parameters
-
-
-def _build_lambda_terraform_parameters(enabled_policies: set[str]) -> List[TerraformElement]:
-    """
-    Build Lambda parameters for Terraform configuration.
-
-    Returns:
-        List of TerraformElement objects for Lambda policies
-    """
-    parameters: List[TerraformElement] = []
-
-    parameters.append(TerraformComment("Lambda"))
-    deny_lambda_auth_type_none = "deny_lambda_auth_type_none" in enabled_policies
-    parameters.append(TerraformParameter("deny_lambda_auth_type_none", deny_lambda_auth_type_none))
-
-    return parameters
-
-
-def _build_rds_terraform_parameters(enabled_policies: set[str]) -> List[TerraformElement]:
-    """
-    Build RDS parameters for Terraform configuration.
-
-    Returns:
-        List of TerraformElement objects for RDS policies
-    """
-    parameters: List[TerraformElement] = []
-
-    parameters.append(TerraformComment("RDS"))
-    deny_rds_unencrypted = "deny_rds_unencrypted" in enabled_policies
-    parameters.append(TerraformParameter("deny_rds_unencrypted", deny_rds_unencrypted))
-
-    return parameters
+        allowlists[rec.check_name] = rec.allowlist_values
+    return allowlists
 
 
 def _build_scp_terraform_module(
@@ -285,33 +78,39 @@ def _build_scp_terraform_module(
     """
     Build Terraform module call for SCP deployment.
 
+    Every registered SCP check renders here, enabled where a recommendation
+    names it and disabled where none does, so registering a check is the
+    whole of wiring it into the generated module (INV-13).
+
     Args:
         module_name: Name of the Terraform module instance (e.g., "scps_root")
         target_id_reference: Reference to the target ID (e.g., "local.root_ou_id")
         recommendations: List of SCP placement recommendations for this target
         comment: Comment line describing the configuration (e.g., "Organization Root")
-        organization_hierarchy: Organization structure for account ID lookups
+        organization_hierarchy: Organization structure, forwarded to the
+            shared renderer so an ARN allowlist can be rewritten to
+            generated locals
 
     Returns:
         Complete Terraform module block as a string
 
     Raises:
         RuntimeError: If a recommendation that is not a placement reaches a
-            module, or a referenced account or OU is missing from the
-            organization hierarchy
+            module, or names a check no registered definition describes,
+            which would otherwise render as a module silently missing that
+            statement, or carries None for a check that declares an
+            allowlist - `allowlist_values` defaults to None, and an
+            observed-empty allowlist is [], so None is lost data rather
+            than a fact about the covered accounts
     """
-    enabled_policies = _get_safe_to_enable_policies(module_name, recommendations)
+    allowlists = _get_safe_to_enable_policies(module_name, recommendations)
 
-    parameters: List[TerraformElement] = []
-    parameters.extend(_build_ec2_terraform_parameters(module_name, enabled_policies, recommendations))
-    parameters.append(TerraformComment(""))
-    parameters.extend(_build_eks_terraform_parameters(enabled_policies))
-    parameters.append(TerraformComment(""))
-    parameters.extend(_build_iam_terraform_parameters(module_name, enabled_policies, recommendations, organization_hierarchy))
-    parameters.append(TerraformComment(""))
-    parameters.extend(_build_lambda_terraform_parameters(enabled_policies))
-    parameters.append(TerraformComment(""))
-    parameters.extend(_build_rds_terraform_parameters(enabled_policies))
+    parameters = render_check_parameters(
+        get_check_definitions("scps"),
+        allowlists,
+        module_name,
+        organization_hierarchy,
+    )
 
     module = TerraformModule(
         name=module_name,

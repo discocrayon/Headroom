@@ -74,12 +74,12 @@ headroom/
 │   └── policy_documents.py  shared grammar for reading IAM policy documents
 ├── checks/              one module per check; registry and BaseCheck
 ├── write_results.py     the result writer, and result path resolution
-├── parse_results.py     SCP result reading and SCP placement
+├── parse_results.py     the result-file readers both policy types share; SCP placement
 ├── placement/           hierarchy traversal, policy-agnostic
 ├── terraform/           rendering and org info, the compiled plan, and the
 │                     one applier that writes, links, and deletes
 ├── constants.py         check names, the ownership marker, shared patterns
-├── enums.py             CheckType, CheckCategory, PlacementLevel
+├── enums.py             CheckType, CheckCategory, PlacementLevel, TerraformSection
 ├── types.py             shared dataclasses
 ├── output.py            console output
 └── utils.py             identifier and Terraform-name formatting

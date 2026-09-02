@@ -1,11 +1,13 @@
 """
 Tests for terraform.generate_scps module.
 
-Covers early returns, warnings for missing targets, and name normalization edges.
+Covers registry-driven rendering and the rejection of a recommendation for an
+unregistered check, alongside the early returns, the aborts on missing
+targets, and the filename collisions the plan aborts on.
 """
 
 from pathlib import Path
-from typing import Dict, List
+from typing import List, Optional, Sequence
 
 import pytest
 
@@ -15,8 +17,15 @@ from headroom.types import (
     OrganizationalUnit,
     SCPPlacementRecommendations,
 )
-from headroom.checks.registry import _CHECK_REGISTRY, get_check_names
+from headroom.checks.registry import (
+    _CHECK_REGISTRY,
+    Allowlist,
+    CheckDefinition,
+    get_check_definitions,
+    get_check_names,
+)
 from headroom.checks.scps.deny_ec2_public_ip import DenyEc2PublicIpCheck
+from headroom.enums import TerraformSection
 from headroom.terraform import make_safe_variable_name
 from headroom.terraform.generate_scps import (
     _build_scp_terraform_module,
@@ -47,7 +56,7 @@ def test_render_scp_terraform_no_recommendations(tmp_path: Path) -> None:
 def test_render_scp_terraform_warn_missing_account(tmp_path: Path) -> None:
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
-        check_name="deny-ec2-imds-v1",
+        check_name="deny_ec2_imds_v1",
         recommended_level="account",
         target_ou_id=None,
         affected_accounts=["999999999999"],
@@ -63,7 +72,7 @@ def test_render_scp_terraform_warn_missing_account(tmp_path: Path) -> None:
 def test_render_scp_terraform_warn_missing_ou(tmp_path: Path) -> None:
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
-        check_name="deny-ec2-imds-v1",
+        check_name="deny_ec2_imds_v1",
         recommended_level="ou",
         target_ou_id="ou-unknown",
         affected_accounts=[],
@@ -88,7 +97,7 @@ def test_build_scp_terraform_module_output_format() -> None:
     org = make_org_empty()
     recs = [
         SCPPlacementRecommendations(
-            check_name="deny-ec2-imds-v1",
+            check_name="deny_ec2_imds_v1",
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
@@ -96,7 +105,7 @@ def test_build_scp_terraform_module_output_format() -> None:
             reasoning="test",
         ),
         SCPPlacementRecommendations(
-            check_name="deny-rds-unencrypted",
+            check_name="deny_rds_unencrypted",
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
@@ -148,7 +157,7 @@ def test_build_scp_terraform_module_single_check_100_percent_compliant() -> None
     """Should include SCP flag when compliance is 100%."""
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
-        check_name="deny-ec2-imds-v1",
+        check_name="deny_ec2_imds_v1",
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=[],
@@ -183,7 +192,7 @@ def test_build_scp_terraform_module_multiple_checks_all_compliant() -> None:
     org = make_org_empty()
     recs = [
         SCPPlacementRecommendations(
-            check_name="deny-ec2-imds-v1",
+            check_name="deny_ec2_imds_v1",
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
@@ -191,13 +200,13 @@ def test_build_scp_terraform_module_multiple_checks_all_compliant() -> None:
             reasoning="test",
         ),
         SCPPlacementRecommendations(
-            check_name="deny-iam-user-creation",
+            check_name="deny_iam_user_creation",
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowed_iam_user_arns=["arn:aws:iam::111111111111:user/terraform-user"],
+            allowlist_values=["arn:aws:iam::111111111111:user/terraform-user"],
         ),
     ]
     result = _build_scp_terraform_module(
@@ -214,7 +223,7 @@ def test_build_scp_terraform_module_multiple_checks_all_compliant() -> None:
     assert "arn:aws:iam::111111111111:user/terraform-user" in result
 
 
-def test_build_scp_terraform_module_with_iam_user_arns() -> None:
+def test_build_scp_terraform_module_renders_iam_allowed_users() -> None:
     """Should include IAM user ARNs with account ID replaced by local variable reference."""
     org = OrganizationHierarchy(
         root_id="r-root",
@@ -236,13 +245,13 @@ def test_build_scp_terraform_module_with_iam_user_arns() -> None:
     )
     recs = [
         SCPPlacementRecommendations(
-            check_name="deny-iam-user-creation",
+            check_name="deny_iam_user_creation",
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowed_iam_user_arns=[
+            allowlist_values=[
                 "arn:aws:iam::111111111111:user/terraform-user",
                 "arn:aws:iam::222222222222:user/github-actions"
             ]
@@ -262,7 +271,7 @@ def test_build_scp_terraform_module_with_iam_user_arns() -> None:
     assert '"arn:aws:iam::${local.test_account_2_account_id}:user/github-actions",' in result
 
 
-def test_build_scp_terraform_module_with_iam_user_arns_unknown_account() -> None:
+def test_build_scp_terraform_module_iam_allowed_users_unknown_account() -> None:
     """Should keep ARN unchanged when account ID is not in organization hierarchy."""
     org = OrganizationHierarchy(
         root_id="r-root",
@@ -278,13 +287,13 @@ def test_build_scp_terraform_module_with_iam_user_arns_unknown_account() -> None
     )
     recs = [
         SCPPlacementRecommendations(
-            check_name="deny-iam-user-creation",
+            check_name="deny_iam_user_creation",
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowed_iam_user_arns=[
+            allowlist_values=[
                 "arn:aws:iam::111111111111:user/terraform-user",
                 "arn:aws:iam::999999999999:user/unknown-account"
             ]
@@ -314,14 +323,14 @@ def test_build_scp_terraform_module_rejects_a_none_level_recommendation() -> Non
     """
     org = make_org_empty()
     none_rec = SCPPlacementRecommendations(
-        check_name="deny-ec2-imds-v1",
+        check_name="deny_ec2_imds_v1",
         recommended_level="none",
         target_ou_id=None,
         affected_accounts=[],
         compliance_percentage=0.0,
         reasoning="test",
     )
-    with pytest.raises(RuntimeError, match=r"scps_root.*deny-ec2-imds-v1.*'none'"):
+    with pytest.raises(RuntimeError, match=r"scps_root.*deny_ec2_imds_v1.*'none'"):
         _build_scp_terraform_module(
             module_name="scps_root",
             target_id_reference="local.root_ou_id",
@@ -335,7 +344,7 @@ def test_build_scp_terraform_module_leaves_unrecommended_checks_false() -> None:
     """A check with no recommendation for this module stays off."""
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
-        check_name="deny-ec2-imds-v1",
+        check_name="deny_ec2_imds_v1",
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=[],
@@ -369,7 +378,7 @@ def test_build_scp_terraform_module_enables_every_recommendation_it_is_given() -
     org = make_org_empty()
     recs = [
         SCPPlacementRecommendations(
-            check_name="deny-ec2-imds-v1",
+            check_name="deny_ec2_imds_v1",
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
@@ -377,13 +386,13 @@ def test_build_scp_terraform_module_enables_every_recommendation_it_is_given() -
             reasoning="test",
         ),
         SCPPlacementRecommendations(
-            check_name="deny-iam-user-creation",
+            check_name="deny_iam_user_creation",
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowed_iam_user_arns=["arn:aws:iam::111111111111:user/terraform-user"],
+            allowlist_values=["arn:aws:iam::111111111111:user/terraform-user"],
         ),
     ]
     result = _build_scp_terraform_module(
@@ -398,8 +407,16 @@ def test_build_scp_terraform_module_enables_every_recommendation_it_is_given() -
     assert "deny_iam_saml_provider_not_aws_sso = false" in result
 
 
-def test_build_scp_terraform_module_check_name_with_hyphens_converts_to_underscores() -> None:
-    """Should convert hyphens in check names to underscores for Terraform."""
+def test_build_scp_terraform_module_rejects_an_unregistered_check() -> None:
+    """
+    A recommendation for a check no definition describes aborts the render.
+
+    The registered name is the Terraform parameter, so there is nothing left
+    to normalize here. Generation used to rewrite hyphens to underscores,
+    which silently accepted `deny-ec2-imds-v1` as `deny_ec2_imds_v1` - and
+    just as silently rendered a module missing the statement whenever the
+    name was wrong in any other way.
+    """
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
         check_name="deny-ec2-imds-v1",
@@ -409,26 +426,23 @@ def test_build_scp_terraform_module_check_name_with_hyphens_converts_to_undersco
         compliance_percentage=100.0,
         reasoning="test",
     )
-    result = _build_scp_terraform_module(
-        module_name="scps_root",
-        target_id_reference="local.root_ou_id",
-        recommendations=[rec],
-        comment="Organization Root",
-        organization_hierarchy=org
-    )
-    assert "deny_ec2_imds_v1 = true" in result
-    assert "deny_iam_user_creation = false" in result
-    assert "deny_iam_saml_provider_not_aws_sso = false" in result
-    assert "iam_allowed_users" not in result
-    assert "deny-ec2-imds-v1" not in result
+
+    with pytest.raises(RuntimeError, match="was given a recommendation for deny-ec2-imds-v1"):
+        _build_scp_terraform_module(
+            module_name="scps_root",
+            target_id_reference="local.root_ou_id",
+            recommendations=[rec],
+            comment="Organization Root",
+            organization_hierarchy=org
+        )
 
 
 def make_rec(
-    check_name: str = "deny-ec2-imds-v1",
+    check_name: str = "deny_ec2_imds_v1",
     level: str = "root",
     target_ou_id: str | None = None,
     affected_accounts: list[str] | None = None,
-    allowed_iam_user_arns: list[str] | None = None,
+    allowlist_values: list[str] | None = None,
 ) -> SCPPlacementRecommendations:
     return SCPPlacementRecommendations(
         check_name=check_name,
@@ -437,7 +451,7 @@ def make_rec(
         affected_accounts=affected_accounts if affected_accounts is not None else [],
         compliance_percentage=100.0,
         reasoning="test",
-        allowed_iam_user_arns=allowed_iam_user_arns if allowed_iam_user_arns is not None else [],
+        allowlist_values=allowlist_values if allowlist_values is not None else [],
     )
 
 
@@ -571,8 +585,8 @@ def test_render_root_scp_terraform_multiple_checks() -> None:
     recs = [
         make_rec(),
         make_rec(
-            check_name="deny-iam-user-creation",
-            allowed_iam_user_arns=["arn:aws:iam::111111111111:user/terraform-user"],
+            check_name="deny_iam_user_creation",
+            allowlist_values=["arn:aws:iam::111111111111:user/terraform-user"],
         ),
     ]
 
@@ -730,13 +744,13 @@ def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners
     """Should include ec2_allowed_ami_owners when deny_ec2_ami_owner is enabled."""
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
-        check_name="deny-ec2-ami-owner",
+        check_name="deny_ec2_ami_owner",
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
-        ec2_allowed_ami_owners=["amazon", "aws-marketplace"]
+        allowlist_values=["amazon", "aws-marketplace"]
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -765,12 +779,13 @@ def test_build_scp_terraform_module_ec2_ami_owner_empty_allowlist_stays_off() ->
     """
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
-        check_name="deny-ec2-ami-owner",
+        check_name="deny_ec2_ami_owner",
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
+        allowlist_values=[],
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -805,7 +820,7 @@ def test_account_level_recommendation_enables_its_policy() -> None:
         },
     )
     rec = SCPPlacementRecommendations(
-        check_name="deny-ec2-imds-v1",
+        check_name="deny_ec2_imds_v1",
         recommended_level="account",
         target_ou_id=None,
         affected_accounts=["111111111111"],
@@ -823,24 +838,47 @@ def test_account_level_recommendation_enables_its_policy() -> None:
     assert "deny_ec2_imds_v1 = true" in result
 
 
-_ALLOWLIST_PAYLOADS: Dict[str, Dict[str, List[str]]] = {
-    "deny_ec2_ami_owner": {"ec2_allowed_ami_owners": ["amazon"]},
-    "deny_iam_user_creation": {
-        "allowed_iam_user_arns": ["arn:aws:iam::111111111111:user/terraform-user"]
-    },
-}
+def _synthetic_allowlist_values(
+    definition: CheckDefinition,
+    observed_nothing: Sequence[str],
+) -> Optional[List[str]]:
+    """
+    Give one definition the allowlist values that let it render enabled.
+
+    The guard reads the boolean, not the values, so any one value will do.
+    What matters is that every definition declaring an allowlist gets one
+    without an entry being written for it here, so a new allowlist check is
+    guarded the day it is registered (INV-13). A check named in
+    `observed_nothing` gets the empty list instead, which is what an
+    allowlist check whose covered accounts observed nothing carries.
+
+    Args:
+        definition: The check being placed
+        observed_nothing: Allowlist checks to hand an empty list
+
+    Returns:
+        None for a check with no allowlist, otherwise its values
+    """
+    if definition.allowlist is None:
+        return None
+    if definition.check_name in observed_nothing:
+        return []
+    return ["observed-value"]
 
 
-def _render_every_scp_check() -> str:
+def _render_every_scp_check(observed_nothing: Sequence[str] = ()) -> str:
     """
     Render one module in which every registered SCP check is safe to enable.
 
     Two checks turn themselves off when their allowlist would be empty
-    (INV-06), so they need the payload their allowlist is built from before
-    they will render enabled. Without it the module renders them `false` for a
-    stated reason, which is correct behavior and useless as a guard.
-    _ALLOWLIST_PAYLOADS is module-level so a test can withhold one check's
-    entry and reproduce that stated-reason `false` on demand.
+    (INV-06), so an allowlist check needs observed values before it will
+    render enabled. With an empty list the module renders it `false` for a
+    stated reason, which is correct behavior and useless as a guard;
+    `observed_nothing` lets a test reproduce that stated-reason `false` on
+    demand.
+
+    Args:
+        observed_nothing: Allowlist checks whose covered accounts observed nothing
 
     Returns:
         The rendered Terraform module block
@@ -859,15 +897,15 @@ def _render_every_scp_check() -> str:
     )
     recommendations = [
         SCPPlacementRecommendations(
-            check_name=check_name,
+            check_name=definition.check_name,
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            **_ALLOWLIST_PAYLOADS.get(check_name, {}),
+            allowlist_values=_synthetic_allowlist_values(definition, observed_nothing),
         )
-        for check_name in get_check_names("scps")
+        for definition in get_check_definitions("scps")
     ]
 
     return _build_scp_terraform_module(
@@ -879,7 +917,7 @@ def _render_every_scp_check() -> str:
     )
 
 
-def _unrendered_scp_checks() -> List[str]:
+def _unrendered_scp_checks(observed_nothing: Sequence[str] = ()) -> List[str]:
     """
     Report the registered SCP checks the renderer does not enable.
 
@@ -888,10 +926,13 @@ def _unrendered_scp_checks() -> List[str]:
     parsed, placed, and then dropped at render - which is the omission this
     guard exists to catch.
 
+    Args:
+        observed_nothing: Allowlist checks whose covered accounts observed nothing
+
     Returns:
         Registered SCP check names that did not render as enabled
     """
-    rendered = _render_every_scp_check()
+    rendered = _render_every_scp_check(observed_nothing)
 
     return [
         check_name for check_name in get_check_names("scps")
@@ -903,55 +944,110 @@ def test_every_registered_scp_check_is_rendered() -> None:
     """
     A registered SCP check must reach the Terraform module.
 
-    _build_scp_terraform_module names all nine checks in straight-line code and
-    reads nothing from the registry, so a tenth check is collected, written,
-    parsed, and placed, then silently dropped at render. Nothing else in the
-    suite notices: the module renders, Terraform validates, and the operator
-    sees a policy that is simply missing a statement.
+    _build_scp_terraform_module renders from get_check_definitions("scps"), so
+    a check the generator has never heard of reaches the module - which is
+    what test_a_registered_scp_check_renders_without_a_generator_edit pins.
+    This one covers the checks that are actually registered: a check dropped
+    at render is collected, written, parsed, and placed, and nothing else in
+    the suite notices. The module renders, Terraform validates, and the
+    operator sees a policy that is simply missing a statement.
 
-    This is the SCP counterpart of test_table_covers_every_registered_rcp_check
+    This is the SCP counterpart of test_every_registered_rcp_check_is_rendered
     (INV-13).
     """
     assert _unrendered_scp_checks() == []
 
 
-class UnrenderedCheck(DenyEc2PublicIpCheck):
-    """A registered SCP check the Terraform renderer has never heard of."""
-
-    CHECK_NAME = "deny_ec2_unrendered"
-
-
-def test_the_unrendered_check_guard_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    The guard above must report a check the renderer has never heard of.
-
-    Without this, the guard would pass just as happily if the rendered output
-    were empty or the registry lookup returned nothing, and it would be proof of
-    nothing. Registering a tenth check reproduces the exact omission it exists
-    to catch.
-
-    Delete both tests once _build_scp_terraform_module reads the registry: the
-    fake check would render, and the guard would no longer be needed.
-    """
-    monkeypatch.setitem(_CHECK_REGISTRY, UnrenderedCheck.CHECK_NAME, UnrenderedCheck)
-
-    assert _unrendered_scp_checks() == ["deny_ec2_unrendered"]
-
-
-def test_the_unrendered_check_guard_reads_the_rendered_value(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_unrendered_check_guard_reads_the_rendered_value() -> None:
     """
     A check that renders `false` must fail the guard, not satisfy it.
 
     Matching "<name> = " and stopping there accepts `deny_x = false` written
     as a literal, which is indistinguishable in the output from a check that
-    was collected, parsed, placed, and then dropped. Withholding
-    deny_iam_user_creation's allowlist payload reproduces exactly that:
-    INV-06 still emits its parameter, just as `false`, so the guard has to
-    read the value to catch it.
+    was collected, parsed, placed, and then dropped. Giving
+    deny_iam_user_creation an observed-empty allowlist reproduces exactly
+    that: INV-06 still emits its parameter, just as `false` under an
+    explanatory comment, so a guard matching only the name reports nothing
+    wrong.
     """
-    monkeypatch.delitem(_ALLOWLIST_PAYLOADS, "deny_iam_user_creation")
+    assert _unrendered_scp_checks(observed_nothing=["deny_iam_user_creation"]) == ["deny_iam_user_creation"]
 
-    assert _unrendered_scp_checks() == ["deny_iam_user_creation"]
+
+def test_a_registered_scp_check_renders_without_a_generator_edit(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A check the generator has never heard of renders from its definition.
+
+    Registering a check is meant to be the whole of wiring it into the
+    generated module (INV-13). A tenth check is collected, written, parsed,
+    and placed, so the only place it can still be silently dropped is here.
+    The assertion pins its boolean between its alphabetical neighbour and the
+    next section comment, which is what proves it rendered in the position
+    its definition asks for rather than appended anywhere at all.
+    """
+    org = make_org_empty()
+    monkeypatch.setitem(
+        _CHECK_REGISTRY,
+        "deny_ec2_unrendered",
+        CheckDefinition(
+            check_class=DenyEc2PublicIpCheck,
+            check_name="deny_ec2_unrendered",
+            check_type="scps",
+            terraform_section=TerraformSection.EC2,
+            allowlist=None,
+        ),
+    )
+    rec = SCPPlacementRecommendations(
+        check_name="deny_ec2_unrendered",
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=100.0,
+        reasoning="test",
+    )
+
+    result = _build_scp_terraform_module(
+        module_name="scps_root",
+        target_id_reference="local.root_ou_id",
+        recommendations=[rec],
+        comment="Organization Root",
+        organization_hierarchy=org,
+    )
+
+    assert "  deny_ec2_public_ip = false\n  deny_ec2_unrendered = true\n\n  # EKS" in result
+
+
+def test_the_render_guard_covers_a_new_allowlist_check_without_an_edit(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    An allowlist check registered tomorrow is guarded today.
+
+    The guard once carried a hand-written table of the values each allowlist
+    check needs before it renders enabled, so a new allowlist check reached
+    the guard with no values at all, and the renderer's "carries None" error
+    stood in for the guard's own verdict. The values now come from the
+    definition, so the guard names the check when the renderer drops it and
+    stays quiet when it does not - here, when it does not.
+    """
+    monkeypatch.setitem(
+        _CHECK_REGISTRY,
+        "deny_ec2_unrendered_allowlisted",
+        CheckDefinition(
+            check_class=DenyEc2PublicIpCheck,
+            check_name="deny_ec2_unrendered_allowlisted",
+            check_type="scps",
+            terraform_section=TerraformSection.EC2,
+            allowlist=Allowlist(
+                summary_key="unique_widgets",
+                terraform_variable="ec2_allowed_widgets",
+                empty_allowlist_comment="No widgets observed",
+            ),
+        ),
+    )
+
+    assert _unrendered_scp_checks() == []
 
 
 def test_build_scp_terraform_module_iam_user_creation_empty_allowlist_stays_off() -> None:
@@ -967,12 +1063,13 @@ def test_build_scp_terraform_module_iam_user_creation_empty_allowlist_stays_off(
     """
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
-        check_name="deny-iam-user-creation",
+        check_name="deny_iam_user_creation",
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
+        allowlist_values=[],
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -991,13 +1088,13 @@ def test_build_scp_terraform_module_iam_user_creation_renders_a_populated_allowl
     """The guard must not fire when the accounts did hold users."""
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
-        check_name="deny-iam-user-creation",
+        check_name="deny_iam_user_creation",
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
-        allowed_iam_user_arns=["arn:aws:iam::111111111111:user/breakglass"],
+        allowlist_values=["arn:aws:iam::111111111111:user/breakglass"],
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",

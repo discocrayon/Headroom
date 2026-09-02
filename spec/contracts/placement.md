@@ -81,6 +81,15 @@ A recommendation reaching Terraform generation **is** the signal to enable the
 policy. Generation does not re-derive safety, and a `none` recommendation
 reaching a module raises rather than being rendered.
 
+An SCP check that feeds an allowlist carries its values on
+`SCPCheckResult.allowlist_values`, and every recommendation for it carries the
+sorted union over the accounts it covers — root, OU, or account — on
+`SCPPlacementRecommendations.allowlist_values`. Placement reads nothing from
+the registry to do this: a result carrying a list is a result whose check
+declared an allowlist, and one carrying `None` is not. `[]` is a legitimate
+union, meaning the covered accounts observed nothing; generation decides what
+that renders as (INV-06).
+
 ## RCP placement
 
 Safety is per account and binary too, but the blocking condition is different: an
@@ -111,6 +120,13 @@ deliberately:
 | The check itself never ran | A registered check with no results directory at all aborts generation, naming the check: a check absent from the results is indistinguishable from one that found nothing, and this output gates deployment |
 | A previous run wrote the file | Resume is per account and per check, so the missing ones are scanned and the rest are read back. [`results.md`](results.md#resume) owns the granularity |
 | The account is excluded from analysis | **Open, and deliberate.** The management account, accounts in `skip_account_ids`, and accounts in any non-ACTIVE lifecycle state are in the hierarchy and never produce results, so they cannot block a placement that reaches them. Exclusion removes an account from the compliance picture rather than holding a policy back; [`../architecture/aws-execution.md`](../architecture/aws-execution.md#analyzable-accounts--_select_analyzable_accounts) states it from the discovery side |
+
+The converse aborts too: a directory under `rcps/` naming no registered check
+stops generation rather than being stepped over. Parsing visits registered names,
+so a directory it never visits holds results nobody reads, and those are
+indistinguishable from results that were read (INV-01). The SCP reader aborts on
+the same directory; [`results.md`](results.md#summary-keys-a-reader-requires)
+states what each reader's error names.
 
 Each check is placed **independently**, against its own blocked set. A resource
 policy that blocks the S3 RCP in one account says nothing about that account's

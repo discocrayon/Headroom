@@ -7,7 +7,7 @@ Tests SCP/RCP compliance results analysis and placement recommendations.
 import json
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from unittest.mock import Mock, patch
 
 import pytest
@@ -50,6 +50,66 @@ def make_test_org_hierarchy() -> OrganizationHierarchy:
                 ou_path=["Root"]
             ),
         }
+    )
+
+
+def make_hierarchy_with_production_ou(ou_account_ids: List[str]) -> OrganizationHierarchy:
+    """
+    Build a hierarchy with one OU and one account parented to the root.
+
+    Args:
+        ou_account_ids: Accounts under the Production OU
+
+    Returns:
+        A hierarchy holding 111111111111 at the root and those accounts
+        under ou-1234
+    """
+    accounts = {
+        "111111111111": AccountOrgPlacement(
+            "111111111111", "account-111111111111", "r-1111", ["Root"]
+        )
+    }
+    for account_id in ou_account_ids:
+        accounts[account_id] = AccountOrgPlacement(
+            account_id, f"account-{account_id}", "ou-1234", ["Production"]
+        )
+    return OrganizationHierarchy(
+        root_id="r-1111",
+        organizational_units={
+            "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ou_account_ids)
+        },
+        accounts=accounts
+    )
+
+
+def make_scp_result(
+    account_id: str,
+    check_name: str,
+    allowlist_values: Optional[List[str]],
+    violations: int = 0
+) -> SCPCheckResult:
+    """
+    Build one account's SCP check result carrying the values it observed.
+
+    Args:
+        account_id: Account the result belongs to
+        check_name: Check the result belongs to
+        allowlist_values: Values the check observed in that account
+        violations: Findings the policy would have denied
+
+    Returns:
+        One parsed-shaped result
+    """
+    return SCPCheckResult(
+        account_id=account_id,
+        account_name="",
+        check_name=check_name,
+        violations=violations,
+        exemptions=0,
+        compliant=2,
+        compliance_percentage=100.0 if violations == 0 else 50.0,
+        total_instances=2,
+        allowlist_values=allowlist_values
     )
 
 
@@ -226,7 +286,7 @@ class TestResultFileParsing:
             with pytest.raises(RuntimeError, match="Account name 'unknown-account' .* not found in organization hierarchy"):
                 parse_scp_result_files(temp_dir, org_hierarchy)
 
-    def test_parse_scp_result_files_with_redacted_iam_user_arns(self) -> None:
+    def test_parse_scp_result_files_restores_redacted_account_ids(self) -> None:
         """Test un-redaction of IAM user ARNs in deny_iam_user_creation results."""
         with tempfile.TemporaryDirectory() as temp_dir:
             results_path = Path(temp_dir)
@@ -260,11 +320,11 @@ class TestResultFileParsing:
             result = parse_scp_result_files(temp_dir, org_hierarchy)
 
             assert len(result) == 1
-            assert result[0].iam_user_arns is not None
-            assert len(result[0].iam_user_arns) == 2
+            assert result[0].allowlist_values is not None
+            assert len(result[0].allowlist_values) == 2
             # Check that REDACTED was replaced with actual account ID
-            assert "arn:aws:iam::111111111111:user/terraform-user" in result[0].iam_user_arns
-            assert "arn:aws:iam::111111111111:user/service/github-actions" in result[0].iam_user_arns
+            assert "arn:aws:iam::111111111111:user/terraform-user" in result[0].allowlist_values
+            assert "arn:aws:iam::111111111111:user/service/github-actions" in result[0].allowlist_values
 
 
 class TestSCPPlacementDetermination:
@@ -384,7 +444,7 @@ class TestSCPPlacementDetermination:
         assert "No accounts have zero violations" in result[0].reasoning
         assert result[0].affected_accounts == []
 
-    def test_determine_scp_placement_unions_iam_user_arns(self) -> None:
+    def test_determine_scp_placement_unions_allowlist_values(self) -> None:
         """Test that IAM user ARNs are unioned for deny_iam_user_creation check."""
         # All accounts have zero violations with different IAM users
         results_data = [
@@ -397,7 +457,7 @@ class TestSCPPlacementDetermination:
                 compliant=2,
                 compliance_percentage=100.0,
                 total_instances=2,
-                iam_user_arns=[
+                allowlist_values=[
                     "arn:aws:iam::111111111111:user/terraform-user",
                     "arn:aws:iam::111111111111:user/github-actions"
                 ]
@@ -411,7 +471,7 @@ class TestSCPPlacementDetermination:
                 compliant=1,
                 compliance_percentage=100.0,
                 total_instances=1,
-                iam_user_arns=[
+                allowlist_values=[
                     "arn:aws:iam::222222222222:user/cicd-deployer"
                 ]
             ),
@@ -430,10 +490,10 @@ class TestSCPPlacementDetermination:
 
         assert len(result) == 1
         assert result[0].recommended_level == "root"
-        assert result[0].allowed_iam_user_arns is not None
-        assert len(result[0].allowed_iam_user_arns) == 3
+        assert result[0].allowlist_values is not None
+        assert len(result[0].allowlist_values) == 3
         # Check all ARNs are present and sorted
-        assert result[0].allowed_iam_user_arns == [
+        assert result[0].allowlist_values == [
             "arn:aws:iam::111111111111:user/github-actions",
             "arn:aws:iam::111111111111:user/terraform-user",
             "arn:aws:iam::222222222222:user/cicd-deployer"
@@ -1374,40 +1434,15 @@ class TestCoverageIsIndependentOfOtherOUs:
         assert "444444444444" not in self.covered_accounts(staging_violations=0)
 
 
-class TestAmiOwnerAllowlistWiring:
+class TestAmiOwnerValuesAreParsed:
     """
-    Tests that observed AMI owners reach the placement recommendation.
+    The parser carries deny_ec2_ami_owner's summary values into a result.
 
-    The check has always reported `unique_ami_owners`, and the SCP module has
-    always taken an `ec2_allowed_ami_owners` list, but nothing joined the two:
-    `SCPCheckResult` had no field for the owners, so every recommendation
-    carried `ec2_allowed_ami_owners=None` and Terraform enabled the policy with
-    an empty allowlist. An empty allowlist denies every `ec2:RunInstances`
-    call, so the generated SCP was an EC2 outage wherever it landed.
+    `unique_ami_owners` reaches `SCPCheckResult.allowlist_values` unchanged:
+    a populated list, an empty list (the check ran and observed nothing),
+    and an absent key (a stale result, rejected rather than read as empty).
     """
-    OWNERS_ACCOUNT_1 = ["amazon", "aws-marketplace"]
-    OWNERS_ACCOUNT_2 = ["222222222222", "amazon"]
-    UNIONED_OWNERS = ["222222222222", "amazon", "aws-marketplace"]
-
-    def make_result(
-        self,
-        account_id: str,
-        account_name: str,
-        violations: int,
-        ami_owners: List[str]
-    ) -> SCPCheckResult:
-        """Build one account's AMI owner check result."""
-        return SCPCheckResult(
-            account_id=account_id,
-            account_name=account_name,
-            check_name="deny_ec2_ami_owner",
-            violations=violations,
-            exemptions=0,
-            compliant=2,
-            compliance_percentage=100.0 if violations == 0 else 50.0,
-            total_instances=2,
-            ami_owners=ami_owners
-        )
+    OBSERVED_OWNERS = ["amazon", "aws-marketplace"]
 
     def test_parse_carries_unique_ami_owners_from_summary(self) -> None:
         """The summary's unique_ami_owners survives into the check result."""
@@ -1425,7 +1460,7 @@ class TestAmiOwnerAllowlistWiring:
                     "exemptions": 0,
                     "compliant": 2,
                     "compliance_percentage": 100.0,
-                    "unique_ami_owners": self.OWNERS_ACCOUNT_1,
+                    "unique_ami_owners": self.OBSERVED_OWNERS,
                     "unknown_ami_owners": {}
                 },
                 "violations": [],
@@ -1439,7 +1474,7 @@ class TestAmiOwnerAllowlistWiring:
             result = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
 
             assert len(result) == 1
-            assert result[0].ami_owners == self.OWNERS_ACCOUNT_1
+            assert result[0].allowlist_values == self.OBSERVED_OWNERS
 
     def test_parse_rejects_a_result_file_predating_ami_owner_collection(self) -> None:
         """
@@ -1474,7 +1509,7 @@ class TestAmiOwnerAllowlistWiring:
             with open(check_dir / "test-account-1_111111111111.json", 'w') as f:
                 json.dump(stale, f)
 
-            with pytest.raises(RuntimeError, match="predates AMI owner collection"):
+            with pytest.raises(RuntimeError, match="has no unique_ami_owners in its summary"):
                 parse_scp_result_files(temp_dir, make_test_org_hierarchy())
 
     def test_parse_accepts_an_account_that_observed_no_ami_owners(self) -> None:
@@ -1512,84 +1547,7 @@ class TestAmiOwnerAllowlistWiring:
             result = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
 
             assert len(result) == 1
-            assert result[0].ami_owners == []
-
-    def test_root_recommendation_unions_ami_owners(self) -> None:
-        """Root placement allowlists every owner seen in any affected account."""
-        results_data = [
-            self.make_result("111111111111", "account-1", 0, self.OWNERS_ACCOUNT_1),
-            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
-        ]
-
-        result = determine_scp_placement(results_data, make_test_org_hierarchy())
-
-        assert len(result) == 1
-        assert result[0].recommended_level == "root"
-        assert result[0].ec2_allowed_ami_owners == self.UNIONED_OWNERS
-
-    def test_ou_recommendation_carries_ami_owners(self) -> None:
-        """OU placement allowlists the owners seen in that OU's accounts."""
-        results_data = [
-            self.make_result("111111111111", "account-1", 2, self.OWNERS_ACCOUNT_1),
-            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
-        ]
-
-        hierarchy = OrganizationHierarchy(
-            root_id="r-1111",
-            organizational_units={
-                "ou-1234": OrganizationalUnit("ou-1234", "Production", None, [], ["222222222222"])
-            },
-            accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
-                "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"])
-            }
-        )
-
-        result = determine_scp_placement(results_data, hierarchy)
-
-        assert len(result) == 1
-        assert result[0].recommended_level == "ou"
-        assert result[0].ec2_allowed_ami_owners == self.OWNERS_ACCOUNT_2
-
-    def test_account_recommendation_carries_ami_owners(self) -> None:
-        """Account placement allowlists the owners seen in that account."""
-        results_data = [
-            self.make_result("111111111111", "account-1", 2, self.OWNERS_ACCOUNT_1),
-            self.make_result("222222222222", "account-2", 0, self.OWNERS_ACCOUNT_2),
-            self.make_result("333333333333", "account-3", 1, self.OWNERS_ACCOUNT_1),
-        ]
-
-        hierarchy = OrganizationHierarchy(
-            root_id="r-1111",
-            organizational_units={
-                "ou-1234": OrganizationalUnit(
-                    "ou-1234", "Production", None, [], ["222222222222", "333333333333"]
-                )
-            },
-            accounts={
-                "111111111111": AccountOrgPlacement("111111111111", "account-1", "r-1111", ["Root"]),
-                "222222222222": AccountOrgPlacement("222222222222", "account-2", "ou-1234", ["Production"]),
-                "333333333333": AccountOrgPlacement("333333333333", "account-3", "ou-1234", ["Production"])
-            }
-        )
-
-        result = determine_scp_placement(results_data, hierarchy)
-
-        assert len(result) == 1
-        assert result[0].recommended_level == "account"
-        assert result[0].ec2_allowed_ami_owners == self.OWNERS_ACCOUNT_2
-
-    def test_other_checks_carry_no_ami_owners(self) -> None:
-        """The allowlist belongs to one check and is not attached to others."""
-        results_data = [
-            SCPCheckResult("111111111111", "account-1", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
-            SCPCheckResult("222222222222", "account-2", "deny_ec2_imds_v1", 0, 0, 3, 100.0, 3),
-        ]
-
-        result = determine_scp_placement(results_data, make_test_org_hierarchy())
-
-        assert len(result) == 1
-        assert result[0].ec2_allowed_ami_owners is None
+            assert result[0].allowlist_values == []
 
 
 class TestAMissingViolationCountIsRejected:
@@ -1680,3 +1638,349 @@ class TestAMissingViolationCountIsRejected:
             parsed = parse_scp_result_files(temp_dir, self.hierarchy())
 
         assert [result.violations for result in parsed] == [0]
+
+
+class TestAllowlistValuesFollowTheRegistry:
+    """
+    A parsed result carries the allowlist values its own check declares.
+
+    The check registry names the summary key each check writes its observed
+    allowlist values under, so parsing reads that key rather than comparing
+    the check name against a literal (INV-13). One field on the result
+    carries them for every check, so a new check needs no new field and no
+    new branch here to complete its allowlist round trip (INV-07).
+    """
+
+    def parse_one_summary(
+        self,
+        check_name: str,
+        summary: Dict[str, Any]
+    ) -> List[SCPCheckResult]:
+        """
+        Write one account's result file for a check and parse the directory.
+
+        Args:
+            check_name: Directory under scps/ the file is written to
+            summary: The file's whole summary block
+
+        Returns:
+            Every result the parse produced
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / check_name
+            check_dir.mkdir(parents=True)
+            result_file = check_dir / "test-account_111111111111.json"
+            result_file.write_text(json.dumps({"summary": summary}))
+            return parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+    def test_ami_owner_values_are_read_from_unique_ami_owners(self) -> None:
+        """deny_ec2_ami_owner declares unique_ami_owners as its summary key."""
+        parsed = self.parse_one_summary("deny_ec2_ami_owner", {
+            "account_name": "test-account",
+            "account_id": "111111111111",
+            "check": "deny_ec2_ami_owner",
+            "violations": 0,
+            "unique_ami_owners": ["amazon", "444444444444"],
+        })
+
+        assert [result.allowlist_values for result in parsed] == [
+            ["amazon", "444444444444"]
+        ]
+
+    def test_iam_user_values_restore_the_redacted_account_id(self) -> None:
+        """
+        deny_iam_user_creation's ARNs carry the account ID `exclude_account_ids` redacted.
+
+        The values are user ARNs, so the account field is the account the
+        result belongs to. The registry definition says so, and parsing puts
+        it back: an ARN reading `REDACTED` allowlists no user.
+        """
+        parsed = self.parse_one_summary("deny_iam_user_creation", {
+            "account_name": "test-account",
+            "account_id": "111111111111",
+            "check": "deny_iam_user_creation",
+            "violations": 0,
+            "users": ["arn:aws:iam::REDACTED:user/terraform-user"],
+        })
+
+        assert [result.allowlist_values for result in parsed] == [
+            ["arn:aws:iam::111111111111:user/terraform-user"]
+        ]
+
+    def test_the_restore_touches_only_the_arn_account_field(self) -> None:
+        """
+        A user named REDACTED-svc is a user name, not a redacted account ID.
+
+        Redaction matches the ARN's account field specifically, so a name
+        carrying the token is written unchanged. Restoring by whole-string
+        replacement undid that: it wrote the account ID into the name as
+        well and allowlisted a user that does not exist. The restore matches
+        the same field the redaction did.
+        """
+        parsed = self.parse_one_summary("deny_iam_user_creation", {
+            "account_name": "test-account",
+            "account_id": "111111111111",
+            "check": "deny_iam_user_creation",
+            "violations": 0,
+            "users": ["arn:aws:iam::REDACTED:user/REDACTED-svc"],
+        })
+
+        assert [result.allowlist_values for result in parsed] == [
+            ["arn:aws:iam::111111111111:user/REDACTED-svc"]
+        ]
+
+    @pytest.mark.parametrize(
+        "check_name, summary_key",
+        [
+            ("deny_ec2_ami_owner", "unique_ami_owners"),
+            ("deny_iam_user_creation", "users"),
+        ],
+    )
+    def test_a_summary_key_carrying_anything_but_a_list_aborts(
+        self,
+        check_name: str,
+        summary_key: str
+    ) -> None:
+        """
+        `null` under the key is neither an absent key nor an empty list.
+
+        The presence check accepts it, and what happened next depended on the
+        check: restoring account IDs into None raised a bare TypeError, and
+        AMI owners carried None through to placement, where the union filter
+        dropped the account as if its check declared no allowlist - an
+        observation lost without a word (INV-01). Both abort naming the file
+        and the key.
+        """
+        with pytest.raises(
+            RuntimeError,
+            match=f"test-account_111111111111.json has {summary_key} = None in its summary, which is not a list",
+        ):
+            self.parse_one_summary(check_name, {
+                "account_name": "test-account",
+                "account_id": "111111111111",
+                "check": check_name,
+                "violations": 0,
+                summary_key: None,
+            })
+
+    def test_a_check_with_no_allowlist_carries_no_values(self) -> None:
+        """
+        deny_rds_unencrypted declares no allowlist, so it reads none.
+
+        The summary here also holds another check's summary key. The values
+        belong to the check that declared the key, so this one still carries
+        nothing: None is "this check has no allowlist", not "the file had no
+        recognizable key".
+        """
+        parsed = self.parse_one_summary("deny_rds_unencrypted", {
+            "account_name": "test-account",
+            "account_id": "111111111111",
+            "check": "deny_rds_unencrypted",
+            "violations": 0,
+            "unique_ami_owners": ["amazon"],
+        })
+
+        assert [result.allowlist_values for result in parsed] == [None]
+
+    def test_an_absent_summary_key_aborts_naming_the_check_and_the_variable(self) -> None:
+        """
+        A missing summary key is a stale file, and it cannot pass for an empty one.
+
+        An absent key and an empty list are indistinguishable once parsed,
+        and they need opposite handling: a stale artifact to re-run, versus a
+        fact about the account that leaves the policy off (INV-01). The error
+        names the check to re-run and the allowlist that would have been
+        built, because the operator holds neither.
+        """
+        with pytest.raises(RuntimeError) as exc_info:
+            self.parse_one_summary("deny_ec2_ami_owner", {
+                "account_name": "test-account",
+                "account_id": "111111111111",
+                "check": "deny_ec2_ami_owner",
+                "violations": 0,
+            })
+
+        message = str(exc_info.value)
+        assert "has no unique_ami_owners in its summary" in message
+        assert "deny_ec2_ami_owner" in message
+        assert "ec2_allowed_ami_owners" in message
+
+    def test_parse_rejects_an_iam_user_result_without_users(self) -> None:
+        """
+        The abort belongs to every check with an allowlist, not to one of them.
+
+        deny_iam_user_creation's absent key costs more than deny_ec2_ami_owner's:
+        an empty allowlist renders `NotResource: []`, which Organizations
+        rejects as malformed, taking every other statement in the module with
+        it. Reading the key from the registry is what makes one rule cover
+        both checks and the next one to declare an allowlist (INV-13).
+        """
+        with pytest.raises(RuntimeError, match="has no users in its summary"):
+            self.parse_one_summary("deny_iam_user_creation", {
+                "account_name": "test-account",
+                "account_id": "111111111111",
+                "check": "deny_iam_user_creation",
+                "violations": 0,
+            })
+
+    def test_an_empty_list_is_an_observation_and_not_an_absent_key(self) -> None:
+        """
+        An account that observed nothing says so, and that parses.
+
+        This is the case the absent-key abort has to be told apart from: the
+        check ran, found no instance with a resolvable AMI owner, and
+        recorded that. It leaves the policy off here (INV-06) rather than
+        stopping the run.
+        """
+        parsed = self.parse_one_summary("deny_ec2_ami_owner", {
+            "account_name": "test-account",
+            "account_id": "111111111111",
+            "check": "deny_ec2_ami_owner",
+            "violations": 0,
+            "unique_ami_owners": [],
+        })
+
+        assert [result.allowlist_values for result in parsed] == [[]]
+
+    def test_an_unregistered_check_is_rejected_before_its_summary_is_read(self) -> None:
+        """
+        The name is checked before anything the file says about the check.
+
+        A stale directory is stale throughout: its files predate the code
+        that would say which of their keys are required. Reporting the first
+        absent key sends the operator to re-run a check that no longer
+        exists, so the name is resolved before any key is required of the
+        file - here a file missing the violations count as well.
+        """
+        with pytest.raises(
+            RuntimeError,
+            match="test-account_111111111111.json names check 'deny_old_check', which is not a registered SCP check",
+        ):
+            self.parse_one_summary("deny_old_check", {
+                "account_name": "test-account",
+                "account_id": "111111111111",
+                "check": "deny_old_check",
+            })
+
+    def test_parse_rejects_a_result_directory_for_an_unregistered_check(self) -> None:
+        """
+        A result file naming a check the registry does not hold aborts.
+
+        The results directory outlives the code that wrote it, so a renamed
+        or deleted check leaves a directory behind. Parsing cannot know
+        whether that check declared an allowlist, so it cannot know whether
+        the file it is holding is complete - and the recommendation it would
+        build feeds a policy. The name is the whole of what is wrong, so the
+        error says it, names the file, and says what to do with the
+        directory: the registry's own "Unknown check" names neither, and
+        main reports a ValueError as a configuration error, which a stale
+        results directory is not.
+        """
+        with pytest.raises(
+            RuntimeError,
+            match=r"scps/deny_old_check/test-account_111111111111.json names check 'deny_old_check', "
+                  r"which is not a registered SCP check\. .* Delete the file, and the rest of "
+                  r".*scps/deny_old_check when it holds only that check's results, "
+                  r"or register a check under that name\.",
+        ):
+            self.parse_one_summary("deny_old_check", {
+                "account_name": "test-account",
+                "account_id": "111111111111",
+                "check": "deny_old_check",
+                "violations": 0,
+            })
+
+
+class TestPlacementUnionsAllowlistValues:
+    """
+    A recommendation carries the union of the values its accounts observed.
+
+    Attaching one policy to one target means every account under it must
+    keep doing what it already does, so the allowlist is the union of what
+    those accounts observed rather than any one of them. The union is taken
+    over the accounts the recommendation covers and no others: an account a
+    target does not reach cannot widen that target's allowlist.
+    """
+
+    def test_root_placement_unions_every_accounts_values(self) -> None:
+        """A root attachment reaches every account, so it allowlists every value."""
+        results_data = [
+            make_scp_result("111111111111", "deny_ec2_ami_owner", ["amazon"]),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", ["444444444444", "amazon"]),
+        ]
+
+        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy())
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "root"
+        assert recommendations[0].allowlist_values == ["444444444444", "amazon"]
+
+    def test_ou_placement_unions_only_the_accounts_the_ou_reaches(self) -> None:
+        """An account outside the OU cannot widen that OU's allowlist."""
+        results_data = [
+            make_scp_result("111111111111", "deny_ec2_ami_owner", ["outside"], violations=2),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", ["amazon"]),
+        ]
+
+        recommendations = determine_scp_placement(
+            results_data,
+            make_hierarchy_with_production_ou(["222222222222"])
+        )
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "ou"
+        assert recommendations[0].allowlist_values == ["amazon"]
+
+    def test_account_placement_carries_that_accounts_own_values(self) -> None:
+        """An account-level attachment reaches one account, so it allowlists one."""
+        results_data = [
+            make_scp_result("111111111111", "deny_ec2_ami_owner", ["outside"], violations=2),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", ["amazon"]),
+            make_scp_result("333333333333", "deny_ec2_ami_owner", ["444444444444"], violations=1),
+        ]
+
+        recommendations = determine_scp_placement(
+            results_data,
+            make_hierarchy_with_production_ou(["222222222222", "333333333333"])
+        )
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "account"
+        assert recommendations[0].allowlist_values == ["amazon"]
+
+    def test_a_check_with_no_allowlist_places_without_values(self) -> None:
+        """
+        No allowlist to union stays no allowlist, rather than becoming an empty one.
+
+        The two mean opposite things downstream: a check with no allowlist
+        renders its statement unconditionally, while a check whose covered
+        accounts observed nothing leaves its statement off (INV-06).
+        """
+        results_data = [
+            make_scp_result("111111111111", "deny_ec2_imds_v1", None),
+            make_scp_result("222222222222", "deny_ec2_imds_v1", None),
+        ]
+
+        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy())
+
+        assert len(recommendations) == 1
+        assert recommendations[0].allowlist_values is None
+
+    def test_covered_accounts_that_observed_nothing_union_to_an_empty_allowlist(self) -> None:
+        """
+        Every covered account observing nothing is an answer, and it is empty.
+
+        This is the case the absent allowlist has to be told apart from. The
+        check does have an allowlist here and every account it covers filled
+        it with nothing, which leaves the policy off rather than rendering it
+        unconditionally.
+        """
+        results_data = [
+            make_scp_result("111111111111", "deny_ec2_ami_owner", []),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", []),
+        ]
+
+        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy())
+
+        assert len(recommendations) == 1
+        assert recommendations[0].allowlist_values == []

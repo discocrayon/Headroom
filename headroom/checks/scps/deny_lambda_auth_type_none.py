@@ -6,13 +6,13 @@ from boto3.session import Session
 
 from ...aws.lambda_functions import DenyLambdaAuthTypeNone, get_deny_lambda_auth_type_none_analysis
 from ...constants import DENY_LAMBDA_AUTH_TYPE_NONE
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
 
-@register_check("scps", DENY_LAMBDA_AUTH_TYPE_NONE)
+@register_check("scps", DENY_LAMBDA_AUTH_TYPE_NONE, terraform_section=TerraformSection.LAMBDA)
 class DenyLambdaAuthTypeNoneCheck(BaseCheck[DenyLambdaAuthTypeNone]):
     """
     Check for Lambda functions that would be blocked by deny_lambda_auth_type_none SCP.

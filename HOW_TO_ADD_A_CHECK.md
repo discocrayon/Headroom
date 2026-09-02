@@ -104,18 +104,25 @@ execution_order:
     ordering: "alphabetical by service"
 
   phase_5_terraform_generation:
-    file: headroom/terraform/generate_{scps|rcps}.py
-    scp: "add parameter generation logic to _build_<service>_terraform_parameters"
-    rcp: |
-      Add one RCP_TERRAFORM_VARIABLES entry naming the check's comment,
-      enable variable, and allowlist variable. The renderer loops the table,
-      so no branch needs editing. Parsing and placement are already driven by
-      the registry and need no change.
+    file: headroom/checks/{scps|rcps}/{check_name}.py
+    action: |
+      Nothing outside the check module. @register_check takes
+      terraform_section=TerraformSection.<SERVICE> and, where the statement
+      is scoped by an allowlist, allowlist=Allowlist(summary_key=...,
+      terraform_variable=...). Both generators render every registered
+      definition from the registry (INV-13).
+    new_service: |
+      Add one member to TerraformSection in headroom/enums.py, in
+      alphabetical position. Declaration order is render order.
     enforced_by: |
-      test_table_covers_every_registered_rcp_check fails by name if a
-      registered RCP check has no table entry. Do not silence it by removing
-      the check from the registry.
-    ordering: "alphabetical by service"
+      test_every_registered_scp_check_is_rendered and
+      test_every_registered_rcp_check_is_rendered fail by name if a
+      registered check does not reach its module;
+      test_every_registered_check_is_declared_by_its_module fails by name
+      if test_environment/modules/{type}/variables.tf does not declare the
+      check's boolean or its allowlist variable;
+      test_generic_pipeline_modules_name_no_check fails if a generic
+      module names a check.
 
   phase_6_tests:
     files:
@@ -181,13 +188,13 @@ import boto3
 
 from ...aws.{service} import {DataModel}, get_{check_name}_analysis
 from ...constants import {CHECK_CONSTANT}
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
 
-@register_check("scps", {CHECK_CONSTANT})
+@register_check("scps", {CHECK_CONSTANT}, terraform_section=TerraformSection.{SERVICE})
 class {CheckClass}(BaseCheck[{DataModel}]):
     """Check for {DESCRIPTION}."""
 
@@ -410,13 +417,21 @@ import boto3
 
 from ...aws.{service} import {DataModel}, analyze_{service}_{resource}_policies
 from ...constants import {CHECK_CONSTANT}
-from ...enums import CheckCategory
+from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
-from ..registry import register_check
+from ..registry import Allowlist, register_check
 
 
-@register_check("rcps", {CHECK_CONSTANT})
+@register_check(
+    "rcps",
+    {CHECK_CONSTANT},
+    terraform_section=TerraformSection.{SERVICE},
+    allowlist=Allowlist(
+        summary_key="unique_third_party_accounts",
+        terraform_variable="{allowlist_var}",
+    ),
+)
 class {CheckClass}(BaseCheck[{DataModel}]):
     """Check for third-party access in {RESOURCE_TYPE}."""
 
@@ -501,11 +516,13 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         }
 ```
 
-`unique_third_party_accounts` is the key, and it is not optional:
-`headroom/terraform/generate_rcps.py` raises on a summary that omits it rather
-than generating an empty allowlist, because an empty allowlist denies every
-third party. `violations` is the other key it requires, and a non-zero count is
-what marks the account as one the RCP cannot be deployed to.
+`unique_third_party_accounts` is the key, and it is not optional: the shared
+reader `parse_results._read_declared_allowlist`, which
+`headroom/terraform/generate_rcps.py` reads every RCP result through, raises on a
+summary that omits it rather than generating an empty allowlist, because an
+empty allowlist denies every third party. `violations` is the other key
+`_parse_single_rcp_result_file` requires, and a non-zero count is what marks
+the account as one the RCP cannot be deployed to.
 
 ---
 
@@ -1333,31 +1350,18 @@ must_modify:
         }
       },
 
-  - path: headroom/terraform/generate_scps.py
-    function: "_build_<service>_terraform_parameters"
-    add_lines: |
-      parameters.append(TerraformComment("<Service>"))  # only when the service is new
-      {check_name} = "{check_name}" in enabled_policies
-      parameters.append(TerraformParameter("{check_name}", {check_name}))
-    location: "alphabetical by service, following the deny_lambda_auth_type_none shape"
-
-  - path: headroom/terraform/generate_rcps.py
-    table: "RCP_TERRAFORM_VARIABLES"
-    add_entry: |
-      {CHECK_CONSTANT}: RcpTerraformVars(
-          comment="<Service>",
-          enable_var="{check_name}",
-          allowlist_var="{allowlist_var}",
-      ),
-    location: "alphabetical by service"
-    do_not: "Hand-write a renderer here. _build_rcp_terraform_module loops this table; a hand-written branch is what INV-13 forbids."
-    enforced_by: "test_table_covers_every_registered_rcp_check fails by name if the entry is missing."
+  - path: headroom/checks/{type}/{check_name}.py
+    decorator: "@register_check"
+    add_kwarg: "terraform_section=TerraformSection.<SERVICE>,"
+    do_not: "Edit generate_scps.py or generate_rcps.py. Both render from the registry; a hand-written branch is what INV-13 forbids."
+    enforced_by: "test_generic_pipeline_modules_name_no_check fails if a generic module names a check."
 
 # A check whose SCP statement is scoped by an allowlist needs EVERY step
 # below. Stop short anywhere and the check still reports 100% compliance,
 # the SCP is still enabled, and the allowlist renders empty - which for a
 # Deny statement denies everything rather than nothing. deny_ec2_ami_owner
-# shipped with the first and last steps only.
+# shipped with the value collected and the module variable declared, and
+# nothing carrying one to the other.
 #
 # Collect the value the CONDITION KEY will hold, not the field of the same
 # name in the describe call. They can differ: ec2:Owner is an AMI's
@@ -1371,36 +1375,36 @@ if_check_has_allowlist:
     function: "build_summary_fields"
     add_line: "\"unique_{thing}s\": sorted(list({thing}s))"
 
-  - path: headroom/types.py
-    dataclass: "SCPCheckResult"
-    add_line: "{thing}s: Optional[List[str]] = None"
+  - path: headroom/checks/{type}/{check_name}.py
+    decorator: "@register_check"
+    add_kwarg: |
+      allowlist=Allowlist(
+          summary_key="unique_{thing}s",
+          terraform_variable="{service}_allowed_{thing}s",
+          restores_account_ids=<True when the values are ARNs>,
+          empty_allowlist_comment="{check_name} stays off here: <why the covered accounts observed nothing, and what an empty list would do>",
+      )
+    purpose: |
+      Parsing reads summary_key and aborts when it is absent - an absent key
+      and an empty list mean opposite things. Placement unions the values
+      across the accounts a placement covers. Rendering emits
+      terraform_variable only when the check is enabled and, when the union
+      is empty and a comment is declared, leaves the policy off with that
+      comment (INV-06). No Python file outside the check module changes; the
+      Terraform module still declares the variable, below.
 
-  - path: headroom/parse_results.py
-    function: "_parse_single_scp_result_file"
-    add_line: "{thing}s=summary.get(\"unique_{thing}s\")"
-
-  - path: headroom/parse_results.py
-    add_function: "_build_{thing}s_for_recommendation"
-    call_from: ["_build_root_recommendation", "_build_ou_recommendation", "_build_account_recommendation"]
-    purpose: "Union the values across the accounts a placement covers"
-
-  - path: headroom/types.py
-    dataclass: "SCPPlacementRecommendations"
-    add_line: "{service}_allowed_{thing}s: Optional[List[str]] = None"
-
-  - path: headroom/terraform/generate_scps.py
-    function: "_build_{service}_terraform_parameters"
-    add_lines: |
-      Emit the list parameter only when it has entries. An empty allowlist
-      leaves the policy off, with a TerraformComment saying why - an empty
-      list on a Deny denies everything rather than nothing, and accounts
-      that own none of the resource legitimately report none. A result file
-      that predates the collection is the other cause, and parsing rejects
-      that outright: an absent summary key and an empty one mean opposite
-      things, and only the file itself can tell them apart.
+  - path: test_environment/modules/{type}/variables.tf
+    add_block: |
+      variable "{service}_allowed_{thing}s" {
+        type        = list(string)
+        default     = []
+        description = "..."
+      }
+    location: "alphabetical by service"
+    purpose: "The statement in locals.tf reads it as var.{service}_allowed_{thing}s. Without the declaration the rendered module does not plan; without default = [] every module call where the check is off stops planning, because the renderer emits the allowlist only for an enabled check."
 
   - path: tests/test_parse_results.py
-    must_test: [summary_field_carried, union_across_accounts, other_checks_unaffected]
+    must_test: [summary_field_carried, absent_key_aborts, union_across_accounts, other_checks_unaffected]
 
   - path: tests/test_generate_scps.py
     must_test: [renders_populated_allowlist, empty_allowlist_leaves_policy_off]
@@ -1601,7 +1605,7 @@ error_check_not_registered:
     - "@register_check decorator missing"
     - "Decorator has wrong parameters"
     - "Check file not in scps/ or rcps/ directory"
-  fix: "Verify @register_check('scps'|'rcps', CHECK_CONSTANT)"
+  fix: "Verify @register_check('scps'|'rcps', CHECK_CONSTANT, terraform_section=TerraformSection.<SERVICE>)"
   verify: "python -c 'from headroom.checks.registry import get_check_names; print(get_check_names())'"
 
 error_type_checking_fails:
@@ -1891,7 +1895,7 @@ base_class:
 
 registry:
   file: headroom/checks/registry.py
-  decorator: "@register_check(type, name)"
+  decorator: "@register_check(type, name, terraform_section=..., allowlist=...)"
   discovery: "Automatic from scps/ and rcps/ directories"
 
 type_aliases:
