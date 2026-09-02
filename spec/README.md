@@ -103,6 +103,7 @@ touching.
 | **Exemption** | A resource the statement's condition would spare. Does not block deployment. |
 | **Compliant** | A resource the statement would allow. |
 | **Blocker** | An RCP finding naming a principal no allowlist can express. [RCP placement](contracts/placement.md#rcp-placement) states what it withholds. |
+| **Cleared** | An account the policy type's per-account safety condition passes: zero violations for an SCP, no blocker for an RCP. [Allowlist union](contracts/placement.md#allowlist-union) states what is built over cleared accounts. |
 | **Placement** | The organization target — root, OU, or account — a policy is attached to. |
 | **Headroom** | The distance between what workloads actually do and what policy would permit. |
 | **Analyzable account** | An ACTIVE member account, excluding the management account and `skip_account_ids`. |
