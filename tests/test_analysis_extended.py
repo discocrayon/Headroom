@@ -433,11 +433,13 @@ class TestRunChecks:
         # Create two mock check classes
         mock_check1 = MagicMock(spec=BaseCheck)
         mock_check1.CHECK_NAME = "check_1"
+        mock_check1.CHECK_TYPE = "scps"
         mock_check1_instance = MagicMock()
         mock_check1.return_value = mock_check1_instance
 
         mock_check2 = MagicMock(spec=BaseCheck)
         mock_check2.CHECK_NAME = "check_2"
+        mock_check2.CHECK_TYPE = "scps"
         mock_check2_instance = MagicMock()
         mock_check2.return_value = mock_check2_instance
 

@@ -70,6 +70,7 @@ def all_check_results_exist(check_type: str, account_info: AccountInfo, config: 
     return all(
         results_exist(
             check_name=check_name,
+            check_type=check_type,
             account_name=account_info.name,
             account_id=account_info.account_id,
             results_base_dir=config.results_dir,
@@ -124,6 +125,7 @@ def run_checks_for_type(
         # sends the operator answers "All results already exist".
         if results_exist(
             check_name=check_class.CHECK_NAME,
+            check_type=check_class.CHECK_TYPE,
             account_name=account_info.name,
             account_id=account_info.account_id,
             results_base_dir=config.results_dir,

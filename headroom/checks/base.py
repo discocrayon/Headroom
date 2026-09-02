@@ -179,6 +179,7 @@ class BaseCheck(ABC, Generic[T]):
 
         write_check_results(
             check_name=self.check_name,
+            check_type=self.CHECK_TYPE,
             account_name=self.account_name,
             account_id=self.account_id,
             results_data=results_data,

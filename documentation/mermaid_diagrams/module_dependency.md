@@ -47,7 +47,6 @@ graph TD
   headroom.analysis --> headroom.utils
 
   headroom.checks.registry --> headroom.checks.base
-  headroom.checks.registry --> headroom.constants
   headroom.checks.registry --> headroom.enums
 
   headroom.checks.base --> headroom.write_results

@@ -8,7 +8,6 @@ from typing import Callable, List, Optional
 
 import pytest
 import headroom.checks.registry
-import headroom.constants
 from headroom.checks.registry import (
     _CHECK_REGISTRY,
     Allowlist,
@@ -53,22 +52,16 @@ RENDERED_RCP_ORDER = [
 @pytest.fixture
 def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Give one test its own copy of the two maps a registration writes to.
+    Give one test its own copy of the registry a registration writes to.
 
     A registration the registry must refuse still runs the decorator. If a
     validation regressed, the throwaway check would land in the real registry
-    and in the constants mirror write_results reads, for the rest of the
-    session and every test after this one.
+    for the rest of the session and every test after this one.
     """
     monkeypatch.setattr(
         headroom.checks.registry,
         "_CHECK_REGISTRY",
         dict(headroom.checks.registry._CHECK_REGISTRY),
-    )
-    monkeypatch.setattr(
-        headroom.constants,
-        "_CHECK_TYPE_MAP",
-        dict(headroom.constants._CHECK_TYPE_MAP),
     )
 
 
@@ -404,7 +397,7 @@ def test_registering_an_unknown_check_type_raises_and_registers_nothing(
         )(MistypedCheck)
 
     assert "deny_ec2_mistyped" not in get_check_names()
-    assert "deny_ec2_mistyped" not in headroom.constants.get_check_type_map()
+    assert "deny_ec2_mistyped" not in get_check_type_map()
 
 
 def test_registering_a_check_type_enum_member_raises_and_registers_nothing(
@@ -439,7 +432,7 @@ def test_registering_a_check_type_enum_member_raises_and_registers_nothing(
         )(EnumTypedCheck)
 
     assert "deny_ec2_enum_typed" not in get_check_names()
-    assert "deny_ec2_enum_typed" not in headroom.constants.get_check_type_map()
+    assert "deny_ec2_enum_typed" not in get_check_type_map()
 
 
 def test_registering_an_rcp_without_an_allowlist_raises(isolated_registry: None) -> None:
@@ -664,23 +657,6 @@ def test_the_filtering_accessors_reject_an_unknown_check_type(
         match=f"Unknown check type: '{check_type}'; expected 'scps' or 'rcps'",
     ):
         accessor(check_type)
-
-
-def test_every_definition_agrees_with_the_constants_mirror() -> None:
-    """
-    The mirror write_results reads must say what the definition says.
-
-    headroom.constants keeps its own name-to-type map, written by the
-    decorator, because write_results sits below the registry in the import
-    graph and cannot ask it. It is a second record of the same fact and the
-    one thing here that can drift: a check whose type differs between them is
-    analyzed as one kind and written into the other kind's results
-    directory, where the run that reads those results back looks for neither.
-    """
-    for check_name in get_check_names():
-        definition = get_check_definition(check_name)
-
-        assert headroom.constants.get_check_type_map()[check_name] == definition.check_type
 
 
 def test_every_rcp_allowlist_collects_third_party_accounts() -> None:
