@@ -453,6 +453,13 @@ is enabled, so each must be a variable the module declares; a check registered
 without its `variable` block passed every test and failed at the operator's
 `terraform plan` with an unsupported argument. The guard reads each module's
 `variables.tf` for every declaration, with or without a default, and fails by
-name when a definition names something the module does not declare. It cannot
-see the module's `main.tf`: a declared variable no statement reads is still
-undetected, and is the check specification's `verification` list to catch.
+name when a definition names something the module does not declare.
+
+`test_every_registered_check_is_read_by_a_statement` takes the step after. It
+reads the module's `locals.tf`, comments removed, for `include = var.<check
+name>` and for `var.<allowlist variable>`, and fails by name on a declared
+variable no statement reads: an argument `terraform plan` accepts and the
+policy ignores, so the check would report its policy in place while the module
+attached nothing for it. Neither guard reads the statement itself. Whether it
+names the right actions, resource type, or condition key is the check
+specification's `verification` list to catch.

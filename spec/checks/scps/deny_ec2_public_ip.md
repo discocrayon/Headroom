@@ -54,9 +54,10 @@ alone; it is not on `instance` and not an action-level key. On the instance
 ARN the key is therefore absent, a `Bool` condition on an absent key is false,
 and a statement scoped to `instance/*` never matches. The statement was scoped
 that way once and could not fire, while the check reported the SCP in place.
-No test in `tests/` reads the module, so the statement's shape is pinned only
-here and in the module's own comment; `terraform validate` accepts either
-scope.
+`test_every_registered_check_is_read_by_a_statement` proves a statement is
+gated by `var.deny_ec2_public_ip`, not what it denies, so the statement's shape
+is pinned only here and in the module's own comment; `terraform validate`
+accepts either scope.
 
 ## Evidence
 

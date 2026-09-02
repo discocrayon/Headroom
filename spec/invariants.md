@@ -313,7 +313,7 @@ comment, or a name or allowlist variable colliding with another definition's
 fails at import time. [`architecture/check-framework.md`](architecture/check-framework.md#discovery)
 states each rule.
 
-Five named guards enforce this. `test_generic_pipeline_modules_name_no_check`
+Six named guards enforce this. `test_generic_pipeline_modules_name_no_check`
 fails when the orchestrator, check discovery, or any collection, result-writing,
 parsing, placement, or rendering module names a registered check or a
 `DENY_`-prefixed constant outside a `#` comment.
@@ -324,6 +324,10 @@ check does not reach its module.
 module's `variables.tf` does not declare a check name or allowlist variable the
 generator will pass — the step after reaching the module, which `terraform plan`
 would otherwise refuse at the operator's desk.
+`test_every_registered_check_is_read_by_a_statement` fails by name when no
+statement in the module's `locals.tf` is gated by a check's boolean or reads its
+allowlist variable — the step after declaration, which `terraform plan` accepts
+and the policy silently ignores.
 `test_render_order_is_independent_of_registration_order` reverses the registry
 and pins the order both generators render from.
 
