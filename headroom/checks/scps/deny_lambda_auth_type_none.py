@@ -4,7 +4,11 @@ from typing import List
 
 from boto3.session import Session
 
-from ...aws.lambda_functions import DenyLambdaAuthTypeNone, get_deny_lambda_auth_type_none_analysis
+from ...aws.lambda_functions import (
+    DenyLambdaAuthTypeNone,
+    FUNCTION_URL_AUTH_TYPE_NONE,
+    get_deny_lambda_auth_type_none_analysis,
+)
 from ...constants import DENY_LAMBDA_AUTH_TYPE_NONE
 from ...enums import CheckCategory, TerraformSection
 from ...types import JsonDict
@@ -56,7 +60,7 @@ class DenyLambdaAuthTypeNoneCheck(BaseCheck[DenyLambdaAuthTypeNone]):
             "function_url_auth_type": result.function_url_auth_type,
         }
 
-        if result.has_function_url and result.function_url_auth_type == "NONE":
+        if result.has_function_url and result.function_url_auth_type == FUNCTION_URL_AUTH_TYPE_NONE:
             return (CheckCategory.VIOLATION, result_dict)
 
         return (CheckCategory.COMPLIANT, result_dict)

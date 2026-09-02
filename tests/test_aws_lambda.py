@@ -6,7 +6,7 @@ Tests for DenyLambdaAuthTypeNone dataclass and get_deny_lambda_auth_type_none_an
 
 import pytest
 from unittest.mock import MagicMock
-from typing import Optional
+from typing import Dict, List
 
 from botocore.exceptions import ClientError
 from headroom.aws.lambda_functions import DenyLambdaAuthTypeNone, get_deny_lambda_auth_type_none_analysis
@@ -123,100 +123,82 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
             "FunctionArn": f"arn:aws:lambda:{region}:{account_id}:function:{function_name}"
         }
 
-    def test_get_deny_lambda_auth_type_none_analysis_success(self) -> None:
-        """Test successful Lambda analysis across regions with mixed auth types."""
-        mock_session = MagicMock()
+    @staticmethod
+    def _no_urls(FunctionName: str) -> List[dict]:
+        """URL-config pages for a function that has no function URL."""
+        return [{"FunctionUrlConfigs": []}]
 
-        # Mock regions response
+    @staticmethod
+    def _lambda_client(functions_pages: List[dict], url_pages: object) -> MagicMock:
+        """
+        Build a regional Lambda client mock with both paginators wired.
+
+        `url_pages` is the URL-config paginator's `paginate` side effect: a
+        callable taking FunctionName and returning that function's pages, or
+        an exception every call raises.
+        """
+        functions_paginator = MagicMock()
+        functions_paginator.paginate.return_value = functions_pages
+        url_paginator = MagicMock()
+        url_paginator.paginate.side_effect = url_pages
+        client = MagicMock()
+        client.get_paginator.side_effect = lambda name: {
+            "list_functions": functions_paginator,
+            "list_function_url_configs": url_paginator,
+        }[name]
+        return client
+
+    @staticmethod
+    def _session(lambda_clients: Dict[str, MagicMock]) -> MagicMock:
+        """Build a session mock serving one Lambda client per region."""
         mock_ec2 = MagicMock()
         mock_ec2.describe_regions.return_value = {
-            "Regions": [
-                {"RegionName": "us-east-1"},
-                {"RegionName": "us-west-2"}
-            ]
+            "Regions": [{"RegionName": region} for region in lambda_clients]
         }
+        mock_session = MagicMock()
+        mock_session.client.side_effect = lambda service, region_name=None: (
+            mock_ec2 if service == "ec2" else lambda_clients[region_name]
+        )
+        return mock_session
 
-        # Mock regional Lambda clients
-        mock_regional_lambda_1 = MagicMock()
-        mock_regional_lambda_2 = MagicMock()
+    def test_get_deny_lambda_auth_type_none_analysis_success(self) -> None:
+        """Test successful Lambda analysis across regions with mixed auth types."""
+        east = self._lambda_client(
+            [{
+                "Functions": [
+                    self.create_mock_function("function-with-none-auth"),
+                    self.create_mock_function("function-with-iam-auth"),
+                    self.create_mock_function("function-without-url"),
+                ]
+            }],
+            lambda FunctionName: {
+                "function-with-none-auth": [{"FunctionUrlConfigs": [{"AuthType": "NONE"}]}],
+                "function-with-iam-auth": [{"FunctionUrlConfigs": [{"AuthType": "AWS_IAM"}]}],
+                "function-without-url": [{"FunctionUrlConfigs": []}],
+            }[FunctionName],
+        )
+        west = self._lambda_client(
+            [{"Functions": [self.create_mock_function("west-function", region="us-west-2")]}],
+            self._no_urls,
+        )
 
-        # Mock paginators for us-east-1
-        mock_functions_paginator_1 = MagicMock()
-        functions_page_1 = {
-            "Functions": [
-                self.create_mock_function("function-with-none-auth"),
-                self.create_mock_function("function-with-iam-auth"),
-                self.create_mock_function("function-without-url")
-            ]
-        }
-        mock_functions_paginator_1.paginate.return_value = [functions_page_1]
+        results = get_deny_lambda_auth_type_none_analysis(
+            self._session({"us-east-1": east, "us-west-2": west})
+        )
 
-        # Mock list_function_url_configs responses
-        def list_function_url_configs_1_side_effect(FunctionName: str) -> dict:
-            if FunctionName == "function-with-none-auth":
-                return {
-                    "FunctionUrlConfigs": [
-                        {"AuthType": "NONE"}
-                    ]
-                }
-            elif FunctionName == "function-with-iam-auth":
-                return {
-                    "FunctionUrlConfigs": [
-                        {"AuthType": "AWS_IAM"}
-                    ]
-                }
-            return {"FunctionUrlConfigs": []}
-
-        mock_regional_lambda_1.list_function_url_configs.side_effect = list_function_url_configs_1_side_effect
-
-        # Mock paginators for us-west-2
-        mock_functions_paginator_2 = MagicMock()
-        functions_page_2 = {
-            "Functions": [
-                self.create_mock_function("west-function", region="us-west-2")
-            ]
-        }
-        mock_functions_paginator_2.paginate.return_value = [functions_page_2]
-
-        def list_function_url_configs_2_side_effect(FunctionName: str) -> dict:
-            return {"FunctionUrlConfigs": []}
-
-        mock_regional_lambda_2.list_function_url_configs.side_effect = list_function_url_configs_2_side_effect
-
-        # Mock get_paginator calls
-        mock_regional_lambda_1.get_paginator.return_value = mock_functions_paginator_1
-        mock_regional_lambda_2.get_paginator.return_value = mock_functions_paginator_2
-
-        # Mock session.client calls
-        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
-            if service == "ec2":
-                return mock_ec2
-            elif region_name == "us-east-1":
-                return mock_regional_lambda_1
-            return mock_regional_lambda_2
-
-        mock_session.client.side_effect = client_side_effect
-
-        # Execute function
-        results = get_deny_lambda_auth_type_none_analysis(mock_session)
-
-        # Verify results
         assert len(results) == 4
 
-        # Check function with NONE auth
         none_auth_functions = [r for r in results if r.function_name == "function-with-none-auth"]
         assert len(none_auth_functions) == 1
         assert none_auth_functions[0].has_function_url is True
         assert none_auth_functions[0].function_url_auth_type == "NONE"
         assert none_auth_functions[0].region == "us-east-1"
 
-        # Check function with AWS_IAM auth
         iam_auth_functions = [r for r in results if r.function_name == "function-with-iam-auth"]
         assert len(iam_auth_functions) == 1
         assert iam_auth_functions[0].has_function_url is True
         assert iam_auth_functions[0].function_url_auth_type == "AWS_IAM"
 
-        # Check function without URL
         no_url_functions = [r for r in results if r.function_name == "function-without-url"]
         assert len(no_url_functions) == 1
         assert no_url_functions[0].has_function_url is False
@@ -224,61 +206,64 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
 
     def test_get_deny_lambda_auth_type_none_analysis_no_functions(self) -> None:
         """Test function with no Lambda functions in any region."""
-        mock_session = MagicMock()
+        client = self._lambda_client([{"Functions": []}], self._no_urls)
 
-        mock_ec2 = MagicMock()
-        mock_ec2.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
+        results = get_deny_lambda_auth_type_none_analysis(
+            self._session({"us-east-1": client})
+        )
 
-        mock_regional_lambda = MagicMock()
-        mock_functions_paginator = MagicMock()
-
-        # Empty responses
-        mock_functions_paginator.paginate.return_value = [{"Functions": []}]
-        mock_regional_lambda.get_paginator.return_value = mock_functions_paginator
-
-        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
-            if service == "ec2":
-                return mock_ec2
-            return mock_regional_lambda
-
-        mock_session.client.side_effect = client_side_effect
-
-        # Execute function
-        results = get_deny_lambda_auth_type_none_analysis(mock_session)
-
-        # Verify empty results
-        assert len(results) == 0
         assert results == []
 
-    def _one_function_session(
-        self,
-        url_config_side_effect: object
-    ) -> MagicMock:
+    def _one_function_session(self, url_pages: object) -> MagicMock:
         """Build a session mock with one region and one function."""
-        mock_session = MagicMock()
+        client = self._lambda_client(
+            [{"Functions": [self.create_mock_function("test-function")]}], url_pages
+        )
+        return self._session({"us-east-1": client})
 
-        mock_ec2 = MagicMock()
-        mock_ec2.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
+    def test_a_none_url_on_any_qualifier_is_reported(self) -> None:
+        """
+        A NONE URL on an alias is found behind an AWS_IAM URL on $LATEST.
 
-        mock_regional_lambda = MagicMock()
-        mock_functions_paginator = MagicMock()
-        mock_functions_paginator.paginate.return_value = [
-            {"Functions": [self.create_mock_function("test-function")]}
-        ]
-        mock_regional_lambda.get_paginator.return_value = mock_functions_paginator
-        mock_regional_lambda.list_function_url_configs.side_effect = url_config_side_effect
+        A function URL can sit on $LATEST and on every alias, and the API
+        documents no order for the configs it returns. Reading only the first
+        would report this function compliant, the SCP would deploy, and the
+        next UpdateFunctionUrlConfig on the alias would be denied - the break
+        the check exists to prevent.
+        """
+        mock_session = self._one_function_session(
+            lambda FunctionName: [{
+                "FunctionUrlConfigs": [{"AuthType": "AWS_IAM"}, {"AuthType": "NONE"}]
+            }]
+        )
 
-        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
-            if service == "ec2":
-                return mock_ec2
-            return mock_regional_lambda
+        results = get_deny_lambda_auth_type_none_analysis(mock_session)
 
-        mock_session.client.side_effect = client_side_effect
-        return mock_session
+        assert results[0].has_function_url is True
+        assert results[0].function_url_auth_type == "NONE"
+
+    def test_url_configs_are_read_across_pages(self) -> None:
+        """
+        A NONE URL on the second page of ListFunctionUrlConfigs is found.
+
+        The API caps a page at 50 configs and returns a marker for the rest,
+        so a single unpaginated call reads the first page only and a NONE URL
+        beyond it is a clean verdict from evidence never read (INV-01).
+        """
+        mock_session = self._one_function_session(
+            lambda FunctionName: [
+                {"FunctionUrlConfigs": [{"AuthType": "AWS_IAM"}]},
+                {"FunctionUrlConfigs": [{"AuthType": "NONE"}]},
+            ]
+        )
+
+        results = get_deny_lambda_auth_type_none_analysis(mock_session)
+
+        url_paginator = mock_session.client(
+            "lambda", region_name="us-east-1"
+        ).get_paginator("list_function_url_configs")
+        url_paginator.paginate.assert_called_once_with(FunctionName="test-function")
+        assert results[0].function_url_auth_type == "NONE"
 
     def test_url_config_read_failure_aborts_the_run(self) -> None:
         """
@@ -327,47 +312,23 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
 
     def test_get_deny_lambda_auth_type_none_analysis_multiple_pages(self) -> None:
         """Test function with paginated results."""
-        mock_session = MagicMock()
+        client = self._lambda_client(
+            [
+                {
+                    "Functions": [
+                        self.create_mock_function("function-1"),
+                        self.create_mock_function("function-2"),
+                    ]
+                },
+                {"Functions": [self.create_mock_function("function-3")]},
+            ],
+            self._no_urls,
+        )
 
-        mock_ec2 = MagicMock()
-        mock_ec2.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
+        results = get_deny_lambda_auth_type_none_analysis(
+            self._session({"us-east-1": client})
+        )
 
-        mock_regional_lambda = MagicMock()
-        mock_functions_paginator = MagicMock()
-
-        # Multiple pages of functions
-        functions_page_1 = {
-            "Functions": [
-                self.create_mock_function("function-1"),
-                self.create_mock_function("function-2")
-            ]
-        }
-
-        functions_page_2 = {
-            "Functions": [
-                self.create_mock_function("function-3")
-            ]
-        }
-
-        mock_functions_paginator.paginate.return_value = [functions_page_1, functions_page_2]
-        mock_regional_lambda.get_paginator.return_value = mock_functions_paginator
-
-        # All functions have no URL
-        mock_regional_lambda.list_function_url_configs.return_value = {"FunctionUrlConfigs": []}
-
-        def client_side_effect(service: str, region_name: Optional[str] = None) -> MagicMock:
-            if service == "ec2":
-                return mock_ec2
-            return mock_regional_lambda
-
-        mock_session.client.side_effect = client_side_effect
-
-        # Execute function
-        results = get_deny_lambda_auth_type_none_analysis(mock_session)
-
-        # Verify all functions from all pages are included
         assert len(results) == 3
         function_names = [r.function_name for r in results]
         assert "function-1" in function_names

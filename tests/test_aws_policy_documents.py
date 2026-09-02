@@ -612,10 +612,108 @@ class TestServicePrincipalSources:
         assert sources[0].has_wildcard_source is False
 
     def test_wildcard_principal_string_reports_nothing(self) -> None:
-        """`Principal: "*"` is not a dict and names no service."""
+        """`Principal: "*"` under no source key names no service and no source."""
         assert read_service_principal_sources(
             self._statement("*"), self.ORG_ACCOUNTS, ORG_ID, self.WHERE
         ) == []
+
+    def test_a_wildcard_principal_narrowed_by_a_source_arn_is_a_source(self) -> None:
+        """
+        AWS's cross-account SNS-to-SQS queue policy is `Principal: "*"`
+        pinned by `aws:SourceArn` to the topic. Only a service call carries
+        a source key, so the guard names who the grant is for even though
+        the Principal element does not, and the topic's account belongs in
+        the allowlist.
+        """
+        sources = read_service_principal_sources(
+            self._statement(
+                "*",
+                {"ArnEquals": {"aws:SourceArn": "arn:aws:sns:us-west-2:999999999999:a-topic"}},
+            ),
+            self.ORG_ACCOUNTS,
+            ORG_ID,
+            self.WHERE,
+        )
+
+        assert len(sources) == 1
+        assert sources[0].service_principal == "*"
+        assert sources[0].source_account_ids == ["999999999999"]
+        assert sources[0].has_source_condition is True
+        assert sources[0].has_wildcard_source is False
+
+    def test_a_wildcard_under_the_aws_key_is_read_the_same_way(self) -> None:
+        """`{"AWS": "*"}` is the same wildcard, and reads as the same source."""
+        sources = read_service_principal_sources(
+            self._statement(
+                {"AWS": "*"},
+                {"StringEquals": {"aws:SourceAccount": "999999999999"}},
+            ),
+            self.ORG_ACCOUNTS,
+            ORG_ID,
+            self.WHERE,
+        )
+
+        assert len(sources) == 1
+        assert sources[0].service_principal == "*"
+        assert sources[0].source_account_ids == ["999999999999"]
+
+    def test_a_wildcard_narrowed_only_by_unrelated_keys_reports_nothing(self) -> None:
+        """
+        `Principal: "*"` under `aws:PrincipalOrgID` alone is the data
+        perimeter idiom, not a service grant. No source key, no source.
+        """
+        assert read_service_principal_sources(
+            self._statement(
+                "*",
+                {"StringEquals": {"aws:PrincipalOrgID": ORG_ID}},
+            ),
+            self.ORG_ACCOUNTS,
+            ORG_ID,
+            self.WHERE,
+        ) == []
+
+    def test_a_wildcard_under_an_unreadable_guard_is_a_read_failure(self) -> None:
+        """
+        A wildcard's guard is read by the same rules as a service's. A
+        negated operator on a source key pins nothing, so the read fails
+        and the statement is withheld rather than read as no guard.
+        """
+        sources = read_service_principal_sources(
+            self._statement(
+                "*",
+                {"StringNotEquals": {"aws:SourceAccount": "999999999999"}},
+            ),
+            self.ORG_ACCOUNTS,
+            ORG_ID,
+            self.WHERE,
+        )
+
+        assert len(sources) == 1
+        assert sources[0].read_failure is not None
+        assert "StringNotEquals" in sources[0].read_failure
+
+    def test_the_failure_text_names_the_guard_not_a_service_principal(self) -> None:
+        """
+        The same guards are read under a wildcard principal as under a
+        Service one, so the text that explains a failed read must describe
+        the guard and not assert a principal type the statement does not
+        carry.
+        """
+        sources = read_service_principal_sources(
+            self._statement(
+                "*",
+                {"StringNotEquals": {"aws:SourceAccount": "999999999999"}},
+            ),
+            self.ORG_ACCOUNTS,
+            ORG_ID,
+            self.WHERE,
+        )
+
+        assert sources[0].read_failure is not None
+        assert sources[0].read_failure.startswith(
+            "Bucket 'a-bucket' has a source guard with 'aws:SourceAccount' "
+            "under operator 'StringNotEquals'"
+        )
 
     @pytest.mark.parametrize("set_operator", ["ForAnyValue", "ForAllValues"])
     @pytest.mark.parametrize("string_operator", ["StringEquals", "StringLike"])
@@ -1034,16 +1132,70 @@ class TestReadPrincipal:
         assert reading.account_ids == set()
         assert reading.has_wildcard is False
 
+    def test_an_arn_naming_no_account_blocks_the_account(self) -> None:
+        """
+        An ARN whose account field is not an account ID is a blocker.
+
+        CloudFront's origin access identity user carries the service's name
+        where an account ID would be. It named no account, no wildcard, and
+        no non-account type, so a bucket granting only an OAI was never
+        recorded and its account cleared for the S3 RCP, which then denied
+        every request the distribution made. No allowlist keyed on
+        aws:PrincipalAccount can carry it, which is what the third fact
+        records.
+        """
+        oai = "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity E11111111111111"
+
+        bare = read_principal(
+            oai, RESOURCE_POLICY_PRINCIPAL_TYPES, "Bucket 'example-bucket'"
+        )
+        keyed = read_principal(
+            {"AWS": oai}, RESOURCE_POLICY_PRINCIPAL_TYPES, "Bucket 'example-bucket'"
+        )
+
+        for reading in (bare, keyed):
+            assert reading.account_ids == set()
+            assert reading.has_wildcard is False
+            assert reading.has_non_account_principals is True
+
+    def test_a_unique_id_names_nothing_and_blocks_nothing(self) -> None:
+        """
+        A deleted principal's unique ID is a dead grant, not a blocker.
+
+        AWS rewrites a Principal ARN to the entity's unique ID when the user
+        or role it named is deleted, and documents that the entry then
+        grants no one access: a replacement with the same name gets a new
+        ID. Nothing lives behind it for an RCP to deny, so it names no
+        account and is no non-account principal. It is the one account-less
+        string that clears rather than blocks, pinned here beside the OAI
+        so the two are never folded into one rule.
+        """
+        unique_id = "AROA11111111111111111"
+
+        bare = read_principal(
+            unique_id, RESOURCE_POLICY_PRINCIPAL_TYPES, "Bucket 'example-bucket'"
+        )
+        keyed = read_principal(
+            {"AWS": unique_id}, RESOURCE_POLICY_PRINCIPAL_TYPES, "Bucket 'example-bucket'"
+        )
+
+        for reading in (bare, keyed):
+            assert reading.account_ids == set()
+            assert reading.has_wildcard is False
+            assert reading.has_non_account_principals is False
+
     def test_a_bare_string_principal_names_no_non_account_type(self) -> None:
         """
-        A bare-string Principal carries no principal-type key, so it names none.
+        A bare-string Principal naming an account names no non-account type.
 
         `has_non_account_principals` is what blocks an account from a check:
         it means the policy grants to something an aws:PrincipalAccount
-        allowlist cannot carry. A bare string is an ARN or an account ID, and
-        an allowlist carries it fine. Flipping this branch to True passes the
-        whole suite, so nothing but this assertion stands between a one-word
-        edit and every such resource blocking its account.
+        allowlist cannot carry. An ARN naming an account is carried fine, so
+        the third fact is False here; the one string form that sets it is
+        pinned by `test_an_arn_naming_no_account_blocks_the_account`. Making
+        the branch a constant True passes the rest of the suite, so nothing
+        but this assertion stands between a one-word edit and every such
+        resource blocking its account.
         """
         reading = read_principal(
             "arn:aws:iam::111111111111:root",
@@ -1381,9 +1533,9 @@ PRINCIPAL_ELEMENT_KEYS = frozenset({"Principal", "NotPrincipal"})
 # read_principal is the sink all six external analyzers reach.
 # _service_principals is policy_documents.py's own second canonical reader -
 # test_only_policy_documents_reads_a_statement_principal already names it
-# alongside read_principal - and _read_service_principal_sources reaches it
-# with an inline `statement.get("Principal")` for the confused-deputy check's
-# Service principals, never touching read_principal at all.
+# alongside read_principal. _read_service_principal_sources binds one read to
+# a local and hands it to both: _service_principals for the confused-deputy
+# check's Service principals, read_principal for the wildcard fact.
 PRINCIPAL_ELEMENT_READERS = frozenset({"read_principal", "_service_principals"})
 
 
@@ -1543,6 +1695,23 @@ class TestOneReaderPerStatementElement:
             "def f(statement):\n"
             "    principal = statement.get('Principal')\n"
             "    return read_principal(principal, TYPES, 'where')\n"
+        ).body[0]
+        assert isinstance(function, ast.FunctionDef)
+
+        assert _has_unread_principal_element(function) is False
+
+    def test_the_principal_guard_accepts_an_inline_read(self) -> None:
+        """
+        A read passed straight into the reader's call is the other shape.
+
+        Nothing in the package writes it today, so this is the only thing
+        that keeps the guard honest about it: a future inline
+        `read_principal(statement.get("Principal"), ...)` must not be
+        reported.
+        """
+        function = ast.parse(
+            "def f(statement):\n"
+            "    return read_principal(statement.get('Principal'), TYPES, 'where')\n"
         ).body[0]
         assert isinstance(function, ast.FunctionDef)
 

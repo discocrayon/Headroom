@@ -179,20 +179,22 @@ is not a safe guess (INV-01).
 | `Allow` with `NotPrincipal` | Wildcard — grants to everyone except a short list, the same reach |
 | `Deny` with `NotPrincipal` | Nothing — it restricts rather than grants, and a resource policy's Deny hands access to nobody |
 | An account ID or an ARN | The 12-digit account ID it names |
+| An ARN whose account field is not twelve digits | Carries no account ID — a blocker. CloudFront's origin access identity user, `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity <id>`, is the documented case |
+| A bare unique ID, `AROA…` or `AIDA…` | Nothing. AWS writes it in place of a deleted user's or role's ARN and documents that the entry then grants no one access, so it is neither an account nor a blocker |
 | `Service` | Not an account principal, and not a blocker |
 | `Federated` | Carries no account ID — a blocker. A SAML provider ARN does contain twelve digits, but they name the provider's host account, not the caller's. |
 | `CanonicalUser` | An opaque identifier that maps to an account only through an API call the scan does not make — a blocker |
 | Any other key | `UnknownPrincipalTypeError` |
 | Not a string, a list, or an object | `MalformedPolicyError` — the element is not a Principal at all |
 
-The reader raises; what that costs is the caller's. Five of the six analyzers
-let it abort the run. `aws/sqs.py` is the one that catches it and records the
-queue as a read failure, which withholds the confused-deputy statement from the
-account rather than dropping the queue from the scan;
-[`../checks/rcps/deny_sqs_third_party_access.md`](../checks/rcps/deny_sqs_third_party_access.md)
-owns that departure and
-[`../architecture/aws-execution.md`](../architecture/aws-execution.md) places it
-against INV-02.
+The reader raises, and no analyzer catches it: all six let
+`UnknownPrincipalTypeError` and `MalformedPolicyError` abort the run.
+`aws/sqs.py` once caught the former and recorded the queue as a read failure,
+which withheld the confused-deputy statement from the account but left the
+queue's own check nothing to read, so that check cleared the account on a
+queue nobody had read.
+[`../architecture/aws-execution.md`](../architecture/aws-execution.md) places
+the abort against INV-02.
 
 Callers must apply their own `Effect` gate **before** consulting `NotPrincipal`.
 A statement carrying both `Principal` and `NotPrincipal` is not valid IAM and
@@ -211,11 +213,24 @@ way so GovCloud and China ARNs resolve.
 account IDs the element names, whether it reaches principals the analyzer cannot
 enumerate, and whether it names a principal type that carries no account ID.
 
-A bare string carries no principal-type key, so it names none of the
-non-account types — the third fact is `False` whether the string resolves to
-an account ID, an ARN, or the wildcard. Pinned by
-`test_a_bare_string_principal_names_no_non_account_type`, since nothing else
-in the suite reads that branch's value for the third fact.
+A bare string carries no principal-type key, so the third fact is `False` for
+an account ID, for an ARN naming one, and for the wildcard — and `True` for an
+ARN that names no account. CloudFront's origin access identity user is that
+case: its account field holds the service's name, no allowlist keyed on
+`aws:PrincipalAccount` can carry it, and the deployed statement denies it.
+Before this rule the ARN named nothing at all, so a bucket granting only an
+OAI was never recorded and its account cleared for the S3 statement, which
+then denied every request the distribution made. Pinned by
+`test_a_bare_string_principal_names_no_non_account_type` and
+`test_an_arn_naming_no_account_blocks_the_account`, since nothing else in the
+suite reads that branch's value for the third fact.
+
+A bare unique ID is the one account-less string that is not a blocker. AWS
+writes it in place of a deleted user's or role's ARN, and documents that the
+entry then grants no one access — a replacement with the same name gets a new
+ID — so nothing lives behind it for an RCP to deny, and reading it as naming
+nothing is the reading, not a gap. Pinned by
+`test_a_unique_id_names_nothing_and_blocks_nothing`.
 
 The permitted keys are a parameter, because the two policy types differ in one
 key and only one:
@@ -300,6 +315,21 @@ keys AWS populates when a service acts on a resource's behalf:
 `headroom/aws/policy_documents.py` is the one place they are read; each of the
 six analyzers named in that check's Evidence table reaches it through
 `read_service_principal_sources`.
+
+That reader looks at a statement's `Condition` only when its `Principal` names
+a `Service`, or is a wildcard — `*` or `{"AWS": "*"}` — as `read_principal`
+reads it. Every adapter reads the `Principal` with `read_principal` against its
+own type set before handing the statement to this reader, so a malformed or
+undocumented principal is reported by the adapter, under the adapter's own
+description and against the type set that policy holds to; the wildcard read
+inside this reader cannot raise. Only a service call carries a source key, so a wildcard narrowed by
+one is a grant to whichever service delivers for those sources; AWS's own
+cross-account SNS-to-SQS queue policy is written that way, `Principal: "*"`
+under `ArnEquals aws:SourceArn`. Such a statement is recorded with
+`service_principal` `*`. A wildcard under no source key is not read here at
+all; it is the plain wildcard the six third-party-access checks block the
+account for. A `Principal` naming accounts and no service is never read here,
+whatever its `Condition` carries.
 
 Reading an operator as a guard takes three parts. `SOURCE_GUARD_OPERATORS`
 whitelists the eight base operators that constrain one of these keys to a
@@ -394,7 +424,11 @@ widening is the safe direction:
 - A `Principal: "*"` narrowed by `aws:PrincipalOrgID` grants nothing outside the
   organization — it is the pattern AWS recommends for organization-wide bucket
   access — but is counted as a violation and blocks that account from the check's
-  RCP.
+  RCP. The same shape narrowed by `kms:CallerAccount` is the default policy of
+  every AWS-managed KMS key. Those keys are skipped, on `KeyManager` rather than
+  by reading the guard, because RCPs do not apply to them at all;
+  [`../checks/rcps/deny_kms_third_party_access.md`](../checks/rcps/deny_kms_third_party_access.md)
+  owns that skip. On a customer-managed key the shape is still a violation.
 - A grant narrowed by `s3:prefix`, `aws:SourceVpce`, or a lapsed `DateLessThan`
   still contributes its account to the allowlist at full width, so the account
   keeps a broader RCP allowance than it needs.

@@ -96,6 +96,7 @@ resource-policy set at all.
 |---|---|---|
 | Violation | A wildcard principal — literal `*`, or an `Allow` with `NotPrincipal` | `VIOLATION` |
 | Violation | A `Federated` or `CanonicalUser` principal | `VIOLATION` |
+| Violation | A CloudFront origin access identity — an ARN naming no account | `VIOLATION` |
 | Compliant | Third-party account IDs only | `COMPLIANT` |
 | Exemption | — | Never produced |
 | Not recorded | Only in-organization principals or AWS services | Not in the output |
@@ -107,6 +108,16 @@ does. The other four resource-policy analyzers raised instead. They have
 converged on this behavior, and the rule now lives in
 [`../../contracts/policy-model.md`](../../contracts/policy-model.md) rather than
 here.
+
+An origin access identity is the same verdict for the same reason. Its user
+ARN carries `cloudfront` where an account ID would be, so no allowlist can
+preserve it, and the deployed statement denies every request the distribution
+makes; AWS's
+[data perimeter guidance](https://github.com/aws-samples/data-perimeter-policy-examples/blob/main/resource_control_policies/README.md)
+names this break and recommends migrating to origin access control, which
+calls as the `cloudfront.amazonaws.com` service principal and is outside this
+check. Before the rule in `read_principal` that ARN named nothing at all, so a
+bucket granting only an OAI was never recorded and its account cleared.
 
 ## Failure behavior
 
@@ -196,6 +207,9 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
 7. `AccessDenied` reading one bucket's policy → the run aborts.
 8. A `Principal: "*"` narrowed by `aws:PrincipalOrgID` → still a violation; see
    the condition limitation.
+9. A bucket policy granting a CloudFront origin access identity → violation;
+   the account is blocked for S3 until the distribution moves to origin access
+   control.
 
 ## Referenced invariants
 

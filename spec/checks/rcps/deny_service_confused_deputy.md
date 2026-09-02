@@ -102,7 +102,18 @@ and owns the accounting.
 
 `read_service_principal_sources` in
 [`../../contracts/policy-model.md`](../../contracts/policy-model.md) is the one
-rule all six read a source guard by.
+rule all six read a source guard by. They hand it `Allow` statements only; a
+`Deny` is never read, which is the second half of limitation 1.
+
+A source is a `Service` principal, or a wildcard principal — `*` or
+`{"AWS": "*"}` — narrowed by one of the four source keys. Only a service call
+carries a source key, so such a statement is a grant to whichever service
+delivers for those sources, and the guard names who it is for even though the
+`Principal` element does not. AWS's own cross-account SNS-to-SQS queue policy
+is written that way. A wildcard under no source key is not a source here; it is
+the plain wildcard the six third-party-access checks block the account for. The
+same wildcard under a guard this check cannot read is a `read_failure`, by the
+same rules a `Service` principal's guard is read by.
 
 A finding is kept only when it names out-of-organization source accounts, names
 a source no allowlist can enumerate, or could not be read. Everything else is
@@ -116,7 +127,8 @@ dropped before categorization.
 | Violation | `has_wildcard_source` — an `...IfExists` operator guards a key other than `aws:SourceAccount`; the guard names its sources precisely, but also matches a request naming none | `VIOLATION` |
 | Violation | `read_failure` is set — the source guard could not be read | `VIOLATION` |
 | Compliant | The guard names out-of-organization accounts, all enumerable | `COMPLIANT` |
-| Not recorded | An unguarded service principal, or a guard naming only organization sources | Dropped before categorization |
+| Compliant | A wildcard principal — `*` or `{"AWS": "*"}` — narrowed by such a guard; `service_principal` is `*` | `COMPLIANT` |
+| Not recorded | An unguarded service principal, a wildcard principal under no source key, or a guard naming only organization sources | Dropped before categorization |
 
 A failed read is a violation for the same reason a wildcard source is: the
 account's allowlist cannot be computed, so the statement must be withheld rather
@@ -143,8 +155,9 @@ failure withholds this statement from the account without disturbing theirs.
 
 Base document shape. Entry fields: `resource_type` (`ecr`, `kms`, `s3`,
 `secretsmanager`, `sqs`, or `iam`), `resource_identifier`, `region` (null for a
-global resource), `service_principal` (null when the read failed before any
-principal resolved), `source_account_ids`, `has_source_condition`,
+global resource), `service_principal` (`*` for a wildcard principal narrowed
+by a source key; null when the read failed before any principal resolved),
+`source_account_ids`, `has_source_condition`,
 `has_wildcard_source`, `read_failure`.
 
 Summary fields beyond the common three:
@@ -182,9 +195,34 @@ services rather than inside it, because it names no single service.
    Dropping them is not the same as their being safe: `aws:SourceAccount` is
    populated by the calling service from the resource that drove the call, so an
    unguarded trust driven by an out-of-organization account is within the
-   statement's reach and will be denied on deploy. The policy does not name that
-   account, so discovery cannot find it — only CloudTrail can. **This is the
-   check's principal deployment risk.**
+   statement's reach and will be denied on deploy. **This is the check's
+   principal deployment risk.**
+
+   Some of those policies do name the driver, and this check does not read
+   it. One idiom for the confused-deputy guard keeps the `Allow Service:...`
+   statement unguarded and pins the source in a companion `Deny` written
+   `StringNotEquals aws:SourceAccount <account>`, or `ArnNotEquals
+   aws:SourceArn`. Every adapter reads `Principal` and `Condition` under
+   `Effect: Allow` only, so the `Deny` is skipped, the `Allow` beside it is
+   an unguarded source, and the account the pair permits is not recorded:
+   the statement deploys and denies the driver the policy named. Where the
+   pin is absent from `Allow` and `Deny` alike, the driver is truly unnamed
+   and only CloudTrail finds it.
+
+   Reading the pin off the `Deny` is standing intent. It is not the mirror
+   image of the `Allow` read. It must accept only the negated operators —
+   `StringNotEquals`, `ArnNotEquals`, and their `...IfExists` forms — on
+   `aws:SourceAccount` and `aws:SourceArn`; take only exact account IDs from
+   them, since a wildcard or an organization scope under a negated operator
+   permits nothing enumerable; ignore rather than raise on anything else
+   under `Deny`, where an unreadable condition withholds nothing; not match
+   the `Deny`'s `Action` or `Resource` against the `Allow`'s, which this
+   analysis never reads; and move the source read above the `Effect` gate in
+   all six adapters. An account the policy names can only lengthen the
+   allowlist, never withhold a statement, so every account the check clears
+   today it would still clear. Until then no adapter reads a `Condition`
+   under `Deny` for any purpose, and scenario 11 pins the idiom as not
+   recorded.
 2. **One statement covers six services**, so one verdict gates all of them
    (INV-10 holds only because the statement is single). A violation found on one
    SQS queue withholds the statement protecting ECR, KMS, S3, Secrets Manager,
@@ -239,6 +277,20 @@ that procedure.
    not clear it.
 8. A guard on `aws:SourceArn` written with `ArnEqualsIfExists` → violation, and
    the account is not cleared, even though the guard names an account.
+9. A queue policy with `Principal: "*"` narrowed by `ArnEquals aws:SourceArn`
+   to a topic in an out-of-organization account, AWS's documented cross-account
+   SNS subscription → compliant, with `service_principal` `*`, and the topic's
+   account reaches `unique_third_party_accounts`. The queue is separately a
+   wildcard violation for
+   [`deny_sqs_third_party_access`](deny_sqs_third_party_access.md), which does
+   not read `Condition`.
+10. The same `Principal: "*"` under `aws:PrincipalOrgID` alone → not recorded
+    here; the wildcard is that other check's to block.
+11. A queue policy whose `Allow` trusts `sns.amazonaws.com` with no guard,
+    beside a `Deny` on the same action written `StringNotEquals
+    aws:SourceAccount` naming an out-of-organization account → not recorded;
+    the account does not reach `unique_third_party_accounts`, and on deploy the
+    statement denies the driver the policy named (limitation 1).
 
 ## Referenced invariants
 

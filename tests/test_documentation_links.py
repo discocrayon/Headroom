@@ -6,9 +6,14 @@ agent following the routing in CLAUDE.md - to nothing, and nothing else in the
 test suite reads Markdown.
 """
 
+import re
 from pathlib import Path
 
 from tests.documentation_links import find_broken_links
+
+# A repository Markdown file named in a docstring or comment, so a reader can
+# be sent to it. Only the two directories that hold prose are matched.
+_DOCUMENT_NAMED_IN_SOURCE = re.compile(r"\b(?:documentation|spec)/[\w./-]+?\.md\b")
 
 
 def test_reports_a_link_whose_target_is_missing(tmp_path: Path) -> None:
@@ -54,6 +59,23 @@ def test_every_relative_link_in_the_repository_resolves() -> None:
     repository_root = Path(__file__).resolve().parent.parent
 
     assert find_broken_links(repository_root) == []
+
+
+def test_every_document_named_in_source_exists() -> None:
+    """
+    A docstring that sends a reader to `documentation/X.md` is a link too,
+    and nothing renders it, so the Markdown scan above never sees it.
+    """
+    repository_root = Path(__file__).resolve().parent.parent
+
+    missing = sorted(
+        f"{source.relative_to(repository_root)} -> {named}"
+        for source in (repository_root / "headroom").rglob("*.py")
+        for named in _DOCUMENT_NAMED_IN_SOURCE.findall(source.read_text())
+        if not (repository_root / named).exists()
+    )
+
+    assert missing == []
 
 
 def test_checks_markdown_in_dot_directories_that_are_not_tool_output(tmp_path: Path) -> None:

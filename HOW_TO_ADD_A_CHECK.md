@@ -761,12 +761,12 @@ three are tested. Five of the six shipped checks test all three
 [`spec/checks/rcps/deny_sts_third_party_assumerole.md`](spec/checks/rcps/deny_sts_third_party_assumerole.md)
 owns why that principal is tolerated there and nowhere else.
 
-Let `UnknownPrincipalTypeError` propagate. Five of the six analyzers abort the
-run on a principal key AWS does not document, because catching it and moving on
-clears the account on the strength of a resource nobody read. `aws/sqs.py` is
-the one exception, and it is not a licence to copy: it catches the exception and
-records the queue as a read failure, which withholds the confused-deputy
-statement from the account rather than clearing it. A new analyzer propagates.
+Let `UnknownPrincipalTypeError` propagate. All six analyzers abort the run on a
+principal key AWS does not document, because catching it and moving on clears
+the account on the strength of a resource nobody read. `aws/sqs.py` once caught
+it and recorded the queue as a read failure with every field its own check
+reads left empty, which cleared the account exactly that way; the catch is
+gone. A new analyzer propagates.
 See [`spec/contracts/policy-model.md`](spec/contracts/policy-model.md) and
 [`spec/checks/rcps/deny_sqs_third_party_access.md`](spec/checks/rcps/deny_sqs_third_party_access.md).
 

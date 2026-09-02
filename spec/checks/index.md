@@ -57,11 +57,12 @@ each of them has two callers in a full estate scan: its own check, and
 `deny_service_confused_deputy`. **The second call costs no AWS request.** Each
 of the six is wrapped by `memoize_per_session`, so whichever caller runs first
 pays for the reads — `describe_repositories`, `get_repository_policy`, and
-`get_registry_policy` for ECR; `list_keys`, `get_key_policy`, and `list_grants`
-for KMS; `list_buckets`, `get_bucket_acl`, and `get_bucket_policy` for S3;
-`list_secrets` and `get_resource_policy` for Secrets Manager; `list_queues` and
-`get_queue_attributes` for SQS; and `list_roles` alone for IAM, whose trust
-policy arrives inline on the role — and the second is served from memory. Budget
+`get_registry_policy` for ECR; `list_keys`, `describe_key`, `get_key_policy`,
+and `list_grants` for KMS; `list_buckets`, `get_bucket_acl`, and
+`get_bucket_policy` for S3; `list_secrets` and `get_resource_policy` for Secrets
+Manager; `list_queues` and `get_queue_attributes` for SQS; and `list_roles` alone
+for IAM, whose trust policy arrives inline on the role — and the second is served
+from memory. Budget
 a full RCP pass at one set of these calls per account, not two.
 
 The memo is keyed on the account's `Session` object, never on an account ID or
@@ -134,12 +135,11 @@ artifact claims to be the output of — and
 [`../README.md`](../README.md) requires reporting a conflict rather than guessing
 which side is right.
 
-**Two are open.**
+**One is open.**
 
 | # | Where | Conflict |
 |---|---|---|
 | 7 | [`deny_ecr_third_party_access`](rcps/deny_ecr_third_party_access.md) | Four committed result files still carry `repositories_third_parties_can_access`, `repositories_with_wildcards`, and `total_repositories_analyzed`, which the check renamed to `policies_third_parties_can_access`, `policies_with_wildcards`, and `total_policies_analyzed`. Rewriting them would make evidence claim to be the output of a code version that never wrote it, and regenerating them needs a live run of the test organization |
-| 8 | [`deny_sqs_third_party_access`](rcps/deny_sqs_third_party_access.md) | This document says both that a queue the analyzer could not read "is recorded as a read failure that withholds the statement from the account", and that `_unreadable_queue` "leaves it `false`, along with every other field this check reads, which is what drops the entry from `analyze`'s filter". Both describe the same queue. Only the second matches the code. Settling it decides whether an unparseable queue policy blocks this check's account or is passed over, so it changes which RCPs deploy |
 
 A resolved conflict leaves nothing behind here. What it was and how it was
 settled is in git history, and the rule it produced is in the document that owns
@@ -149,10 +149,6 @@ rule, going stale on its own schedule.
 A number is allocated once and never reused, because commit messages cite them
 and git history cannot be edited. **The next conflict is 9.** Whoever opens it
 advances that number here.
-
-One further gap is recorded where it belongs rather than here, because it is a
-limitation of the design rather than a disagreement with it: KMS grants are
-unread ([`deny_kms_third_party_access`](rcps/deny_kms_third_party_access.md)).
 
 ## Statements with no check
 

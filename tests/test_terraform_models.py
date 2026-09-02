@@ -5,9 +5,53 @@ Tests the TerraformParameter, TerraformComment, and TerraformModule dataclasses
 used for structured Terraform generation.
 """
 
+import pytest
 
 from headroom.constants import GENERATED_MARKER
-from headroom.terraform.models import TerraformModule, TerraformParameter, TerraformComment
+from headroom.terraform.models import (
+    TerraformModule,
+    TerraformParameter,
+    TerraformComment,
+    hcl_escape,
+)
+
+
+class TestHclEscape:
+    """
+    Every value placed inside an HCL quoted string is escaped by this one rule.
+
+    Expected values are the escape sequences HCL's quoted-template grammar
+    defines, written out by hand: backslash, double quote, newline, carriage
+    return, tab, and the two template sequences that would otherwise be
+    interpolated. A bare `$` or `%` is not a template sequence and is left
+    alone.
+    """
+
+    @pytest.mark.parametrize("value, literal", [
+        ("plain", "plain"),
+        ('say "hi"', 'say \\"hi\\"'),
+        ("back\\slash", "back\\\\slash"),
+        ("a\nb", "a\\nb"),
+        ("a\rb", "a\\rb"),
+        ("a\tb", "a\\tb"),
+        ('${upper("x")}', '$${upper(\\"x\\")}'),
+        ("%{ if true }a%{ endif }", "%%{ if true }a%%{ endif }"),
+        ("$5 and 100%", "$5 and 100%"),
+    ], ids=[
+        "plain", "quote", "backslash", "newline", "carriage-return", "tab",
+        "interpolation", "directive", "bare-dollar-and-percent",
+    ])
+    def test_escapes_one_sequence(self, value: str, literal: str) -> None:
+        assert hcl_escape(value) == literal
+
+    def test_backslash_is_escaped_before_the_quote_it_precedes(self) -> None:
+        """
+        The backslash rule runs first, or the quote's own backslash doubles.
+
+        Input: a backslash then a quote. Output: an escaped backslash then an
+        escaped quote, four characters, not five.
+        """
+        assert hcl_escape('\\"') == '\\\\\\"'
 
 
 class TestTerraformParameter:
@@ -65,10 +109,35 @@ class TestTerraformParameter:
         param = TerraformParameter("arn", "arn:aws:iam::111111111111:user/path/username")
         assert param.render() == '  arn = "arn:aws:iam::111111111111:user/path/username"'
 
-    def test_render_with_terraform_variable(self) -> None:
-        """Test rendering string containing Terraform variable reference."""
+    def test_render_with_an_interpolation_sequence_renders_it_as_text(self) -> None:
+        """
+        A parameter value is data by default, never an expression.
+
+        `${` in a value would be interpolated by Terraform, so it is escaped to
+        `$${`, which renders the literal text. A producer that means the
+        interpolation opts out with `template`, as the next test shows.
+        """
         param = TerraformParameter("account_id", "${local.account_id}")
-        assert param.render() == '  account_id = "${local.account_id}"'
+        assert param.render() == '  account_id = "$${local.account_id}"'
+
+    def test_render_template_text_keeps_its_interpolation(self) -> None:
+        """
+        Template text renders as composed, so its reference stays live.
+
+        `iam_allowed_users` is the value that needs this: each user ARN carries
+        a reference to the account's local in place of the account ID. The
+        producer escaped the data segments itself, so nothing is escaped here.
+        """
+        param = TerraformParameter(
+            "iam_allowed_users",
+            ["arn:aws:iam::${local.prod_account_id}:user/deploy"],
+            template=True,
+        )
+        assert param.render() == (
+            '  iam_allowed_users = [\n'
+            '    "arn:aws:iam::${local.prod_account_id}:user/deploy",\n'
+            '  ]'
+        )
 
 
 class TestTerraformComment:
@@ -93,6 +162,19 @@ class TestTerraformComment:
         """Test rendering comment with special characters."""
         comment = TerraformComment("IAM (Identity & Access Management)")
         assert comment.render() == "  # IAM (Identity & Access Management)"
+
+    def test_a_line_break_in_a_comment_stays_on_the_comment_line(self) -> None:
+        """
+        A comment has no escape syntax, so a line break is the only hazard.
+
+        Left in, the rest of the text lands as a bare top-level line of HCL.
+        It is replaced with the two-character sequence so the comment stays
+        one line and still shows where the break was.
+        """
+        assert TerraformComment("Prod\n  injected = 1 #").render() == (
+            "  # Prod\\n  injected = 1 #"
+        )
+        assert TerraformComment("a\r\nb\rc").render() == "  # a\\nb\\nc"
 
 
 class TestTerraformModule:
@@ -136,6 +218,25 @@ module "test_module" {
 }
 '''
         assert module.render() == expected
+
+    def test_a_line_break_in_the_module_comment_stays_in_the_header(self) -> None:
+        """
+        The header names an account or OU, and Organizations allows any
+        character in both. A line break left in would end the comment and
+        land the rest of the name as a bare top-level line of HCL.
+        """
+        module = TerraformModule(
+            name="test_module",
+            source="../modules/test",
+            target_id="local.test_id",
+            parameters=[],
+            comment='prod\nresource "x" "y" {}',
+        )
+
+        lines = module.render().splitlines()
+
+        assert lines[1] == '# Auto-generated SCP Terraform configuration for prod\\nresource "x" "y" {}'
+        assert not [line for line in lines if line.startswith("resource")]
 
     def test_render_module_with_single_parameter(self) -> None:
         """Test rendering module with single parameter."""
@@ -339,9 +440,14 @@ class TestTerraformParameterEdgeCases:
     """Test edge cases for TerraformParameter."""
 
     def test_render_with_quotes_in_string(self) -> None:
-        """Test rendering string containing quotes (no escaping done)."""
+        """A quote inside a value is escaped, so the literal still closes where it should."""
         param = TerraformParameter("description", 'test "value"')
-        assert param.render() == '  description = "test "value""'
+        assert param.render() == '  description = "test \\"value\\""'
+
+    def test_render_list_items_are_escaped(self) -> None:
+        """Every item in a list is a quoted literal and gets the same rule."""
+        param = TerraformParameter("names", ['a"b', "c\\d"])
+        assert param.render() == '  names = [\n    "a\\"b",\n    "c\\\\d",\n  ]'
 
     def test_render_zero_value(self) -> None:
         """Test rendering zero integer value."""

@@ -42,7 +42,8 @@ class ServicePrincipalSourceFinding:
         resource_identifier: The resource's name or ARN, whichever that
             analyzer records
         region: The region the resource lives in, None for global resources
-        service_principal: The service the policy trusts, None when the
+        service_principal: The service the policy trusts, `*` for a
+            wildcard principal narrowed by a source key, None when the
             source read failed before any principal was resolved
         source_account_ids: Out-of-organization accounts the guard permits
         has_source_condition: True if any source key guards the statement
@@ -126,10 +127,11 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
     Dropping them is not the same as their being safe. `aws:SourceAccount`
     is populated by the calling service, from the resource that drove the
     call, so an unguarded trust driven by an out-of-organization account is
-    within the statement's reach and will be denied. The policy does not
-    name that account, so discovery cannot find it - only CloudTrail can.
-    This is the check's principal deployment risk; see the rollout guidance
-    in documentation/CHECKS.md.
+    within the statement's reach and will be denied. A policy that names
+    that account does so in a companion Deny statement, which no adapter
+    reads; one that does not leaves it to CloudTrail. This is the check's
+    principal deployment risk; see limitation 1 and the Rollout section
+    of spec/checks/rcps/deny_service_confused_deputy.md.
     """
 
     def __init__(
@@ -179,8 +181,9 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         statement's reach, not because they sit outside it: the calling
         service populates aws:SourceAccount itself, so an account outside
         the organization driving an unguarded trust is denied once the
-        statement deploys. Nothing in a resource policy names that account,
-        so only CloudTrail can find it.
+        statement deploys. A policy that names that account does so in a
+        companion Deny statement, which no adapter reads; one that does not
+        leaves it to CloudTrail.
 
         They are not counted either. Five of the six analyzers drop an
         analysis that found nothing worth reporting; SQS keeps every queue

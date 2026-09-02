@@ -14,17 +14,15 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_sqs.client import SQSClient
 
-from .helpers import get_all_regions, memoize_per_session
+from .helpers import get_all_regions, memoize_per_session, paginate
 from .policy_documents import (
     normalize_actions,
     RESOURCE_POLICY_PRINCIPAL_TYPES,
     ServicePrincipalSource,
-    UnknownPrincipalTypeError,
     has_not_principal,
     normalize_statements,
     read_principal,
     read_service_principal_sources,
-    unreadable_service_principal_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +37,15 @@ QUEUE_GONE_ERROR_CODES = frozenset({
     "AWS.SimpleQueueService.NonExistentQueue",
     "QueueDoesNotExist",
 })
+
+# Page size sent as MaxResults on every ListQueues request.
+#
+# SQS returns a NextToken only when the request set MaxResults; without it
+# the response holds at most 1000 queues and no token, so a paginator that
+# sends none reads one page and stops as if the region held nothing more.
+# botocore sends MaxResults only when PageSize is configured. 1000 is the
+# largest value the API accepts, so it costs the fewest requests.
+LIST_QUEUES_PAGE_SIZE = 1000
 
 
 ActionsType = Union[str, List[str]]
@@ -61,12 +68,11 @@ class SQSQueuePolicyAnalysis:
             type carrying no account ID, which no allowlist can preserve
         actions_by_account: Dict mapping account IDs to sets of allowed actions
         service_principal_sources: Service principals this policy trusts,
-            with the cross-service source guard on each, or a single entry
-            recording that the queue's policy could not be read at all.
-            Read by the deny_service_confused_deputy check; contributes
-            nothing to this analysis's own third-party accounts or wildcard
-            flag, so a queue kept only for one of these entries stays
-            invisible to the deny_sqs_third_party_access check.
+            with the cross-service source guard on each. Read by the
+            deny_service_confused_deputy check; contributes nothing to this
+            analysis's own third-party accounts or wildcard flag, so a queue
+            kept only for one of these entries stays invisible to the
+            deny_sqs_third_party_access check.
     """
     queue_url: str
     queue_arn: str
@@ -131,12 +137,10 @@ def _analyze_queue_policy(
         if not principal:
             continue
 
+        resource_description = f"Queue {queue_arn} in {region}"
+        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
         sources.extend(
-            read_service_principal_sources(statement, org_account_ids, org_id, f"Queue {queue_arn}")
-        )
-
-        reading = read_principal(
-            principal, RESOURCE_POLICY_PRINCIPAL_TYPES, f"Queue {queue_arn} in {region}"
+            read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
         )
 
         if reading.has_non_account_principals:
@@ -166,53 +170,6 @@ def _analyze_queue_policy(
     )
 
 
-def _unreadable_queue(
-    queue_url: str,
-    queue_arn: str,
-    region: str,
-    error: Exception,
-) -> SQSQueuePolicyAnalysis:
-    """
-    Record a queue whose policy could not be read.
-
-    The statement walk reads service principal sources before it reaches
-    the principal types that raise, so a queue can fail partway through with
-    a guard already read. Recording the queue does not preserve that guard -
-    it dies with the raise. What it preserves is the knowledge that the read
-    was incomplete, which is what matters: without it the queue vanished on
-    a logger.warning, its source account never reached the
-    DenyServiceConfusedDeputy allowlist, and the deployed RCP broke that
-    integration. The failure entry withholds the statement instead.
-
-    Every field the deny_sqs_third_party_access check reads is left empty,
-    so that check's filter drops this queue exactly as the earlier
-    warn-and-skip did. Only deny_service_confused_deputy sees the entry,
-    and it files it as a violation, which withholds the statement from the
-    account.
-
-    Args:
-        queue_url: URL of the queue that could not be read
-        queue_arn: ARN of the queue, empty if the attributes never arrived
-        region: AWS region the queue lives in
-        error: Why the policy could not be read
-
-    Returns:
-        An analysis carrying only the read failure
-    """
-    return SQSQueuePolicyAnalysis(
-        queue_url=queue_url,
-        queue_arn=queue_arn,
-        region=region,
-        third_party_account_ids=set(),
-        has_wildcard_principal=False,
-        has_non_account_principals=False,
-        actions_by_account={},
-        service_principal_sources=[unreadable_service_principal_source(
-            f"Queue {queue_url} in {region} could not be analyzed: {error}"
-        )],
-    )
-
-
 def _analyze_queues_in_region(
     session: Session,
     region: str,
@@ -233,9 +190,13 @@ def _analyze_queues_in_region(
     makes an `AccessDenied` here a genuine permissions gap rather than an
     expected regional block. See documentation/SETUP.md.
 
-    A queue whose policy is unparseable, or names a principal type the
-    analyzer does not recognize, is recorded rather than discarded - see
-    `_unreadable_queue`.
+    A queue whose policy cannot be read aborts the run too. This analyzer
+    catches nothing a policy document can raise: unparseable JSON, a
+    principal key AWS does not document, and a malformed Statement or
+    Principal each propagate, as they do from the other five resource-policy
+    analyzers. It once caught the first two and recorded the queue with every
+    field the deny_sqs_third_party_access check reads left empty, which
+    cleared the account on the strength of a queue nobody had read.
 
     Args:
         session: boto3.Session for the target account
@@ -250,14 +211,17 @@ def _analyze_queues_in_region(
     Raises:
         ClientError: If listing queues, or reading a queue's attributes for any
             reason other than the queue having been deleted mid-scan, fails
+        json.JSONDecodeError: If a queue's policy is not valid JSON
+        UnknownPrincipalTypeError: If a statement names a principal key AWS
+            does not document
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
     """
     sqs_client: SQSClient = session.client("sqs", region_name=region)
     results: List[SQSQueuePolicyAnalysis] = []
 
     try:
-        paginator = sqs_client.get_paginator("list_queues")
-
-        for page in paginator.paginate():
+        for page in paginate(sqs_client, "list_queues", PaginationConfig={"PageSize": LIST_QUEUES_PAGE_SIZE}):
             queue_urls = page.get("QueueUrls", [])
 
             for queue_url in queue_urls:
@@ -283,19 +247,14 @@ def _analyze_queues_in_region(
                 if not policy_json:
                     continue
 
-                try:
-                    result = _analyze_queue_policy(
-                        queue_url=queue_url,
-                        queue_arn=queue_arn,
-                        region=region,
-                        policy_json=policy_json,
-                        org_account_ids=org_account_ids,
-                        org_id=org_id
-                    )
-                    results.append(result)
-                except (json.JSONDecodeError, UnknownPrincipalTypeError) as e:
-                    logger.warning(f"Failed to analyze queue {queue_url} in {region}: {e}")
-                    results.append(_unreadable_queue(queue_url, queue_arn, region, e))
+                results.append(_analyze_queue_policy(
+                    queue_url=queue_url,
+                    queue_arn=queue_arn,
+                    region=region,
+                    policy_json=policy_json,
+                    org_account_ids=org_account_ids,
+                    org_id=org_id
+                ))
 
     except ClientError as e:
         logger.error(f"Failed to analyze SQS queues in region {region}: {e}")
@@ -316,7 +275,8 @@ def analyze_sqs_queue_policies(
     Algorithm:
     1. Get all enabled regions via get_all_regions()
     2. For each region:
-       a. List all SQS queues
+       a. List all SQS queues, paginated with MaxResults set (see
+          LIST_QUEUES_PAGE_SIZE)
        b. Get queue attributes (Policy, QueueArn)
        c. Skip queues without policies
        d. Parse policy JSON
@@ -340,6 +300,11 @@ def analyze_sqs_queue_policies(
 
     Raises:
         ClientError: If any region's queues cannot be read
+        json.JSONDecodeError: If a queue's policy is not valid JSON
+        UnknownPrincipalTypeError: If a statement names a principal key AWS
+            does not document
+        MalformedPolicyError: If a Statement is neither an object nor a list,
+            or a Principal is neither a string, a list, nor an object
     """
     all_results: List[SQSQueuePolicyAnalysis] = []
     regions = get_all_regions(session)

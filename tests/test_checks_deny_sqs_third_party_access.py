@@ -496,13 +496,15 @@ class TestDenySQSThirdPartyAccessCheck:
         temp_results_dir: str,
     ) -> None:
         """
-        A queue the analyzer could not read stays invisible to this check.
+        A queue kept only for an unreadable source guard is invisible here.
 
-        The analyzer now records such a queue rather than discarding it, so
-        the confused deputy check can withhold its statement. This check
-        reads none of that, and its warn-and-skip behavior is unchanged:
-        the queue names no third-party account and no wildcard, so the
-        filter drops it exactly as before.
+        The shared source-guard parser records a guard it cannot read as a
+        `read_failure` entry rather than raising, so the confused deputy
+        check can withhold its statement. This check reads none of that:
+        the queue names no third-party account, no wildcard, and no
+        non-account principal, so the filter drops it. A queue whose whole
+        policy cannot be read never gets this far - the analyzer aborts the
+        run on it.
         """
         mock_session = MagicMock()
 
@@ -516,7 +518,9 @@ class TestDenySQSThirdPartyAccessCheck:
                 has_non_account_principals=False,
                 actions_by_account={},
                 service_principal_sources=[
-                    unreadable_service_principal_source("policy could not be read")
+                    unreadable_service_principal_source(
+                        "aws:SourceAccount under StringNotEquals does not pin the source"
+                    )
                 ],
             ),
         ]

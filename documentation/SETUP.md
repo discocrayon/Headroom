@@ -21,7 +21,7 @@ maps to an analyzer under `headroom/aws/`. A missing permission surfaces as
 | IAM | `iam:ListUsers`, `iam:ListRoles`, `iam:ListSAMLProviders` (global, not per region) |
 | S3 | `s3:ListAllMyBuckets`, `s3:GetBucketAcl`, `s3:GetBucketPolicy` (global, not per region) |
 | ECR | `ecr:DescribeRepositories`, `ecr:GetRepositoryPolicy`, `ecr:GetRegistryPolicy` |
-| KMS | `kms:ListKeys`, `kms:GetKeyPolicy`, `kms:ListGrants` |
+| KMS | `kms:ListKeys`, `kms:DescribeKey`, `kms:GetKeyPolicy`, `kms:ListGrants` |
 | Secrets Manager | `secretsmanager:ListSecrets`, `secretsmanager:GetResourcePolicy` |
 | SQS | `sqs:ListQueues`, `sqs:GetQueueAttributes` |
 

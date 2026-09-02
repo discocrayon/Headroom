@@ -20,17 +20,99 @@ TerraformValue: TypeAlias = TerraformScalarValue | TerraformListValue
 RenderedTerraformFiles: TypeAlias = Dict[Path, str]
 
 
+def hcl_escape(value: str) -> str:
+    """
+    Escape a value for placement inside an HCL quoted string.
+
+    HCL's quoted-template grammar gives a backslash, a double quote, a
+    newline, a carriage return, and a tab an escape each, and reads `${` and
+    `%{` as the start of an interpolation or a directive unless the first
+    character is doubled. Every value Headroom renders between double quotes
+    passes through here, once, at the line that emits the quotes. OU and
+    account names are the values that carry arbitrary text: AWS Organizations
+    validates both with `[\\s\\S]*`, and they once reached the file verbatim,
+    where a quote or a backslash failed `terraform plan` after the file was
+    written and a `${` was interpolated.
+
+    The backslash rule runs first so the backslashes the other rules add are
+    not themselves doubled. Other control characters are left as they are:
+    the names this renders are constrained to the ASCII range, and none is
+    typed in practice.
+
+    Args:
+        value: The text to place between double quotes
+
+    Returns:
+        The text with every HCL escape applied, without the quotes
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace("${", "$${")
+        .replace("%{", "%%{")
+    )
+
+
+def comment_text(value: str) -> str:
+    """
+    Keep text placed in an HCL comment on one line.
+
+    A comment has no escape syntax, so a line break is its one hazard: left
+    in, the rest of the text lands as a bare top-level line of HCL. Every
+    line break becomes the two-character sequence `\\n`, so the comment
+    stays on one line and still shows where the break was. Every comment
+    Headroom renders from a name passes through here: the parameter-level
+    `TerraformComment`, and the module header that names an account or OU.
+
+    Args:
+        value: The comment's text, without the `#`
+
+    Returns:
+        The text with every line break replaced
+    """
+    return value.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+
+
 @dataclass
 class TerraformParameter:
     """
     Single parameter in a Terraform module.
 
+    A string value, alone or in a list, is data: it is escaped in full by
+    `hcl_escape` when rendered, so a quote, a backslash, a line break, or a
+    `${` in it reaches Terraform as that text. A producer that composes
+    template text - literal segments around an interpolation that must stay
+    live - sets `template` and takes on escaping its own data segments. An
+    allowlist whose definition sets `restores_account_ids` is the one such
+    value: `_replace_account_id_in_arn` in `parameters.py` puts a reference
+    to the account's local where the account ID was and escapes every other
+    segment.
+
     Attributes:
         key: Parameter name
         value: Parameter value (bool, str, list, or other type)
+        template: True when a string value is HCL template text the producer
+            already escaped, whose interpolations must survive rendering
     """
     key: str
     value: TerraformValue
+    template: bool = False
+
+    def _literal(self, value: str) -> str:
+        """
+        Return a string value as an HCL quoted literal.
+
+        Args:
+            value: The string value
+
+        Returns:
+            The value between double quotes, escaped unless it is template text
+        """
+        body = value if self.template else hcl_escape(value)
+        return f'"{body}"'
 
     def render(self) -> str:
         """
@@ -44,10 +126,10 @@ class TerraformParameter:
         if isinstance(self.value, list):
             if not self.value:
                 return f"  {self.key} = []"
-            items = [f'    "{item}",' for item in self.value]
+            items = [f"    {self._literal(item)}," for item in self.value]
             return f"  {self.key} = [\n" + "\n".join(items) + "\n  ]"
         if isinstance(self.value, str):
-            return f'  {self.key} = "{self.value}"'
+            return f"  {self.key} = {self._literal(self.value)}"
         return f"  {self.key} = {self.value}"
 
 
@@ -58,6 +140,10 @@ class TerraformComment:
 
     Used for section headers and explanatory comments within module blocks.
     Empty text creates a blank line for spacing.
+
+    A comment has no escape syntax, so a line break in its text is the one
+    hazard; `comment_text` folds it, and the module header folds its own
+    text the same way.
 
     Attributes:
         text: Comment text (without the # prefix). Empty string creates blank line.
@@ -71,9 +157,9 @@ class TerraformComment:
         Returns:
             HCL-formatted comment string with proper indentation, or empty string for blank lines
         """
-        if self.text:
-            return f"  # {self.text}"
-        return ""
+        if not self.text:
+            return ""
+        return f"  # {comment_text(self.text)}"
 
 
 TerraformElement: TypeAlias = TerraformParameter | TerraformComment
@@ -111,7 +197,9 @@ class TerraformModule:
         lines: list[str] = [GENERATED_MARKER]
 
         if self.comment:
-            lines.append(f"# Auto-generated {self.policy_type} Terraform configuration for {self.comment}")
+            lines.append(
+                f"# Auto-generated {self.policy_type} Terraform configuration for {comment_text(self.comment)}"
+            )
             if self.policy_type == "RCP":
                 lines.append("# Generated by Headroom based on third-party account analysis")
             else:
@@ -119,8 +207,8 @@ class TerraformModule:
         lines.append("")
 
         lines.extend([
-            f'module "{self.name}" {{',
-            f'  source = "{self.source}"',
+            f'module "{hcl_escape(self.name)}" {{',
+            f'  source = "{hcl_escape(self.source)}"',
             f'  target_id = {self.target_id}',
             ""
         ])

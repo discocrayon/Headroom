@@ -11,7 +11,7 @@ import logging
 from itertools import groupby
 from typing import List, Mapping, Optional
 
-from .models import TerraformComment, TerraformElement, TerraformParameter
+from .models import TerraformComment, TerraformElement, TerraformParameter, hcl_escape
 from .utils import account_id_local_name
 from ..checks.registry import CheckDefinition
 from ..enums import TerraformSection
@@ -49,25 +49,33 @@ def _replace_account_id_in_arn(
     account in the hierarchy, and a rewrite that knew only IAM would commit a
     KMS or SQS allowlist's real account IDs into Terraform. An ARN naming an
     account outside the hierarchy, one with no account field, and a value
-    that is not an ARN all pass through unchanged.
+    that is not an ARN all keep their text.
+
+    The result is HCL template text, not data: the reference must stay live,
+    so the allowlist renders with `template=True` and the escaping
+    `TerraformParameter` would otherwise apply is done here, on every
+    segment but the reference. An IAM user name cannot hold a character that
+    needs it, but the path before it admits any printable ASCII character,
+    `${` and `"` included, so the escape is live. A value the rewrite leaves
+    alone is escaped the same way, since it renders under the same flag.
 
     Args:
         arn: One allowlist value (e.g., "arn:aws:iam::111111111111:user/path/username")
         organization_hierarchy: Organization structure for account ID lookups
 
     Returns:
-        The value with its account field replaced by a local variable reference
+        The value's segments escaped as data, with the account field replaced
+        by a local variable reference where the hierarchy holds the account
         (e.g., "arn:aws:iam::${local.account_name_account_id}:user/path/username")
     """
     parts = arn.split(":")
-    if len(parts) < 5 or parts[0] != "arn":
-        return arn
-    account_info = organization_hierarchy.accounts.get(parts[4])
-    if account_info is None:
-        return arn
-    safe_account_name = make_safe_variable_name(account_info.account_name)
-    parts[4] = f"${{local.{account_id_local_name(safe_account_name)}}}"
-    return ":".join(parts)
+    escaped = [hcl_escape(part) for part in parts]
+    is_arn = len(parts) >= 5 and parts[0] == "arn"
+    account_info = organization_hierarchy.accounts.get(parts[4]) if is_arn else None
+    if account_info is not None:
+        safe_account_name = make_safe_variable_name(account_info.account_name)
+        escaped[4] = f"${{local.{account_id_local_name(safe_account_name)}}}"
+    return ":".join(escaped)
 
 
 def _render_definition(
@@ -133,7 +141,11 @@ def _render_definition(
 
     elements.append(TerraformParameter(definition.check_name, enabled))
     if enabled:
-        elements.append(TerraformParameter(allowlist.terraform_variable, values))
+        # A restored allowlist is template text: the rewrite escaped its data
+        # and inserted the one interpolation that must survive rendering.
+        elements.append(
+            TerraformParameter(allowlist.terraform_variable, values, template=allowlist.restores_account_ids)
+        )
     return elements
 
 

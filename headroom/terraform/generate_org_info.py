@@ -14,6 +14,7 @@ from .utils import (
     ou_id_local_name,
     ou_path_names,
 )
+from .models import TerraformComment, hcl_escape
 from ..constants import GENERATED_MARKER
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
 
@@ -255,15 +256,16 @@ def _generate_ou_locals(
         base_name = ou_base_names[ou_id]
         path_label = " / ".join(ou_path_names(ou_id, organizational_units))
         siblings = _ou_siblings_reference(ou, organizational_units, ou_base_names)
-        matches = f"[for ou in {siblings} : ou.id if ou.name == \"{ou.name}\"]"
+        ou_name = hcl_escape(ou.name)
+        matches = f"[for ou in {siblings} : ou.id if ou.name == \"{ou_name}\"]"
 
         content_parts.extend([
-            f"  # Validation for {path_label} OU",
-            f"  validation_check_{base_name}_ou = (length({matches}) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {path_label} OU, found ${{length({matches})}}\")",
+            TerraformComment(f"Validation for {path_label} OU").render(),
+            f"  validation_check_{base_name}_ou = (length({matches}) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {hcl_escape(path_label)} OU, found ${{length({matches})}}\")",
             "",
             f"  {ou_id_local_name(base_name)} = [",
             f"    for ou in {siblings} :",
-            f"    ou.id if ou.name == \"{ou.name}\"",
+            f"    ou.id if ou.name == \"{ou_name}\"",
             "  ][0]",
             "",
         ])
@@ -348,17 +350,18 @@ def _generate_account_locals(
             continue
 
         safe_account_name = account_base_names[account.account_id]
+        account_name = hcl_escape(account.account_name)
         matches = (
             f"[for account in {accounts_source} : account.id "
-            f"if account.name == \"{account.account_name}\"]"
+            f"if account.name == \"{account_name}\"]"
         )
         content_parts.extend([
-            f"  # Validation for {account.account_name} account",
-            f"  validation_check_{safe_account_name}_account = (length({matches}) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {account.account_name} account, found ${{length({matches})}}\")",
+            TerraformComment(f"Validation for {account.account_name} account").render(),
+            f"  validation_check_{safe_account_name}_account = (length({matches}) == 1) ? \"All good. This is a no-op.\" : error(\"[Error] Expected exactly 1 {account_name} account, found ${{length({matches})}}\")",
             "",
             f"  {account_id_local_name(safe_account_name)} = [",
             f"    for account in {accounts_source} :",
-            f"    account.id if account.name == \"{account.account_name}\"",
+            f"    account.id if account.name == \"{account_name}\"",
             "  ][0]",
             "",
         ])

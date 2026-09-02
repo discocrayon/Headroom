@@ -29,19 +29,18 @@ the ability to decrypt.
 
 ### Scope
 
-The `default` key policy **and the grants** of every key `kms:ListKeys` returns,
-in every enabled region. That listing is unfiltered, so AWS-managed keys are
-scanned alongside customer-managed ones.
+The `default` key policy **and the grants** of every customer-managed key
+`kms:ListKeys` returns, in every enabled region. That listing is unfiltered, so
+each key is described first and an AWS-managed key is skipped before its
+policy or grants are read; the Decision table owns why.
 
 ### Non-goals
 
-- Does not read KMS **grants**. Cross-account access delivered through
-  `kms:CreateGrant` is invisible to this check.
 - Does not read a key policy stored under a name other than `default`.
 - Does not evaluate `Condition`, `Resource`/`NotResource`, or `NotAction`.
-- Does not distinguish AWS-managed keys from customer-managed ones. An
-  AWS-managed key's policy names the owning service, which the scan reads like
-  any other principal.
+- Does not read an AWS-managed key at all, not even to confirm that its policy
+  has the documented shape. RCPs do not apply to such a key, so nothing its
+  policy says can change what this check's statement does.
 
 ## Enforced statement
 
@@ -60,8 +59,9 @@ Terraform variables: `deny_kms_third_party_access` and
 
 ## Evidence
 
-Per enabled region: `kms:ListKeys` (paginated), then `kms:GetKeyPolicy` with
-`PolicyName="default"` per key.
+Per enabled region: `kms:ListKeys` (paginated), then per key `kms:DescribeKey`,
+and for a customer-managed key `kms:GetKeyPolicy` with `PolicyName="default"`
+and `kms:ListGrants` (paginated).
 
 For each `Allow` statement: `NotPrincipal` presence, `Principal`, `Action`.
 The `Principal` element is read by `read_principal` against
@@ -76,24 +76,46 @@ The `Principal` element is read by `read_principal` against
 | Compliant | Third-party account IDs only | `COMPLIANT` |
 | Exemption | — | Never produced |
 | Not recorded | Only in-organization principals or AWS services | Not in the output |
+| Not recorded | An AWS-managed key: `KeyManager` is `AWS` on `DescribeKey` | Not in the output; neither its policy nor its grants are read |
 | Violation | A `Federated` or `CanonicalUser` principal | `VIOLATION` |
+| Violation | An ARN naming no account, under the rule [`../../contracts/policy-model.md`](../../contracts/policy-model.md#a-blocker-stops-the-account-a-document-headroom-cannot-read-stops-the-run) owns | `VIOLATION` |
 | Aborts | A principal key AWS does not document | The run aborts |
 
 Every KMS key policy names its own account's root principal, which is an
 in-organization principal and so is never recorded.
+
+An AWS-managed key is skipped on `KeyManager` alone. AWS states that resource
+control policies do not apply to AWS managed keys, in both the
+[KMS key concepts](https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html#aws-managed-key)
+and the
+[RCP documentation](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_rcps.html#actions-not-restricted-by-rcps),
+so no statement this check gates can reach one; and such a key can be used only
+by principals in the account that holds it, so there is no third party to
+preserve either. Its default policy grants `Principal: {"AWS": "*"}` narrowed
+by `kms:CallerAccount` to the key's own account, the idiom AWS documents for
+"all identities in one account" because the `Principal` element has no syntax
+for it. `read_principal` reads that as a wildcard, so before the skip every
+account holding an AWS-managed key was blocked for this RCP by a policy its
+operator cannot change. The skip reads the key type, not the `Condition`
+block: `kms:CallerAccount` is not evaluated, and a customer-managed key written
+the same way is still a violation
+([`../../contracts/policy-model.md`](../../contracts/policy-model.md#what-is-deliberately-not-read)).
+`DescribeKey` is the identification AWS documents as definitive; the `aws/`
+alias prefix is the informal one.
 
 ## Failure behavior
 
 | Situation | Behavior |
 |---|---|
 | `NotFoundException` from `GetKeyPolicy` on one key | The key has no policy, so no statement is read. Its grants are still listed, and the key reaches the results list if one of them names an account outside the organization |
+| `ClientError` from `DescribeKey` on one key | Re-raised, aborting the run. The key's type is unknown, and either guess is wrong: reading the policy could block the account over an AWS-managed key, and skipping could drop a customer-managed key that grants a third party |
 | Any other `ClientError` on one key | Re-raised, aborting the run |
 | A grant naming a principal that is neither an ARN nor an AWS service principal | `UnknownGranteePrincipalError`, aborting the run |
 | `ClientError` in any region | Logged and re-raised, aborting the run |
 | Unparseable policy JSON | Not caught; propagates and aborts |
 | `Statement` neither object nor list | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
-| A `Federated` or `CanonicalUser` principal | Recorded as `has_non_account_principals`; the account is blocked |
+| A `Federated` or `CanonicalUser` principal, or an ARN naming no account | Recorded as `has_non_account_principals`; the account is blocked |
 | A principal key outside the four documented types | `UnknownPrincipalTypeError`, aborting the run |
 | An `Action` that is neither a string nor a list | `TypeError`, aborting the run |
 
@@ -187,6 +209,11 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
 6. A key policy with a `Federated` or `CanonicalUser` principal → violation; the
    account is blocked for KMS, and the remaining keys are still read.
 7. A key policy naming a principal key AWS does not document → the run aborts.
+8. An AWS-managed key, `KeyManager` = `AWS`, whose default policy grants
+   `Principal: {"AWS": "*"}` under `kms:CallerAccount` → not recorded, and
+   neither `GetKeyPolicy` nor `ListGrants` is called for it.
+9. A customer-managed key with that same policy → violation, as in scenario 3.
+10. `AccessDenied` from `DescribeKey` on one key → the run aborts.
 
 ## Referenced invariants
 

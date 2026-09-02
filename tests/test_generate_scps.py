@@ -271,6 +271,45 @@ def test_build_scp_terraform_module_renders_iam_allowed_users() -> None:
     assert '"arn:aws:iam::${local.test_account_2_account_id}:user/github-actions",' in result
 
 
+def test_build_scp_terraform_module_escapes_an_iam_user_path() -> None:
+    """
+    An IAM path admits any printable ASCII character, so a path can hold the
+    `${` that opens an interpolation. It is data, and the account reference
+    beside it is the one live piece of template text in the ARN.
+    """
+    org = OrganizationHierarchy(
+        root_id="r-root",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="test-account-1",
+                parent_ou_id="ou-test",
+                ou_path=["r-root", "ou-test"]
+            ),
+        }
+    )
+    recs = [
+        SCPPlacementRecommendations(
+            check_name="deny_iam_user_creation",
+            recommended_level="root",
+            target_ou_id=None,
+            affected_accounts=[],
+            compliance_percentage=100.0,
+            reasoning="test",
+            allowlist_values=['arn:aws:iam::111111111111:user/${team}/"deploy"'],
+        ),
+    ]
+    result = _build_scp_terraform_module(
+        module_name="scps_test",
+        target_id_reference="local.test_id",
+        recommendations=recs,
+        comment="Test",
+        organization_hierarchy=org
+    )
+    assert '"arn:aws:iam::${local.test_account_1_account_id}:user/$${team}/\\"deploy\\"",' in result
+
+
 def test_build_scp_terraform_module_iam_allowed_users_unknown_account() -> None:
     """Should keep ARN unchanged when account ID is not in organization hierarchy."""
     org = OrganizationHierarchy(

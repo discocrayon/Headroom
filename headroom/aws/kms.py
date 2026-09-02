@@ -53,6 +53,11 @@ AWS_SERVICE_PRINCIPAL_SUFFIX = ".amazonaws.com"
 # grant's own operations to it would overstate its access.
 KMS_RETIRE_GRANT_ACTION = "kms:RetireGrant"
 
+# DescribeKey reports this KeyManager for a key an AWS service created and
+# controls on the account's behalf. AWS documents it as the definitive test
+# for an AWS-managed key; the `aws/` alias prefix is the informal one.
+AWS_MANAGED_KEY_MANAGER = "AWS"
+
 
 @dataclass
 class KMSGrantFinding:
@@ -248,6 +253,34 @@ def _analyze_key_grants(
     return findings
 
 
+def _is_aws_managed_key(kms_client: KMSClient, key_id: str) -> bool:
+    """
+    Report whether a key is an AWS-managed key.
+
+    RCPs do not apply to AWS-managed keys, so no statement this scan
+    generates can reach one, and nothing about one is worth reading. Its
+    policy is written by the owning service and cannot be changed, and it
+    grants `Principal: {"AWS": "*"}` narrowed by `kms:CallerAccount` to the
+    key's own account - which `read_principal` reads as a wildcard, so
+    reading it blocked every account holding such a key for the KMS RCP
+    over a policy the operator could not fix. The key is described before
+    its policy and grants are read, so a skipped key costs one call rather
+    than three.
+
+    Args:
+        kms_client: Boto3 KMS client
+        key_id: KMS key ID
+
+    Returns:
+        True if DescribeKey reports the key as AWS-managed
+
+    Raises:
+        ClientError: If the key cannot be described
+    """
+    response = kms_client.describe_key(KeyId=key_id)
+    return response["KeyMetadata"]["KeyManager"] == AWS_MANAGED_KEY_MANAGER
+
+
 def _read_key_policy(
     kms_client: KMSClient,
     key_id: str,
@@ -344,12 +377,10 @@ def _analyze_key_in_region(
         if not principal:
             continue
 
+        resource_description = f"Key '{key_id}' in {region}"
+        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
         sources.extend(
-            read_service_principal_sources(statement, org_account_ids, org_id, f"Key '{key_id}' in {region}")
-        )
-
-        reading = read_principal(
-            principal, RESOURCE_POLICY_PRINCIPAL_TYPES, f"Key '{key_id}' in {region}"
+            read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
         )
 
         has_non_account_principals = (
@@ -417,14 +448,16 @@ def analyze_kms_key_policies(
     1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. List all keys via list_keys() (paginated)
-       b. Get key policy via get_key_policy(), tolerating a key with none
-       c. Parse policy JSON
-       d. Extract principals and actions
-       e. List the key's grants via list_grants() (paginated)
-       f. Resolve each grantee and retiring principal to an account
-       g. Identify third-party account IDs (not in org) from both surfaces
-       h. Track which actions each third-party account can perform
-       i. Detect wildcard principals, which only a policy can carry
+       b. Describe each key via describe_key() and skip AWS-managed keys,
+          which RCPs do not apply to, before reading anything else
+       c. Get key policy via get_key_policy(), tolerating a key with none
+       d. Parse policy JSON
+       e. Extract principals and actions
+       f. List the key's grants via list_grants() (paginated)
+       g. Resolve each grantee and retiring principal to an account
+       h. Identify third-party account IDs (not in org) from both surfaces
+       i. Track which actions each third-party account can perform
+       j. Detect wildcard principals, which only a policy can carry
     3. Return all results across all regions
 
     Args:
@@ -443,6 +476,7 @@ def analyze_kms_key_policies(
             analyzer cannot classify
     """
     results: List[KMSKeyPolicyAnalysis] = []
+    aws_managed_keys_skipped = 0
 
     regions = get_all_regions(session)
 
@@ -453,6 +487,14 @@ def analyze_kms_key_policies(
         try:
             for page in paginate(kms_client, "list_keys"):
                 for key in page.get("Keys", []):
+                    if _is_aws_managed_key(kms_client, key["KeyId"]):
+                        logger.debug(
+                            f"Key {key['KeyId']} in {region} is AWS-managed, which RCPs "
+                            "do not apply to, skipping"
+                        )
+                        aws_managed_keys_skipped += 1
+                        continue
+
                     analysis = _analyze_key_in_region(
                         kms_client,
                         key,
@@ -471,6 +513,7 @@ def analyze_kms_key_policies(
 
     logger.info(
         f"Analyzed KMS keys across {len(regions)} regions, "
-        f"found {len(results)} keys with third-party access or wildcards"
+        f"found {len(results)} keys with third-party access or wildcards, "
+        f"skipped {aws_managed_keys_skipped} AWS-managed keys"
     )
     return results
