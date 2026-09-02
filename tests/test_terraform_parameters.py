@@ -341,7 +341,7 @@ def test_restores_account_ids_rewrites_arns_for_accounts_in_the_hierarchy() -> N
             "arn:aws:iam::${local.acme_co_account_id}:user/x",
             "arn:aws:iam::999999999999:user/y",
             "amazon",
-        ]),
+        ], template=True),
     ]
 
 
@@ -382,8 +382,49 @@ def test_restores_account_ids_rewrites_the_account_field_of_any_service_arn() ->
         TerraformParameter("ec2_allowed_things", [
             "arn:aws:kms:us-east-1:${local.acme_co_account_id}:key/11111111-1111-1111-1111-111111111111",
             "arn:aws:s3:::acme-co-bucket",
-        ]),
+        ], template=True),
     ]
+
+
+def test_restores_account_ids_escapes_every_segment_but_the_reference() -> None:
+    """
+    A restored allowlist is template text, so the renderer escapes nothing
+    and the rewrite escapes everything but the reference it inserts.
+
+    An IAM path admits any printable ASCII character, `${` and `"` included,
+    so the escape is live. A value the rewrite leaves alone - an ARN naming
+    an account outside the hierarchy, or a value that is not an ARN - is
+    escaped the same way, since it renders under the same flag.
+    """
+    definitions = [
+        make_definition(
+            "deny_ec2_alpha",
+            TerraformSection.EC2,
+            Allowlist("unique_things", "ec2_allowed_things", restores_account_ids=True),
+        ),
+    ]
+    allowlists: Dict[str, Optional[List[str]]] = {
+        "deny_ec2_alpha": [
+            'arn:aws:iam::111111111111:user/${team}/"deploy"',
+            'arn:aws:iam::999999999999:user/${team}',
+            'amazon"',
+        ],
+    }
+
+    elements = render_check_parameters(
+        definitions,
+        allowlists,
+        "scps_test",
+        make_hierarchy(),
+    )
+
+    assert elements[-1].render() == (
+        "  ec2_allowed_things = [\n"
+        '    "arn:aws:iam::${local.acme_co_account_id}:user/$${team}/\\"deploy\\"",\n'
+        '    "arn:aws:iam::999999999999:user/$${team}",\n'
+        '    "amazon\\"",\n'
+        "  ]"
+    )
 
 
 def test_allowlist_that_does_not_restore_account_ids_renders_arns_literally() -> None:

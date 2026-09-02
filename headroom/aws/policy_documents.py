@@ -106,6 +106,10 @@ TRUST_POLICY_PRINCIPAL_TYPES = frozenset({"AWS", "Federated", "Service"})
 # the scan does not make.
 NON_ACCOUNT_PRINCIPAL_TYPES = frozenset({"CanonicalUser", "Federated"})
 
+# What `ServicePrincipalSource.service_principal` records when the statement's
+# principal is a wildcard narrowed by a source key rather than a named service.
+WILDCARD_SERVICE_PRINCIPAL = "*"
+
 
 # A Principal element is a string, an array of them, or an object keyed by
 # principal type whose values are again strings or arrays.
@@ -128,18 +132,14 @@ class UnknownPrincipalTypeError(Exception):
     """
     Raised when a Principal element names a key AWS does not document.
 
-    Five of the six analyzers let this abort the run: ECR, KMS, S3, Secrets
-    Manager, and IAM role trust policies. AWS validates the Principal element
+    Every analyzer lets this abort the run: ECR, KMS, S3, Secrets Manager,
+    SQS, and IAM role trust policies. AWS validates the Principal element
     when it stores a policy, so a key outside the documented set is a document
     Headroom has misread or a principal type AWS has added since this was
     written - not an ordinary fact about the account. Recording it as a
-    finding would state a verdict on a grant nobody has modelled.
-
-    SQS is the exception, and deliberately so. `_analyze_queues_in_region`
-    catches it and records the queue through `_unreadable_queue`, which
-    withholds the confused-deputy statement from the account instead of
-    letting the queue vanish on a log line.
-    `spec/checks/rcps/deny_sqs_third_party_access.md` owns that departure.
+    finding would state a verdict on a grant nobody has modelled, and
+    recording the resource with its findings left empty, as the SQS analyzer
+    once did, clears the account on the strength of a document nobody read.
     """
 
 
@@ -285,7 +285,8 @@ class ServicePrincipalSource:
     statement is harmless: an unguarded trust names no source at all, yet the
     driving service still populates `aws:SourceAccount`, so the deny reaches
     it and an out-of-organization driver is blocked. It means only that the
-    policy gives nothing an allowlist could carry - which is why finding
+    Allow statement gives nothing an allowlist could carry. A companion Deny
+    statement may name the driver, and no adapter reads one, so finding
     those drivers takes CloudTrail rather than this parser.
     `has_wildcard_source` marks a guard no allowlist can express, which is
     what withholds the statement from the account. A guard scoped to
@@ -300,7 +301,9 @@ class ServicePrincipalSource:
 
     Attributes:
         service_principal: The service the statement names, such as
-            `sns.amazonaws.com`, None on a failed read
+            `sns.amazonaws.com`; `*` when the statement's principal is a
+            wildcard narrowed by a source key, since only a service call
+            carries one; None on a failed read
         source_account_ids: Out-of-organization accounts the guard permits,
             sorted
         has_source_condition: True if any source key guards the statement
@@ -366,10 +369,9 @@ def _as_condition_values(value: Any, key: str, resource_description: str) -> Lis
         return list(value)
 
     raise UnknownSourceConditionError(
-        f"{resource_description} guards a Service principal with '{key}' "
-        f"holding {type(value).__name__}, expected a string or a list of "
-        "strings. Reading it as no guard would leave its account out of the "
-        "allowlist."
+        f"{resource_description} has a '{key}' entry holding "
+        f"{type(value).__name__}, expected a string or a list of strings. "
+        "Reading it as empty would leave its account out of the allowlist."
     )
 
 
@@ -503,7 +505,7 @@ def _keys_asserted_present(
     entries = condition.get(NULL_OPERATOR, {})
     if not isinstance(entries, dict):
         raise UnknownSourceConditionError(
-            f"{resource_description} guards a Service principal with a "
+            f"{resource_description} has a source guard with a "
             f"'{NULL_OPERATOR}' clause holding {type(entries).__name__}, "
             "expected a mapping of condition keys to values. Reading it as "
             "asserting nothing would guess a ForAllValues guard's "
@@ -580,7 +582,7 @@ def _read_source_guards(
 
             if set_operator and set_operator not in SOURCE_GUARD_SET_OPERATORS:
                 raise UnknownSourceConditionError(
-                    f"{resource_description} guards a Service principal with "
+                    f"{resource_description} has a source guard with "
                     f"'{key}' under set operator '{set_operator}', which is "
                     "neither ForAnyValue nor ForAllValues. Reading it as a "
                     "guard would put the wrong account in the allowlist."
@@ -588,7 +590,7 @@ def _read_source_guards(
 
             if base_operator not in SOURCE_GUARD_OPERATORS:
                 raise UnknownSourceConditionError(
-                    f"{resource_description} guards a Service principal with "
+                    f"{resource_description} has a source guard with "
                     f"'{key}' under operator '{operator}', which does not pin "
                     "the source to a value. Reading it as a guard would put "
                     "the wrong account in the allowlist."
@@ -666,6 +668,14 @@ def _read_service_principal_sources(
     """
     Read the source guard on each Service principal a statement names.
 
+    A wildcard principal narrowed by a source key is read as one source
+    named `*`. AWS's own cross-account SNS-to-SQS queue policy is written
+    that way: `Principal: "*"` under `ArnEquals aws:SourceArn`. Only a
+    service call carries a source key, so the guard names who the grant is
+    for even though the Principal element does not. A wildcard under no
+    source key names no source, and is left to the six third-party-access
+    checks, which block the account for it.
+
     An organization scope naming this organization is a perfect guard: the
     deployed statement exempts a source carrying this organization's ID, so
     the resource needs no allowlist entry. A scope naming any other
@@ -690,25 +700,46 @@ def _read_service_principal_sources(
     account instead.
 
     Args:
-        statement: One statement from a resource policy or trust policy
+        statement: One Allow statement from a resource policy or trust
+            policy, carrying a Principal element the adapter has already
+            read with `read_principal` against its own type set; every
+            adapter skips a Deny and a statement without a Principal, and
+            reads the Principal it does have, before reaching here
         org_account_ids: Every account ID in the organization
         org_id: This organization's ID
         resource_description: The resource this policy belongs to, named in
             error messages
 
     Returns:
-        One entry per service principal, empty if the statement names none
+        One entry per service principal, or one entry for a wildcard
+        principal narrowed by a source key; empty if the statement has
+        neither
 
     Raises:
         UnknownSourceConditionError: If a source guard cannot be read
     """
-    services = _service_principals(statement.get("Principal"), resource_description)
-    if not services:
+    principal = statement["Principal"]
+    services = _service_principals(principal, resource_description)
+    # Only a service call carries a source key, so a wildcard principal under
+    # one is a grant to whichever service delivers for those sources. The
+    # adapter has already read this principal against its own type set, and
+    # the resource-policy set is the wider of the two, so this read cannot
+    # raise: a malformed or undocumented principal is reported by the
+    # adapter, under its own description.
+    reads_wildcard = not services and read_principal(
+        principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description
+    ).has_wildcard
+    if not services and not reads_wildcard:
         return []
 
     guards = _read_source_guards(
         statement.get("Condition"), org_id, resource_description
     )
+    has_source_condition = bool(guards.accounts) or bool(guards.arns) or guards.has_org_scope
+    if reads_wildcard and not has_source_condition:
+        return []
+    if reads_wildcard:
+        services = [WILDCARD_SERVICE_PRINCIPAL]
 
     resolved: Set[str] = set()
     has_wildcard = guards.names_foreign_org or guards.permits_absent_source_key
@@ -720,7 +751,7 @@ def _read_service_principal_sources(
             resolved.add(account)
         else:
             raise UnknownSourceConditionError(
-                f"{resource_description} guards a Service principal with "
+                f"{resource_description} has a source guard with "
                 f"aws:SourceAccount '{account}', which is neither an account "
                 "ID nor a wildcard. Reading it as no guard would leave its "
                 "account out of the allowlist."
@@ -744,9 +775,7 @@ def _read_service_principal_sources(
         ServicePrincipalSource(
             service_principal=service,
             source_account_ids=third_party,
-            has_source_condition=(
-                bool(guards.accounts) or bool(guards.arns) or guards.has_org_scope
-            ),
+            has_source_condition=has_source_condition,
             has_wildcard_source=has_wildcard,
         )
         for service in services
@@ -779,9 +808,10 @@ def has_actionable_service_principal_source(
     still receives requests carrying that key - the confused deputy
     statement's Null gate tests the request, not the policy document. An
     out-of-organization account driving one of these trusts is inside the
-    statement's reach and will be denied. Discovery cannot enumerate those
-    drivers, because the policy does not name them; only CloudTrail can.
-    That is the check's principal deployment risk.
+    statement's reach and will be denied. Discovery does not enumerate
+    those drivers: a policy that names one does so in a companion Deny
+    statement no adapter reads, and one that does not leaves it to
+    CloudTrail. That is the check's principal deployment risk.
 
     Args:
         sources: The service principal sources one resource's statements
@@ -830,7 +860,12 @@ def read_principal(
     An allowlist keyed on `aws:PrincipalAccount` can preserve exactly one kind
     of grant: one naming accounts. This reports which accounts a principal
     names, and the two ways it can name something no allowlist can carry - a
-    wildcard, and a principal type that has no account ID.
+    wildcard, and a principal that has no account ID, whether a `Federated`
+    or `CanonicalUser` type or an ARN whose account field is not an account,
+    which is what CloudFront's origin access identity user carries. A bare
+    unique ID is neither: AWS writes it in place of a deleted user's or
+    role's ARN and documents that the entry then grants no one access, so
+    there is nothing behind it for an RCP to deny.
 
     The two are one verdict, not two mechanisms: both mean the RCP would deny
     a grant that exists today, so both must block the account. Which of them
@@ -855,10 +890,15 @@ def read_principal(
             or one this policy type does not accept
     """
     if isinstance(principal, str):
+        accounts_named = _account_ids_in_string(principal)
         return PrincipalReading(
-            account_ids=_account_ids_in_string(principal),
+            account_ids=accounts_named,
             has_wildcard=principal == "*",
-            has_non_account_principals=False,
+            # An ARN that names no account. CloudFront's origin access
+            # identity user carries the service's name where an account ID
+            # would be, and no allowlist keyed on aws:PrincipalAccount can
+            # carry it. Read as naming nothing, it cleared the account.
+            has_non_account_principals=principal.startswith("arn:") and not accounts_named,
         )
 
     if isinstance(principal, list):
@@ -898,11 +938,10 @@ def read_principal(
         )
 
     named = read_principal(principal.get("AWS", []), permitted_types, resource_description)
+    names_non_account_type = bool(set(principal.keys()) & NON_ACCOUNT_PRINCIPAL_TYPES)
 
     return PrincipalReading(
         account_ids=named.account_ids,
         has_wildcard=named.has_wildcard,
-        has_non_account_principals=bool(
-            set(principal.keys()) & NON_ACCOUNT_PRINCIPAL_TYPES
-        ),
+        has_non_account_principals=named.has_non_account_principals or names_non_account_type,
     )

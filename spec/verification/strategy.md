@@ -146,6 +146,7 @@ replacing it removes an invariant's only enforcement.
 | `test_render_order_is_independent_of_registration_order` | INV-13 — a reversed registry yields the same definition order, which is what both generators render from |
 | `test_every_committed_module_call_passes_every_required_variable` | The committed worked examples still plan — a module variable with no default is passed by every generated call under `test_environment/` |
 | `test_every_registered_check_is_declared_by_its_module` | INV-13 — the other direction: every registered check name and allowlist variable is a variable its module's `variables.tf` declares, so the argument the generator passes is one `terraform plan` accepts |
+| `test_every_registered_check_is_read_by_a_statement` | INV-13 — the step after declaration: a statement in the module's `locals.tf` is gated by every registered check's boolean and reads its allowlist variable, so a declared variable the policy would silently ignore fails by name. What the statement denies is not read; the check specification owns that |
 | `tests/test_spec_corpus.py` | Every registered check has exactly one specification |
 | `test_the_conflict_register_and_the_check_documents_agree` | The conflict register and the per-check documents name the same checks |
 | `test_every_named_guard_resolves_to_a_real_test` | This table itself — every guard named below or above resolves to a test that exists. The table named `test_only_the_aws_package_constructs_a_client` for as long as no such test did |

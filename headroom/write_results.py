@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Union, cast
 
-from .constants import REDACTED_ACCOUNT_ID, get_check_type_map
+from .constants import REDACTED_ACCOUNT_ID
 from .utils import format_account_identifier
 
 # Set up logging
@@ -42,14 +42,24 @@ class ResultFilePathResolver:
     write_check_results(), get_results_dir(), get_results_path(), and
     results_exist() functions.
 
+    The check type is passed in, never looked up. Every caller knows it: a
+    check carries its CHECK_TYPE and the RCP generator reads one type. The
+    resolver once read a name-to-type map in `constants` that the
+    `register_check` decorator filled as a side effect, so a process that
+    imported this module without `headroom.checks` found the map empty and
+    resolved no path for any check. The CLI imports the checks first and
+    never met it.
+
     Attributes:
         check_name: The check's registered name
+        check_type: scps or rcps, the directory the check's results go in
         results_base_dir: Base directory for results
         account_name: Account name (optional, defaults to empty string)
         account_id: Account ID (optional, defaults to empty string)
         exclude_account_ids: If True, exclude account ID from filename
     """
     check_name: str
+    check_type: str
     results_base_dir: str
     account_name: str = ""
     account_id: str = ""
@@ -61,18 +71,8 @@ class ResultFilePathResolver:
 
         Returns:
             Path to the check's results directory
-
-        Raises:
-            ValueError: If check_name is not recognized
         """
-        check_type_map = get_check_type_map()
-        check_type = check_type_map.get(self.check_name)
-        if not check_type:
-            raise ValueError(
-                f"Unknown check name: {self.check_name}. "
-                f"Must be one of {list(check_type_map.keys())}"
-            )
-        return f"{self.results_base_dir}/{check_type}/{self.check_name}"
+        return f"{self.results_base_dir}/{self.check_type}/{self.check_name}"
 
     def get_file_path(self) -> Path:
         """
@@ -126,6 +126,7 @@ class ResultFilePathResolver:
         """
         alternate = ResultFilePathResolver(
             check_name=self.check_name,
+            check_type=self.check_type,
             results_base_dir=self.results_base_dir,
             account_name=self.account_name,
             account_id=self.account_id,
@@ -183,6 +184,7 @@ def restore_account_id_in_arns(value: str, account_id: str) -> str:
 
 def write_check_results(
     check_name: str,
+    check_type: str,
     account_name: str,
     account_id: str,
     results_data: Dict[str, Any],
@@ -197,6 +199,7 @@ def write_check_results(
 
     Args:
         check_name: The check's registered name
+        check_type: scps or rcps, the check's CHECK_TYPE
         account_name: Account name
         account_id: Account ID
         results_data: Dictionary containing summary, violations, exemptions, etc.
@@ -209,6 +212,7 @@ def write_check_results(
     """
     results_resolver = ResultFilePathResolver(
         check_name=check_name,
+        check_type=check_type,
         results_base_dir=results_base_dir,
         account_name=account_name,
         account_id=account_id,
@@ -235,7 +239,7 @@ def write_check_results(
     logger.info(f"Wrote results to {output_file}")
 
 
-def get_results_dir(check_name: str, results_base_dir: str) -> str:
+def get_results_dir(check_name: str, check_type: str, results_base_dir: str) -> str:
     """
     Get the directory path where results for a check should be stored.
 
@@ -243,6 +247,7 @@ def get_results_dir(check_name: str, results_base_dir: str) -> str:
 
     Args:
         check_name: The check's registered name
+        check_type: scps or rcps, the check's CHECK_TYPE
         results_base_dir: Base directory for results
 
     Returns:
@@ -251,6 +256,7 @@ def get_results_dir(check_name: str, results_base_dir: str) -> str:
     """
     results_resolver = ResultFilePathResolver(
         check_name=check_name,
+        check_type=check_type,
         results_base_dir=results_base_dir
     )
     return results_resolver.get_check_directory()
@@ -258,6 +264,7 @@ def get_results_dir(check_name: str, results_base_dir: str) -> str:
 
 def get_results_path(
     check_name: str,
+    check_type: str,
     account_name: str,
     account_id: str,
     results_base_dir: str,
@@ -270,6 +277,7 @@ def get_results_path(
 
     Args:
         check_name: The check's registered name
+        check_type: scps or rcps, the check's CHECK_TYPE
         account_name: Account name
         account_id: Account ID
         results_base_dir: Base directory for results
@@ -282,6 +290,7 @@ def get_results_path(
     """
     results_resolver = ResultFilePathResolver(
         check_name=check_name,
+        check_type=check_type,
         results_base_dir=results_base_dir,
         account_name=account_name,
         account_id=account_id,
@@ -292,6 +301,7 @@ def get_results_path(
 
 def results_exist(
     check_name: str,
+    check_type: str,
     account_name: str,
     account_id: str,
     results_base_dir: str,
@@ -304,6 +314,7 @@ def results_exist(
 
     Args:
         check_name: The check's registered name
+        check_type: scps or rcps, the check's CHECK_TYPE
         account_name: Account name
         account_id: Account ID
         results_base_dir: Base directory for results
@@ -314,6 +325,7 @@ def results_exist(
     """
     results_resolver = ResultFilePathResolver(
         check_name=check_name,
+        check_type=check_type,
         results_base_dir=results_base_dir,
         account_name=account_name,
         account_id=account_id,

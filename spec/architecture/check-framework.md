@@ -29,9 +29,9 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
 
 The decorator records a frozen `CheckDefinition` under the check's name — the
 class, the name and type, the `TerraformSection` its parameters render under,
-and the `Allowlist` its statement is scoped by, if any — stamps `CHECK_NAME`
-and `CHECK_TYPE` onto the class, and registers the name-to-type mapping that
-the result writer resolves directories through. It validates first: a
+and the `Allowlist` its statement is scoped by, if any — and stamps `CHECK_NAME`
+and `CHECK_TYPE` onto the class. The check passes `CHECK_TYPE` to the result
+writer, which looks nothing up. It validates first: a
 duplicate name, a class already registered under another name, an unknown type,
 an RCP check with no allowlist, an empty allowlist key or variable, an
 empty-string `empty_allowlist_comment`, or a name or allowlist variable another
@@ -45,9 +45,10 @@ while the parser reads `results/scps/`.
 each decorator runs. **This is the repository's one sanctioned dynamic import.**
 Everywhere else, imports are at the top of the file. It exists so that
 registering a check is the whole of wiring it into the pipeline: collection,
-result writing, parsing, and both Terraform generators read the registry rather
-than a hardcoded list, and placement consumes what parsing read from it without
-a lookup of its own (INV-13). The one thing a check's module
+parsing, and both Terraform generators read the registry rather than a
+hardcoded list, result writing is handed the check's `CHECK_TYPE`, and
+placement consumes what parsing read from it without a lookup of its own
+(INV-13). The one thing a check's module
 cannot declare is a new `TerraformSection`; `headroom/enums.py` declares those,
 in render order.
 

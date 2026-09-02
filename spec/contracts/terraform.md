@@ -259,6 +259,47 @@ downstream would have caught the lexical version: the next run reads the same
 wrong text back, finds it equal to the same wrong expectation, and leaves a
 dangling link in place while reporting a converged run.
 
+## Escaping
+
+Every value Headroom places between double quotes in HCL passes through
+`hcl_escape` in `headroom/terraform/models.py`, once, at the line that emits
+the quotes. It applies the escapes HCL's quoted-template grammar defines — a
+backslash, a double quote, a newline, a carriage return, a tab — and doubles
+the first character of `${` and `%{` so neither opens an interpolation or a
+directive. Other control characters are not escaped: AWS constrains the names
+this renders to the ASCII range, and none is typed in practice.
+
+OU and account names are the values that carry arbitrary text. AWS
+Organizations validates both with `[\s\S]*`, to 128 and 50 characters. Each
+reaches `grab_org_info.tf` in three places — the `ou.name ==` comparison in a
+`for` expression, the `error(...)` message beside it, and the comment above —
+and once reached all three verbatim. A quote or a backslash in a name then
+failed `terraform plan` after apply had written the file, since `validate_plan`
+checks paths, links, and the marker rather than syntax; a `${` was
+interpolated; and a line break ended the comment early, leaving the rest of the
+name as a bare top-level line, though the same break also broke the quoted
+occurrences, so the file did not parse. `tests/test_generate_org_info.py`
+renders names holding each of those characters and pins the escaped output.
+
+A comment has no escape syntax, so its one hazard is the line break.
+`comment_text` in `headroom/terraform/models.py` replaces every line break with
+the two-character sequence `\n`. `TerraformComment.render` passes its text
+through it, and so does the header line of every module block, which names the
+account or OU the module covers; the organization renderer emits its
+name-bearing comments through `TerraformComment`. No rendered comment spans
+lines. `tests/test_terraform_models.py` pins both renderers.
+
+A parameter value is data and is escaped in full. One producer composes
+template text instead: an allowlist whose definition sets
+`restores_account_ids` has the account ID in each ARN replaced by a reference
+to that account's local, so the module hardcodes no account ID.
+`_replace_account_id_in_arn` in `headroom/terraform/parameters.py` does the
+rewrite and escapes the other segments itself, along with any value it leaves
+unrewritten, and the renderer emits the allowlist with `template=True`, which
+is the only opt-out from the rule. `tests/test_terraform_parameters.py` pins
+the escaped output around a live reference. `target_id` on a module block is
+the one other reference, and it is emitted unquoted, never as a string value.
+
 ## Module interface
 
 Both generated module calls take a `target_id` validated to be a 12-digit
@@ -412,6 +453,13 @@ is enabled, so each must be a variable the module declares; a check registered
 without its `variable` block passed every test and failed at the operator's
 `terraform plan` with an unsupported argument. The guard reads each module's
 `variables.tf` for every declaration, with or without a default, and fails by
-name when a definition names something the module does not declare. It cannot
-see the module's `main.tf`: a declared variable no statement reads is still
-undetected, and is the check specification's `verification` list to catch.
+name when a definition names something the module does not declare.
+
+`test_every_registered_check_is_read_by_a_statement` takes the step after. It
+reads the module's `locals.tf`, comments removed, for `include = var.<check
+name>` and for `var.<allowlist variable>`, and fails by name on a declared
+variable no statement reads: an argument `terraform plan` accepts and the
+policy ignores, so the check would report its policy in place while the module
+attached nothing for it. Neither guard reads the statement itself. Whether it
+names the right actions, resource type, or condition key is the check
+specification's `verification` list to catch.

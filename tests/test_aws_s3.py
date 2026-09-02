@@ -495,6 +495,31 @@ class TestPolicyGrammar:
         assert results[0].third_party_account_ids == set()
         assert results[0].has_wildcard_principal is False
 
+    def test_an_origin_access_identity_blocks_the_bucket(self) -> None:
+        """
+        A bucket granting only a CloudFront OAI is a violation, not clean.
+
+        The OAI user ARN has no account field, so it reaches no allowlist;
+        the deployed statement denies it, and AWS's data perimeter guidance
+        names that break. Recording nothing here is what cleared the account.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity E11111111111111"
+                },
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::test-bucket/*"
+            }],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_non_account_principals is True
+        assert results[0].has_wildcard_principal is False
+        assert results[0].third_party_account_ids == set()
+
     def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
         """The field stays empty when no statement names a service."""
         results = self._analyze({

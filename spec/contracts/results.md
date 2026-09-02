@@ -20,9 +20,14 @@ take account identity from the file's own `summary`.
 {results_dir}/{check_type}/{check_name}/{account_identifier}.json
 ```
 
-- `check_type` is `scps` or `rcps`, taken from the registry, never from the
-  check name's spelling. An unregistered check name is an error, not a new
-  directory.
+- `check_type` is `scps` or `rcps`, passed to the writer as the check's
+  registered `CHECK_TYPE`, never inferred from the check name's spelling. The
+  writer looks nothing up. It once read a name-to-type map in `constants` that
+  the `register_check` decorator filled as a side effect, so a process that
+  imported the writer without `headroom.checks` found the map empty and
+  resolved no path for any check; the CLI imports the checks first and never
+  met it. `test_the_writer_resolves_a_path_without_the_registry_imported`
+  pins the fresh-interpreter case.
 - `account_identifier` is `{account_name}_{account_id}`, or `{account_name}`
   alone when `exclude_account_ids` is set.
 

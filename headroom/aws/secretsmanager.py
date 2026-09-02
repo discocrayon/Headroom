@@ -228,14 +228,10 @@ def _analyze_secret_policy(
         if not principal:
             continue
 
+        resource_description = f"Secret '{secret_name}' ({secret_arn})"
+        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
         sources.extend(
-            read_service_principal_sources(statement, org_account_ids, org_id, f"Secret '{secret_name}'")
-        )
-
-        reading = read_principal(
-            principal,
-            RESOURCE_POLICY_PRINCIPAL_TYPES,
-            f"Secret '{secret_name}' ({secret_arn})",
+            read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
         )
 
         if reading.has_non_account_principals:

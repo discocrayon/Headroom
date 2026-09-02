@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 # read that never succeeded.
 FUNCTION_GONE_ERROR_CODE = "ResourceNotFoundException"
 
+# The AuthType a function URL carries when it accepts unauthenticated calls.
+#
+# A function can hold one URL on $LATEST and one on each alias, and the API
+# documents no order for the configs it returns, so the verdict is NONE if any
+# config carries it. The other documented value is AWS_IAM.
+FUNCTION_URL_AUTH_TYPE_NONE = "NONE"
+
 
 @dataclass
 class DenyLambdaAuthTypeNone:
@@ -53,8 +60,11 @@ def get_deny_lambda_auth_type_none_analysis(
     1. Get all enabled regions from EC2
     2. For each region:
        a. List Lambda functions via list_functions()
-       b. For each function, check for function URL via list_function_url_configs()
-       c. Extract auth type from URL config (NONE or AWS_IAM)
+       b. For each function, list every function URL config via
+          list_function_url_configs(), paginated: one URL may sit on $LATEST
+          and one on each alias
+       c. Record the auth type as NONE if any config carries it, otherwise
+          the first config's type (AWS_IAM)
        d. Create DenyLambdaAuthTypeNone results
     3. Return all results across all regions
 
@@ -138,14 +148,24 @@ def _analyze_lambda_function(
     function_url_auth_type = None
 
     try:
-        url_configs_response = lambda_client.list_function_url_configs(
-            FunctionName=function_name
-        )
-        url_configs = cast(Sequence[FunctionUrlConfigTypeDef], url_configs_response.get("FunctionUrlConfigs", []))
+        url_configs = [
+            config
+            for page in paginate(
+                lambda_client, "list_function_url_configs", FunctionName=function_name
+            )
+            for config in cast(
+                Sequence[FunctionUrlConfigTypeDef], page.get("FunctionUrlConfigs", [])
+            )
+        ]
 
         if url_configs:
             has_function_url = True
-            function_url_auth_type = url_configs[0].get("AuthType")
+            auth_types = [config["AuthType"] for config in url_configs]
+            function_url_auth_type = (
+                FUNCTION_URL_AUTH_TYPE_NONE
+                if FUNCTION_URL_AUTH_TYPE_NONE in auth_types
+                else auth_types[0]
+            )
 
     except ClientError as e:
         if e.response.get("Error", {}).get("Code", "") != FUNCTION_GONE_ERROR_CODE:

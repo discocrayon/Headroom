@@ -39,12 +39,25 @@ Launches only, and only the public IP the launch itself assigns.
 ```
 Effect:    Deny
 Action:    ec2:RunInstances
-Resource:  arn:aws:ec2:*:*:instance/*
+Resource:  arn:aws:ec2:*:*:network-interface/*
 Condition: Bool
              ec2:AssociatePublicIpAddress = "true"
 ```
 
 Pattern 2, conditional deny.
+
+**The Resource is the network interface, not the instance.** `RunInstances`
+is authorized once per resource the launch touches, and the
+[service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html)
+binds `ec2:AssociatePublicIpAddress` to the `network-interface` resource type
+alone; it is not on `instance` and not an action-level key. On the instance
+ARN the key is therefore absent, a `Bool` condition on an absent key is false,
+and a statement scoped to `instance/*` never matches. The statement was scoped
+that way once and could not fire, while the check reported the SCP in place.
+`test_every_registered_check_is_read_by_a_statement` proves a statement is
+gated by `var.deny_ec2_public_ip`, not what it denies, so the statement's shape
+is pinned only here and in the module's own comment; `terraform validate`
+accepts either scope.
 
 ## Evidence
 

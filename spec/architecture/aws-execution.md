@@ -288,6 +288,16 @@ would abort every run against every region with no queues. Its `.get` is
 load-bearing, not laxity, and a reader tidying it into a subscript breaks the
 tool for the common case.
 
+The same listing is the one whose pagination is opt-in. `sqs:ListQueues`
+returns a `NextToken` only when the request set `MaxResults`; without it the
+response holds at most 1000 queues and no token, so a paginator sending none
+reads one page and stops as if the region held nothing more, with no error to
+distinguish that from a region of 1000 queues. Botocore sends `MaxResults`
+only when `PageSize` is configured, so `_analyze_queues_in_region` in
+`headroom/aws/sqs.py` configures it, and it is the only paginator here that
+must: every other listing this run issues returns its continuation marker
+whether or not the request bounded the page.
+
 | Listing | Key | Read as | Why |
 |---|---|---|---|
 | `organizations:ListAccounts`, `ListAccountsForParent` | `Accounts` | indexed | An organization always holds the management account, so empty is never a true answer, and this is the oracle nothing downstream re-checks |
@@ -296,7 +306,7 @@ tool for the common case.
 | `organizations:ListRoots` | `Roots` | defaulted | The function's own post-condition already raises on no root and on several, with a better message than a `KeyError` |
 | `organizations:ListOrganizationalUnitsForParent` | `OrganizationalUnits` | defaulted | A dropped subtree makes the placement view disagree with membership, and the snapshot cross-check aborts on that |
 | `sqs:ListQueues` | `QueueUrls` | defaulted, and must stay so | AWS omits the key on an account with no queues |
-| `s3:ListBuckets`, `kms:ListKeys`, `ecr:DescribeRepositories`, `secretsmanager:ListSecrets`, `lambda:ListFunctions`, `rds:DescribeDBInstances`, `rds:DescribeDBClusters`, `eks:ListClusters` | `Buckets`, `Keys`, `repositories`, `SecretList`, `Functions`, `DBInstances`, `DBClusters`, `clusters` | defaulted | Unestablished. Neither AWS's reference nor botocore says whether the key survives an empty result |
+| `s3:ListBuckets`, `kms:ListKeys`, `ecr:DescribeRepositories`, `secretsmanager:ListSecrets`, `lambda:ListFunctions`, `lambda:ListFunctionUrlConfigs`, `rds:DescribeDBInstances`, `rds:DescribeDBClusters`, `eks:ListClusters` | `Buckets`, `Keys`, `repositories`, `SecretList`, `Functions`, `FunctionUrlConfigs`, `DBInstances`, `DBClusters`, `clusters` | defaulted | Unestablished. Neither AWS's reference nor botocore says whether the key survives an empty result |
 
 That last row is a known gap rather than a settled design, and it is a smaller
 one than it first reads. Work out what indexing would catch on a listing that
@@ -316,7 +326,7 @@ healthy run over. Whoever revisits this decides whether detecting a malformed
 AWS response is worth that cost; the answer so far has been no, on the grounds
 that a region that errored, an API that denied permission, and a policy that
 would not parse are the INV-01 exposures that actually occur, and each of those
-already aborts or records a read failure.
+already aborts.
 
 ## Failure policy
 
@@ -328,7 +338,7 @@ Two deliberate exceptions, both narrow:
 | Tolerated | Why |
 |---|---|
 | Any `ClientError` fetching an account's tags, in `_fetch_account_tags` in `headroom/aws/organization_snapshot.py` | Labels, not evidence. [`../contracts/configuration.md`](../contracts/configuration.md#tag-fallbacks) owns the fallbacks the account takes instead, the argument for tolerating the failure, and the record that the catch is wider than intended |
-| Per-region and per-resource errors inside a check | Specified per check, and each such case is reported in that check's result rather than silently dropped. The last exception was [`deny_sqs_third_party_access`](../checks/rcps/deny_sqs_third_party_access.md), which dropped a queue naming an unrecognized principal key, and that is fixed |
+| Per-region and per-resource errors inside a check | Specified per check, and each such case is reported in that check's result rather than silently dropped. The last exception was [`deny_sqs_third_party_access`](../checks/rcps/deny_sqs_third_party_access.md), which dropped a queue naming an unrecognized principal key, then recorded it with nothing that check reads; it now aborts on that queue like the other five analyzers |
 
 ### What an aborted run tells the operator
 
@@ -387,9 +397,8 @@ it, `TrustPolicyAnalysis` carries no field for a principal with no account ID,
 and the role is dropped.
 [`../checks/rcps/deny_sts_third_party_assumerole.md`](../checks/rcps/deny_sts_third_party_assumerole.md)
 owns that argument and that analyzer's full failure list.
-`InvalidFederatedPrincipalError` is caught nowhere, so it reaches INV-02 by the
-first row. `UnknownPrincipalTypeError` does so from every analyzer but the SQS
-one, which catches it; see below.
+`InvalidFederatedPrincipalError` and `UnknownPrincipalTypeError` are caught
+nowhere, so each reaches INV-02 by the first row.
 
 Once configuration has been validated, everything after it runs inside one of
 three `_failures_reported` scopes, which between them cover the whole run:
@@ -409,28 +418,27 @@ message. INV-02 held either way, which is why it went unnoticed.
 
 Any other exception type is caught nowhere and aborts on an unlabelled
 traceback, with no log line at all: `MalformedPolicyError`,
-`UnknownGranteeTypeError`, `UnknownGranteePrincipalError`,
-`InvalidFederatedPrincipalError`, and `MalformedStatementError` each subclass
-`Exception` directly, and an `Action` that is neither a string nor an array
-raises `TypeError`. Of row 1's four examples, only unparseable JSON reaches a
-handler, because `json.JSONDecodeError` subclasses `ValueError`.
+`UnknownPrincipalTypeError`, `UnknownGranteeTypeError`,
+`UnknownGranteePrincipalError`, `InvalidFederatedPrincipalError`, and
+`MalformedStatementError` each subclass `Exception` directly, and an `Action`
+that is neither a string nor an array raises `TypeError`. Of row 1's four
+examples, only unparseable JSON reaches a handler, because
+`json.JSONDecodeError` subclasses `ValueError`.
 
 That is not a defect to fix in `main`. INV-02 is met because the run aborts
 whole, and INV-01 is met because the abort itself keeps a missing observation
 from being read as clean — not because every message is equally informative.
-Four of the five classes name the resource whose policy or grant could not be
+Five of the six classes name the resource whose policy or grant could not be
 read; `UnknownGranteePrincipalError` names the unrecognized grant principal
 rather than the resource carrying it; and the bare `TypeError` names only the
-value's Python type. None of the six lets the run finish and report the account
-clean, which is the property that matters.
+value's Python type. None of the seven lets the run finish and report the
+account clean, which is the property that matters.
 
-`UnknownPrincipalTypeError` subclasses `Exception` too, and names the resource
-as four of those five do, but it is the one type on that list with a catch site:
-`headroom/aws/sqs.py` catches it and records the queue as a read failure rather
-than aborting.
-[`../checks/rcps/deny_sqs_third_party_access.md`](../checks/rcps/deny_sqs_third_party_access.md)
-owns what that record does. From the other five resource-policy analyzers it
-aborts like the rest.
+`UnknownPrincipalTypeError` was for a time the one type on that list with a
+catch site: `headroom/aws/sqs.py` caught it and recorded the queue as a read
+failure carrying nothing the queue's own check reads, so the abort INV-01
+relies on here never happened for that queue and the account was cleared. The
+catch is gone, and the exception aborts from all six analyzers.
 
 A configuration error is caught earlier, and separately, in
 `setup_configuration`: a `ValueError` or `TypeError` raised by `merge_configs`

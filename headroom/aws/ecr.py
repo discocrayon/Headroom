@@ -150,11 +150,10 @@ def _analyze_policy_statements(
         if not principal:
             continue
 
+        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, context)
         sources.extend(
             read_service_principal_sources(statement, org_account_ids, org_id, context)
         )
-
-        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, context)
 
         has_non_account_principals = (
             has_non_account_principals or reading.has_non_account_principals

@@ -12,7 +12,6 @@ import pytest
 from pathlib import Path
 from typing import Any, Dict, List, Set, Generator
 from headroom.constants import (
-    _CHECK_TYPE_MAP,
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
@@ -482,7 +481,6 @@ class TestParseRcpResultFiles:
                 ),
             ),
         )
-        monkeypatch.setitem(_CHECK_TYPE_MAP, "deny_kms_custom_key", "rcps")
         seed_all_rcp_check_dirs(temp_results_dir)
         check_dir = Path(temp_results_dir) / "rcps" / "deny_kms_custom_key"
         with open(check_dir / "test-account.json", "w") as f:

@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Type
 
 from .base import BaseCheck
-from ..constants import register_check_type as _register_check_type
 from ..enums import CheckType, TerraformSection
 
 
@@ -136,9 +135,9 @@ def _validate_registration(
     claimed_by[check_name] = check_name
     # A CheckType member is a str, so it passes the membership test below and
     # every lookup that compares by equality. It does not format as one: the
-    # result writer builds a check's directory by formatting the type in the
-    # constants mirror, and a member there renders results/CheckType.SCPS/
-    # while the parser reads results/scps/.
+    # result writer builds a check's directory by formatting CHECK_TYPE, and
+    # a member there renders results/CheckType.SCPS/ while the parser reads
+    # results/scps/.
     if type(check_type) is not str:
         raise ValueError(
             f"Check {check_name!r} has check_type {check_type!r}, which is not "
@@ -214,8 +213,6 @@ def register_check(
         _CHECK_REGISTRY[check_name] = definition
         cls.CHECK_NAME = check_name
         cls.CHECK_TYPE = check_type
-        # Also register with constants module for write_results
-        _register_check_type(check_name, check_type)
         return cls
     return decorator
 

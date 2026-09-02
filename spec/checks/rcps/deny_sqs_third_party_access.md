@@ -56,6 +56,16 @@ Terraform variables: `deny_sqs_third_party_access` and
 Per enabled region: `sqs:ListQueues` (paginated), then `sqs:GetQueueAttributes`
 requesting `Policy` and `QueueArn` per queue.
 
+Every `ListQueues` request sets `MaxResults` to 1000, the largest value the
+API accepts. SQS returns a `NextToken` only when the request set `MaxResults`,
+so a paginator that sends none reads one page of at most 1000 queues and stops
+as if the region held no more. Queue 1001 would then never be read: a partner
+granted there would be left out of the allowlist and denied on deploy, and a
+wildcard there would let the statement deploy where it should be withheld
+(INV-01). `LIST_QUEUES_PAGE_SIZE` in `headroom/aws/sqs.py` holds the value;
+[`../../architecture/aws-execution.md`](../../architecture/aws-execution.md#reading-a-pages-collection-key)
+records why this listing alone needs it.
+
 For each `Allow` statement: `NotPrincipal` presence, `Principal`, `Action`.
 The `Principal` element is read by `read_principal` against
 `RESOURCE_POLICY_PRINCIPAL_TYPES`
@@ -70,7 +80,7 @@ The `Principal` element is read by `read_principal` against
 | Exemption | — | Never produced |
 | Not recorded | The queue has no policy | Not in the output |
 | Violation | A `Federated` or `CanonicalUser` principal | `VIOLATION` |
-| Read failure | Unparseable policy JSON, or an unrecognized principal key | Recorded; the statement is withheld from the account |
+| Violation | An ARN naming no account, under the rule [`../../contracts/policy-model.md`](../../contracts/policy-model.md#a-blocker-stops-the-account-a-document-headroom-cannot-read-stops-the-run) owns | `VIOLATION` |
 
 ## Failure behavior
 
@@ -81,19 +91,20 @@ The `Principal` element is read by `read_principal` against
 | Any other `ClientError` in any region | Logged and re-raised, aborting the run |
 | `Statement` neither object nor list | `MalformedPolicyError`, aborting the run |
 | `Principal` neither string, list, nor object | `MalformedPolicyError`, aborting the run |
-| Unparseable policy JSON | `json.JSONDecodeError`, **caught and recorded as a read failure** |
-| A principal key outside the four documented types | `UnknownPrincipalTypeError`, **caught and recorded as a read failure** |
+| Unparseable policy JSON | `json.JSONDecodeError`, aborting the run |
+| A principal key outside the four documented types | `UnknownPrincipalTypeError`, aborting the run |
 | An `Action` that is neither a string nor a list | `TypeError`, aborting the run |
 
-**This analyzer catches exactly two of the things a policy document can
-raise, and records both.** It once skipped the queue instead, which cleared the
-account on the strength of a queue nobody had read, against INV-01; and it once
-raised on a `Federated` principal and stopped the whole run. Both are fixed: a
-principal no allowlist can carry is now a violation like any other blocker, and
-a document this analyzer cannot read is recorded as a read failure that
-withholds the statement from the account. An `Action` that is neither a string
-nor a list is the one policy-document error still uncaught here, and it aborts.
-The rule is stated once in
+**This analyzer catches nothing a policy document can raise.** Unparseable
+JSON and an undocumented principal key abort the run here as they do from the
+other five resource-policy analyzers. They did not always: this analyzer once
+skipped such a queue on a warning, and then recorded it with every field this
+check reads left empty. Either way the queue contributed no violation, the
+account was cleared for this check on the strength of a queue nobody had read,
+and the generated Deny was attached against an allowlist computed without it,
+which is INV-01's case. A `Federated` or `CanonicalUser` principal is the
+opposite correction: it once aborted the run and is now a violation like any
+other blocker. The rule is stated once in
 [`../../contracts/policy-model.md`](../../contracts/policy-model.md).
 
 ## Result contract
@@ -131,54 +142,13 @@ their names say.
 is the field that makes a queue naming a `Federated` or `CanonicalUser`
 principal a violation. It was dead while the analyzer raised instead of setting
 it, and it came into use when the five analyzers converged on recording such a
-principal. `_unreadable_queue` leaves it `false`, along with every other field
-this check reads, which is what drops the entry from `analyze`'s filter.
+principal.
 
 `queues_with_wildcards` counts every violation, not only entries with a literal
 wildcard principal. A `Federated` or `CanonicalUser` principal is now recorded
 as a violation rather than aborting, so it is folded into the same field and the
 name understates what the field holds. The same is true of
 [`deny_secrets_manager_third_party_access`](deny_secrets_manager_third_party_access.md).
-
-## Known conflict: an unreadable queue is recorded and then filtered out
-
-Status: unresolved. Conflict 8 in
-[`../index.md`](../index.md).
-
-The Failure behavior section above says an unparseable document and an
-undocumented principal key are each "caught and recorded as a read failure",
-and that such a record "withholds the statement from the account". The Result
-contract section says `_unreadable_queue` "leaves it `false`, along with every
-other field this check reads, which is what drops the entry from `analyze`'s
-filter". Both sentences describe the same queue, and they do not agree.
-
-The code matches the second. `_unreadable_queue` in `headroom/aws/sqs.py`
-returns an analysis whose `third_party_account_ids`, `has_wildcard_principal`,
-and `has_non_account_principals` are all empty, and `analyze` filters on
-exactly those three, so the queue never reaches `categorize_result`. The
-statement that is withheld belongs to
-[`deny_service_confused_deputy`](deny_service_confused_deputy.md), which reads
-`service_principal_sources` and files the read failure as a violation. This
-check reads none of it, and
-`test_a_queue_kept_only_for_a_read_failure_is_not_reported` pins that.
-
-What is unsettled is which behavior was intended here, and INV-01 is why it
-matters rather than being a wording problem. A queue whose policy could not be
-parsed may grant a third party. Dropped, it contributes no violation, this
-check's account is cleared, and the generated Deny is attached against an
-allowlist computed without it — a missing observation read as evidence of
-safety. The sibling check reaches the opposite verdict from the same record,
-for that stated reason.
-
-Against that: the analyzer's catch is deliberate and well argued. It replaced
-an abort that cost every other account's results and dropped a source account
-the confused-deputy allowlist depended on. Whatever settles this must keep the
-run completing.
-
-Not fixed here, because the fix is not a prose change. Making this check see
-the read failure would alter which accounts are blocked and which RCPs deploy,
-and [`../../README.md`](../../README.md) requires reporting a conflict rather
-than guessing which side is right.
 
 ## Placement and generated policy
 
@@ -187,13 +157,11 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
 
 ## Accepted limitations
 
-1. A queue whose policy or principal could not be read contributes no source
-   guard, only the knowledge that the read failed; see Failure behavior.
-2. `Condition`, `Resource`, and `NotAction` are not evaluated.
-3. The queue-level filter for third-party or wildcard findings lives in the
+1. `Condition`, `Resource`, and `NotAction` are not evaluated.
+2. The queue-level filter for third-party or wildcard findings lives in the
    check's `analyze`, not in the analyzer, which appends every queue that has a
    policy.
-4. AWS documents federated principals only for role trust policies, so a
+3. AWS documents federated principals only for role trust policies, so a
    `Federated` principal in a queue policy may grant nothing at all. It is still
    counted as a blocker, because whether the grant is live is not readable from
    the document and INV-01 forbids assuming it is not.
@@ -209,14 +177,21 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
 4. A queue with no `Policy` attribute → skipped.
 5. A queue deleted between listing and reading → skipped.
 6. `AccessDenied` in one region → the run aborts.
-7. A queue whose policy is not valid JSON → recorded as a read failure; the
-   queue is withheld from the account, and the remaining queues are still read.
-8. A queue naming a principal key AWS does not document → recorded as a read
-   failure, on the same grounds.
+7. A queue whose policy is not valid JSON → the run aborts.
+8. A queue naming a principal key AWS does not document → the run aborts, on
+   the same grounds.
 9. A queue naming a `Federated` principal → the account is blocked for SQS;
    the run continues.
 10. A queue naming a `CanonicalUser` principal → the account is blocked, on the same
     grounds.
+11. A region holding more queues than one `ListQueues` page → every page is
+    read, because each request sets `MaxResults`.
+12. A queue policy with `Principal: "*"` narrowed by `aws:SourceArn` to an SNS
+    topic, AWS's documented cross-account subscription → still a violation
+    here, since `Condition` is not evaluated (limitation 1). The topic's
+    account reaches the allowlist of
+    [`deny_service_confused_deputy`](deny_service_confused_deputy.md) through
+    `service_principal_sources`, so that statement stays deployable.
 
 ## Referenced invariants
 

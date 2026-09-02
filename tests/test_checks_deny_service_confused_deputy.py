@@ -1,5 +1,6 @@
 """Tests for the deny_service_confused_deputy RCP check."""
 
+import json
 import tempfile
 from typing import Any, Dict, Iterator, List
 from unittest.mock import MagicMock, patch
@@ -155,6 +156,74 @@ def _run_many(
     return results_data
 
 
+def _sqs_session(policy: Dict[str, Any]) -> MagicMock:
+    """
+    Build a boto3 session stand-in serving one queue carrying the policy.
+
+    The real SQS analyzer and the shared source reader run against it, so a
+    check executed with this session pins the path from policy document to
+    finding with nothing in between replaced.
+    """
+    session = MagicMock()
+    ec2_client = MagicMock()
+    sqs_client = MagicMock()
+    session.client.side_effect = lambda service, **kwargs: {
+        "ec2": ec2_client,
+        "sqs": sqs_client,
+    }[service]
+    ec2_client.describe_regions.return_value = {
+        "Regions": [{"RegionName": "us-west-2"}]
+    }
+    paginator = MagicMock()
+    paginator.paginate.return_value = [
+        {"QueueUrls": ["https://sqs.us-west-2.amazonaws.com/111111111111/a-queue"]}
+    ]
+    sqs_client.get_paginator.return_value = paginator
+    sqs_client.get_queue_attributes.return_value = {
+        "Attributes": {
+            "Policy": json.dumps(policy),
+            "QueueArn": "arn:aws:sqs:us-west-2:111111111111:a-queue",
+        }
+    }
+    return session
+
+
+def _run_sqs_policy(temp_results_dir: str, policy: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Execute the check with the real SQS analyzer reading one queue policy.
+
+    The other five analyzers return nothing.
+
+    Returns the results payload the check wrote.
+    """
+    module = "headroom.checks.rcps.deny_service_confused_deputy"
+    check = DenyServiceConfusedDeputyCheck(
+        check_name="deny_service_confused_deputy",
+        account_name="test-account",
+        account_id="111111111111",
+        results_dir=temp_results_dir,
+        org_account_ids=ORG_ACCOUNTS,
+        org_id=ORG_ID,
+    )
+
+    patches = [
+        patch(f"{module}.{name}", return_value=[])
+        for name in ANALYZERS
+        if name != "analyze_sqs_queue_policies"
+    ]
+    for entered in patches:
+        entered.start()
+    try:
+        with patch("headroom.checks.base.write_check_results") as mock_write:
+            check.execute(_sqs_session(policy))
+    finally:
+        for entered in patches:
+            entered.stop()
+
+    results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
+    return results_data
+
+
 def _run_single_analyzer(
     temp_results_dir: str, analyzer_name: str, analysis: MagicMock
 ) -> Dict[str, Any]:
@@ -288,6 +357,39 @@ class TestServiceConfusedDeputyCheck:
         data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
 
         assert data["compliant_instances"][0]["read_failure"] is None
+
+    def test_a_source_pinned_only_on_a_deny_statement_is_not_recorded(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        An unguarded Allow to the service beside a Deny pinning the source.
+
+        No adapter reads a Deny, so the account the pair permits reaches
+        nothing, and the deployed statement denies the driver the policy
+        named. This pins limitation 1 of the specification; lifting it is
+        standing intent, and doing so flips this test.
+        """
+        data = _run_sqs_policy(temp_results_dir, {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-west-2:111111111111:a-queue",
+                },
+                {
+                    "Effect": "Deny",
+                    "Principal": "*",
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-west-2:111111111111:a-queue",
+                    "Condition": {"StringNotEquals": {"aws:SourceAccount": THIRD_PARTY}},
+                },
+            ],
+        })
+
+        assert data["summary"]["unique_third_party_accounts"] == []
+        assert data["summary"]["violations"] == 0
 
     def test_the_finding_names_its_resource(
         self, temp_results_dir: str

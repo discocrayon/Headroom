@@ -170,12 +170,19 @@ locals {
     # -->
     # Sid: DenyEc2PublicIp
     # Denies creation of EC2 instances with public IP addresses
+    #
+    # The Resource is the network interface, not the instance. RunInstances
+    # is authorized once per resource it touches, and the service reference
+    # binds ec2:AssociatePublicIpAddress to the network-interface resource
+    # alone: on the instance ARN the key is absent, a Bool condition on an
+    # absent key is false, and a statement scoped to instance/* never
+    # matches. It once was, and the deny could not fire.
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonec2.html
     {
       include = var.deny_ec2_public_ip,
       statement = {
         Action   = "ec2:RunInstances"
-        Resource = "arn:aws:ec2:*:*:instance/*"
+        Resource = "arn:aws:ec2:*:*:network-interface/*"
         Condition = {
           "Bool" = {
             "ec2:AssociatePublicIpAddress" = "true"

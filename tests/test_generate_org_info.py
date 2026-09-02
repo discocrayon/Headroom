@@ -574,3 +574,46 @@ class TestRootParentedAccountLocals:
         ))
 
         assert "validation_check_sandbox_account = " in content
+
+
+class TestHostileNames:
+    """
+    OU and account names reach HCL as escaped literals and one-line comments.
+
+    AWS Organizations validates both names with `[\\s\\S]*`, so a name may hold
+    a quote, a backslash, a template sequence, or a line break. Each of those
+    once reached the rendered file verbatim and failed `terraform plan` after
+    the file was written, or, for `${`, was interpolated.
+    """
+
+    @staticmethod
+    def _hierarchy(ou_name: str, account_name: str) -> OrganizationHierarchy:
+        ou_id = "ou-1111-11111111"
+        return OrganizationHierarchy(
+            root_id="r-1111",
+            organizational_units={
+                ou_id: OrganizationalUnit(ou_id, ou_name, None, [], ["111111111111"]),
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    "111111111111", account_name, ou_id, [ou_id]
+                ),
+            },
+        )
+
+    def test_a_quote_and_a_backslash_are_escaped_in_every_literal(self) -> None:
+        content = _generate_terraform_content(self._hierarchy('Prod "A"', "Back\\slash"))
+
+        assert 'ou.name == "Prod \\"A\\""' in content
+        assert 'Expected exactly 1 Prod \\"A\\" OU, found ${length(' in content
+        assert 'account.name == "Back\\\\slash"' in content
+        assert 'Expected exactly 1 Back\\\\slash account, found ${length(' in content
+
+    def test_a_line_break_in_a_name_does_not_start_a_new_hcl_line(self) -> None:
+        content = _generate_terraform_content(
+            self._hierarchy("Prod\n  injected = 1 #", "Workload")
+        )
+
+        assert "\n  injected" not in content
+        assert "  # Validation for Prod\\n  injected = 1 # OU" in content
+        assert 'ou.name == "Prod\\n  injected = 1 #"' in content

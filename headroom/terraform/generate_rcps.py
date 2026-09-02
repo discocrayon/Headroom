@@ -142,7 +142,7 @@ def parse_rcp_result_files(
     missing_check_dirs: List[str] = []
 
     for check_name in sorted(get_check_names("rcps")):
-        check_dir = Path(get_results_dir(check_name, results_dir))
+        check_dir = Path(get_results_dir(check_name, "rcps", results_dir))
 
         if not check_dir.exists():
             missing_check_dirs.append(check_name)

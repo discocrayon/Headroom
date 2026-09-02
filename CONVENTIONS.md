@@ -29,6 +29,7 @@ this file, so these rules are loaded on every change.
 - Do not use the type of Any, if you change the existing code to Any, you are making it worse.
 - Never commit without asking me first.
 - Do not commit without asking me first.
+- Never push or open a pull request without asking me first. Approval of a plan that lists a push or a PR as a step is not approval to push or open the PR; ask again at that step, each time.
 - Never commit a design or plan document. `design-docs/`, `docs/superpowers/` and `.superpowers/` are git-ignored scratch; anything durable belongs in the specification corpus, and nothing committed may cite a path they hold.
 - Be specific. Do not say, for example, "and other formats" list the formats explictly instead.
 - Always import at the top of the file.

@@ -208,7 +208,10 @@ class TestAnalyzeSecretPolicy:
             ]
         }
 
-        with pytest.raises(UnknownPrincipalTypeError):
+        with pytest.raises(
+            UnknownPrincipalTypeError,
+            match=r"Secret 'odd-secret' \(arn:aws:secretsmanager:us-east-1:111111111111:secret:odd-secret\) names principal type\(s\) \['Kerberos'\]",
+        ):
             _analyze_secret_policy(
                 "odd-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:odd-secret",

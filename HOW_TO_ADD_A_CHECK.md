@@ -121,6 +121,9 @@ execution_order:
       test_every_registered_check_is_declared_by_its_module fails by name
       if test_environment/modules/{type}/variables.tf does not declare the
       check's boolean or its allowlist variable;
+      test_every_registered_check_is_read_by_a_statement fails by name if
+      no statement in test_environment/modules/{type}/locals.tf is gated by
+      the check's boolean or reads its allowlist variable;
       test_generic_pipeline_modules_name_no_check fails if a generic
       module names a check.
 
@@ -761,12 +764,12 @@ three are tested. Five of the six shipped checks test all three
 [`spec/checks/rcps/deny_sts_third_party_assumerole.md`](spec/checks/rcps/deny_sts_third_party_assumerole.md)
 owns why that principal is tolerated there and nowhere else.
 
-Let `UnknownPrincipalTypeError` propagate. Five of the six analyzers abort the
-run on a principal key AWS does not document, because catching it and moving on
-clears the account on the strength of a resource nobody read. `aws/sqs.py` is
-the one exception, and it is not a licence to copy: it catches the exception and
-records the queue as a read failure, which withholds the confused-deputy
-statement from the account rather than clearing it. A new analyzer propagates.
+Let `UnknownPrincipalTypeError` propagate. All six analyzers abort the run on a
+principal key AWS does not document, because catching it and moving on clears
+the account on the strength of a resource nobody read. `aws/sqs.py` once caught
+it and recorded the queue as a read failure with every field its own check
+reads left empty, which cleared the account exactly that way; the catch is
+gone. A new analyzer propagates.
 See [`spec/contracts/policy-model.md`](spec/contracts/policy-model.md) and
 [`spec/checks/rcps/deny_sqs_third_party_access.md`](spec/checks/rcps/deny_sqs_third_party_access.md).
 
@@ -1403,11 +1406,18 @@ if_check_has_allowlist:
     location: "alphabetical by service"
     purpose: "The statement in locals.tf reads it as var.{service}_allowed_{thing}s. Without the declaration the rendered module does not plan; without default = [] every module call where the check is off stops planning, because the renderer emits the allowlist only for an enabled check."
 
-  - path: tests/test_parse_results.py
-    must_test: [summary_field_carried, absent_key_aborts, union_across_accounts, other_checks_unaffected]
-
-  - path: tests/test_generate_scps.py
-    must_test: [renders_populated_allowlist, empty_allowlist_leaves_policy_off]
+  - path: tests/test_checks_{check_name}.py
+    must_test: [summary_key_carries_the_observed_values, summary_key_present_when_nothing_observed]
+    purpose: |
+      Parsing, placement, and rendering of an allowlist are generic and
+      already pinned: an absent summary_key aborts, an empty list is an
+      observation, values union across the accounts a placement covers, and
+      an empty union leaves the policy off with its comment. Those tests
+      live in tests/test_parse_results.py, tests/test_terraform_parameters.py,
+      and tests/test_committed_terraform_examples.py and need no new case.
+      The check's own test is the one place its summary_key is proven to
+      hold the values the statement's condition key will compare against,
+      and to be present, as [], when the account holds nothing.
 
 if_check_has_exemptions:
   - path: test_environment/modules/scps/locals.tf

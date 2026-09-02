@@ -78,6 +78,7 @@ The `Principal` element is read by `read_principal` against
 | Exemption | — | Never produced |
 | Not recorded | Only in-organization principals or AWS services | Not in the output |
 | Violation | A `Federated` or `CanonicalUser` principal | `VIOLATION` |
+| Violation | An ARN naming no account, under the rule [`../../contracts/policy-model.md`](../../contracts/policy-model.md#a-blocker-stops-the-account-a-document-headroom-cannot-read-stops-the-run) owns | `VIOLATION` |
 | Aborts | A principal key AWS does not document | The run aborts |
 
 ## Failure behavior
@@ -91,7 +92,7 @@ The `Principal` element is read by `read_principal` against
 | Unparseable policy JSON | Not caught; propagates and aborts |
 | `Statement` neither object nor list | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
-| A `Federated` or `CanonicalUser` principal | Recorded as `has_non_account_principals`; the account is blocked |
+| A `Federated` or `CanonicalUser` principal, or an ARN naming no account | Recorded as `has_non_account_principals`; the account is blocked |
 | A principal key outside the four documented types | `UnknownPrincipalTypeError`, aborting the run |
 | An `Action` that is neither a string nor a list | `TypeError`, aborting the run |
 

@@ -12,7 +12,10 @@ from botocore.exceptions import ClientError
 from headroom.aws.sqs import (
     analyze_sqs_queue_policies,
 )
-from headroom.aws.policy_documents import MalformedPolicyError
+from headroom.aws.policy_documents import (
+    MalformedPolicyError,
+    UnknownPrincipalTypeError,
+)
 from tests.constants import ORG_ID
 
 
@@ -722,6 +725,30 @@ class TestAnalyzeSQSQueuePolicies:
         }
         return mock_session, mock_sqs_client
 
+    def test_listing_queues_asks_for_a_page_size(self) -> None:
+        """
+        ListQueues is paginated only when the request carries MaxResults.
+
+        SQS is the one API here that returns no NextToken unless the request
+        set MaxResults, so a paginator that sends none reads a single page of
+        at most 1000 queues and stops, silently. Queue 1001 is never read: a
+        partner granted there is left out of the allowlist and denied on
+        deploy, and a wildcard there lets the RCP deploy where it should be
+        withheld (INV-01). botocore sends MaxResults only when PageSize is
+        set, and 1000 is the largest value the API accepts.
+        """
+        mock_session, mock_sqs_client = self._single_region_session()
+
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"QueueUrls": []}]
+        mock_sqs_client.get_paginator.return_value = paginator
+
+        analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        paginator.paginate.assert_called_once_with(
+            PaginationConfig={"PageSize": 1000}
+        )
+
     def test_listing_queues_raises_on_access_denied(self) -> None:
         """
         AccessDenied while listing queues raises rather than returning nothing.
@@ -844,27 +871,16 @@ class TestAnalyzeSQSQueuePolicies:
         assert results[0].queue_arn == live_arn
         assert results[0].third_party_account_ids == {"222222222222"}
 
-    def test_json_decode_error(self) -> None:
+    def test_json_decode_error_aborts_the_run(self) -> None:
         """
-        An unparseable queue policy is recorded rather than discarded.
+        An unparseable queue policy ends the run rather than being recorded.
 
-        The queue carries no third-party account and no wildcard, so the
-        deny_sqs_third_party_access check still filters it out; only the
-        confused deputy check sees the read failure, and it withholds the
-        statement from the account over it.
+        Recording the queue as clean would let the RCP deploy over whatever
+        the policy actually grants, which is INV-01's case. The analyzer
+        catches nothing here, so the JSONDecodeError ends the run, as it
+        does from the other five resource-policy analyzers.
         """
-        mock_session = MagicMock()
-        mock_ec2_client = MagicMock()
-        mock_sqs_client = MagicMock()
-
-        mock_session.client.side_effect = lambda service, **kwargs: {
-            "ec2": mock_ec2_client,
-            "sqs": mock_sqs_client,
-        }.get(service)
-
-        mock_ec2_client.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
+        mock_session, mock_sqs_client = self._single_region_session()
 
         queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/test-queue"
         queue_arn = "arn:aws:sqs:us-east-1:111111111111:test-queue"
@@ -873,41 +889,25 @@ class TestAnalyzeSQSQueuePolicies:
         paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
         mock_sqs_client.get_paginator.return_value = paginator
 
-        # Invalid JSON
         mock_sqs_client.get_queue_attributes.return_value = {
-            "Attributes": {
-                "Policy": "{invalid json",
-                "QueueArn": queue_arn
-            }
+            "Attributes": {"Policy": "{invalid json", "QueueArn": queue_arn}
         }
 
-        org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
+        with pytest.raises(json.JSONDecodeError):
+            analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
-        assert len(results) == 1
-        assert results[0].queue_arn == queue_arn
-        assert results[0].third_party_account_ids == set()
-        assert results[0].has_wildcard_principal is False
-        assert results[0].has_non_account_principals is False
-        assert results[0].actions_by_account == {}
-
-        sources = results[0].service_principal_sources
-        assert len(sources) == 1
-        assert sources[0].read_failure is not None
-        assert "could not be analyzed" in sources[0].read_failure
-        assert sources[0].service_principal is None
-
-    def test_unknown_principal_type_keeps_the_queue_as_a_read_failure(self) -> None:
+    def test_an_undocumented_principal_key_aborts_the_run(self) -> None:
         """
-        A queue whose source guard was read but whose principal was not.
+        A key AWS could not have stored means Headroom misread the document.
 
-        The statement walk reads service principal sources before it
-        reaches the principal types that raise, so discarding the queue
-        would drop a guarded out-of-organization source. It never reaches
-        the allowlist either way - the whole policy is unreadable - but the
-        recorded failure makes the confused deputy check withhold the
-        statement instead of deploying a Deny that would break the
-        integration.
+        The statement walk reads service principal sources before it reaches
+        the principal types that raise, so this queue's first statement has
+        already yielded a guarded out-of-organization source when the second
+        raises. That source dies with the raise, and so does every other
+        account's result. Recording the queue instead once kept the run
+        going, but left every field the deny_sqs_third_party_access check
+        reads empty, which cleared the account on the strength of a queue
+        nobody had read. Aborting is what the other five analyzers do.
         """
         mock_session, mock_sqs_client = self._single_region_session()
 
@@ -943,71 +943,11 @@ class TestAnalyzeSQSQueuePolicies:
             "Attributes": {"Policy": json.dumps(policy), "QueueArn": queue_arn}
         }
 
-        results = analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
-
-        assert len(results) == 1
-        assert results[0].third_party_account_ids == set()
-        assert results[0].has_wildcard_principal is False
-
-        sources = results[0].service_principal_sources
-        assert len(sources) == 1
-        assert sources[0].read_failure is not None
-        assert "NotAThing" in sources[0].read_failure
-
-    def test_an_undocumented_principal_key_is_recorded_not_raised(self) -> None:
-        """
-        A key AWS could not have stored means Headroom misread the document.
-
-        One such queue does not abort the run: the other accounts' results
-        are worth more than the one queue, and aborting cost the confused
-        deputy allowlist a source account it depended on. The queue comes
-        back carrying only the read failure, and no field a caller could
-        mistake for a finding.
-        """
-        mock_session = MagicMock()
-        mock_ec2_client = MagicMock()
-        mock_sqs_client = MagicMock()
-
-        mock_session.client.side_effect = lambda service, **kwargs: {
-            "ec2": mock_ec2_client,
-            "sqs": mock_sqs_client,
-        }.get(service)
-
-        mock_ec2_client.describe_regions.return_value = {
-            "Regions": [{"RegionName": "us-east-1"}]
-        }
-
-        queue_url = "https://sqs.us-east-1.amazonaws.com/111111111111/test-queue"
-        queue_arn = "arn:aws:sqs:us-east-1:111111111111:test-queue"
-
-        paginator = MagicMock()
-        paginator.paginate.return_value = [{"QueueUrls": [queue_url]}]
-        mock_sqs_client.get_paginator.return_value = paginator
-
-        mock_sqs_client.get_queue_attributes.return_value = {
-            "Attributes": {
-                "Policy": json.dumps({
-                    "Version": "2012-10-17",
-                    "Statement": [{
-                        "Effect": "Allow",
-                        "Principal": {"Kerberos": "example"},
-                        "Action": "sqs:SendMessage",
-                        "Resource": queue_arn
-                    }]
-                }),
-                "QueueArn": queue_arn,
-            }
-        }
-
-        results = analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
-
-        assert len(results) == 1
-        assert results[0].queue_arn == queue_arn
-        assert results[0].third_party_account_ids == set()
-        assert results[0].has_wildcard_principal is False
-        assert results[0].has_non_account_principals is False
-        assert len(results[0].service_principal_sources) == 1
-        assert "Kerberos" in str(results[0].service_principal_sources[0].read_failure)
+        with pytest.raises(
+            UnknownPrincipalTypeError,
+            match=r"Queue arn:aws:sqs:us-east-1:111111111111:mixed in us-east-1 names principal type\(s\) \['NotAThing'\]",
+        ):
+            analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
 
 class TestPolicyGrammar:
@@ -1119,6 +1059,35 @@ class TestPolicyGrammar:
         # with an account that drives a service call rather than making one.
         assert results[0].third_party_account_ids == set()
         assert results[0].has_wildcard_principal is False
+
+    def test_a_wildcard_pinned_to_a_topic_is_both_a_wildcard_and_a_source(self) -> None:
+        """
+        AWS's documented cross-account SNS subscription policy.
+
+        `Principal: "*"` narrowed by `aws:SourceArn` to the topic. This
+        check does not read Condition, so the queue is still a wildcard
+        violation here; the topic's account reaches the confused deputy
+        allowlist through the source, so that statement stays deployable.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "sqs:SendMessage",
+                "Resource": "arn:aws:sqs:us-east-1:111111111111:test-queue",
+                "Condition": {
+                    "ArnEquals": {"aws:SourceArn": "arn:aws:sns:us-east-1:999999999999:a-topic"}
+                },
+            }],
+        })
+
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+        assert len(results[0].service_principal_sources) == 1
+        source = results[0].service_principal_sources[0]
+        assert source.service_principal == "*"
+        assert source.source_account_ids == ["999999999999"]
 
     def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
         """The field stays empty when no statement names a service."""

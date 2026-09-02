@@ -288,12 +288,10 @@ def analyze_s3_bucket_policies(
                 if not principal:
                     continue
 
+                resource_description = f"Bucket '{bucket_name}'"
+                reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
                 sources.extend(
-                    read_service_principal_sources(statement, org_account_ids, org_id, f"Bucket '{bucket_name}'")
-                )
-
-                reading = read_principal(
-                    principal, RESOURCE_POLICY_PRINCIPAL_TYPES, f"Bucket '{bucket_name}'"
+                    read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
                 )
 
                 has_wildcard = has_wildcard or reading.has_wildcard

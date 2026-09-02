@@ -1075,3 +1075,152 @@ class TestKeyGrants:
         assert [g.grantee_account_id for g in results[0].grants] == [
             self.THIRD_PARTY
         ]
+
+
+class TestAWSManagedKeys:
+    """
+    AWS-managed keys are skipped on `KeyManager`, before any policy is read.
+
+    RCPs do not apply to AWS-managed keys, so no statement this scan generates
+    can reach one. Their default policy grants `Principal: {"AWS": "*"}` under
+    `kms:CallerAccount`, which `read_principal` reads as a wildcard, so before
+    the skip every account holding one was blocked for the KMS RCP by a
+    policy its operator cannot change.
+    """
+
+    KEY_ID = "11111111-1111-1111-1111-111111111111"
+    KEY_ARN = f"arn:aws:kms:us-east-1:111111111111:key/{KEY_ID}"
+
+    # The documented default policy of an AWS-managed key, with the key's own
+    # account in kms:CallerAccount and the owning service in kms:ViaService.
+    AWS_MANAGED_DEFAULT_POLICY = {
+        "Version": "2012-10-17",
+        "Id": "auto-s3-2",
+        "Statement": [
+            {
+                "Sid": "Allow access through S3 for all principals in the account that are authorized to use S3",
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": [
+                    "kms:Encrypt",
+                    "kms:Decrypt",
+                    "kms:ReEncrypt*",
+                    "kms:GenerateDataKey*",
+                    "kms:DescribeKey",
+                ],
+                "Resource": "*",
+                "Condition": {
+                    "StringEquals": {
+                        "kms:CallerAccount": "111111111111",
+                        "kms:ViaService": "s3.us-east-1.amazonaws.com",
+                    }
+                },
+            },
+            {
+                "Sid": "Allow direct access to key metadata to the account",
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::111111111111:root"},
+                "Action": ["kms:Describe*", "kms:Get*", "kms:List*", "kms:RevokeGrant"],
+                "Resource": "*",
+            },
+        ],
+    }
+
+    @staticmethod
+    def _one_key_client(describe_key_response: Any) -> tuple[MagicMock, MagicMock]:
+        """
+        Build a session wired to one region holding one key.
+
+        Returns the session and the KMS client, so a test can assert which
+        reads the analyzer made against the key.
+        """
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_kms_client = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "kms": mock_kms_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        keys_paginator = MagicMock()
+        keys_paginator.paginate.return_value = [
+            {"Keys": [{"KeyId": TestAWSManagedKeys.KEY_ID, "KeyArn": TestAWSManagedKeys.KEY_ARN}]}
+        ]
+        grants_paginator = MagicMock()
+        grants_paginator.paginate.return_value = [{"Grants": []}]
+
+        mock_kms_client.get_paginator.side_effect = lambda name: {
+            "list_keys": keys_paginator,
+            "list_grants": grants_paginator,
+        }[name]
+
+        if isinstance(describe_key_response, Exception):
+            mock_kms_client.describe_key.side_effect = describe_key_response
+        else:
+            mock_kms_client.describe_key.return_value = describe_key_response
+
+        mock_kms_client.get_key_policy.return_value = {
+            "Policy": json.dumps(TestAWSManagedKeys.AWS_MANAGED_DEFAULT_POLICY)
+        }
+        return mock_session, mock_kms_client
+
+    def test_an_aws_managed_key_is_skipped_before_its_policy_is_read(self) -> None:
+        """
+        A key AWS manages is neither recorded nor read past DescribeKey.
+
+        Its policy would be read as a wildcard, and RCPs do not apply to the
+        key, so reading it could only produce a false blocker. Skipping
+        before GetKeyPolicy and ListGrants also saves those two calls.
+        """
+        mock_session, mock_kms_client = self._one_key_client(
+            {"KeyMetadata": {"KeyId": self.KEY_ID, "KeyManager": "AWS"}}
+        )
+
+        results = analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        assert results == []
+        mock_kms_client.describe_key.assert_called_once_with(KeyId=self.KEY_ID)
+        mock_kms_client.get_key_policy.assert_not_called()
+        assert all(
+            call.args[0] != "list_grants"
+            for call in mock_kms_client.get_paginator.call_args_list
+        )
+
+    def test_a_customer_managed_key_with_the_same_policy_is_a_violation(self) -> None:
+        """
+        The skip reads the key type, not the policy's Condition block.
+
+        A customer-managed key written with the AWS-managed idiom is still
+        read as a wildcard: RCPs do apply to it, and `kms:CallerAccount` is
+        deliberately not evaluated.
+        """
+        mock_session, mock_kms_client = self._one_key_client(
+            {"KeyMetadata": {"KeyId": self.KEY_ID, "KeyManager": "CUSTOMER"}}
+        )
+
+        results = analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        assert len(results) == 1
+        assert results[0].key_id == self.KEY_ID
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+
+    def test_a_describe_key_failure_aborts_the_run(self) -> None:
+        """
+        A key whose type cannot be read is not read as customer-managed.
+
+        Guessing either way is wrong: reading the policy would block the
+        account over a key that may be AWS-managed, and skipping would drop
+        a key that may grant a third party. The ClientError propagates.
+        """
+        mock_session, _ = self._one_key_client(
+            ClientError({"Error": {"Code": "AccessDeniedException"}}, "DescribeKey")
+        )
+
+        with pytest.raises(ClientError):
+            analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)

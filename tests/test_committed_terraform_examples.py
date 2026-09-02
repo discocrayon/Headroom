@@ -182,3 +182,103 @@ def test_the_declaration_guard_names_an_undeclared_check_and_its_allowlist(
     )
 
     assert undeclared_module_variables("scps") == ["deny_ec2_undeclared", "ec2_allowed_widgets"]
+
+
+def statement_text(locals_tf: Path) -> str:
+    """
+    Return a module's locals.tf with its comment lines removed.
+
+    The comment above each statement names the variable that gates it, so a
+    match against the raw file would find the comment where no statement
+    reads the variable.
+
+    Args:
+        locals_tf: A module's locals.tf
+
+    Returns:
+        The lines that are not comments, joined
+    """
+    return "\n".join(
+        line for line in locals_tf.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+def unread_module_variables(policy_type: str) -> List[str]:
+    """
+    Report the registry's names for one policy type that no statement in its module reads.
+
+    A check's boolean gates its statement as `include = var.<check name>`, and
+    that statement reads the allowlist as `var.<terraform variable>`. A
+    variable the module declares and no statement reads is an argument
+    `terraform plan` accepts and the policy ignores, so the check would report
+    its policy in place while the module attached nothing for it. In render
+    order, so the failure reads the way the module would.
+
+    Args:
+        policy_type: scps or rcps
+
+    Returns:
+        Check names whose boolean gates no statement, and allowlist variables
+        no statement reads
+    """
+    statements = statement_text(TEST_ENVIRONMENT / "modules" / policy_type / "locals.tf")
+    unread: List[str] = []
+    for definition in get_check_definitions(policy_type):
+        if not re.search(rf"include\s*=\s*var\.{definition.check_name}\b", statements):
+            unread.append(definition.check_name)
+        if definition.allowlist is None:
+            continue
+        if not re.search(rf"\bvar\.{definition.allowlist.terraform_variable}\b", statements):
+            unread.append(definition.allowlist.terraform_variable)
+    return unread
+
+
+@pytest.mark.parametrize("policy_type", ["scps", "rcps"])
+def test_every_registered_check_is_read_by_a_statement(policy_type: str) -> None:
+    """
+    A declared variable no statement reads is a policy that silently omits the check.
+
+    The declaration guard proves the module accepts the argument; this is the
+    step after: a statement has to be gated by the boolean and, where the
+    check declares one, read the allowlist. Neither guard reads the statement
+    itself, so what it denies stays with the check specification.
+    """
+    assert unread_module_variables(policy_type) == []
+
+
+def test_the_statement_guard_names_an_unread_check_and_its_allowlist(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The guard reports both names a definition would pass, in render order.
+
+    A registered check with no statement in the module is the case the guard
+    exists for, and it cannot be reproduced against the committed module
+    without breaking it, so a definition is registered here instead.
+    """
+    monkeypatch.setitem(
+        _CHECK_REGISTRY,
+        "deny_ec2_unread",
+        CheckDefinition(
+            check_class=DenyEc2PublicIpCheck,
+            check_name="deny_ec2_unread",
+            check_type="scps",
+            terraform_section=TerraformSection.EC2,
+            allowlist=Allowlist("unique_gadgets", "ec2_allowed_gadgets"),
+        ),
+    )
+
+    assert unread_module_variables("scps") == ["deny_ec2_unread", "ec2_allowed_gadgets"]
+
+
+def test_statement_text_drops_the_comment_that_names_each_variable(tmp_path: Path) -> None:
+    """
+    The comment above a statement names the variable that gates it, so a
+    match against the raw file would find the comment where no statement
+    reads the variable.
+    """
+    locals_tf = tmp_path / "locals.tf"
+    locals_tf.write_text("    # var.deny_ec2_commented\n    {\n      include = var.deny_ec2_read,\n")
+
+    assert statement_text(locals_tf) == "    {\n      include = var.deny_ec2_read,"

@@ -311,6 +311,9 @@ class TestAnalyzeIamRolesTrustPolicies:
             analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
         assert "UnknownType" in str(exc_info.value)
+        # A trust policy is read against its own type set, which has no
+        # CanonicalUser; the message must list the set the document is held to.
+        assert "Expected one of: ['AWS', 'Federated', 'Service']." in str(exc_info.value)
 
     def test_federated_with_assume_role_raises_error(self) -> None:
         """Test that Federated principal with sts:AssumeRole raises InvalidFederatedPrincipalError."""

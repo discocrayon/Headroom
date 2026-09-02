@@ -210,10 +210,6 @@ def analyze_iam_roles_trust_policies(
                     if not principal:
                         continue
 
-                    sources.extend(
-                        read_service_principal_sources(statement, org_account_ids, org_id, f"Role '{role_name}'")
-                    )
-
                     # Validate that Federated principals don't have sts:AssumeRole
                     # Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity
                     #
@@ -248,6 +244,9 @@ def analyze_iam_roles_trust_policies(
                     # spec/checks/rcps/deny_sts_third_party_assumerole.md.
                     reading = read_principal(
                         principal, TRUST_POLICY_PRINCIPAL_TYPES, f"Role '{role_name}'"
+                    )
+                    sources.extend(
+                        read_service_principal_sources(statement, org_account_ids, org_id, f"Role '{role_name}'")
                     )
 
                     if reading.has_wildcard:
