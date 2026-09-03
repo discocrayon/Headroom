@@ -7,6 +7,7 @@ levels (root, OU, account) based on violation patterns and organization structur
 
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -18,6 +19,7 @@ from .types import (
 from .aws.organization import lookup_account_id_by_name
 from .checks.registry import Allowlist, CheckDefinition, get_check_definition, get_check_names
 from .placement import HierarchyPlacementAnalyzer
+from .placement.hierarchy import accounts_under_ou
 from .output import OutputHandler
 from .utils import delete_and_rerun_remedy
 from .write_results import restore_account_id_in_arns
@@ -86,6 +88,60 @@ def _extract_account_id_from_result(
         account_name,
         organization_hierarchy,
         str(result_file)
+    )
+
+
+def verify_one_result_file_per_account(
+    result_files_by_check_and_account: Dict[str, Dict[str, List[Path]]]
+) -> None:
+    """
+    Abort when any check directory holds two result files for one account.
+
+    An account rename leaves the file written under the old name beside the
+    one written under the new, under every check that ran, and both carry
+    the same `summary.account_id`. Without this the SCP reader deploys from
+    whichever copy is clean and the RCP reader builds the allowlist from
+    whichever sorts last. Agreeing copies abort too: the directory
+    misdescribes what was scanned either way. Every directory is reported in
+    one error, so one sweep clears them all.
+
+    Args:
+        result_files_by_check_and_account: Every file parsed, keyed by check
+            name and then by the account it resolved to
+
+    Raises:
+        RuntimeError: If any account has more than one result file under any
+            check
+    """
+    check_listings: List[str] = []
+    for check_name in sorted(result_files_by_check_and_account):
+        result_files_by_account_id = result_files_by_check_and_account[check_name]
+        duplicated_accounts = sorted(
+            account_id
+            for account_id, result_files in result_files_by_account_id.items()
+            if len(result_files) > 1
+        )
+        if not duplicated_accounts:
+            continue
+
+        account_listing = "\n    ".join(
+            f"{account_id}: "
+            f"{', '.join(sorted(str(path) for path in result_files_by_account_id[account_id]))}"
+            for account_id in duplicated_accounts
+        )
+        check_listings.append(f"{check_name}: {account_listing}")
+
+    if not check_listings:
+        return
+
+    listing = "\n  ".join(check_listings)
+    raise RuntimeError(
+        f"More than one result file for the same account:\n  {listing}\n"
+        "An account rename leaves the file written under the old name beside "
+        "the one written under the new, under every check that ran, and each "
+        "carries the same account_id, so the policy is built from whichever "
+        "copy its reader happens to pick. Delete every file listed above and "
+        "re-run; the scan writes one result file per account."
     )
 
 
@@ -281,12 +337,18 @@ def parse_scp_result_files(
 
     Returns:
         List of SCPCheckResult objects.
+
+    Raises:
+        RuntimeError: If the results directory does not exist, a file names
+            an unregistered check or is missing a required field, or one
+            check directory resolved two files to the same account
     """
     results_path = Path(results_dir)
     if not results_path.exists():
         raise RuntimeError(f"Results directory {results_dir} does not exist")
 
     check_results: List[SCPCheckResult] = []
+    result_files_by_check_and_account: Dict[str, Dict[str, List[Path]]] = defaultdict(dict)
 
     # Look in scps/ subdirectory
     scps_path = results_path / "scps"
@@ -310,6 +372,13 @@ def parse_scp_result_files(
                 organization_hierarchy
             )
             check_results.append(check_result)
+            result_files_by_check_and_account[check_name].setdefault(
+                check_result.account_id, []
+            ).append(result_file)
+
+    # Every directory is read before the abort: a rename leaves a stale file
+    # under each of them, and one error names every file the sweep deletes.
+    verify_one_result_file_per_account(result_files_by_check_and_account)
 
     return check_results
 
@@ -400,23 +469,56 @@ def _union_allowlist_values(
     return sorted({value for values in observed for value in values})
 
 
+def _coverage_reasoning(analyzed: int, reached: int, scope: str, level: str) -> str:
+    """
+    State how many of the accounts a placement reaches were analyzed.
+
+    Every analyzed account had zero violations, or the placement would not
+    have been offered; the rest inherit the policy unmeasured, and the
+    sentence names them only when there are any.
+
+    Args:
+        analyzed: Accounts that produced a result file, all with zero violations
+        reached: Accounts the placement applies to, the management account excluded
+        scope: Phrase that follows "accounts" and precedes "were analyzed",
+            carrying its own punctuation
+        level: Word that precedes "level"
+    """
+    unanalyzed = reached - analyzed
+    if unanalyzed == 0:
+        return (
+            f"All {reached} accounts {scope} were analyzed, all with zero violations"
+            f" - safe to deploy at {level} level"
+        )
+    return (
+        f"{analyzed} of {reached} accounts {scope} were analyzed, all with zero violations"
+        f" - safe to deploy at {level} level; {unanalyzed} accounts were not analyzed and will inherit it"
+    )
+
+
 def _build_root_recommendation(
     check_name: str,
     affected_accounts: List[str],
-    check_results: List[SCPCheckResult]
+    check_results: List[SCPCheckResult],
+    organization_hierarchy: OrganizationHierarchy,
+    management_account_id: str
 ) -> SCPPlacementRecommendations:
     """
     Build root-level placement recommendation.
 
-    Creates recommendation for deploying SCP at organization root level.
+    A root SCP reaches every account in the hierarchy except the management
+    account, but only the accounts that produced result files were analyzed.
+    The reasoning states analyzed-of-reached and, when the two differ, how
+    many accounts inherit the policy unmeasured.
     """
+    reached = len(organization_hierarchy.accounts.keys() - {management_account_id})
     return SCPPlacementRecommendations(
         check_name=check_name,
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
-        reasoning="All accounts in organization have zero violations - safe to deploy at root level",
+        reasoning=_coverage_reasoning(len(affected_accounts), reached, "reached by root", "root"),
         allowlist_values=_union_allowlist_values(check_results, affected_accounts)
     )
 
@@ -426,13 +528,16 @@ def _build_ou_recommendation(
     target_ou_id: str,
     affected_accounts: List[str],
     check_results: List[SCPCheckResult],
-    organization_hierarchy: OrganizationHierarchy
+    organization_hierarchy: OrganizationHierarchy,
+    management_account_id: str
 ) -> SCPPlacementRecommendations:
     """
     Build OU-level placement recommendation.
 
-    Creates recommendation for deploying SCP at organizational unit level.
-    Includes OU name in reasoning.
+    An OU SCP reaches every account in the OU and in its child OUs except the
+    management account, but only the accounts that produced result files were
+    analyzed. The reasoning names the OU and states analyzed-of-reached and,
+    when the two differ, how many accounts inherit the policy unmeasured.
 
     Raises:
         RuntimeError: If the target OU is not present in the hierarchy
@@ -442,18 +547,20 @@ def _build_ou_recommendation(
         raise RuntimeError(f"OU {target_ou_id} not found in organization hierarchy")
 
     ou_name = ou_info.name
-
+    reached = len(accounts_under_ou(target_ou_id, organization_hierarchy) - {management_account_id})
+    reasoning = _coverage_reasoning(
+        len(affected_accounts),
+        reached,
+        f"under OU '{ou_name}', including those in its child OUs,",
+        "OU"
+    )
     return SCPPlacementRecommendations(
         check_name=check_name,
         recommended_level="ou",
         target_ou_id=target_ou_id,
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
-        reasoning=(
-            f"All {len(affected_accounts)} accounts under OU '{ou_name}', "
-            "including those in its child OUs, have zero violations - safe to "
-            "deploy at OU level"
-        ),
+        reasoning=reasoning,
         allowlist_values=_union_allowlist_values(check_results, affected_accounts)
     )
 
@@ -493,7 +600,8 @@ def _determine_check_placement(
     check_name: str,
     check_results: List[SCPCheckResult],
     analyzer: HierarchyPlacementAnalyzer,
-    organization_hierarchy: OrganizationHierarchy
+    organization_hierarchy: OrganizationHierarchy,
+    management_account_id: str
 ) -> List[SCPPlacementRecommendations]:
     """
     Determine placement recommendations for a single check.
@@ -520,7 +628,9 @@ def _determine_check_placement(
             rec = _build_root_recommendation(
                 check_name,
                 candidate.affected_accounts,
-                check_results
+                check_results,
+                organization_hierarchy,
+                management_account_id
             )
             recommendations.append(rec)
         elif candidate.level == "ou" and candidate.target_id is not None:
@@ -529,7 +639,8 @@ def _determine_check_placement(
                 candidate.target_id,
                 candidate.affected_accounts,
                 check_results,
-                organization_hierarchy
+                organization_hierarchy,
+                management_account_id
             )
             recommendations.append(rec)
         elif candidate.level == "account":
@@ -551,7 +662,8 @@ def _determine_check_placement(
 
 def determine_scp_placement(
     results_data: List[SCPCheckResult],
-    organization_hierarchy: OrganizationHierarchy
+    organization_hierarchy: OrganizationHierarchy,
+    management_account_id: str
 ) -> List[SCPPlacementRecommendations]:
     """
     Analyze compliance results to determine optimal SCP placement level.
@@ -562,6 +674,8 @@ def determine_scp_placement(
     Args:
         results_data: List of SCP check results from all accounts
         organization_hierarchy: Organization structure for placement analysis
+        management_account_id: The organization's management account, which
+            no SCP applies to
 
     Returns:
         List of placement recommendations for each check
@@ -580,7 +694,8 @@ def determine_scp_placement(
             check_name,
             check_results,
             analyzer,
-            organization_hierarchy
+            organization_hierarchy,
+            management_account_id
         )
         recommendations.extend(check_recommendations)
 
@@ -657,7 +772,15 @@ def analyze_scp_compliance(
 
     Returns:
         List of SCP placement recommendations for each check
+
+    Raises:
+        ValueError: If management_account_id is not set in config
+        RuntimeError: If no SCP result files were parsed
     """
+    management_account_id = config.management_account_id
+    if not management_account_id:
+        raise ValueError("management_account_id must be set in config")
+
     logger.info("Starting SCP placement analysis")
 
     # Parse result files (organization_hierarchy already provided by caller)
@@ -684,7 +807,9 @@ def analyze_scp_compliance(
 
     # Determine SCP placement recommendations
     logger.info("Determining SCP placement recommendations")
-    recommendations = determine_scp_placement(results_data, organization_hierarchy)
+    recommendations = determine_scp_placement(
+        results_data, organization_hierarchy, management_account_id
+    )
 
     logger.info("SCP placement analysis completed")
     return recommendations

@@ -27,8 +27,8 @@ $ python -m headroom --config config.yaml
 Check: deny_ec2_imds_v1
 Recommended Level: ROOT
 Affected Accounts: 4
-Compliance: 100.0%
-Reasoning: All accounts have zero violations - safe to deploy at root level
+Compliance (affected accounts): 100.0%
+Reasoning: All 4 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level
 
 # Review auto-generated Terraform
 $ cat test_environment/scps/root_scps.tf

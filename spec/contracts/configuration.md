@@ -80,7 +80,10 @@ omit one is the pydantic field default, reached through the precedence above.
 ### `management_account_id`
 
 Typed optional because the model allows it to be absent, but every organization
-lookup raises `ValueError` without it. Treat it as required.
+lookup raises `ValueError` without it. Treat it as required. SCP placement
+raises the same `ValueError` before reading any result file: the count of
+accounts a root or OU SCP reaches leaves the management account out, so
+placement cannot run without knowing which account that is.
 
 ### `security_analysis_account_id`
 

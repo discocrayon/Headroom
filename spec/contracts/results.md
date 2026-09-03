@@ -10,9 +10,11 @@ Implementation: writer `headroom/write_results.py`, its single call site
 `TestRunChecks` in `tests/test_analysis_extended.py`.
 
 **This artifact is a wire format** (INV-14). Both the JSON and the filenames are
-read back by a later run. A change to either can silently re-scan or silently
-skip accounts without any reader raising, because the readers glob `*.json` and
-take account identity from the file's own `summary`.
+read back by a later run. A change to either can silently skip accounts without
+any reader raising, because the readers glob `*.json` and take account identity
+from the file's own `summary`; a change that re-scans them instead is caught by
+[One file per account](#one-file-per-account), and only from the second file
+the re-scan leaves.
 
 ## Layout
 
@@ -253,10 +255,39 @@ Organizations enforces uniqueness on account email, not on account name, so
 several accounts genuinely can share a name. That is an error at read time, not
 something to resolve arbitrarily.
 
+### One file per account
+
+A check directory holds at most one result file per account. Both readers
+group the files they parse by check and then by the account each resolves
+to — by the rule above, never by filename — and abort once, after every
+directory is read, when two files resolve to one account. The error names
+every check, account, and file at once and prescribes deleting every listed
+file before re-running, so one sweep clears a rename that left a pair under
+every check. The RCP reader raises this before it reports a registered check
+with no directory: that abort's remedy is a re-run, which would write fresh
+files beside the stale ones and push this abort to the next run, while
+deleting the listed files and re-running fills the missing directory too
+([`placement.md`](placement.md#rcp-placement) owns that abort).
+
+The case this exists for is an account rename. `results_exist` looks the
+account up under its current name, misses the file written under the old
+one, scans again, and writes a second file beside the first. Under the
+default both carry the same `summary.account_id` and both match the readers'
+glob; with `exclude_account_ids` set the old name resolves to no account and
+the read already fails by the rule above, so this rule closes the default
+case. Without it the SCP reader would deploy from whichever copy was clean
+while the RCP reader would build the allowlist from whichever sorted last.
+Agreeing duplicates abort too: the directory still misdescribes what was
+scanned, and the operator learns it now rather than on the run where the
+copies finally differ.
+
 ## Resume
 
 A check is skipped when its result file already exists for that account. There
 is no freshness check and no expiry: **delete the file to re-run the check.**
+Existence is tested by filename, so a renamed account is scanned again under its
+new name; [One file per account](#one-file-per-account) catches the pair at read
+time.
 
 Resume is evaluated at two granularities, and both must agree with the writer's
 naming or a run silently re-scans or silently skips:
