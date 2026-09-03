@@ -10,9 +10,11 @@ Implementation: writer `headroom/write_results.py`, its single call site
 `TestRunChecks` in `tests/test_analysis_extended.py`.
 
 **This artifact is a wire format** (INV-14). Both the JSON and the filenames are
-read back by a later run. A change to either can silently re-scan or silently
-skip accounts without any reader raising, because the readers glob `*.json` and
-take account identity from the file's own `summary`.
+read back by a later run. A change to either can silently skip accounts without
+any reader raising, because the readers glob `*.json` and take account identity
+from the file's own `summary`; a change that re-scans them instead is caught by
+[One file per account](#one-file-per-account), and only from the second file
+the re-scan leaves.
 
 ## Layout
 
@@ -237,9 +239,22 @@ the token wherever it appeared in the string.
 
 Readers take account identity from the file, never from the filename:
 
-1. Use `summary.account_id` when present.
+1. Use `summary.account_id` when present. An ID the hierarchy does not hold is
+   an error, not an account.
 2. Otherwise resolve `summary.account_name` against the organization hierarchy.
 3. A file with neither is an error.
+
+Either way the account a file resolves to is in the hierarchy. An account that
+left the organization after its scan leaves its file behind, and the ID is
+still well-formed, so only the hierarchy can say it is gone. Read as written
+the SCP reader would count it as analyzed under a root placement that cannot
+reach it — `3 of 2 accounts reached by root were analyzed` — and the RCP
+reader would carry its third parties into an allowlist that no longer protects
+it. The error names the file and the account and says to delete the file;
+re-running would not regenerate it, since the account is no longer scanned.
+`skip_account_ids` and non-ACTIVE accounts are in the hierarchy
+([`../architecture/aws-execution.md`](../architecture/aws-execution.md#analyzable-accounts--_select_analyzable_accounts)),
+so a file from an earlier run that scanned one of them still resolves.
 
 Name resolution is exact-match first. A name matching nothing exactly falls back
 to comparing names with case and separators ignored, because result files are
@@ -253,10 +268,39 @@ Organizations enforces uniqueness on account email, not on account name, so
 several accounts genuinely can share a name. That is an error at read time, not
 something to resolve arbitrarily.
 
+### One file per account
+
+A check directory holds at most one result file per account. Both readers
+group the files they parse by check and then by the account each resolves
+to — by the rule above, never by filename — and abort once, after every
+directory is read, when two files resolve to one account. The error names
+every check, account, and file at once and prescribes deleting every listed
+file before re-running, so one sweep clears a rename that left a pair under
+every check. The RCP reader raises this before it reports a registered check
+with no directory: that abort's remedy is a re-run, which would write fresh
+files beside the stale ones and push this abort to the next run, while
+deleting the listed files and re-running fills the missing directory too
+([`placement.md`](placement.md#rcp-placement) owns that abort).
+
+The case this exists for is an account rename. `results_exist` looks the
+account up under its current name, misses the file written under the old
+one, scans again, and writes a second file beside the first. Under the
+default both carry the same `summary.account_id` and both match the readers'
+glob; with `exclude_account_ids` set the old name resolves to no account and
+the read already fails by the rule above, so this rule closes the default
+case. Without it the SCP reader would deploy from whichever copy was clean
+while the RCP reader would build the allowlist from whichever sorted last.
+Agreeing duplicates abort too: the directory still misdescribes what was
+scanned, and the operator learns it now rather than on the run where the
+copies finally differ.
+
 ## Resume
 
 A check is skipped when its result file already exists for that account. There
 is no freshness check and no expiry: **delete the file to re-run the check.**
+Existence is tested by filename, so a renamed account is scanned again under its
+new name; [One file per account](#one-file-per-account) catches the pair at read
+time.
 
 Resume is evaluated at two granularities, and both must agree with the writer's
 naming or a run silently re-scans or silently skips:

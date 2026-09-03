@@ -64,6 +64,7 @@ def handle_scp_workflow(
         This run's SCP placement recommendations
 
     Raises:
+        ValueError: If management_account_id is not set in config
         RuntimeError: If no SCP result files were parsed
     """
     scp_recommendations = analyze_scp_compliance(final_config, org_hierarchy)

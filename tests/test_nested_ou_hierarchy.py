@@ -46,6 +46,7 @@ LEDGER_OU = "ou-fake-ledger"
 PROD_APP_ACCOUNT = "111111111111"
 PAYMENTS_ACCOUNT = "222222222222"
 LEDGER_ACCOUNT = "333333333333"
+MANAGEMENT_ACCOUNT_ID = "777777777777"
 
 
 def make_nested_hierarchy() -> OrganizationHierarchy:
@@ -310,6 +311,7 @@ class TestNestedOuScpAllowlists:
                 make_scp_result(LEDGER_ACCOUNT, "ledger-core", 0),
             ],
             org,
+            MANAGEMENT_ACCOUNT_ID,
         )
 
         ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
@@ -332,6 +334,7 @@ class TestNestedOuScpAllowlists:
         recommendations = determine_scp_placement(
             [make_scp_result(PROD_APP_ACCOUNT, "prod-app", 3), payments, ledger],
             org,
+            MANAGEMENT_ACCOUNT_ID,
         )
 
         ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
@@ -351,6 +354,7 @@ class TestNestedOuScpAllowlists:
                 make_scp_result(LEDGER_ACCOUNT, "ledger-core", 7),
             ],
             org,
+            MANAGEMENT_ACCOUNT_ID,
         )
 
         ou_targets = [
@@ -578,7 +582,7 @@ class TestGeneratedTerraformResolves:
     ) -> None:
         """A policy on a nested OU resolves against the generated org info."""
         org = make_nested_hierarchy()
-        recommendations = determine_scp_placement(self.make_results(), org)
+        recommendations = determine_scp_placement(self.make_results(), org, MANAGEMENT_ACCOUNT_ID)
 
         rendered = render_scp_terraform(recommendations, org, tmp_path)
 
@@ -590,7 +594,7 @@ class TestGeneratedTerraformResolves:
     def test_nested_ou_policy_file_is_named_for_its_path(self, tmp_path: Path) -> None:
         """Two OUs of the same name in different branches cannot share a file."""
         org = make_nested_hierarchy()
-        recommendations = determine_scp_placement(self.make_results(), org)
+        recommendations = determine_scp_placement(self.make_results(), org, MANAGEMENT_ACCOUNT_ID)
 
         rendered = render_scp_terraform(recommendations, org, tmp_path)
 

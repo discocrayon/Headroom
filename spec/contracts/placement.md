@@ -79,6 +79,28 @@ when some other account violates the check. Every per-account file therefore
 emitted every policy as disabled. Coverage now appears in `reasoning`, which
 describes reach rather than gating deployment.
 
+Reach and evidence differ. A root SCP applies to every account in the hierarchy,
+and an OU SCP to every account in the OU's subtree, in both cases except the
+management account; safety is judged over the accounts that produced results,
+and `skip_account_ids` and non-ACTIVE accounts are in the hierarchy and never
+produce one
+([`../architecture/aws-execution.md`](../architecture/aws-execution.md#analyzable-accounts--_select_analyzable_accounts)).
+Root and OU `reasoning` therefore states analyzed-of-reached, with the
+management account left out of the reached count: `3 of 5 accounts reached by
+root were analyzed, all with zero violations - safe to deploy at root level; 2
+accounts were not analyzed and will inherit it`, collapsing to `All 5 accounts
+reached by root were analyzed, all with zero violations - safe to deploy at
+root level` when the two agree. Counts agree in number: one unanalyzed account
+reads `1 account was not analyzed and will inherit it`, and a placement
+reaching one account reads `The only account reached by root was analyzed,
+with zero violations - safe to deploy at root level`. Analyzed never exceeds
+reached, because the reader refuses a file naming an account the hierarchy
+does not hold
+([`results.md`](results.md#identifying-the-account-a-file-describes)). The
+count needs `management_account_id`, so
+`analyze_scp_compliance` raises without it before reading a file;
+[`configuration.md`](configuration.md#management_account_id) owns the field.
+
 A recommendation reaching Terraform generation **is** the signal to enable the
 policy. Generation does not re-derive safety, and a `none` recommendation
 reaching a module raises rather than being rendered.
@@ -128,7 +150,7 @@ deliberately:
 | The scan could not read it | Nothing. A failure aborts the whole run (INV-02), so a completed scan means every analyzable account was read |
 | The check itself never ran | A registered check with no results directory at all aborts generation, naming the check: a check absent from the results is indistinguishable from one that found nothing, and this output gates deployment |
 | A previous run wrote the file | Resume is per account and per check, so the missing ones are scanned and the rest are read back. [`results.md`](results.md#resume) owns the granularity |
-| The account is excluded from analysis | **Open, and deliberate.** The management account, accounts in `skip_account_ids`, and accounts in any non-ACTIVE lifecycle state are in the hierarchy and never produce results, so they cannot block a placement that reaches them. Exclusion removes an account from the compliance picture rather than holding a policy back; [`../architecture/aws-execution.md`](../architecture/aws-execution.md#analyzable-accounts--_select_analyzable_accounts) states it from the discovery side |
+| The account is excluded from analysis | **Open, and deliberate.** The management account, accounts in `skip_account_ids`, and accounts in any non-ACTIVE lifecycle state are in the hierarchy and never produce results, so they cannot block a placement that reaches them. Exclusion removes an account from the compliance picture rather than holding a policy back; [`../architecture/aws-execution.md`](../architecture/aws-execution.md#analyzable-accounts--_select_analyzable_accounts) states it from the discovery side. The SCP reasoning strings say how many such accounts a placement reaches; [SCP placement](#scp-placement) owns that |
 
 The converse aborts too: a directory under `rcps/` naming no registered check
 stops generation rather than being stepped over. Parsing visits registered names,

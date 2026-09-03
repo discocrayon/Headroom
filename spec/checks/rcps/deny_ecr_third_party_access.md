@@ -85,6 +85,7 @@ The `Principal` element is read by `read_principal` against
 | `RepositoryPolicyNotFoundException` | The repository is skipped; it grants nothing. A repository reaches this check's results list on a third-party account, a wildcard, or a principal carrying no account ID |
 | Any other `ClientError` on one repository | Re-raised, aborting the run |
 | `ClientError` in any region | Logged and re-raised, aborting the run |
+| A response carrying no `policyText` | `KeyError`, aborting the run. Indexed rather than defaulted: botocore marks the field optional, but `GetRepositoryPolicy` and `GetRegistryPolicy` raise `RepositoryPolicyNotFoundException` or `RegistryPolicyNotFoundException` when there is no policy, so a response carrying neither the field nor the exception is an unread policy, not an empty one (INV-01) |
 | Unparseable policy JSON | Not caught; propagates and aborts |
 | `Statement` neither object nor list | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
@@ -112,6 +113,11 @@ Summary fields beyond the common three: `total_policies_analyzed`,
 `actions_by_account`. The keys are named for the policy rather than the
 resource because a registry policy is one of the things counted, and it is
 not a repository.
+
+`total_policies_analyzed` counts the policies that produced an entry — violations,
+exemptions, and compliant together — not every policy read. Neither a
+repository with no policy nor a repository or registry policy naming only
+in-organization principals is entered or counted.
 
 Entry shape: `scope`, `repository_name`, `repository_arn`, `region`,
 `third_party_account_ids`, `actions_by_account`, `has_wildcard_principal`,

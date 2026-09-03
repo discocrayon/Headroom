@@ -342,8 +342,11 @@ test failing.
 ## INV-14 — Persisted results keep wire compatibility
 
 A later run reads back both the result JSON and the result filenames. Changing
-either without an explicit migration can silently re-scan or silently skip
-accounts without any reader failing.
+either without an explicit migration can silently skip accounts without
+any reader failing, or re-scan them, which
+[`contracts/results.md`](contracts/results.md#one-file-per-account) catches at
+read time from the second file the re-scan leaves, but only after the scan has
+been paid for.
 
 `results_exist` therefore tolerates both the account-name and the
 account-name-plus-ID filename forms, so an existing results directory still

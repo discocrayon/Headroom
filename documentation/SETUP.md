@@ -541,10 +541,19 @@ pre-flight version could not be complete and there is none.
 
 The scan is not wasted, but the rename is not free either. Resume is keyed on the account
 name, so the renamed account's results are sitting under its old name and that one account
-is scanned again -- 299 of 300 resume, and the 300th does not. Delete its old result files
-before re-running. Left in place they are the stale files
-["Resolving Result Files Back to Accounts"](#resolving-result-files-back-to-accounts)
-warns about: under the default they parse as a second result for the same account, and
-because placement asks whether every result in a group is clean, a stale violation can
-only withhold a policy rather than place one it should not; under `exclude_account_ids:
-true` the old name resolves to no account and the next run fails on it.
+is scanned again -- 299 of 300 resume, and the 300th does not.
+Delete its old result files before re-running. Left in place, under the default they are two
+files carrying one account ID under every check that ran, and generation aborts -- see
+["More than one result file for the same account"](#more-than-one-result-file-for-the-same-account).
+Under `exclude_account_ids: true` the old name resolves to no account and the run fails on
+it, as ["Resolving Result Files Back to Accounts"](#resolving-result-files-back-to-accounts)
+describes.
+
+### "More than one result file for the same account"
+
+A check directory holds one result file per account, and generation aborts when two files
+resolve to the same account. The usual cause is a rename: resume is keyed on the account
+name, so the renamed account was scanned again under its new name and the file written under
+the old one is still there, under every check that ran. The message lists every check,
+account, and file. Delete every listed file and re-run; the scan writes one file per
+account.

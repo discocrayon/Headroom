@@ -29,7 +29,12 @@ from ..types import (
     RCPPlacementRecommendations,
 )
 from ..write_results import get_results_dir
-from ..parse_results import _extract_account_id_from_result, _load_result_file_json, _read_declared_allowlist
+from ..parse_results import (
+    _extract_account_id_from_result,
+    _load_result_file_json,
+    _read_declared_allowlist,
+    verify_one_result_file_per_account,
+)
 from ..placement import HierarchyPlacementAnalyzer
 from ..placement.hierarchy import PlacementCandidate, accounts_under_ou
 
@@ -135,11 +140,13 @@ def parse_rcp_result_files(
 
     Raises:
         RuntimeError: If any registered RCP check has no results directory,
-            a directory under rcps/ names no registered RCP check, or a
-            result file cannot be parsed
+            a directory under rcps/ names no registered RCP check, a result
+            file cannot be parsed, or one check directory resolved two files
+            to the same account
     """
     parse_results: List[RCPCheckParseResult] = []
     missing_check_dirs: List[str] = []
+    result_files_by_check_and_account: Dict[str, Dict[str, List[Path]]] = defaultdict(dict)
 
     for check_name in sorted(get_check_names("rcps")):
         check_dir = Path(get_results_dir(check_name, "rcps", results_dir))
@@ -157,6 +164,9 @@ def parse_rcp_result_files(
                 check_name,
                 organization_hierarchy
             )
+            result_files_by_check_and_account[check_name].setdefault(
+                rcp_result.account_id, []
+            ).append(result_file)
 
             if rcp_result.blocks_rcp:
                 accounts_with_blockers.add(rcp_result.account_id)
@@ -170,6 +180,13 @@ def parse_rcp_result_files(
             account_third_party_map=account_third_party_map,
             accounts_with_blockers=accounts_with_blockers,
         ))
+
+    # Every directory is read before the abort: a rename leaves a stale file
+    # under each of them, and one error names every file the sweep deletes.
+    # It precedes the missing-directory abort because that abort's remedy is
+    # a re-run, which writes fresh files beside the stale ones and defers
+    # this abort a cycle.
+    verify_one_result_file_per_account(result_files_by_check_and_account)
 
     if missing_check_dirs:
         raise RuntimeError(

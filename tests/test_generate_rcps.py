@@ -16,6 +16,7 @@ from headroom.constants import (
     DENY_KMS_THIRD_PARTY_ACCESS,
     DENY_S3_THIRD_PARTY_ACCESS,
     DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
+    DENY_SQS_THIRD_PARTY_ACCESS,
     DENY_STS_THIRD_PARTY_ASSUMEROLE,
 )
 from headroom.terraform.generate_rcps import (
@@ -52,6 +53,22 @@ from headroom.types import (
 
 def make_org_empty() -> OrganizationHierarchy:
     return OrganizationHierarchy(root_id="r-1111", organizational_units={}, accounts={})
+
+
+def make_org_holding_one_account() -> OrganizationHierarchy:
+    """
+    Build a hierarchy holding 111111111111 at the root and nothing else.
+
+    The reader refuses a file naming an account the hierarchy does not hold,
+    so a test that writes files for 111111111111 needs the account present.
+    """
+    return OrganizationHierarchy(
+        root_id="r-1111",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement("111111111111", "test-account", None, ["Root"])
+        },
+    )
 
 
 def write_rcp_result(
@@ -353,6 +370,26 @@ class TestParseRcpResultFiles:
         with pytest.raises(RuntimeError, match="Account name 'unknown-account'.* not found in organization hierarchy"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
+    def test_parse_fails_when_account_id_is_not_in_the_hierarchy(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A file naming an account the hierarchy does not hold is refused.
+
+        The account left the organization after its scan. Read as written,
+        its third parties would enter the allowlist of a policy that no
+        longer protects it.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir, DENY_STS_THIRD_PARTY_ASSUMEROLE, "333333333333", "departed-account", ["999999999999"]
+        )
+
+        with pytest.raises(RuntimeError, match=r"names account 333333333333, which is not in the organization hierarchy"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
     def test_parse_aborts_when_a_check_directory_is_missing(
         self,
         temp_results_dir: str,
@@ -614,6 +651,221 @@ class TestParseRcpResultFiles:
             assert "Delete " in message, absent_key
             assert "skips any account whose result file already exists" in message, absent_key
             assert "Re-run the analysis to regenerate it" not in message, absent_key
+
+
+class TestTheRCPReaderRequiresOneFilePerAccount:
+    """
+    Test what the RCP reader hands the guard and when it hands it over.
+
+    The guard decides what a duplicate is; the reader decides what the guard
+    gets to see. Each check directory maps an account to the third parties
+    its policies allow, and a plain assignment lets whichever of two files
+    sorts last choose that allowlist. Every check directory is read before
+    the one abort, so a rename that left a pair under each of them is
+    reported once rather than one delete-and-re-run cycle at a time.
+    """
+
+    @pytest.fixture
+    def temp_results_dir(self) -> Generator[str, None, None]:
+        """Create temporary results directory for testing."""
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    def test_two_files_for_one_account_abort_the_parse(
+        self,
+        temp_results_dir: str
+    ) -> None:
+        """
+        An account renamed between runs leaves two files carrying its ID.
+
+        The stale file records a third party the earlier run found and the
+        current one records none, so reading both builds the allowlist from
+        whichever sorts last. The abort has to name the check, the account,
+        and both files with their directory - a bare file name does not say
+        which check directory holds it.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_S3_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="old-name",
+            third_party_account_ids=["999999999999"],
+        )
+        write_rcp_result(
+            temp_results_dir,
+            DENY_S3_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="new-name",
+            third_party_account_ids=[],
+        )
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
+
+        with pytest.raises(RuntimeError) as raised:
+            parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
+
+        message = str(raised.value)
+        assert f"{DENY_S3_THIRD_PARTY_ACCESS}: " in message
+        assert "111111111111: " in message
+        assert str(check_dir / "old-name.json") in message
+        assert str(check_dir / "new-name.json") in message
+
+    def test_one_file_per_check_directory_for_one_account_is_read(
+        self,
+        temp_results_dir: str
+    ) -> None:
+        """
+        Every check scans every analyzable account, so one file each is normal.
+
+        One file per account is what a single check directory holds, not what
+        the whole results tree holds: an account the run analyzed has a
+        result under every check that ran. Counting an account's files across
+        directories aborts every run of more than one check.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_S3_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=["999999999999"],
+        )
+        write_rcp_result(
+            temp_results_dir,
+            DENY_SQS_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=["888888888888"],
+        )
+
+        results = parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
+
+        s3 = next(r for r in results if r.check_name == DENY_S3_THIRD_PARTY_ACCESS)
+        sqs = next(r for r in results if r.check_name == DENY_SQS_THIRD_PARTY_ACCESS)
+        assert s3.account_third_party_map == {"111111111111": {"999999999999"}}
+        assert sqs.account_third_party_map == {"111111111111": {"888888888888"}}
+
+    def test_duplicates_under_two_checks_abort_in_one_error(
+        self,
+        temp_results_dir: str
+    ) -> None:
+        """
+        A rename leaves a stale pair under every check that ran, not one.
+
+        The abort asks for a sweep of the tree, so aborting on the first
+        directory and leaving the rest unread sends the operator round the
+        delete-and-re-run loop once per check, each cycle rediscovering the
+        same rename. Every directory is read before the one abort, so one
+        error names every file the sweep has to delete.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        for account_name in ("old-name", "new-name"):
+            write_rcp_result(
+                temp_results_dir,
+                DENY_S3_THIRD_PARTY_ACCESS,
+                account_id="111111111111",
+                account_name=account_name,
+                third_party_account_ids=[],
+            )
+            write_rcp_result(
+                temp_results_dir,
+                DENY_SQS_THIRD_PARTY_ACCESS,
+                account_id="111111111111",
+                account_name=account_name,
+                third_party_account_ids=[],
+            )
+        rcps_dir = Path(temp_results_dir) / "rcps"
+
+        with pytest.raises(RuntimeError) as raised:
+            parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
+
+        message = str(raised.value)
+        assert f"{DENY_S3_THIRD_PARTY_ACCESS}: " in message
+        assert f"{DENY_SQS_THIRD_PARTY_ACCESS}: " in message
+        assert str(rcps_dir / DENY_S3_THIRD_PARTY_ACCESS / "old-name.json") in message
+        assert str(rcps_dir / DENY_S3_THIRD_PARTY_ACCESS / "new-name.json") in message
+        assert str(rcps_dir / DENY_SQS_THIRD_PARTY_ACCESS / "old-name.json") in message
+        assert str(rcps_dir / DENY_SQS_THIRD_PARTY_ACCESS / "new-name.json") in message
+
+    def test_a_blocking_and_a_clean_file_for_one_account_abort_the_parse(
+        self,
+        temp_results_dir: str
+    ) -> None:
+        """
+        A duplicate is counted before the reader decides what the file means.
+
+        A file with violations puts its account among the blockers and never
+        touches the allowlist map, so a stale blocking file beside a clean
+        current one leaves the account in both: a blocker for the check and,
+        in the map, an account with nothing to allowlist. Placement reads
+        that map. The parse raises before it returns, naming the account
+        and both files, so no caller is handed a map to consult.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_S3_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="old-name",
+            third_party_account_ids=[],
+            violations=2,
+        )
+        write_rcp_result(
+            temp_results_dir,
+            DENY_S3_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="new-name",
+            third_party_account_ids=[],
+        )
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
+
+        with pytest.raises(RuntimeError) as raised:
+            parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
+
+        message = str(raised.value)
+        assert "111111111111: " in message
+        assert str(check_dir / "old-name.json") in message
+        assert str(check_dir / "new-name.json") in message
+
+    def test_duplicates_are_reported_before_a_missing_check_directory(
+        self,
+        temp_results_dir: str
+    ) -> None:
+        """
+        A rename and a newly registered check can land in one results tree.
+
+        The missing-directory remedy is to re-run, which writes fresh files
+        beside the stale ones and hands the operator the duplicate abort on
+        the next run: two cycles. The duplicate remedy is to delete the
+        listed files and re-run, and that re-run fills the missing directory
+        too: one cycle. So duplicates are reported first.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        (Path(temp_results_dir) / "rcps" / DENY_SQS_THIRD_PARTY_ACCESS).rmdir()
+        write_rcp_result(
+            temp_results_dir,
+            DENY_S3_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="old-name",
+            third_party_account_ids=["999999999999"],
+        )
+        write_rcp_result(
+            temp_results_dir,
+            DENY_S3_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="new-name",
+            third_party_account_ids=[],
+        )
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
+
+        with pytest.raises(RuntimeError) as raised:
+            parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
+
+        message = str(raised.value)
+        assert "111111111111: " in message
+        assert str(check_dir / "old-name.json") in message
+        assert str(check_dir / "new-name.json") in message
 
 
 class TestDetermineRcpPlacement:

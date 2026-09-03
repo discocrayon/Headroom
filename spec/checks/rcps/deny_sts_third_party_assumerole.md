@@ -148,6 +148,11 @@ Summary fields beyond the common three: `total_roles_analyzed`,
 `roles_third_parties_can_access`, `roles_with_wildcards`, `violations`,
 `unique_third_party_accounts`, `third_party_account_count`.
 
+`total_roles_analyzed` counts the roles that produced an entry — violations,
+exemptions, and compliant together — not the roles `ListRoles` returned. A role
+whose trust policy grants `sts:AssumeRole` only to in-organization principals,
+or not at all, is never entered and is not counted.
+
 Entry shape: `role_name`, `role_arn`, `third_party_account_ids`,
 `has_wildcard_principal`.
 

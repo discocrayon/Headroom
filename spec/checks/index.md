@@ -74,7 +74,11 @@ answer to a different question.
 `test_the_shared_analyzers_read_an_account_once_for_both_callers` in
 `tests/performance/test_call_counts.py` pins the count, and
 `test_every_doubly_called_analyzer_is_memoized` in `tests/test_aws_helpers.py`
-is the registry-driven guard that fails when an analyzer loses its decorator.
+is the discovery-driven guard that fails when an analyzer loses its decorator.
+`test_confused_deputy_reads_every_analyzer_producing_sources` in
+`tests/test_checks_deny_service_confused_deputy.py` fails by name when an
+analyzer producing `service_principal_sources` is not read by the check; both
+guards walk the same discovery.
 
 Registering the seventh check is still what triggers the second pass: its
 Terraform variable gates the rendered statement, not the scan. A resumed run

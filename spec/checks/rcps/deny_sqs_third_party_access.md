@@ -79,6 +79,7 @@ The `Principal` element is read by `read_principal` against
 | Compliant | Third-party account IDs only | `COMPLIANT` |
 | Exemption | — | Never produced |
 | Not recorded | The queue has no policy | Not in the output |
+| Not recorded | Only in-organization principals or AWS services | Not in the output |
 | Violation | A `Federated` or `CanonicalUser` principal | `VIOLATION` |
 | Violation | An ARN naming no account, under the rule [`../../contracts/policy-model.md`](../../contracts/policy-model.md#a-blocker-stops-the-account-a-document-headroom-cannot-read-stops-the-run) owns | `VIOLATION` |
 
@@ -120,6 +121,11 @@ Summary fields beyond the common three: `total_queues_analyzed`,
 `queues_third_parties_can_access`, `queues_with_wildcards`, `violations`,
 `unique_third_party_accounts`, `third_party_account_count`,
 `actions_by_third_party_account`, `queues_by_third_party_account`.
+
+`total_queues_analyzed` counts the queues that produced an entry — violations,
+exemptions, and compliant together — not the queues `ListQueues` returned. A
+queue with no policy, or one naming only in-organization principals, is never
+entered and is not counted; limitation 2 owns where the second is dropped.
 
 Entry shape: `queue_url`, `queue_arn`, `region`, `third_party_account_ids`,
 `has_wildcard_principal`, `has_non_account_principals`, `actions_by_account`.

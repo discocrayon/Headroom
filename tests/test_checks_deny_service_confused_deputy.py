@@ -1,7 +1,10 @@
 """Tests for the deny_service_confused_deputy RCP check."""
 
+import ast
+import inspect
 import json
 import tempfile
+import textwrap
 from typing import Any, Dict, Iterator, List
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +18,7 @@ from headroom.checks.rcps.deny_service_confused_deputy import (
     DenyServiceConfusedDeputyCheck,
 )
 from tests.constants import ORG_ID
+from tests.test_aws_helpers import analyzers_producing_service_principal_sources
 
 ORG_ACCOUNTS = {"111111111111"}
 THIRD_PARTY = "999999999999"
@@ -608,3 +612,27 @@ class TestEveryAnalyzerFeedsTheCheck:
         assert finding["resource_type"] == "iam"
         assert finding["resource_identifier"] == "a-role"
         assert finding["region"] is None
+
+    def test_confused_deputy_reads_every_analyzer_producing_sources(self) -> None:
+        """
+        Every analyzer that records source guards is called by the check.
+
+        The six loops in `analyze` are hand-written on purpose; this is what
+        fails by name when a module in `SHARED_ANALYZER_MODULES`, in
+        `tests/test_aws_helpers.py`, gains an analyzer producing
+        `service_principal_sources` that `analyze` does not call.
+        """
+        source = textwrap.dedent(inspect.getsource(DenyServiceConfusedDeputyCheck.analyze))
+        called = {
+            node.func.id
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+        unread = sorted(
+            analyzer.__name__
+            for analyzer in analyzers_producing_service_principal_sources()
+            if analyzer.__name__ not in called
+        )
+
+        assert unread == []

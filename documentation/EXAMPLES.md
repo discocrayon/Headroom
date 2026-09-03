@@ -22,7 +22,7 @@ Check: deny_ec2_ami_owner
   Recommended Level: ROOT
   Affected Accounts: 4
   Compliance (affected accounts): 100.0%
-  Reasoning: All accounts in organization have zero violations - safe to deploy at root level
+  Reasoning: 4 of 6 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level; 2 accounts were not analyzed and will inherit it
   --------------------------------------
 
 Check: deny_rds_unencrypted
@@ -31,7 +31,7 @@ Check: deny_rds_unencrypted
   Target OU: high_value_assets (ou-1111-11111111)
   Affected Accounts: 2
   Compliance (affected accounts): 100.0%
-  Reasoning: All 2 accounts under OU 'high_value_assets', including those in its child OUs, have zero violations - safe to deploy at OU level
+  Reasoning: All 2 accounts under OU 'high_value_assets', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level
   --------------------------------------
 
 ================================================================================

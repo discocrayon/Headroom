@@ -34,8 +34,9 @@ Every role trusts the security analysis account as its principal.
 
 Step 0 is skipped when Headroom is already running in the security analysis
 account; the ambient credentials are used instead. Step 1 requires
-`management_account_id` and raises without it. Step 2 chains from the security
-session, not from the management session.
+`management_account_id` and raises without it; so does SCP placement, per
+[`../contracts/configuration.md`](../contracts/configuration.md#management_account_id).
+Step 2 chains from the security session, not from the management session.
 
 Role names are fixed. They are not configurable.
 

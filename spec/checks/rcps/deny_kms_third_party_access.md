@@ -140,6 +140,11 @@ Summary fields beyond the common three: `total_keys_analyzed`,
 `keys_with_third_party_grants`, `violations`, `unique_third_party_accounts`,
 `third_party_account_count`, `actions_by_account`.
 
+`total_keys_analyzed` counts the keys that produced an entry — violations,
+exemptions, and compliant together — not the keys `ListKeys` returned. An
+AWS-managed key, or a customer-managed key whose policy and grants name only
+in-organization principals, is never entered and is not counted.
+
 `keys_with_third_party_grants` counts the entries whose `grants` list is
 non-empty, and it is the only summary-level signal that the grant surface found
 anything. Without it a key with a clean policy and a third-party grant is

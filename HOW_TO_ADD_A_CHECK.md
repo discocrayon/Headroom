@@ -745,10 +745,12 @@ deny a grant that exists today.
 
 The same facts are filtered on twice, and the templates do it in both places.
 Five of the six shipped analyzers drop a resource with no finding before
-returning it: `headroom/aws/ecr.py:248-264` names the predicate and applies it
-at `:380` and `:393`, and `kms.py:465`, `s3.py:313`, `secretsmanager.py:255`
-and `iam/roles.py:246` inline the same test. `analyze_sqs_queue_policies` is
-the sixth and appends every queue carrying a policy, which
+returning it: `_grants_third_party_access` in `headroom/aws/ecr.py` names the
+predicate and `analyze_ecr_policies` applies it once per surface - registry
+and repository - and `kms.py:465`, `s3.py:313`, `secretsmanager.py:255` and
+`iam/roles.py:246` inline the same test.
+`analyze_sqs_queue_policies` is the sixth and appends every queue carrying a
+policy, which
 [`spec/checks/rcps/deny_sqs_third_party_access.md`](spec/checks/rcps/deny_sqs_third_party_access.md)
 records as that check's own accepted limitation rather than as the pattern to
 copy.
@@ -820,8 +822,8 @@ more than one code. Per service, from the tree:
 | `secretsmanager.get_resource_policy` | `ResourceNotFoundException` (`secretsmanager.py:156`) |
 | `s3.get_bucket_policy` | `NoSuchBucketPolicy` (`s3.py:196`) |
 | `kms.get_key_policy` | `NotFoundException` (`kms.py:277`) |
-| `ecr.get_repository_policy` | `RepositoryPolicyNotFoundException` (`ecr.py:220`) |
-| `ecr.get_registry_policy` | `RegistryPolicyNotFoundException` (`ecr.py:304`) |
+| `ecr.get_repository_policy` | `RepositoryPolicyNotFoundException` (`_analyze_repository_in_region` in `ecr.py`) |
+| `ecr.get_registry_policy` | `RegistryPolicyNotFoundException` (`_analyze_registry_policy` in `ecr.py`) |
 | `sqs.get_queue_attributes` | `AWS.SimpleQueueService.NonExistentQueue` **and** `QueueDoesNotExist` - one condition, two spellings (`sqs.py:36-39`) |
 
 If you cannot name the codes and say what they mean, catch nothing.

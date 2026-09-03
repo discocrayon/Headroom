@@ -209,13 +209,18 @@ def _analyze_repository_in_region(
     Raises:
         MalformedPolicyError: If a Statement is neither an object nor a list,
             or a Principal is neither a string, a list, nor an object
+        KeyError: If a 200 response carries no `policyText`. Indexed rather
+            than defaulted: a repository with no policy is answered with
+            `RepositoryPolicyNotFoundException`, never a 200 without the
+            field, so a missing key is not the empty answer, and reading it
+            as "{}" would clear the repository on a policy nobody read (INV-01)
     """
     repository_name = repository["repositoryName"]
     repository_arn = repository["repositoryArn"]
 
     try:
         response = ecr_client.get_repository_policy(repositoryName=repository_name)
-        policy_text = response.get("policyText", "{}")
+        policy_text = response["policyText"]
         policy = json.loads(policy_text)
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")
@@ -295,10 +300,15 @@ def _analyze_registry_policy(
         ClientError: If the call fails for any reason other than a missing policy
         MalformedPolicyError: If a Statement is neither an object nor a list,
             or a Principal is neither a string, a list, nor an object
+        KeyError: If a 200 response carries no `policyText`. Indexed rather
+            than defaulted: a registry with no policy is answered with
+            `RegistryPolicyNotFoundException`, never a 200 without the
+            field, so a missing key is not the empty answer, and reading it
+            as "{}" would clear the registry on a policy nobody read (INV-01)
     """
     try:
         response = ecr_client.get_registry_policy()
-        policy_text = response.get("policyText", "{}")
+        policy_text = response["policyText"]
         policy = json.loads(policy_text)
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")

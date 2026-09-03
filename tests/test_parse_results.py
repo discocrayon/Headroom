@@ -18,6 +18,7 @@ from headroom.parse_results import (
     determine_scp_placement,
     analyze_scp_compliance,
     print_policy_recommendations,
+    verify_one_result_file_per_account,
 )
 from headroom.terraform.generate_scps import render_scp_terraform
 from headroom.types import (
@@ -29,6 +30,9 @@ from headroom.types import (
     RCPPlacementRecommendations,
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
+
+
+MANAGEMENT_ACCOUNT_ID = "777777777777"
 
 
 def make_test_org_hierarchy() -> OrganizationHierarchy:
@@ -110,6 +114,72 @@ def make_scp_result(
         compliance_percentage=100.0 if violations == 0 else 50.0,
         total_instances=2,
         allowlist_values=allowlist_values
+    )
+
+
+def make_hierarchy_with_management_account(member_account_ids: List[str]) -> OrganizationHierarchy:
+    """
+    Build a hierarchy of root-parented member accounts plus the management account.
+
+    A root SCP reaches every member but never the management account, so the
+    hierarchy holds one account more than a root placement reaches.
+
+    Args:
+        member_account_ids: The member accounts a root SCP reaches
+
+    Returns:
+        The hierarchy with every account parented to the root
+    """
+    accounts = {
+        account_id: AccountOrgPlacement(account_id, f"member-{account_id}", None, ["Root"])
+        for account_id in member_account_ids
+    }
+    accounts[MANAGEMENT_ACCOUNT_ID] = AccountOrgPlacement(MANAGEMENT_ACCOUNT_ID, "management", None, ["Root"])
+    return OrganizationHierarchy(root_id="r-1111", organizational_units={}, accounts=accounts)
+
+
+def make_hierarchy_with_workloads_ou(workloads_account_ids: List[str]) -> OrganizationHierarchy:
+    """
+    Build a hierarchy of a Workloads OU, a child OU beneath it, and a sibling OU.
+
+    Workloads holds the given accounts directly and 333333333333 and
+    444444444444 through its child OU. The sibling OU holds 555555555555,
+    which every test gives a violation so that the root is unsafe and
+    placement descends to the OUs.
+
+    Args:
+        workloads_account_ids: Accounts parented directly to the Workloads OU
+
+    Returns:
+        The hierarchy with every account parented to one of the three OUs
+    """
+    accounts = {
+        account_id: AccountOrgPlacement(
+            account_id, f"account-{account_id}", "ou-1111-11111111", ["Root", "Workloads"]
+        )
+        for account_id in workloads_account_ids
+    }
+    for account_id in ["333333333333", "444444444444"]:
+        accounts[account_id] = AccountOrgPlacement(
+            account_id, f"account-{account_id}", "ou-2222-22222222", ["Root", "Workloads", "Platform"]
+        )
+    accounts["555555555555"] = AccountOrgPlacement(
+        "555555555555", "account-555555555555", "ou-3333-33333333", ["Root", "Sandbox"]
+    )
+    return OrganizationHierarchy(
+        root_id="r-1111",
+        organizational_units={
+            "ou-1111-11111111": OrganizationalUnit(
+                "ou-1111-11111111", "Workloads", None, ["ou-2222-22222222"], workloads_account_ids
+            ),
+            "ou-2222-22222222": OrganizationalUnit(
+                "ou-2222-22222222", "Platform", "ou-1111-11111111", [], ["333333333333", "444444444444"]
+            ),
+            "ou-3333-33333333": OrganizationalUnit(
+                "ou-3333-33333333", "Sandbox", None, [], ["555555555555"]
+            ),
+        },
+        accounts=accounts
     )
 
 
@@ -286,6 +356,41 @@ class TestResultFileParsing:
             with pytest.raises(RuntimeError, match="Account name 'unknown-account' .* not found in organization hierarchy"):
                 parse_scp_result_files(temp_dir, org_hierarchy)
 
+    def test_parse_scp_result_files_rejects_an_account_the_hierarchy_does_not_hold(self) -> None:
+        """
+        A file whose account_id names no hierarchy account is refused, not read.
+
+        The account left the organization after its scan. Read as written it
+        would count as analyzed under a root placement that cannot reach it,
+        and the reasoning would report more accounts analyzed than reached.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            test_data = {
+                "summary": {
+                    "account_id": "333333333333",
+                    "account_name": "departed-account",
+                    "check": "deny_ec2_imds_v1",
+                    "total_instances": 5,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 5,
+                    "compliance_percentage": 100.0
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+            with open(check_dir / "departed-account_333333333333.json", "w") as f:
+                json.dump(test_data, f)
+
+            with pytest.raises(
+                RuntimeError,
+                match=r"departed-account_333333333333\.json names account 333333333333, which is not in the organization hierarchy.*Delete the file",
+            ):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
     def test_parse_scp_result_files_restores_redacted_account_ids(self) -> None:
         """Test un-redaction of IAM user ARNs in deny_iam_user_creation results."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -349,13 +454,13 @@ class TestSCPPlacementDetermination:
             }
         )
 
-        result = determine_scp_placement(results_data, mock_hierarchy)
+        result = determine_scp_placement(results_data, mock_hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         assert len(result) == 1
         assert result[0].recommended_level == "root"
         assert result[0].target_ou_id is None
         assert result[0].compliance_percentage == 100.0
-        assert "All accounts in organization have zero violations" in result[0].reasoning
+        assert result[0].reasoning == "All 2 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level"
 
     def test_determine_scp_placement_ou_level(self) -> None:
         """Test recommendation for OU level deployment."""
@@ -376,7 +481,7 @@ class TestSCPPlacementDetermination:
             }
         )
 
-        result = determine_scp_placement(results_data, mock_hierarchy)
+        result = determine_scp_placement(results_data, mock_hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         assert len(result) == 1
         assert result[0].recommended_level == "ou"
@@ -406,7 +511,7 @@ class TestSCPPlacementDetermination:
             }
         )
 
-        result = determine_scp_placement(results_data, mock_hierarchy)
+        result = determine_scp_placement(results_data, mock_hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         assert len(result) == 1
         assert result[0].recommended_level == "account"
@@ -435,7 +540,7 @@ class TestSCPPlacementDetermination:
             }
         )
 
-        result = determine_scp_placement(results_data, mock_hierarchy)
+        result = determine_scp_placement(results_data, mock_hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         assert len(result) == 1
         assert result[0].recommended_level == "none"
@@ -486,7 +591,7 @@ class TestSCPPlacementDetermination:
             }
         )
 
-        result = determine_scp_placement(results_data, mock_hierarchy)
+        result = determine_scp_placement(results_data, mock_hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         assert len(result) == 1
         assert result[0].recommended_level == "root"
@@ -519,7 +624,7 @@ class TestSCPPlacementDetermination:
 
         # Should raise exception for account not in hierarchy
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
-            determine_scp_placement(results_data, mock_hierarchy)
+            determine_scp_placement(results_data, mock_hierarchy, MANAGEMENT_ACCOUNT_ID)
 
     def test_determine_scp_placement_missing_account_id_lookup_by_name(self) -> None:
         """Test handling when account_id is missing but account_name can be found in hierarchy."""
@@ -542,7 +647,7 @@ class TestSCPPlacementDetermination:
             }
         )
 
-        result = determine_scp_placement(results_data, mock_hierarchy)
+        result = determine_scp_placement(results_data, mock_hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         assert len(result) == 1
         assert result[0].check_name == "deny_ec2_imds_v1"
@@ -568,7 +673,188 @@ class TestSCPPlacementDetermination:
         )
 
         with pytest.raises(RuntimeError, match="Account name 'unknown-account' from SCP check result not found in organization hierarchy"):
-            determine_scp_placement(results_data, mock_hierarchy)
+            determine_scp_placement(results_data, mock_hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+
+class TestRootReasoning:
+    """
+    A root recommendation states how many of the accounts it reaches were analyzed.
+
+    The hierarchy holds every organization account, but only the accounts that
+    produced result files were read; the rest inherit a root SCP unmeasured.
+    """
+
+    def test_root_reasoning_states_analyzed_of_reached_and_the_unanalyzed_remainder(self) -> None:
+        """Three of five members analyzed names the two that inherit the policy unmeasured."""
+        hierarchy = make_hierarchy_with_management_account(
+            ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
+        )
+        results = [
+            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            for account_id in ["111111111111", "222222222222", "333333333333"]
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "3 of 5 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level; 2 accounts were not analyzed and will inherit it"
+
+    def test_root_reasoning_omits_the_remainder_when_every_reached_account_was_analyzed(self) -> None:
+        """All five members analyzed leaves nothing to inherit the policy unmeasured."""
+        hierarchy = make_hierarchy_with_management_account(
+            ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
+        )
+        results = [
+            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            for account_id in ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "All 5 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level"
+
+    def test_root_reasoning_does_not_count_the_management_account_as_reached(self) -> None:
+        """
+        The management account is excluded by identity, not by subtracting one.
+
+        A hierarchy that does not hold the management account counts every
+        member it holds.
+        """
+        hierarchy = make_test_org_hierarchy()
+        results = [
+            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            for account_id in ["111111111111", "222222222222"]
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "All 2 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level"
+
+    def test_root_reasoning_agrees_in_number_with_one_unanalyzed_account(self) -> None:
+        """One account left unanalyzed is named in the singular."""
+        hierarchy = make_hierarchy_with_management_account(["111111111111", "222222222222", "333333333333"])
+        results = [
+            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            for account_id in ["111111111111", "222222222222"]
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "2 of 3 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level; 1 account was not analyzed and will inherit it"
+
+    def test_root_reasoning_agrees_in_number_with_one_analyzed_account(self) -> None:
+        """One account analyzed takes a singular verb and drops the 'all'."""
+        hierarchy = make_hierarchy_with_management_account(["111111111111", "222222222222", "333333333333"])
+        results = [make_scp_result("111111111111", "deny_ec2_imds_v1", None)]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "1 of 3 accounts reached by root was analyzed, with zero violations - safe to deploy at root level; 2 accounts were not analyzed and will inherit it"
+
+    def test_root_reasoning_names_the_only_reached_account(self) -> None:
+        """A one-member organization is described as the only account, not as 'All 1 accounts'."""
+        hierarchy = make_hierarchy_with_management_account(["111111111111"])
+        results = [make_scp_result("111111111111", "deny_ec2_imds_v1", None)]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "The only account reached by root was analyzed, with zero violations - safe to deploy at root level"
+
+    def test_root_recommendation_covers_only_the_analyzed_accounts_at_full_compliance(self) -> None:
+        """The recommendation still covers exactly the analyzed accounts at full compliance."""
+        hierarchy = make_hierarchy_with_management_account(
+            ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
+        )
+        results = [
+            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            for account_id in ["111111111111", "222222222222", "333333333333"]
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].affected_accounts == ["111111111111", "222222222222", "333333333333"]
+        assert recommendations[0].compliance_percentage == 100.0
+
+
+class TestOUReasoning:
+    """
+    An OU recommendation states how many of the accounts it reaches were analyzed.
+
+    An SCP attached to an OU reaches every account in it and in its child OUs,
+    but only the accounts that produced result files were read; the rest
+    inherit the policy unmeasured. A sibling OU's violation keeps the root
+    unsafe so that placement descends to the Workloads OU.
+    """
+
+    def test_ou_reasoning_states_analyzed_of_reached_and_the_unanalyzed_remainder(self) -> None:
+        """Two of the four accounts under Workloads analyzed names the two that inherit unmeasured."""
+        hierarchy = make_hierarchy_with_workloads_ou(["111111111111", "222222222222"])
+        results = [
+            make_scp_result("111111111111", "deny_ec2_imds_v1", None),
+            make_scp_result("222222222222", "deny_ec2_imds_v1", None),
+            make_scp_result("555555555555", "deny_ec2_imds_v1", None, violations=1),
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        workloads = [rec for rec in recommendations if rec.target_ou_id == "ou-1111-11111111"]
+        assert len(workloads) == 1
+        assert workloads[0].reasoning == "2 of 4 accounts under OU 'Workloads', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level; 2 accounts were not analyzed and will inherit it"
+
+    def test_ou_reasoning_omits_the_remainder_when_every_reached_account_was_analyzed(self) -> None:
+        """All four accounts under Workloads analyzed leaves nothing to inherit the policy unmeasured."""
+        hierarchy = make_hierarchy_with_workloads_ou(["111111111111", "222222222222"])
+        results = [
+            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            for account_id in ["111111111111", "222222222222", "333333333333", "444444444444"]
+        ]
+        results.append(make_scp_result("555555555555", "deny_ec2_imds_v1", None, violations=1))
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        workloads = [rec for rec in recommendations if rec.target_ou_id == "ou-1111-11111111"]
+        assert len(workloads) == 1
+        assert workloads[0].reasoning == "All 4 accounts under OU 'Workloads', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level"
+
+    def test_ou_reasoning_does_not_count_the_management_account_as_reached(self) -> None:
+        """
+        The management account resident under Workloads is not an account the SCP reaches.
+
+        Four members plus the management account sit under the OU; with every
+        member analyzed, nothing is left to inherit the policy unmeasured.
+        """
+        hierarchy = make_hierarchy_with_workloads_ou(["111111111111", "222222222222", MANAGEMENT_ACCOUNT_ID])
+        results = [
+            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            for account_id in ["111111111111", "222222222222", "333333333333", "444444444444"]
+        ]
+        results.append(make_scp_result("555555555555", "deny_ec2_imds_v1", None, violations=1))
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        workloads = [rec for rec in recommendations if rec.target_ou_id == "ou-1111-11111111"]
+        assert len(workloads) == 1
+        assert workloads[0].reasoning == "All 4 accounts under OU 'Workloads', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level"
+
+    def test_ou_reasoning_names_the_only_reached_account(self) -> None:
+        """An OU whose subtree holds one account is described as the only account, not as 'All 1 accounts'."""
+        hierarchy = make_hierarchy_with_production_ou(["222222222222"])
+        results = [
+            make_scp_result("111111111111", "deny_ec2_imds_v1", None, violations=1),
+            make_scp_result("222222222222", "deny_ec2_imds_v1", None),
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        production = [rec for rec in recommendations if rec.target_ou_id == "ou-1234"]
+        assert len(production) == 1
+        assert production[0].reasoning == "The only account under OU 'Production', including those in its child OUs, was analyzed, with zero violations - safe to deploy at OU level"
 
 
 class TestParseResultsIntegration:
@@ -613,42 +899,6 @@ class TestParseResultsIntegration:
             recommendations = analyze_scp_compliance(config, mock_hierarchy)
 
         assert [rec.check_name for rec in recommendations] == ["deny_ec2_imds_v1"]
-
-    def test_parse_scp_results_missing_management_account_id(self) -> None:
-        """Test that analyze_scp_compliance works with minimal organization hierarchy."""
-        config = HeadroomConfig(
-            use_account_name_from_tags=False,
-            account_tag_layout=AccountTagLayout(
-                environment="Environment",
-                name="Name",
-                owner="Owner"
-            ),
-            security_analysis_account_id="111111111111",
-            management_account_id=None
-        )
-
-        # Organization hierarchy is now passed by caller
-        mock_hierarchy = OrganizationHierarchy(
-            root_id="r-1111",
-            organizational_units={},
-            accounts={}
-        )
-
-        parsed = [
-            SCPCheckResult(
-                account_id="111111111111",
-                account_name="test-account",
-                check_name="deny_ec2_imds_v1",
-                violations=0,
-                exemptions=0,
-                compliant=1,
-                total_instances=1,
-                compliance_percentage=100.0,
-            )
-        ]
-
-        with patch('headroom.parse_results.parse_scp_result_files', return_value=parsed):
-            assert analyze_scp_compliance(config, mock_hierarchy)
 
     def test_parse_scp_results_no_result_files(self) -> None:
         """Test that no result files stops the run rather than emptying the directory."""
@@ -835,6 +1085,35 @@ class TestParseResultsIntegration:
             assert len(recommendations) > 0
 
 
+class TestAnalyzeSCPComplianceRequiresTheManagementAccount:
+    """
+    Placement joins the guard every other management_account_id consumer applies.
+    """
+
+    def test_raises_before_any_result_file_is_read(self, tmp_path: Path) -> None:
+        """
+        A missing management_account_id must stop the run before parsing.
+
+        results_dir points at a subdirectory of tmp_path that was never
+        created, so a run that reached parse_scp_result_files would raise
+        RuntimeError for the missing directory instead. Raising ValueError
+        here proves the guard runs before any result file is read.
+        """
+        config = HeadroomConfig(
+            use_account_name_from_tags=False,
+            account_tag_layout=AccountTagLayout(
+                environment="Environment",
+                name="Name",
+                owner="Owner"
+            ),
+            security_analysis_account_id="111111111111",
+            results_dir=str(tmp_path / "never-created")
+        )
+
+        with pytest.raises(ValueError, match="management_account_id must be set in config"):
+            analyze_scp_compliance(config, make_test_org_hierarchy())
+
+
 class TestGenerateSCPTerraform:
     """Test SCP Terraform generation functionality."""
 
@@ -859,7 +1138,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id=None,
                     affected_accounts=["222222222222", "111111111111"],
                     compliance_percentage=100.0,
-                    reasoning="All accounts have zero violations"
+                    reasoning="Only 2 out of 5 accounts have zero violations - deploy at individual account level"
                 )
             ]
 
@@ -947,7 +1226,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id="ou-1234",
                     affected_accounts=["222222222222"],
                     compliance_percentage=100.0,
-                    reasoning="All accounts in OU have zero violations"
+                    reasoning="The only account under OU 'Production', including those in its child OUs, was analyzed, with zero violations - safe to deploy at OU level"
                 )
             ]
 
@@ -988,7 +1267,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id=None,
                     affected_accounts=["222222222222"],
                     compliance_percentage=100.0,
-                    reasoning="All accounts in organization have zero violations"
+                    reasoning="The only account reached by root was analyzed, with zero violations - safe to deploy at root level"
                 )
             ]
 
@@ -1040,7 +1319,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id="ou-1234",
                     affected_accounts=["222222222222"],
                     compliance_percentage=100.0,
-                    reasoning="All accounts in OU have zero violations"
+                    reasoning="The only account under OU 'Production', including those in its child OUs, was analyzed, with zero violations - safe to deploy at OU level"
                 ),
                 SCPPlacementRecommendations(
                     check_name="deny_ec2_imds_v1",
@@ -1048,7 +1327,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id=None,
                     affected_accounts=["222222222222", "111111111111"],
                     compliance_percentage=100.0,
-                    reasoning="All accounts in organization have zero violations"
+                    reasoning="All 2 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level"
                 )
             ]
 
@@ -1262,7 +1541,8 @@ class TestRootParentedAccountPlacement:
         """The root-parented account gets its own account-level recommendation."""
         recommendations = determine_scp_placement(
             self.make_results(),
-            self.make_hierarchy()
+            self.make_hierarchy(),
+            MANAGEMENT_ACCOUNT_ID
         )
 
         account_recs = [
@@ -1275,7 +1555,8 @@ class TestRootParentedAccountPlacement:
         """Adding account-level coverage does not displace the OU recommendation."""
         recommendations = determine_scp_placement(
             self.make_results(),
-            self.make_hierarchy()
+            self.make_hierarchy(),
+            MANAGEMENT_ACCOUNT_ID
         )
 
         ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
@@ -1286,7 +1567,8 @@ class TestRootParentedAccountPlacement:
         """Regression: the root ID must never appear as target_ou_id."""
         recommendations = determine_scp_placement(
             self.make_results(),
-            self.make_hierarchy()
+            self.make_hierarchy(),
+            MANAGEMENT_ACCOUNT_ID
         )
 
         assert all(r.target_ou_id != self.ROOT_ID for r in recommendations)
@@ -1301,7 +1583,7 @@ class TestRootParentedAccountPlacement:
         organizational_units and failed.
         """
         hierarchy = self.make_hierarchy()
-        recommendations = determine_scp_placement(self.make_results(), hierarchy)
+        recommendations = determine_scp_placement(self.make_results(), hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             rendered = render_scp_terraform(recommendations, hierarchy, Path(tmp_dir))
@@ -1327,7 +1609,8 @@ class TestOURecommendationValidation:
                 target_ou_id="ou-aabb-missing",
                 affected_accounts=["111111111111"],
                 check_results=[],
-                organization_hierarchy=hierarchy
+                organization_hierarchy=hierarchy,
+                management_account_id=MANAGEMENT_ACCOUNT_ID
             )
 
 
@@ -1402,7 +1685,8 @@ class TestCoverageIsIndependentOfOtherOUs:
         """Return every account named by any recommendation."""
         recommendations = determine_scp_placement(
             self.make_results(staging_violations),
-            self.make_hierarchy()
+            self.make_hierarchy(),
+            MANAGEMENT_ACCOUNT_ID
         )
         return {
             account
@@ -1909,7 +2193,7 @@ class TestPlacementUnionsAllowlistValues:
             make_scp_result("222222222222", "deny_ec2_ami_owner", ["444444444444", "amazon"]),
         ]
 
-        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy())
+        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy(), MANAGEMENT_ACCOUNT_ID)
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
@@ -1924,7 +2208,8 @@ class TestPlacementUnionsAllowlistValues:
 
         recommendations = determine_scp_placement(
             results_data,
-            make_hierarchy_with_production_ou(["222222222222"])
+            make_hierarchy_with_production_ou(["222222222222"]),
+            MANAGEMENT_ACCOUNT_ID
         )
 
         assert len(recommendations) == 1
@@ -1941,7 +2226,8 @@ class TestPlacementUnionsAllowlistValues:
 
         recommendations = determine_scp_placement(
             results_data,
-            make_hierarchy_with_production_ou(["222222222222", "333333333333"])
+            make_hierarchy_with_production_ou(["222222222222", "333333333333"]),
+            MANAGEMENT_ACCOUNT_ID
         )
 
         assert len(recommendations) == 1
@@ -1997,7 +2283,7 @@ class TestPlacementUnionsAllowlistValues:
             }
         )
 
-        recommendations = determine_scp_placement(results_data, hierarchy)
+        recommendations = determine_scp_placement(results_data, hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir)
@@ -2027,7 +2313,7 @@ class TestPlacementUnionsAllowlistValues:
             make_scp_result("222222222222", "deny_ec2_imds_v1", None),
         ]
 
-        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy())
+        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy(), MANAGEMENT_ACCOUNT_ID)
 
         assert len(recommendations) == 1
         assert recommendations[0].allowlist_values is None
@@ -2046,10 +2332,386 @@ class TestPlacementUnionsAllowlistValues:
             make_scp_result("222222222222", "deny_ec2_ami_owner", []),
         ]
 
-        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy())
+        recommendations = determine_scp_placement(results_data, make_test_org_hierarchy(), MANAGEMENT_ACCOUNT_ID)
 
         assert len(recommendations) == 1
         assert recommendations[0].allowlist_values == []
+
+
+class TestVerifyOneResultFilePerAccount:
+    """
+    Test the guard both result readers apply to one whole results tree.
+
+    A check directory is read by globbing it, so an account that resolved
+    from two files is read twice: the SCP reader deploys from whichever copy
+    is clean, the RCP reader builds the allowlist from whichever sorts last.
+    A rename leaves such a pair under every check that ran, so the guard is
+    handed the whole tree and reports every directory at once.
+    """
+
+    def test_one_file_per_account_under_every_check_is_accepted(self) -> None:
+        """A tree holding one file per account per check describes what was scanned."""
+        verify_one_result_file_per_account(
+            {
+                "deny_ec2_imds_v1": {
+                    "111111111111": [Path("a/prod_111111111111.json")],
+                    "222222222222": [Path("a/staging_222222222222.json")],
+                },
+                "deny_iam_user_creation": {
+                    "111111111111": [Path("b/prod_111111111111.json")],
+                },
+            }
+        )
+
+    def test_two_files_for_one_account_abort(self) -> None:
+        """
+        A renamed account leaves the file written under the old name behind.
+
+        Both files carry account_id 111111111111 and neither says which run
+        wrote it, so the message has to name the check, the account, and
+        every file that resolved to it.
+        """
+        with pytest.raises(RuntimeError) as error:
+            verify_one_result_file_per_account(
+                {
+                    "deny_ec2_imds_v1": {
+                        "111111111111": [
+                            Path("a/old_111111111111.json"),
+                            Path("a/new_111111111111.json"),
+                        ],
+                    },
+                }
+            )
+
+        message = str(error.value)
+        assert "deny_ec2_imds_v1" in message
+        assert "111111111111: " in message
+        assert "a/old_111111111111.json" in message
+        assert "a/new_111111111111.json" in message
+
+    def test_files_for_one_account_are_listed_in_sort_order(self) -> None:
+        """
+        One directory lists its duplicates the same way however it was read.
+
+        The files were parsed in the order the filesystem offered them, so a
+        listing in parse order moves between runs of the same directory,
+        while ascending path order does not.
+        """
+        with pytest.raises(RuntimeError) as error:
+            verify_one_result_file_per_account(
+                {
+                    "deny_ec2_imds_v1": {
+                        "111111111111": [
+                            Path("a/old_111111111111.json"),
+                            Path("a/new_111111111111.json"),
+                        ],
+                    },
+                }
+            )
+
+        message = str(error.value)
+        assert message.index("a/new_111111111111.json") < message.index("a/old_111111111111.json")
+
+    def test_the_message_ends_with_the_delete_everything_remedy(self) -> None:
+        """
+        Every listed file goes, not one of them.
+
+        `results_exist` skips any account whose result file is present, so
+        deleting the copy under the account's current name only has the
+        re-run write it again while the stale copy stays put: the same abort,
+        on a loop. Nothing short of deleting all of them clears it.
+        """
+        with pytest.raises(RuntimeError) as error:
+            verify_one_result_file_per_account(
+                {
+                    "deny_ec2_imds_v1": {
+                        "111111111111": [
+                            Path("a/old_111111111111.json"),
+                            Path("a/new_111111111111.json"),
+                        ],
+                    },
+                }
+            )
+
+        assert str(error.value).endswith(
+            "Delete every file listed above and re-run; the scan writes one "
+            "result file per account."
+        )
+
+    def test_duplicated_accounts_are_reported_in_ascending_order(self) -> None:
+        """
+        Two reads of one directory report the duplicates in the same order.
+
+        Each reader fills the mapping in the order it parses its files, and
+        dict insertion order is a contract neither reader keeps, so an
+        account order taken from the mapping moves between runs and two
+        operators reading one directory compare different messages.
+        """
+        with pytest.raises(RuntimeError) as error:
+            verify_one_result_file_per_account(
+                {
+                    "deny_ec2_imds_v1": {
+                        "222222222222": [
+                            Path("a/old_222222222222.json"),
+                            Path("a/new_222222222222.json"),
+                        ],
+                        "111111111111": [
+                            Path("a/old_111111111111.json"),
+                            Path("a/new_111111111111.json"),
+                        ],
+                    },
+                }
+            )
+
+        message = str(error.value)
+        assert message.index("111111111111: ") < message.index("222222222222: ")
+
+    def test_duplicates_under_two_checks_are_reported_in_one_error(self) -> None:
+        """
+        A rename leaves a stale pair under every check that ran, not one.
+
+        The remedy is a sweep of the whole tree, so reporting one directory
+        at a time costs the operator a delete-and-re-run cycle per check to
+        discover the same thing again. Ascending check order is what makes
+        two operators reading one tree compare the same message, since the
+        readers fill the mapping in directory order.
+        """
+        with pytest.raises(RuntimeError) as error:
+            verify_one_result_file_per_account(
+                {
+                    "deny_iam_user_creation": {
+                        "111111111111": [
+                            Path("b/old_111111111111.json"),
+                            Path("b/new_111111111111.json"),
+                        ],
+                    },
+                    "deny_ec2_imds_v1": {
+                        "111111111111": [
+                            Path("a/old_111111111111.json"),
+                            Path("a/new_111111111111.json"),
+                        ],
+                    },
+                }
+            )
+
+        message = str(error.value)
+        assert "deny_ec2_imds_v1: " in message
+        assert "deny_iam_user_creation: " in message
+        assert message.index("deny_ec2_imds_v1: ") < message.index("deny_iam_user_creation: ")
+
+
+class TestTheSCPReaderRequiresOneFilePerAccount:
+    """
+    Test what the SCP reader hands the guard and when it hands it over.
+
+    The guard decides what a duplicate is; the reader decides what the guard
+    gets to see. Every check directory is read before the one abort, so a
+    rename that left a pair under each of them is reported once rather than
+    one delete-and-re-run cycle at a time. Files go over as the glob yielded
+    them, directory and all, because a bare file name does not say which
+    directory holds it. Nothing de-duplicates them on the way, so copies that
+    agree on what was found are still two files.
+    """
+
+    def write_scp_result_file(
+        self,
+        check_dir: Path,
+        file_name: str,
+        summary: Dict[str, Any]
+    ) -> Path:
+        """
+        Write one account's result file into a check directory.
+
+        Args:
+            check_dir: Directory under scps/ the file belongs to
+            file_name: Name the scan wrote the file under
+            summary: The file's whole summary block
+
+        Returns:
+            The path the file was written to
+        """
+        result_file = check_dir / file_name
+        result_file.write_text(json.dumps({"summary": summary}))
+        return result_file
+
+    def test_two_files_for_one_account_abort_the_parse(self) -> None:
+        """
+        An account renamed between runs leaves two files carrying its ID.
+
+        The stale file records the three violations the earlier run found and
+        the current one records none, so reading both hands placement a
+        zero-violation result for an account that violates the check. The
+        abort has to name the check, the account, and both files as the glob
+        yielded them - a bare file name does not say which of the check
+        directories holds it.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            stale_file = self.write_scp_result_file(
+                check_dir,
+                "old-name_111111111111.json",
+                {
+                    "account_name": "old-name",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_imds_v1",
+                    "violations": 3,
+                }
+            )
+            current_file = self.write_scp_result_file(
+                check_dir,
+                "new-name_111111111111.json",
+                {
+                    "account_name": "new-name",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_imds_v1",
+                    "violations": 0,
+                }
+            )
+
+            with pytest.raises(RuntimeError) as error:
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+            message = str(error.value)
+            assert "deny_ec2_imds_v1" in message
+            assert "111111111111: " in message
+            assert str(stale_file) in message
+            assert str(current_file) in message
+
+    def test_two_agreeing_files_for_one_account_abort_the_parse(self) -> None:
+        """
+        Copies holding identical bytes abort as well.
+
+        Both files are written from the one summary, so they agree on
+        everything they record. Agreement does not make the directory
+        describe what was scanned and identical copies are not de-duplicated:
+        neither file says which run wrote it, the account is still read twice
+        and still reaches placement twice, landing in the recommendation's
+        affected accounts twice and inflating the denominator the
+        account-level reasoning reports coverage against.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            agreeing_summary = {
+                "account_name": "test-account",
+                "account_id": "111111111111",
+                "check": "deny_ec2_imds_v1",
+                "violations": 0,
+            }
+            stale_file = self.write_scp_result_file(
+                check_dir,
+                "old-name_111111111111.json",
+                agreeing_summary
+            )
+            current_file = self.write_scp_result_file(
+                check_dir,
+                "new-name_111111111111.json",
+                agreeing_summary
+            )
+
+            with pytest.raises(RuntimeError) as error:
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+            message = str(error.value)
+            assert "deny_ec2_imds_v1" in message
+            assert str(stale_file) in message
+            assert str(current_file) in message
+
+    def test_one_file_per_check_directory_for_one_account_is_read(self) -> None:
+        """
+        Every check scans every analyzable account, so one file each is normal.
+
+        One file per account is what a single check directory holds, not what
+        the whole results tree holds: an account the run analyzed has a
+        result under every check that ran. Counting an account's files across
+        directories aborts every run of more than one check.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            imds_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            imds_dir.mkdir(parents=True)
+            self.write_scp_result_file(
+                imds_dir,
+                "test-account_111111111111.json",
+                {
+                    "account_name": "test-account",
+                    "account_id": "111111111111",
+                    "check": "deny_ec2_imds_v1",
+                    "violations": 0,
+                }
+            )
+            iam_dir = Path(temp_dir) / "scps" / "deny_iam_user_creation"
+            iam_dir.mkdir(parents=True)
+            self.write_scp_result_file(
+                iam_dir,
+                "test-account_111111111111.json",
+                {
+                    "account_name": "test-account",
+                    "account_id": "111111111111",
+                    "check": "deny_iam_user_creation",
+                    "violations": 0,
+                    "users": [],
+                }
+            )
+
+            parsed = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+            assert sorted(result.check_name for result in parsed) == [
+                "deny_ec2_imds_v1",
+                "deny_iam_user_creation",
+            ]
+            assert [result.account_id for result in parsed] == [
+                "111111111111",
+                "111111111111",
+            ]
+
+    def test_duplicates_under_two_checks_abort_in_one_error(self) -> None:
+        """
+        A rename leaves a stale pair under every check that ran, not one.
+
+        The abort asks for a sweep of the tree, so aborting on the first
+        directory and leaving the rest unread sends the operator round the
+        delete-and-re-run loop once per check, each cycle rediscovering the
+        same rename. Every directory is read before the one abort, so one
+        error names every file the sweep has to delete.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            imds_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            imds_dir.mkdir(parents=True)
+            iam_dir = Path(temp_dir) / "scps" / "deny_iam_user_creation"
+            iam_dir.mkdir(parents=True)
+            for account_name in ("old-name", "new-name"):
+                file_name = f"{account_name}_111111111111.json"
+                self.write_scp_result_file(
+                    imds_dir,
+                    file_name,
+                    {
+                        "account_name": account_name,
+                        "account_id": "111111111111",
+                        "check": "deny_ec2_imds_v1",
+                        "violations": 0,
+                    }
+                )
+                self.write_scp_result_file(
+                    iam_dir,
+                    file_name,
+                    {
+                        "account_name": account_name,
+                        "account_id": "111111111111",
+                        "check": "deny_iam_user_creation",
+                        "violations": 0,
+                        "users": [],
+                    }
+                )
+
+            with pytest.raises(RuntimeError) as error:
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+            message = str(error.value)
+            assert "deny_ec2_imds_v1: " in message
+            assert "deny_iam_user_creation: " in message
+            assert str(imds_dir / "old-name_111111111111.json") in message
+            assert str(iam_dir / "old-name_111111111111.json") in message
 
 
 class TestTheAccountTierPlacesEachAccountSeparately:
@@ -2075,7 +2737,8 @@ class TestTheAccountTierPlacesEachAccountSeparately:
 
         recommendations = determine_scp_placement(
             results_data,
-            make_hierarchy_with_production_ou(["222222222222", "333333333333"])
+            make_hierarchy_with_production_ou(["222222222222", "333333333333"]),
+            MANAGEMENT_ACCOUNT_ID
         )
 
         assert len(recommendations) == 2
@@ -2099,7 +2762,8 @@ class TestTheAccountTierPlacesEachAccountSeparately:
 
         recommendations = determine_scp_placement(
             results_data,
-            make_hierarchy_with_production_ou(["222222222222", "333333333333"])
+            make_hierarchy_with_production_ou(["222222222222", "333333333333"]),
+            MANAGEMENT_ACCOUNT_ID
         )
 
         assert len(recommendations) == 2

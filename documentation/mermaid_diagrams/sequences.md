@@ -128,7 +128,7 @@ sequenceDiagram
   Results-->>Results: List[SCPCheckResult]
 
   Note over Results: Determine placement using hierarchy
-  Results->>Results: determine_scp_placement(results, org_hierarchy)
+  Results->>Results: determine_scp_placement(results, org_hierarchy, management_account_id)
   Results->>Hierarchy: determine_placement(results, is_safe_for_root, is_safe_for_ou, get_account_id)
   Hierarchy->>Hierarchy: Check if safe for root (all violations = 0)
   Hierarchy->>Hierarchy: Group results by OU
