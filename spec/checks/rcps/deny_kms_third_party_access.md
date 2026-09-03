@@ -68,6 +68,11 @@ The `Principal` element is read by `read_principal` against
 `RESOURCE_POLICY_PRINCIPAL_TYPES`
 ([`../../contracts/policy-model.md`](../../contracts/policy-model.md)).
 
+For each grant: `GrantId`, `GranteeServicePrincipal`, `GranteePrincipal`,
+`Operations`, `Constraints` presence. `RetiringPrincipal`,
+`RetiringServicePrincipal`, and `IssuingAccount` are not read; the Decision
+table owns why.
+
 ## Decision table
 
 | State | Condition | Category |
@@ -80,9 +85,48 @@ The `Principal` element is read by `read_principal` against
 | Violation | A `Federated` or `CanonicalUser` principal | `VIOLATION` |
 | Violation | An ARN naming no account, under the rule [`../../contracts/policy-model.md`](../../contracts/policy-model.md#a-blocker-stops-the-account-a-document-headroom-cannot-read-stops-the-run) owns | `VIOLATION` |
 | Aborts | A principal key AWS does not document | The run aborts |
+| Compliant | A grant whose `GranteePrincipal` is an ordinary ARN outside the organization, with any operation other than `RetireGrant` alone, or with no `Operations` | `COMPLIANT`; the grantee's account enters the allowlist |
+| Not recorded | A grant listed with `GranteeServicePrincipal`, or whose `GranteePrincipal` is an AWS service principal | Not in the output; the RCP exempts services with `aws:PrincipalIsAWSService`. When the typed field is present the display `GranteePrincipal` beside it is not read |
+| Not recorded | A grant whose `GranteePrincipal` is a service-linked role, in any partition, identified by the reserved `role/aws-service-role/` path | Not in the output, whichever account holds the role; RCPs do not impact service-linked roles |
+| Not recorded | A grant whose nonempty `Operations` is only `RetireGrant` | Not in the output; RCPs do not impact `kms:RetireGrant` |
+| Not read | `RetiringPrincipal` and `RetiringServicePrincipal`, whatever they hold | Never classified, allowlisted, or failed on |
+| Aborts | A `GranteePrincipal` that is neither an ARN nor an AWS service principal, on a grant with no `GranteeServicePrincipal` | The run aborts |
 
 Every KMS key policy names its own account's root principal, which is an
 in-organization principal and so is never recorded.
+
+A grant's retiring principal is irrelevant to RCP safety. It can call
+`kms:RetireGrant` and nothing else, and AWS states in the
+[RCP documentation](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_rcps.html#actions-not-restricted-by-rcps)
+that RCPs do not impact that permission, and in the
+[grant lifecycle documentation](https://docs.aws.amazon.com/kms/latest/developerguide/grant-delete.html)
+that the grant itself authorizes retirement and the permission is not
+effective in a key policy or an RCP. So the statement this check generates
+cannot deny a retiring principal, and an allowlist entry for its account would
+open `kms:*` to an account the RCP was never going to block. The field is
+ignored categorically rather than by value: a service-created grant lists an
+opaque display value such as `AWS Internal` there, and reading it through the
+grantee's classifier aborted the whole organization scan over a value that
+bears on nothing the RCP does. The same reasoning drops a grant whose only
+operation is `RetireGrant`, since the grantee then holds nothing the RCP can
+deny. Neither exemption is a statement about grants in general — an SCP or an
+identity policy can deny `kms:RetireGrant` — only about this check's RCP.
+
+A service-linked role is recognized by its path, not its name. IAM reserves
+the `aws-service-role/` role path to AWS services, so a role under it was
+created by a service, while a role named `AWSServiceRoleForExample` outside
+that path is an ordinary role anyone can create and is classified by its
+account like any other. The path is matched in every partition. A
+service-linked role in another account is still not a third party: RCPs do not
+impact the permissions of any service-linked role, so the RCP cannot deny it.
+
+A grant with no `Operations` is not one carrying only `RetireGrant`. Nothing in
+it says what it authorizes, and INV-01 forbids reading that silence as safe,
+so its external grantee is recorded with an empty operations list.
+
+Grantee identity is read from `GranteeServicePrincipal` and `GranteePrincipal`
+only. `IssuingAccount`, the key's own account, and the retiring fields say
+nothing about who the grantee is and are not consulted.
 
 An AWS-managed key is skipped on `KeyManager` alone. AWS states that resource
 control policies do not apply to AWS managed keys, in both the
@@ -110,8 +154,11 @@ alias prefix is the informal one.
 | `NotFoundException` from `GetKeyPolicy` on one key | The key has no policy, so no statement is read. Its grants are still listed, and the key reaches the results list if one of them names an account outside the organization |
 | `ClientError` from `DescribeKey` on one key | Re-raised, aborting the run. The key's type is unknown, and either guess is wrong: reading the policy could block the account over an AWS-managed key, and skipping could drop a customer-managed key that grants a third party |
 | Any other `ClientError` on one key | Re-raised, aborting the run |
-| A grant naming a principal that is neither an ARN nor an AWS service principal | `UnknownGrantPrincipalError`, aborting the run. The message names the key ARN, the grant ID, and which of `GranteePrincipal` and `RetiringPrincipal` carried it, since either raises and the run stops before anything records the key |
+| A grant whose `GranteePrincipal` is neither an ARN nor an AWS service principal, with no `GranteeServicePrincipal` beside it | `UnknownGrantPrincipalError`, aborting the run. The message names the key ARN and the grant ID, and the run stops before anything records the key. `AWS Internal` as the grantee raises like any other opaque value: the grantee holds access the RCP would deny, and nothing authoritative says which account it belongs to |
+| A grant whose `RetiringPrincipal` or `RetiringServicePrincipal` is opaque, `AWS Internal` included | Nothing. The field is not read, so no value in it can raise |
+| A grant with no `Operations` | Recorded with an empty operations list when its grantee is outside the organization, not dropped as `RetireGrant`-only |
 | A grant carrying no `GrantId` | `KeyError`, aborting the run. `ListGrants` returns the ID `RetireGrant` takes, so its absence is a response Headroom has misread; recording the grant with a blank ID would report access through a grant nobody can name |
+| A grant carrying neither `GranteeServicePrincipal` nor `GranteePrincipal` | `KeyError`, aborting the run. Every grant is listed with one of the two, so a grant with neither is a response Headroom has misread, and dropping it would read a missing grantee as no grantee (INV-01) |
 | `ClientError` in any region | Logged and re-raised, aborting the run |
 | Unparseable policy JSON | Not caught; propagates and aborts |
 | `Statement` neither object nor list | `MalformedPolicyError` |
@@ -158,7 +205,13 @@ Entry shape: `key_id`, `key_arn`, `region`, `third_party_account_ids`,
 `grants` holds one object per grant reaching outside the organization —
 `grant_id`, `grantee_account_id`, `retiring_principal_account_id`,
 `operations`, `has_constraints` — and is an empty list on a key whose only
-third-party access is in its policy. This is the only one of the six entry
+third-party access is in its policy. `grantee_account_id` is always set on an
+entry, since a grantee outside the organization is what makes one.
+`retiring_principal_account_id` is always `null` on a newly analyzed entry: the
+retiring principal is no longer read, for the reason the Decision table gives,
+and the field is kept only so persisted results keep their shape (INV-14). A
+result file written before that change may carry an account there, and both
+readers still read it. This is the only one of the six entry
 shapes with a field of its own for a second surface;
 [`deny_s3_third_party_access`](deny_s3_third_party_access.md) reads two surfaces
 as well and merges the ACL's verdict into `has_wildcard_principal` and
@@ -220,6 +273,30 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
    neither `GetKeyPolicy` nor `ListGrants` is called for it.
 9. A customer-managed key with that same policy → violation, as in scenario 3.
 10. `AccessDenied` from `DescribeKey` on one key → the run aborts.
+11. A grant to an in-organization service-linked role with
+    `RetiringPrincipal: "AWS Internal"` → not recorded, and the run continues.
+12. A grant to an in-organization role whose `RetiringPrincipal` is a role in
+    `999999999999`, outside the organization → not recorded; that account
+    enters neither the results nor the allowlist.
+13. A grant to a service-linked role in `999999999999`, under the
+    `role/aws-service-role/` path → not recorded.
+14. A grant listed with `GranteeServicePrincipal`, whatever `GranteePrincipal`
+    says beside it → not recorded.
+15. A grant to an ordinary role in `999999999999` whose `Operations` is only
+    `RetireGrant` → not recorded.
+16. A grant to an ordinary role in `999999999999` whose `Operations` is
+    `RetireGrant` and `Decrypt` → compliant; the account enters the allowlist
+    with both operations recorded.
+17. A grant to an ordinary role in `999999999999` with no `Operations` →
+    compliant, recorded with an empty operations list.
+18. A grant to an ordinary role in `999999999999` named
+    `AWSServiceRoleForExample`, outside the reserved path → compliant; the
+    name does not make it a service-linked role.
+19. A grant whose `GranteePrincipal` is `AWS Internal`, with no
+    `GranteeServicePrincipal` → the run aborts, naming the key ARN and the
+    grant ID.
+20. A grant with neither `GranteeServicePrincipal` nor `GranteePrincipal` →
+    the run aborts with `KeyError`.
 
 ## Referenced invariants
 
