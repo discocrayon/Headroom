@@ -1056,7 +1056,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id=None,
                     affected_accounts=["222222222222", "111111111111"],
                     compliance_percentage=100.0,
-                    reasoning="All accounts have zero violations"
+                    reasoning="Only 2 out of 5 accounts have zero violations - deploy at individual account level"
                 )
             ]
 
@@ -1144,7 +1144,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id="ou-1234",
                     affected_accounts=["222222222222"],
                     compliance_percentage=100.0,
-                    reasoning="All accounts in OU have zero violations"
+                    reasoning="All 1 accounts under OU 'Production', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level"
                 )
             ]
 
@@ -1237,7 +1237,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id="ou-1234",
                     affected_accounts=["222222222222"],
                     compliance_percentage=100.0,
-                    reasoning="All accounts in OU have zero violations"
+                    reasoning="All 1 accounts under OU 'Production', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level"
                 ),
                 SCPPlacementRecommendations(
                     check_name="deny_ec2_imds_v1",

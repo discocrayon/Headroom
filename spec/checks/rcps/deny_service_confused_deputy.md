@@ -13,6 +13,7 @@ depends_on:
   - INV-13
 verification:
   - tests/test_checks_deny_service_confused_deputy.py
+  - tests/test_aws_helpers.py
   - tests/test_aws_policy_documents.py
 ---
 
@@ -305,4 +306,4 @@ INV-01, INV-02, INV-06, INV-10, INV-13.
 - `headroom/terraform/parameters.py` — `render_check_parameters`
 - `test_environment/modules/rcps/locals.tf` — the rendered statement
 - Tests: `tests/test_checks_deny_service_confused_deputy.py`,
-  `tests/test_aws_policy_documents.py`
+  `tests/test_aws_policy_documents.py`, `tests/test_aws_helpers.py`

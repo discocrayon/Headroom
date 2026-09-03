@@ -104,7 +104,7 @@ same statement walk, and the entry's `scope` — `repository`, `registry`, or
 | Any other `ClientError` on one repository | Re-raised, aborting the run |
 | `ClientError` in any region | Logged and re-raised, aborting the run |
 | `ClientError` listing creation templates, including `AccessDeniedException` | Logged and re-raised, aborting the run. `ecr:DescribeRepositoryCreationTemplates` is a permission the scan role must hold; an unreadable template is not an absent one (INV-01) |
-| A response carrying no `policyText` | `KeyError`, aborting the run. `GetRepositoryPolicy` and `GetRegistryPolicy` each return the field on success and raise `RepositoryPolicyNotFoundException` or `RegistryPolicyNotFoundException` when there is no policy, so a response with neither is an unread policy, not an empty one (INV-01) |
+| A response carrying no `policyText` | `KeyError`, aborting the run. Indexed rather than defaulted: botocore marks the field optional, but `GetRepositoryPolicy` and `GetRegistryPolicy` raise `RepositoryPolicyNotFoundException` or `RegistryPolicyNotFoundException` when there is no policy, so a response carrying neither the field nor the exception is an unread policy, not an empty one (INV-01) |
 | A template carrying no `prefix` | `KeyError`, aborting the run. Indexed rather than defaulted: botocore marks the field optional, and the prefix is the only name Headroom has for a template, so a template it cannot name is refused rather than entered untraceably (INV-01) |
 | Unparseable policy JSON | Not caught; propagates and aborts |
 | `Statement` neither object nor list | `MalformedPolicyError` |
