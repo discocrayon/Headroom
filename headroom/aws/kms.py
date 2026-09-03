@@ -35,12 +35,16 @@ from .policy_documents import (
 logger = logging.getLogger(__name__)
 
 
-class UnknownGranteePrincipalError(Exception):
+class UnknownGrantPrincipalError(Exception):
     """
     Raised when a grant names a principal the analyzer cannot classify.
 
     Dropping it silently would leave its account out of the allowlist,
     which is the failure this analysis exists to prevent.
+
+    Grant rather than grantee: `GranteePrincipal` and `RetiringPrincipal`
+    take the same shapes and raise this from the same reader, so the
+    message says which of the two it read, on which grant, on which key.
     """
 
 
@@ -135,7 +139,7 @@ class KMSKeyPolicyAnalysis:
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
-def _grant_principal_account_id(principal: str) -> Optional[str]:
+def _grant_principal_account_id(principal: str, principal_description: str) -> Optional[str]:
     """
     Resolve a grant principal to an account ID.
 
@@ -145,12 +149,14 @@ def _grant_principal_account_id(principal: str) -> Optional[str]:
 
     Args:
         principal: Principal string from a ListGrants entry
+        principal_description: Which field of which grant on which key
+            named this principal, opening the error message
 
     Returns:
         The 12-digit account ID, or None for an AWS service principal
 
     Raises:
-        UnknownGranteePrincipalError: If the principal is neither an ARN
+        UnknownGrantPrincipalError: If the principal is neither an ARN
             nor an AWS service principal
     """
     arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
@@ -160,9 +166,9 @@ def _grant_principal_account_id(principal: str) -> Optional[str]:
     if principal.endswith(AWS_SERVICE_PRINCIPAL_SUFFIX):
         return None
 
-    raise UnknownGranteePrincipalError(
-        f"Grant names principal '{principal}', which is neither an ARN nor "
-        f"an AWS service principal. The analyzer cannot tell whether it "
+    raise UnknownGrantPrincipalError(
+        f"{principal_description} is '{principal}', which is neither an ARN "
+        f"nor an AWS service principal. The analyzer cannot tell whether it "
         f"belongs to a third-party account, and guessing would risk "
         f"omitting that account from the RCP allowlist."
     )
@@ -170,7 +176,8 @@ def _grant_principal_account_id(principal: str) -> Optional[str]:
 
 def _external_grant_account(
     principal: Optional[str],
-    org_account_ids: Set[str]
+    org_account_ids: Set[str],
+    principal_description: str
 ) -> Optional[str]:
     """
     Resolve a grant principal, keeping it only if it is outside the org.
@@ -179,17 +186,19 @@ def _external_grant_account(
         principal: Principal string from a ListGrants entry, or None when
             the grant does not carry that field
         org_account_ids: Set of all account IDs in the organization
+        principal_description: Which field of which grant on which key
+            named this principal, for the error message
 
     Returns:
         The account ID if it is outside the organization, else None
 
     Raises:
-        UnknownGranteePrincipalError: If the principal cannot be classified
+        UnknownGrantPrincipalError: If the principal cannot be classified
     """
     if not principal:
         return None
 
-    account_id = _grant_principal_account_id(principal)
+    account_id = _grant_principal_account_id(principal, principal_description)
     if account_id is None or account_id in org_account_ids:
         return None
 
@@ -199,7 +208,7 @@ def _external_grant_account(
 def _analyze_key_grants(
     kms_client: KMSClient,
     key_id: str,
-    region: str,
+    key_arn: str,
     org_account_ids: Set[str]
 ) -> List[KMSGrantFinding]:
     """
@@ -212,8 +221,9 @@ def _analyze_key_grants(
 
     Args:
         kms_client: Boto3 KMS client
-        key_id: KMS key ID
-        region: AWS region
+        key_id: KMS key ID, which is what ListGrants takes
+        key_arn: ARN of the same key, which names its account and region
+            in the messages a failure leaves behind
         org_account_ids: Set of all account IDs in the organization
 
     Returns:
@@ -221,26 +231,35 @@ def _analyze_key_grants(
 
     Raises:
         ClientError: If the grants cannot be listed
-        UnknownGranteePrincipalError: If a grant names a principal the
+        KeyError: If a grant carries no GrantId
+        UnknownGrantPrincipalError: If a grant names a principal the
             analyzer cannot classify
     """
     findings: List[KMSGrantFinding] = []
 
-    logger.debug(f"Listing grants for key {key_id} in {region}")
+    logger.debug(f"Listing grants for key {key_arn}")
     for page in paginate(kms_client, "list_grants", KeyId=key_id):
         for grant in page.get("Grants", []):
+            # ListGrants always returns the ID RetireGrant takes, and the
+            # description below is worth nothing without it.
+            grant_description = f"grant '{grant['GrantId']}' on key {key_arn}"
+
             grantee_account = _external_grant_account(
-                grant.get("GranteePrincipal"), org_account_ids
+                grant.get("GranteePrincipal"),
+                org_account_ids,
+                f"The GranteePrincipal of {grant_description}",
             )
             retiring_account = _external_grant_account(
-                grant.get("RetiringPrincipal"), org_account_ids
+                grant.get("RetiringPrincipal"),
+                org_account_ids,
+                f"The RetiringPrincipal of {grant_description}",
             )
 
             if grantee_account is None and retiring_account is None:
                 continue
 
             findings.append(KMSGrantFinding(
-                grant_id=grant.get("GrantId", ""),
+                grant_id=grant["GrantId"],
                 grantee_account_id=grantee_account,
                 retiring_principal_account_id=retiring_account,
                 operations=sorted(
@@ -342,13 +361,18 @@ def _analyze_key_in_region(
         KMSKeyPolicyAnalysis result for this key
 
     Raises:
-        UnknownGranteePrincipalError: If a grant names a principal the analyzer
+        KeyError: If a grant carries no GrantId
+        UnknownGrantPrincipalError: If a grant names a principal the analyzer
             cannot classify
         MalformedPolicyError: If a Statement is neither an object nor a list,
             or a Principal is neither a string, a list, nor an object
     """
     key_id = key["KeyId"]
     key_arn = key["KeyArn"]
+
+    # The ARN names the partition, region, account, and key in one token,
+    # so a message carrying it identifies the key on its own.
+    resource_description = f"Key {key_arn}"
 
     third_party_accounts: Set[str] = set()
     actions_by_account: defaultdict[str, Set[str]] = defaultdict(set)
@@ -358,7 +382,7 @@ def _analyze_key_in_region(
 
     policy = _read_key_policy(kms_client, key_id, region)
     statements = (
-        normalize_statements(policy, f"Key '{key_id}' in {region}")
+        normalize_statements(policy, resource_description)
         if policy is not None
         else []
     )
@@ -377,7 +401,6 @@ def _analyze_key_in_region(
         if not principal:
             continue
 
-        resource_description = f"Key '{key_id}' in {region}"
         reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
         sources.extend(
             read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
@@ -399,7 +422,7 @@ def _analyze_key_in_region(
             third_party_accounts.add(account_id)
             actions_by_account[account_id].update(actions)
 
-    grants = _analyze_key_grants(kms_client, key_id, region, org_account_ids)
+    grants = _analyze_key_grants(kms_client, key_id, key_arn, org_account_ids)
 
     for grant in grants:
         if grant.grantee_account_id is not None:
@@ -472,7 +495,8 @@ def analyze_kms_key_policies(
 
     Raises:
         ClientError: If AWS API calls fail
-        UnknownGranteePrincipalError: If a grant names a principal the
+        KeyError: If a grant carries no GrantId
+        UnknownGrantPrincipalError: If a grant names a principal the
             analyzer cannot classify
     """
     results: List[KMSKeyPolicyAnalysis] = []

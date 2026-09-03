@@ -110,7 +110,8 @@ alias prefix is the informal one.
 | `NotFoundException` from `GetKeyPolicy` on one key | The key has no policy, so no statement is read. Its grants are still listed, and the key reaches the results list if one of them names an account outside the organization |
 | `ClientError` from `DescribeKey` on one key | Re-raised, aborting the run. The key's type is unknown, and either guess is wrong: reading the policy could block the account over an AWS-managed key, and skipping could drop a customer-managed key that grants a third party |
 | Any other `ClientError` on one key | Re-raised, aborting the run |
-| A grant naming a principal that is neither an ARN nor an AWS service principal | `UnknownGranteePrincipalError`, aborting the run |
+| A grant naming a principal that is neither an ARN nor an AWS service principal | `UnknownGrantPrincipalError`, aborting the run. The message names the key ARN, the grant ID, and which of `GranteePrincipal` and `RetiringPrincipal` carried it, since either raises and the run stops before anything records the key |
+| A grant carrying no `GrantId` | `KeyError`, aborting the run. `ListGrants` returns the ID `RetireGrant` takes, so its absence is a response Headroom has misread; recording the grant with a blank ID would report access through a grant nobody can name |
 | `ClientError` in any region | Logged and re-raised, aborting the run |
 | Unparseable policy JSON | Not caught; propagates and aborts |
 | `Statement` neither object nor list | `MalformedPolicyError` |

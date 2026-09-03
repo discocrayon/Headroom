@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
 from headroom.aws.kms import (
-    UnknownGranteePrincipalError,
+    UnknownGrantPrincipalError,
     analyze_kms_key_policies,
 )
 from headroom.aws.policy_documents import (
@@ -1016,12 +1016,65 @@ class TestKeyGrants:
 
         Silently dropping it would leave the account out of the allowlist,
         which is the failure this whole check exists to prevent.
+
+        The message names the key and the grant carrying the principal.
+        An abort saying only what the principal was leaves the operator to
+        find it among every grant on every key in the organization.
         """
-        with pytest.raises(UnknownGranteePrincipalError, match="not-a-principal"):
+        with pytest.raises(UnknownGrantPrincipalError) as raised:
             self._analyze([
                 {
                     "GrantId": "grant-abc",
                     "GranteePrincipal": "not-a-principal",
+                    "Operations": ["Decrypt"],
+                }
+            ])
+
+        message = str(raised.value)
+        assert "not-a-principal" in message
+        assert "GranteePrincipal" in message
+        assert "grant-abc" in message
+        assert "arn:aws:kms:us-east-1:111111111111:key/key-123" in message
+
+    def test_unrecognized_retiring_principal_names_that_field(self) -> None:
+        """
+        The message says which of the grant's two principals it could not
+        read.
+
+        GranteePrincipal and RetiringPrincipal take the same shapes and
+        raise the same error, so a message naming neither sends the
+        operator to inspect a grantee that was never the problem.
+        """
+        with pytest.raises(UnknownGrantPrincipalError) as raised:
+            self._analyze([
+                {
+                    "GrantId": "grant-abc",
+                    "GranteePrincipal": (
+                        f"arn:aws:iam::{self.ORG_ACCOUNT}:role/App"
+                    ),
+                    "RetiringPrincipal": "not-a-principal",
+                    "Operations": ["Decrypt"],
+                }
+            ])
+
+        message = str(raised.value)
+        assert "RetiringPrincipal" in message
+        assert "GranteePrincipal" not in message
+
+    def test_a_grant_with_no_id_raises(self) -> None:
+        """
+        A grant carrying no ID is not a grant whose ID is the empty string.
+
+        ListGrants always returns the ID RetireGrant takes. Recording ""
+        would write a finding naming a grant nobody can retire, and leave
+        every message about the grant naming no grant at all.
+        """
+        with pytest.raises(KeyError, match="GrantId"):
+            self._analyze([
+                {
+                    "GranteePrincipal": (
+                        f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                    ),
                     "Operations": ["Decrypt"],
                 }
             ])
