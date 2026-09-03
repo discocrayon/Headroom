@@ -420,20 +420,22 @@ message. INV-02 held either way, which is why it went unnoticed.
 Any other exception type is caught nowhere and aborts on an unlabelled
 traceback, with no log line at all: `MalformedPolicyError`,
 `UnknownPrincipalTypeError`, `UnknownGranteeTypeError`,
-`UnknownGranteePrincipalError`, `InvalidFederatedPrincipalError`, and
-`MalformedStatementError` each subclass `Exception` directly, and an `Action`
-that is neither a string nor an array raises `TypeError`. Of row 1's four
-examples, only unparseable JSON reaches a handler, because
-`json.JSONDecodeError` subclasses `ValueError`.
+`UnknownGrantPrincipalError`, `InvalidFederatedPrincipalError`, and
+`MalformedStatementError` each subclass `Exception` directly, an `Action`
+that is neither a string nor an array raises `TypeError`, and a KMS grant
+carrying no `GrantId` raises `KeyError`. Of row 1's four examples, only
+unparseable JSON reaches a handler, because `json.JSONDecodeError` subclasses
+`ValueError`.
 
 That is not a defect to fix in `main`. INV-02 is met because the run aborts
 whole, and INV-01 is met because the abort itself keeps a missing observation
 from being read as clean — not because every message is equally informative.
-Five of the six classes name the resource whose policy or grant could not be
-read; `UnknownGranteePrincipalError` names the unrecognized grant principal
-rather than the resource carrying it; and the bare `TypeError` names only the
-value's Python type. None of the seven lets the run finish and report the
-account clean, which is the property that matters.
+All six classes name the resource whose policy or grant could not be read,
+`UnknownGrantPrincipalError` since it was given the key ARN and the grant ID
+alongside the principal it could not classify; the bare `TypeError` names only
+the value's Python type, and the `KeyError` only the absent field. None of the
+eight lets the run finish and report the account clean, which is the property
+that matters.
 
 `UnknownPrincipalTypeError` was for a time the one type on that list with a
 catch site: `headroom/aws/sqs.py` caught it and recorded the queue as a read
