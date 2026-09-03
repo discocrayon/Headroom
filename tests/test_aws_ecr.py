@@ -5,7 +5,7 @@ Tests for headroom.aws.ecr module.
 import json
 
 import pytest
-from typing import Any, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
@@ -70,6 +70,44 @@ class TestAnalyzeECRRepositoryPolicies:
         mock_ecr_client.get_repository_policy.return_value = {"policyText": "{not json"}
 
         with pytest.raises(json.JSONDecodeError):
+            analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
+
+    def test_a_response_without_policy_text_aborts_the_run(self) -> None:
+        """
+        A 200 response always carries policyText, because a missing policy is
+        an exception, not an empty response.
+
+        A response missing it means Headroom misread the API, not that the
+        repository carries no policy - AWS signals that case with
+        RepositoryPolicyNotFoundException, not an empty response. Defaulting to
+        "{}" here would report the repository as clean on a policy nobody read,
+        which is INV-01's case, so a missing key raises KeyError instead.
+        """
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+        _no_registry_policy(mock_ecr_client)
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {"repositories": [{
+                "repositoryName": "test-repo",
+                "repositoryArn": "arn:aws:ecr:us-east-1:111111111111:repository/test-repo",
+            }]}
+        ]
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+        mock_ecr_client.get_repository_policy.return_value = {}
+
+        with pytest.raises(KeyError, match="policyText"):
             analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
 
     def test_successful_analysis(self) -> None:
@@ -1003,6 +1041,7 @@ class TestRegistryPolicy:
         repositories: Optional[List[Any]] = None,
         repository_policy: Any = None,
         registry_error: Optional[str] = None,
+        registry_response: Optional[Dict[str, str]] = None,
     ) -> Sequence[ECRPolicyAnalysis]:
         """
         Run the analyzer over a single region.
@@ -1017,6 +1056,10 @@ class TestRegistryPolicy:
             registry_error: AWS error code get_registry_policy should raise
                 instead of returning, which takes precedence over
                 registry_policy
+            registry_response: Raw get_registry_policy() response to return
+                verbatim, taking precedence over both registry_error and
+                registry_policy - for a response shaped unlike any real one,
+                such as one missing policyText entirely
 
         Returns:
             The analyzer's results for the region
@@ -1050,7 +1093,9 @@ class TestRegistryPolicy:
                 "policyText": json.dumps(repository_policy)
             }
 
-        if registry_error is not None:
+        if registry_response is not None:
+            mock_ecr_client.get_registry_policy.return_value = registry_response
+        elif registry_error is not None:
             failure: Any = {"Error": {"Code": registry_error}}
             mock_ecr_client.get_registry_policy.side_effect = ClientError(
                 failure, "GetRegistryPolicy"
@@ -1112,6 +1157,20 @@ class TestRegistryPolicy:
     def test_absent_registry_policy_reports_nothing(self) -> None:
         """A registry that carries no policy contributes no result."""
         assert self._analyze(registry_policy=None) == []
+
+    def test_a_registry_response_without_policy_text_aborts_the_run(self) -> None:
+        """
+        A 200 response always carries policyText, because a missing policy is
+        an exception, not an empty response.
+
+        A response missing it means Headroom misread the API, not that the
+        registry carries no policy - AWS signals that case with
+        RegistryPolicyNotFoundException, not an empty response. Defaulting to
+        "{}" here would report the registry as clean on a policy nobody read,
+        which is INV-01's case, so a missing key raises KeyError instead.
+        """
+        with pytest.raises(KeyError, match="policyText"):
+            self._analyze(registry_response={})
 
     def test_registry_policy_naming_only_org_accounts_reports_nothing(self) -> None:
         """An in-org grant is not third-party access."""

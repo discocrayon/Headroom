@@ -151,6 +151,12 @@ Summary fields beyond the common three: `total_buckets_analyzed`,
 `unique_third_party_accounts`, `third_party_account_count`,
 `actions_by_third_party_account`, `buckets_by_third_party_account`.
 
+`total_buckets_analyzed` counts the buckets that produced an entry — violations,
+exemptions, and compliant together — not the buckets `ListBuckets` returned. A
+bucket whose policy names only in-organization principals, and whose ACL grants
+only to its owner or the `LogDelivery` group, is never entered and is not
+counted.
+
 Entry shape: `bucket_name`, `bucket_arn`, `third_party_account_ids`,
 `has_wildcard_principal`, `has_non_account_principals`, `actions_by_account`.
 

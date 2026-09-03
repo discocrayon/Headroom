@@ -118,6 +118,11 @@ Summary fields beyond the common three: `total_secrets_analyzed`,
 `unique_third_party_accounts`, `third_party_account_count`,
 `actions_by_third_party_account`, `secrets_by_third_party_account`.
 
+`total_secrets_analyzed` counts the secrets that produced an entry — violations,
+exemptions, and compliant together — not the secrets `ListSecrets` returned. A
+secret whose policy is absent or empty, or names only in-organization
+principals, is never entered and is not counted.
+
 Entry shape: `secret_name`, `secret_arn`, `third_party_account_ids`,
 `has_wildcard_principal`, `has_non_account_principals`, `actions_by_account`.
 

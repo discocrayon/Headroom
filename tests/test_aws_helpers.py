@@ -3,14 +3,17 @@ Tests for headroom.aws.helpers module.
 """
 
 import gc
-from typing import Any, Dict, Iterator, List, Set
+import inspect
+from dataclasses import fields, is_dataclass
+from types import FunctionType, ModuleType
+from typing import Any, Dict, Iterator, List, Set, get_args, get_origin, get_type_hints
 from unittest.mock import MagicMock
 
 from boto3.session import Session
 
 import pytest
 
-from headroom.aws.ecr import analyze_ecr_policies
+from headroom.aws import ecr, kms, s3, secretsmanager, sqs
 from headroom.aws.helpers import (
     _REGION_MEMO,
     find_tag_value_as_iam_matches,
@@ -18,11 +21,50 @@ from headroom.aws.helpers import (
     memoize_per_session,
     paginate,
 )
-from headroom.aws.iam.roles import analyze_iam_roles_trust_policies
-from headroom.aws.kms import analyze_kms_key_policies
-from headroom.aws.s3 import analyze_s3_bucket_policies
-from headroom.aws.secretsmanager import analyze_secrets_manager_policies
-from headroom.aws.sqs import analyze_sqs_queue_policies
+from headroom.aws.iam import roles
+
+
+# The one list still kept by hand. Discovery walks these modules for the
+# shape; a module carrying `service_principal_sources` that is not listed here
+# is invisible to every test that reads this discovery, in this file and in
+# tests/test_checks_deny_service_confused_deputy.py.
+SHARED_ANALYZER_MODULES: List[ModuleType] = [ecr, roles, kms, s3, secretsmanager, sqs]
+
+
+def _produces_service_principal_sources(module: ModuleType, name: str, member: FunctionType) -> bool:
+    """
+    Decide whether one module member is a public analyzer carrying the field.
+
+    The module and name tests come first so that type hints are read only for
+    functions the module itself defines. Single-line statements, not early
+    returns: a return no real module reaches fails the 100% coverage floor on
+    tests/.
+    """
+    if member.__module__ != module.__name__ or name.startswith("_"):
+        return False
+    hint = get_type_hints(member)["return"]
+    element_types = get_args(hint)
+    is_list_of_one_dataclass = get_origin(hint) is list and len(element_types) == 1 and is_dataclass(element_types[0])
+    return is_list_of_one_dataclass and "service_principal_sources" in {f.name for f in fields(element_types[0])}
+
+
+def analyzers_producing_service_principal_sources() -> List[FunctionType]:
+    """
+    Find every public analyzer whose result carries `service_principal_sources`.
+
+    That field is what `deny_service_confused_deputy` consumes, so an analyzer
+    producing it and not read by that check is a source guard nobody reports.
+    Discovery is by shape - a public function defined in the module, returning
+    a list of one dataclass that carries the field - and deliberately not by
+    the memo attribute, so that asserting the memo on what is found is a real
+    assertion rather than one true by construction.
+    """
+    return [
+        member
+        for module in SHARED_ANALYZER_MODULES
+        for name, member in inspect.getmembers(module, inspect.isfunction)
+        if _produces_service_principal_sources(module, name, member)
+    ]
 
 
 class TestGetAllRegions:
@@ -294,14 +336,7 @@ class TestMemoizePerSession:
         so an analyzer that loses the decorator silently doubles that
         account's API calls without failing anything.
         """
-        shared = [
-            analyze_ecr_policies,
-            analyze_iam_roles_trust_policies,
-            analyze_kms_key_policies,
-            analyze_s3_bucket_policies,
-            analyze_secrets_manager_policies,
-            analyze_sqs_queue_policies,
-        ]
+        shared = analyzers_producing_service_principal_sources()
 
         unmemoized = [
             analyzer.__name__ for analyzer in shared
@@ -309,6 +344,27 @@ class TestMemoizePerSession:
         ]
 
         assert unmemoized == []
+
+    def test_discovery_finds_the_six_shared_analyzers(self) -> None:
+        """
+        The shape-based walk finds exactly the analyzers the check reads today.
+
+        The memo test above and the confused-deputy guard in
+        `tests/test_checks_deny_service_confused_deputy.py` both pass on an
+        empty or short discovery, so this literal is the only assertion that
+        fails when the walk misses one - a renamed field, a return type that
+        stops being `List[<dataclass>]`, or a module dropped from the list above.
+        """
+        assert sorted(
+            analyzer.__name__ for analyzer in analyzers_producing_service_principal_sources()
+        ) == [
+            "analyze_ecr_policies",
+            "analyze_iam_roles_trust_policies",
+            "analyze_kms_key_policies",
+            "analyze_s3_bucket_policies",
+            "analyze_secrets_manager_policies",
+            "analyze_sqs_queue_policies",
+        ]
 
 
 class TestPaginate:
