@@ -56,14 +56,15 @@ The seventh re-runs all six analyzers rather than reading what they recorded, so
 each of them has two callers in a full estate scan: its own check, and
 `deny_service_confused_deputy`. **The second call costs no AWS request.** Each
 of the six is wrapped by `memoize_per_session`, so whichever caller runs first
-pays for the reads — `describe_repositories`, `get_repository_policy`, and
+pays for the reads — `describe_repositories`,
+`describe_repository_creation_templates`, `get_repository_policy`, and
 `get_registry_policy` for ECR; `list_keys`, `describe_key`, `get_key_policy`,
 and `list_grants` for KMS; `list_buckets`, `get_bucket_acl`, and
 `get_bucket_policy` for S3; `list_secrets` and `get_resource_policy` for Secrets
-Manager; `list_queues` and `get_queue_attributes` for SQS; and `list_roles` alone
-for IAM, whose trust policy arrives inline on the role — and the second is served
-from memory. Budget
-a full RCP pass at one set of these calls per account, not two.
+Manager; `list_queues` and `get_queue_attributes` for SQS; and `list_roles`
+alone for IAM, whose trust policy arrives inline on the role — and the second is
+served from memory. Budget a full RCP pass at one set of these calls per
+account, not two.
 
 The memo is keyed on the account's `Session` object, never on an account ID or
 name, which is what keeps one account's resource policies out of another

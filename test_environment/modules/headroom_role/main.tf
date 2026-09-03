@@ -28,3 +28,9 @@ resource "aws_iam_role_policy_attachment" "headroom_securityaudit" {
   role       = aws_iam_role.headroom.name
   policy_arn = "arn:aws:iam::aws:policy/SecurityAudit"
 }
+
+resource "aws_iam_role_policy" "headroom_ecr_creation_templates" {
+  name   = "HeadroomECRCreationTemplates"
+  role   = aws_iam_role.headroom.name
+  policy = data.aws_iam_policy_document.headroom_ecr_creation_templates.json
+}

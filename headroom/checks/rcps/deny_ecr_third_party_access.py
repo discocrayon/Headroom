@@ -1,9 +1,9 @@
 """
 Check for ECR policies that allow third-party account access.
 
-This check identifies ECR resource policies - repository policies and the
-per-region registry policy - that allow principals from accounts outside
-the organization.
+This check identifies ECR resource policies - repository policies, the
+per-region registry policy, and repository creation template policies -
+that allow principals from accounts outside the organization.
 """
 
 from typing import Any, Dict, List, Set
@@ -36,10 +36,13 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRPolicyAnalysis]):
     - All unique third-party account IDs found
     - ECR actions allowed per third-party account
 
-    Both policy surfaces are covered. A repository policy governs one
-    repository; a registry policy governs every ECR request in its region,
+    All three policy surfaces are covered. A repository policy governs one
+    repository. A registry policy governs every ECR request in its region,
     so a third party named in one reaches repositories that grant it nothing.
-    Each result carries a `scope` saying which it came from.
+    A creation template's policy is attached to every repository ECR creates
+    from it, so a third party named there reaches repositories that do not
+    exist yet. Each result carries a `scope` saying which it came from, and a
+    template's result also carries its `template_prefix`.
     """
 
     def __init__(
@@ -82,7 +85,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRPolicyAnalysis]):
 
     def analyze(self, session: Session) -> List[ECRPolicyAnalysis]:
         """
-        Analyze ECR repository and registry policies for third-party access.
+        Analyze ECR repository, registry, and creation template policies for third-party access.
 
         Filters to only return policies with a wildcard principal, a principal
         type carrying no account ID, or third-party account access.
@@ -117,6 +120,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRPolicyAnalysis]):
             "scope": result.scope,
             "repository_name": result.repository_name,
             "repository_arn": result.repository_arn,
+            "template_prefix": result.template_prefix,
             "region": result.region,
             "third_party_account_ids": sorted(list(result.third_party_account_ids)),
             "actions_by_account": {
@@ -145,7 +149,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRPolicyAnalysis]):
         """
         Build ECR third-party access check-specific summary fields.
 
-        Counts cover both policy scopes. `violations` in particular must,
+        Counts cover all three policy scopes. `violations` in particular must,
         since it is what withholds the RCP from the account - a wildcard
         registry policy blocks deployment exactly as a wildcard repository
         policy does.

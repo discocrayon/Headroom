@@ -20,21 +20,25 @@ maps to an analyzer under `headroom/aws/`. A missing permission surfaces as
 | Lambda | `lambda:ListFunctions`, `lambda:ListFunctionUrlConfigs` |
 | IAM | `iam:ListUsers`, `iam:ListRoles`, `iam:ListSAMLProviders` (global, not per region) |
 | S3 | `s3:ListAllMyBuckets`, `s3:GetBucketAcl`, `s3:GetBucketPolicy` (global, not per region) |
-| ECR | `ecr:DescribeRepositories`, `ecr:GetRepositoryPolicy`, `ecr:GetRegistryPolicy` |
+| ECR | `ecr:DescribeRepositories`, `ecr:GetRepositoryPolicy`, `ecr:GetRegistryPolicy`, `ecr:DescribeRepositoryCreationTemplates` |
 | KMS | `kms:ListKeys`, `kms:DescribeKey`, `kms:GetKeyPolicy`, `kms:ListGrants` |
 | Secrets Manager | `secretsmanager:ListSecrets`, `secretsmanager:GetResourcePolicy` |
 | SQS | `sqs:ListQueues`, `sqs:GetQueueAttributes` |
 
-Two reads that are easy to over-grant. A role's trust policy arrives inline on
-`iam:ListRoles` as `AssumeRolePolicyDocument`, so no `iam:GetRole` is needed. And
-ECR is read at two levels: `ecr:GetRegistryPolicy` returns the registry-wide
-policy, which is a separate permission from the per-repository
-`ecr:GetRepositoryPolicy`.
+Two services whose read permissions are easy to get wrong. A role's trust policy
+arrives inline on `iam:ListRoles` as `AssumeRolePolicyDocument`, so no
+`iam:GetRole` is needed. And ECR is read at three levels:
+`ecr:GetRegistryPolicy` returns the registry-wide policy,
+`ecr:DescribeRepositoryCreationTemplates` returns the policies ECR will attach
+to repositories it creates, and both are separate permissions from the
+per-repository `ecr:GetRepositoryPolicy`.
 
 **Example Terraform**: See [`test_environment/modules/headroom_role/main.tf`](https://github.com/discocrayon/Headroom/blob/main/test_environment/modules/headroom_role/main.tf). That module
 attaches the `ViewOnlyAccess` and `SecurityAudit` AWS managed policies rather
 than enumerating actions, so it is a different mechanism from the table above
 and does not correspond to it action for action.
+One inline statement grants `ecr:DescribeRepositoryCreationTemplates`, which
+neither managed policy carries.
 [`test_environment/headroom_roles.tf`](https://github.com/discocrayon/Headroom/blob/main/test_environment/headroom_roles.tf) calls that module once per
 subaccount and grants nothing itself.
 
