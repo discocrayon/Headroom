@@ -239,9 +239,22 @@ the token wherever it appeared in the string.
 
 Readers take account identity from the file, never from the filename:
 
-1. Use `summary.account_id` when present.
+1. Use `summary.account_id` when present. An ID the hierarchy does not hold is
+   an error, not an account.
 2. Otherwise resolve `summary.account_name` against the organization hierarchy.
 3. A file with neither is an error.
+
+Either way the account a file resolves to is in the hierarchy. An account that
+left the organization after its scan leaves its file behind, and the ID is
+still well-formed, so only the hierarchy can say it is gone. Read as written
+the SCP reader would count it as analyzed under a root placement that cannot
+reach it — `3 of 2 accounts reached by root were analyzed` — and the RCP
+reader would carry its third parties into an allowlist that no longer protects
+it. The error names the file and the account and says to delete the file;
+re-running would not regenerate it, since the account is no longer scanned.
+`skip_account_ids` and non-ACTIVE accounts are in the hierarchy
+([`../architecture/aws-execution.md`](../architecture/aws-execution.md#analyzable-accounts--_select_analyzable_accounts)),
+so a file from an earlier run that scanned one of them still resolves.
 
 Name resolution is exact-match first. A name matching nothing exactly falls back
 to comparing names with case and separators ignored, because result files are

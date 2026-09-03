@@ -55,6 +55,22 @@ def make_org_empty() -> OrganizationHierarchy:
     return OrganizationHierarchy(root_id="r-1111", organizational_units={}, accounts={})
 
 
+def make_org_holding_one_account() -> OrganizationHierarchy:
+    """
+    Build a hierarchy holding 111111111111 at the root and nothing else.
+
+    The reader refuses a file naming an account the hierarchy does not hold,
+    so a test that writes files for 111111111111 needs the account present.
+    """
+    return OrganizationHierarchy(
+        root_id="r-1111",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement("111111111111", "test-account", None, ["Root"])
+        },
+    )
+
+
 def write_rcp_result(
     results_dir: str,
     check_name: str,
@@ -352,6 +368,26 @@ class TestParseRcpResultFiles:
             json.dump(result_data, f)
 
         with pytest.raises(RuntimeError, match="Account name 'unknown-account'.* not found in organization hierarchy"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+    def test_parse_fails_when_account_id_is_not_in_the_hierarchy(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A file naming an account the hierarchy does not hold is refused.
+
+        The account left the organization after its scan. Read as written,
+        its third parties would enter the allowlist of a policy that no
+        longer protects it.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir, DENY_STS_THIRD_PARTY_ASSUMEROLE, "333333333333", "departed-account", ["999999999999"]
+        )
+
+        with pytest.raises(RuntimeError, match=r"names account 333333333333, which is not in the organization hierarchy"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
     def test_parse_aborts_when_a_check_directory_is_missing(
@@ -667,7 +703,7 @@ class TestTheRCPReaderRequiresOneFilePerAccount:
         check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
 
         with pytest.raises(RuntimeError) as raised:
-            parse_rcp_result_files(temp_results_dir, make_org_empty())
+            parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
 
         message = str(raised.value)
         assert f"{DENY_S3_THIRD_PARTY_ACCESS}: " in message
@@ -703,7 +739,7 @@ class TestTheRCPReaderRequiresOneFilePerAccount:
             third_party_account_ids=["888888888888"],
         )
 
-        results = parse_rcp_result_files(temp_results_dir, make_org_empty())
+        results = parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
 
         s3 = next(r for r in results if r.check_name == DENY_S3_THIRD_PARTY_ACCESS)
         sqs = next(r for r in results if r.check_name == DENY_SQS_THIRD_PARTY_ACCESS)
@@ -742,7 +778,7 @@ class TestTheRCPReaderRequiresOneFilePerAccount:
         rcps_dir = Path(temp_results_dir) / "rcps"
 
         with pytest.raises(RuntimeError) as raised:
-            parse_rcp_result_files(temp_results_dir, make_org_empty())
+            parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
 
         message = str(raised.value)
         assert f"{DENY_S3_THIRD_PARTY_ACCESS}: " in message
@@ -785,7 +821,7 @@ class TestTheRCPReaderRequiresOneFilePerAccount:
         check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
 
         with pytest.raises(RuntimeError) as raised:
-            parse_rcp_result_files(temp_results_dir, make_org_empty())
+            parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
 
         message = str(raised.value)
         assert "111111111111: " in message
@@ -824,7 +860,7 @@ class TestTheRCPReaderRequiresOneFilePerAccount:
         check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
 
         with pytest.raises(RuntimeError) as raised:
-            parse_rcp_result_files(temp_results_dir, make_org_empty())
+            parse_rcp_result_files(temp_results_dir, make_org_holding_one_account())
 
         message = str(raised.value)
         assert "111111111111: " in message

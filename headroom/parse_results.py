@@ -61,6 +61,12 @@ def _extract_account_id_from_result(
     1. Try to get account_id directly from summary
     2. If missing, look up account by name in organization hierarchy
 
+    Either way the account must be in the hierarchy. An account that left the
+    organization after its scan leaves its file behind; read as written, the
+    SCP reader would count it as analyzed under a root placement that cannot
+    reach it, and the RCP reader would carry its third parties into an
+    allowlist that no longer protects it.
+
     Args:
         summary: The summary dict from the result JSON
         organization_hierarchy: Organization structure for account lookups
@@ -70,12 +76,22 @@ def _extract_account_id_from_result(
         Account ID string
 
     Raises:
-        RuntimeError: If account ID cannot be determined
+        RuntimeError: If account ID cannot be determined, or names an account
+            the hierarchy does not hold
     """
-    # Happy path: account_id present
     account_id: str = summary.get("account_id", "")
-    if account_id:
+    if account_id and account_id in organization_hierarchy.accounts:
         return account_id
+
+    if account_id:
+        raise RuntimeError(
+            f"Result file {result_file} names account {account_id}, which is not "
+            f"in the organization hierarchy. The account has left the organization "
+            f"since the file was written, or the results directory was written "
+            f"from a different organization. Delete the file: read as written, a "
+            f"root or OU placement would count the account as analyzed, and an "
+            f"RCP allowlist would carry the third parties it granted."
+        )
 
     # Fallback: look up by account name
     account_name = summary.get("account_name", "")
@@ -469,13 +485,22 @@ def _union_allowlist_values(
     return sorted({value for values in observed for value in values})
 
 
+def _plural(count: int, singular: str, plural: str) -> str:
+    """
+    Pick the form that agrees in number with a count.
+    """
+    return singular if count == 1 else plural
+
+
 def _coverage_reasoning(analyzed: int, reached: int, scope: str, level: str) -> str:
     """
     State how many of the accounts a placement reaches were analyzed.
 
     Every analyzed account had zero violations, or the placement would not
     have been offered; the rest inherit the policy unmeasured, and the
-    sentence names them only when there are any.
+    sentence names them only when there are any. Every count agrees in
+    number: one account "was" analyzed, and a placement reaching one account
+    names "the only account" rather than "all 1 accounts".
 
     Args:
         analyzed: Accounts that produced a result file, all with zero violations
@@ -485,14 +510,15 @@ def _coverage_reasoning(analyzed: int, reached: int, scope: str, level: str) -> 
         level: Word that precedes "level"
     """
     unanalyzed = reached - analyzed
+    verdict = _plural(analyzed, "with zero violations", "all with zero violations")
+    if unanalyzed == 0 and reached == 1:
+        return f"The only account {scope} was analyzed, {verdict} - safe to deploy at {level} level"
     if unanalyzed == 0:
-        return (
-            f"All {reached} accounts {scope} were analyzed, all with zero violations"
-            f" - safe to deploy at {level} level"
-        )
+        return f"All {reached} accounts {scope} were analyzed, {verdict} - safe to deploy at {level} level"
     return (
-        f"{analyzed} of {reached} accounts {scope} were analyzed, all with zero violations"
-        f" - safe to deploy at {level} level; {unanalyzed} accounts were not analyzed and will inherit it"
+        f"{analyzed} of {reached} accounts {scope} {_plural(analyzed, 'was', 'were')} analyzed, {verdict}"
+        f" - safe to deploy at {level} level; {unanalyzed} {_plural(unanalyzed, 'account was', 'accounts were')}"
+        f" not analyzed and will inherit it"
     )
 
 

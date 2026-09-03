@@ -356,6 +356,41 @@ class TestResultFileParsing:
             with pytest.raises(RuntimeError, match="Account name 'unknown-account' .* not found in organization hierarchy"):
                 parse_scp_result_files(temp_dir, org_hierarchy)
 
+    def test_parse_scp_result_files_rejects_an_account_the_hierarchy_does_not_hold(self) -> None:
+        """
+        A file whose account_id names no hierarchy account is refused, not read.
+
+        The account left the organization after its scan. Read as written it
+        would count as analyzed under a root placement that cannot reach it,
+        and the reasoning would report more accounts analyzed than reached.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            test_data = {
+                "summary": {
+                    "account_id": "333333333333",
+                    "account_name": "departed-account",
+                    "check": "deny_ec2_imds_v1",
+                    "total_instances": 5,
+                    "violations": 0,
+                    "exemptions": 0,
+                    "compliant": 5,
+                    "compliance_percentage": 100.0
+                },
+                "violations": [],
+                "exemptions": [],
+                "compliant_instances": []
+            }
+            with open(check_dir / "departed-account_333333333333.json", "w") as f:
+                json.dump(test_data, f)
+
+            with pytest.raises(
+                RuntimeError,
+                match=r"departed-account_333333333333\.json names account 333333333333, which is not in the organization hierarchy.*Delete the file",
+            ):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
     def test_parse_scp_result_files_restores_redacted_account_ids(self) -> None:
         """Test un-redaction of IAM user ARNs in deny_iam_user_creation results."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -697,6 +732,39 @@ class TestRootReasoning:
         assert len(recommendations) == 1
         assert recommendations[0].reasoning == "All 2 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level"
 
+    def test_root_reasoning_agrees_in_number_with_one_unanalyzed_account(self) -> None:
+        """One account left unanalyzed is named in the singular."""
+        hierarchy = make_hierarchy_with_management_account(["111111111111", "222222222222", "333333333333"])
+        results = [
+            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            for account_id in ["111111111111", "222222222222"]
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "2 of 3 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level; 1 account was not analyzed and will inherit it"
+
+    def test_root_reasoning_agrees_in_number_with_one_analyzed_account(self) -> None:
+        """One account analyzed takes a singular verb and drops the 'all'."""
+        hierarchy = make_hierarchy_with_management_account(["111111111111", "222222222222", "333333333333"])
+        results = [make_scp_result("111111111111", "deny_ec2_imds_v1", None)]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "1 of 3 accounts reached by root was analyzed, with zero violations - safe to deploy at root level; 2 accounts were not analyzed and will inherit it"
+
+    def test_root_reasoning_names_the_only_reached_account(self) -> None:
+        """A one-member organization is described as the only account, not as 'All 1 accounts'."""
+        hierarchy = make_hierarchy_with_management_account(["111111111111"])
+        results = [make_scp_result("111111111111", "deny_ec2_imds_v1", None)]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].reasoning == "The only account reached by root was analyzed, with zero violations - safe to deploy at root level"
+
     def test_root_recommendation_covers_only_the_analyzed_accounts_at_full_compliance(self) -> None:
         """The recommendation still covers exactly the analyzed accounts at full compliance."""
         hierarchy = make_hierarchy_with_management_account(
@@ -773,6 +841,20 @@ class TestOUReasoning:
         workloads = [rec for rec in recommendations if rec.target_ou_id == "ou-1111-11111111"]
         assert len(workloads) == 1
         assert workloads[0].reasoning == "All 4 accounts under OU 'Workloads', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level"
+
+    def test_ou_reasoning_names_the_only_reached_account(self) -> None:
+        """An OU whose subtree holds one account is described as the only account, not as 'All 1 accounts'."""
+        hierarchy = make_hierarchy_with_production_ou(["222222222222"])
+        results = [
+            make_scp_result("111111111111", "deny_ec2_imds_v1", None, violations=1),
+            make_scp_result("222222222222", "deny_ec2_imds_v1", None),
+        ]
+
+        recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        production = [rec for rec in recommendations if rec.target_ou_id == "ou-1234"]
+        assert len(production) == 1
+        assert production[0].reasoning == "The only account under OU 'Production', including those in its child OUs, was analyzed, with zero violations - safe to deploy at OU level"
 
 
 class TestParseResultsIntegration:
@@ -1144,7 +1226,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id="ou-1234",
                     affected_accounts=["222222222222"],
                     compliance_percentage=100.0,
-                    reasoning="All 1 accounts under OU 'Production', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level"
+                    reasoning="The only account under OU 'Production', including those in its child OUs, was analyzed, with zero violations - safe to deploy at OU level"
                 )
             ]
 
@@ -1185,7 +1267,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id=None,
                     affected_accounts=["222222222222"],
                     compliance_percentage=100.0,
-                    reasoning="All 1 accounts reached by root were analyzed, all with zero violations - safe to deploy at root level"
+                    reasoning="The only account reached by root was analyzed, with zero violations - safe to deploy at root level"
                 )
             ]
 
@@ -1237,7 +1319,7 @@ class TestGenerateSCPTerraform:
                     target_ou_id="ou-1234",
                     affected_accounts=["222222222222"],
                     compliance_percentage=100.0,
-                    reasoning="All 1 accounts under OU 'Production', including those in its child OUs, were analyzed, all with zero violations - safe to deploy at OU level"
+                    reasoning="The only account under OU 'Production', including those in its child OUs, was analyzed, with zero violations - safe to deploy at OU level"
                 ),
                 SCPPlacementRecommendations(
                     check_name="deny_ec2_imds_v1",

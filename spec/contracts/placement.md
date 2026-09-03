@@ -88,7 +88,14 @@ management account left out of the reached count: `3 of 5 accounts reached by
 root were analyzed, all with zero violations - safe to deploy at root level; 2
 accounts were not analyzed and will inherit it`, collapsing to `All 5 accounts
 reached by root were analyzed, all with zero violations - safe to deploy at
-root level` when the two agree. The count needs `management_account_id`, so
+root level` when the two agree. Counts agree in number: one unanalyzed account
+reads `1 account was not analyzed and will inherit it`, and a placement
+reaching one account reads `The only account reached by root was analyzed,
+with zero violations - safe to deploy at root level`. Analyzed never exceeds
+reached, because the reader refuses a file naming an account the hierarchy
+does not hold
+([`results.md`](results.md#identifying-the-account-a-file-describes)). The
+count needs `management_account_id`, so
 `analyze_scp_compliance` raises without it before reading a file;
 [`configuration.md`](configuration.md#management_account_id) owns the field.
 
