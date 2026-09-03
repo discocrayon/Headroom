@@ -593,13 +593,16 @@ def _build_ou_recommendation(
 
 def _build_account_recommendation(
     check_name: str,
-    safe_check_results: List[SCPCheckResult],
+    result: SCPCheckResult,
+    safe_count: int,
     total_results: int
 ) -> SCPPlacementRecommendations:
     """
-    Build account-level placement recommendation.
+    Build the account-level placement recommendation for one account.
 
-    Creates recommendation for deploying SCP at individual account level.
+    The account tier attaches a policy to each account separately, so each
+    attachment is its own recommendation carrying only what that account
+    observed.
 
     `compliance_percentage` reports the affected accounts, which are the
     zero-violation subset - the same 100.0 that root and OU recommendations
@@ -609,7 +612,7 @@ def _build_account_recommendation(
     violates the check. Coverage is in `reasoning`, where it describes reach
     rather than gating deployment.
     """
-    affected_accounts = [r.account_id for r in safe_check_results]
+    affected_accounts = [result.account_id]
 
     return SCPPlacementRecommendations(
         check_name=check_name,
@@ -617,8 +620,8 @@ def _build_account_recommendation(
         target_ou_id=None,
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
-        reasoning=f"Only {len(safe_check_results)} out of {total_results} accounts have zero violations - deploy at individual account level",
-        allowlist_values=_union_allowlist_values(safe_check_results, affected_accounts)
+        reasoning=f"Only {safe_count} out of {total_results} accounts have zero violations - deploy at individual account level",
+        allowlist_values=_union_allowlist_values([result], affected_accounts)
     )
 
 
@@ -633,8 +636,9 @@ def _determine_check_placement(
     Determine placement recommendations for a single check.
 
     Analyzes check results to find the highest safe organizational level
-    for SCP deployment. Returns list of recommendations (may be multiple
-    for account-level deployments across different OUs).
+    for SCP deployment. Returns one recommendation per placement target -
+    the root, an OU, or one uncovered zero-violation account - or a single
+    `none` recommendation when no account has zero violations.
     """
     safe_check_results = _get_safe_results(check_results)
 
@@ -674,14 +678,15 @@ def _determine_check_placement(
                 r for r in safe_check_results
                 if r.account_id in candidate.affected_accounts
             ]
-            if not candidate_safe_results:
-                continue
-            rec = _build_account_recommendation(
-                check_name,
-                candidate_safe_results,
-                len(check_results)
-            )
-            recommendations.append(rec)
+            candidate_safe_results.sort(key=lambda r: r.account_id)
+            for result in candidate_safe_results:
+                rec = _build_account_recommendation(
+                    check_name,
+                    result,
+                    len(candidate_safe_results),
+                    len(check_results)
+                )
+                recommendations.append(rec)
 
     return recommendations
 

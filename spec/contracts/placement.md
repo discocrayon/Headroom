@@ -32,13 +32,15 @@ policies; the predicates know nothing about the tree.
    is safe becomes a candidate and its **whole subtree** is marked covered; its
    descendants are not visited, so they never collect a redundant second
    attachment. An unsafe OU hands the question to its child OUs.
-3. Every account no OU claimed is offered as one account-level candidate.
-   Accounts parented directly to the organization root land here by
+3. Every account no OU claimed is offered, together, as one account-level
+   candidate. Accounts parented directly to the organization root land here by
    construction: they belong to no OU, so no OU-level attachment can reach them,
    and the root ID is not a substitute.
 
-Callers apply their own safety filter to the account-level candidate. The
-traversal offers accounts; it does not clear them.
+Callers apply their own safety filter to the account-level candidate and emit
+one recommendation per account that passes it
+([Allowlist union](#allowlist-union)). The traversal offers accounts; it does
+not clear them.
 
 ### Subtree grouping
 
@@ -106,11 +108,13 @@ reaching a module raises rather than being rendered.
 An SCP check that feeds an allowlist carries its values on
 `SCPCheckResult.allowlist_values`, and every recommendation for it carries the
 sorted union over the accounts it covers — root, OU, or account — on
-`SCPPlacementRecommendations.allowlist_values`. Placement reads nothing from
-the registry to do this: a result carrying a list is a result whose check
-declared an allowlist, and one carrying `None` is not. `[]` is a legitimate
-union, meaning the covered accounts observed nothing; generation decides what
-that renders as (INV-06).
+`SCPPlacementRecommendations.allowlist_values`. An account-level recommendation
+covers exactly one account and so carries that account's values alone;
+[Allowlist union](#allowlist-union) states the rule for every level. Placement
+reads nothing from the registry to do this: a result carrying a list is a
+result whose check declared an allowlist, and one carrying `None` is not. `[]`
+is a legitimate union, meaning the covered accounts observed nothing;
+generation decides what that renders as (INV-06).
 
 ## RCP placement
 
@@ -126,6 +130,11 @@ blocker; it is the thing the allowlist is built from.
 
 An OU is judged by every account it governs: the subtree is enumerated from the
 hierarchy, not from the set of accounts that produced results.
+
+An OU or account recommendation lists only the cleared accounts that produced
+results. A root recommendation, by contrast, reports every account in the
+hierarchy as `affected_accounts`, including accounts that produced no results,
+because a root attachment does reach them.
 
 **The blocked set, though, can only hold accounts that produced results.** It is
 built by reading the result files present under the check's directory, so an
@@ -157,25 +166,29 @@ IAM trust policies and must not suppress the STS RCP.
 A check with no cleared accounts at all produces no recommendations and no
 Terraform — distinct from the SCP `none` recommendation, which is materialized.
 
-### Allowlist union
+## Allowlist union
 
-The allowlist attached to a placement is the **union** of the third-party
-accounts observed across the accounts that placement covers.
+The allowlist attached to a placement is the **union** of the allowlist values
+observed across the accounts that placement covers: third-party account IDs
+for RCPs, IAM user ARNs and AMI owner IDs for SCPs. A cleared account is one
+the policy type's safety predicate passes — zero violations for an SCP, no
+blocker for an RCP.
 
-| Level | Union over | `affected_accounts` |
-|---|---|---|
-| `root` | Every cleared account | **Every account in the hierarchy** |
-| `ou` | The cleared accounts in that OU's subtree | Those accounts |
-| `account` | That account alone | That account |
+| Level | Union over |
+|---|---|
+| `root` | Every cleared account |
+| `ou` | The cleared accounts in that OU's subtree |
+| `account` | That account alone |
 
-The root case reports every account in the hierarchy, including accounts that
-produced no results, because a root attachment does reach them.
+The account tier yields one recommendation per uncovered cleared account, for
+both policy types, so an account's allowlist is built from its own
+observations alone.
 
 Union is the only safe combination: attaching one policy to a target means every
-account beneath it must keep reaching the third parties it already reaches, so
-the allowlist has to be the union rather than the intersection. The cost is that
-a root-level RCP allows every third party any covered account uses. An operator
-who wants narrower allowlists gets them by placing lower.
+account beneath it must keep every value it already relies on, so the allowlist
+has to be the union rather than the intersection. The cost is that a root-level
+policy allows every value any covered account uses. An operator who wants
+narrower allowlists gets them by placing lower.
 
 ## Ordering
 

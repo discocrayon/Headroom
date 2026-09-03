@@ -2234,6 +2234,72 @@ class TestPlacementUnionsAllowlistValues:
         assert recommendations[0].recommended_level == "account"
         assert recommendations[0].allowlist_values == ["amazon"]
 
+    def test_each_safe_account_gets_only_the_values_it_observed(self) -> None:
+        """
+        One account's observed values never reach another account's file.
+
+        The account tier placed a single recommendation over every uncovered
+        zero-violation account and unioned their values into it, and the
+        renderer then wrote that union into each of their files. An account
+        was allowlisted for an IAM user it does not hold, and an account
+        holding no user at all had the policy switched on for someone else's
+        users instead of staying off.
+        """
+        results_data = [
+            make_scp_result(
+                "111111111111",
+                "deny_iam_user_creation",
+                ["arn:aws:iam::111111111111:user/alpha-user"]
+            ),
+            make_scp_result(
+                "222222222222",
+                "deny_iam_user_creation",
+                ["arn:aws:iam::222222222222:user/beta-user"]
+            ),
+            make_scp_result(
+                "333333333333",
+                "deny_iam_user_creation",
+                ["arn:aws:iam::333333333333:user/gamma-user"],
+                violations=2
+            ),
+            make_scp_result("444444444444", "deny_iam_user_creation", []),
+        ]
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1111",
+            organizational_units={
+                "ou-1234": OrganizationalUnit(
+                    "ou-1234",
+                    "Production",
+                    None,
+                    [],
+                    ["222222222222", "333333333333", "444444444444"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement("111111111111", "alpha", "r-1111", ["Root"]),
+                "222222222222": AccountOrgPlacement("222222222222", "beta", "ou-1234", ["Production"]),
+                "333333333333": AccountOrgPlacement("333333333333", "gamma", "ou-1234", ["Production"]),
+                "444444444444": AccountOrgPlacement("444444444444", "delta", "ou-1234", ["Production"]),
+            }
+        )
+
+        recommendations = determine_scp_placement(results_data, hierarchy, MANAGEMENT_ACCOUNT_ID)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir)
+            rendered = render_scp_terraform(recommendations, hierarchy, output_path)
+
+            alpha_content = rendered[output_path / "alpha_scps.tf"]
+            beta_content = rendered[output_path / "beta_scps.tf"]
+            delta_content = rendered[output_path / "delta_scps.tf"]
+
+            assert "alpha-user" in alpha_content
+            assert "beta-user" in beta_content
+            assert "alpha-user" not in beta_content
+            assert "beta-user" not in alpha_content
+            assert "deny_iam_user_creation = false" in delta_content
+            assert "alpha-user" not in delta_content
+
     def test_a_check_with_no_allowlist_places_without_values(self) -> None:
         """
         No allowlist to union stays no allowlist, rather than becoming an empty one.
@@ -2646,3 +2712,67 @@ class TestTheSCPReaderRequiresOneFilePerAccount:
             assert "deny_iam_user_creation: " in message
             assert str(imds_dir / "old-name_111111111111.json") in message
             assert str(iam_dir / "old-name_111111111111.json") in message
+
+
+class TestTheAccountTierPlacesEachAccountSeparately:
+    """
+    The account tier yields one recommendation per uncovered zero-violation
+    account, ordered by account ID.
+    """
+
+    def test_account_recommendations_come_back_ordered_by_account_id(self) -> None:
+        """
+        The account tier's recommendations are ordered by account ID.
+
+        Results reach placement in whatever order the run collected them, so
+        ordering the recommendations here is what keeps two runs over the
+        same organization producing the same list rather than one that
+        follows collection order.
+        """
+        results_data = [
+            make_scp_result("222222222222", "deny_ec2_ami_owner", ["amazon"]),
+            make_scp_result("111111111111", "deny_ec2_ami_owner", ["amazon"]),
+            make_scp_result("333333333333", "deny_ec2_ami_owner", ["outside"], violations=2),
+        ]
+
+        recommendations = determine_scp_placement(
+            results_data,
+            make_hierarchy_with_production_ou(["222222222222", "333333333333"]),
+            MANAGEMENT_ACCOUNT_ID
+        )
+
+        assert len(recommendations) == 2
+        assert recommendations[0].affected_accounts == ["111111111111"]
+        assert recommendations[1].affected_accounts == ["222222222222"]
+
+    def test_the_account_tier_places_one_recommendation_per_safe_account(self) -> None:
+        """
+        Every safe account the tier covers gets its own recommendation.
+
+        The recommendation is the unit of attachment, so an account tier
+        covering two accounts is two attachments rather than one spanning
+        both. Each names one account and carries that account's values, and
+        the reasoning still reports the tier's org-wide reach.
+        """
+        results_data = [
+            make_scp_result("111111111111", "deny_ec2_ami_owner", ["amazon"]),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", ["444444444444"]),
+            make_scp_result("333333333333", "deny_ec2_ami_owner", ["outside"], violations=2),
+        ]
+
+        recommendations = determine_scp_placement(
+            results_data,
+            make_hierarchy_with_production_ou(["222222222222", "333333333333"]),
+            MANAGEMENT_ACCOUNT_ID
+        )
+
+        assert len(recommendations) == 2
+        for recommendation in recommendations:
+            assert recommendation.recommended_level == "account"
+            assert recommendation.target_ou_id is None
+            assert recommendation.compliance_percentage == 100.0
+            assert "Only 2 out of 3 accounts have zero violations" in recommendation.reasoning
+        assert recommendations[0].affected_accounts == ["111111111111"]
+        assert recommendations[0].allowlist_values == ["amazon"]
+        assert recommendations[1].affected_accounts == ["222222222222"]
+        assert recommendations[1].allowlist_values == ["444444444444"]

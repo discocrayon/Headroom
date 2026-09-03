@@ -133,8 +133,9 @@ class HierarchyPlacementAnalyzer(Generic[T]):
         The organization is walked from the top down, so a policy lands on the
         highest OU whose whole subtree is safe and its descendants inherit it
         rather than collecting a second, redundant copy. An OU that is not safe
-        hands the question to its child OUs, and any account no OU claimed is
-        offered on its own.
+        hands the question to its child OUs, and every account no OU claimed is
+        offered together in one account-level candidate, for the caller to
+        filter and split.
 
         Args:
             check_results: List of check results to analyze
@@ -188,10 +189,11 @@ class HierarchyPlacementAnalyzer(Generic[T]):
                     if child_id in self.org.organizational_units
                 )
 
-        # Everything an OU did not claim is offered individually, so that one
-        # qualifying OU cannot suppress placement for accounts elsewhere.
-        # Accounts under the root land here too: they have no OU to inherit
-        # from. Callers apply their own safety filter to these accounts.
+        # Everything an OU did not claim is offered in one account-level
+        # candidate, so that one qualifying OU cannot suppress placement for
+        # accounts elsewhere. Accounts under the root land here too: they have
+        # no OU to inherit from. Callers apply their own safety filter to these
+        # accounts and emit one recommendation per account that passes it.
         uncovered_accounts = [
             account_id for account_id in map(get_account_id, check_results)
             if account_id not in covered_accounts
