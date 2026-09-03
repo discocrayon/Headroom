@@ -1,12 +1,11 @@
 """
 AWS ECR policy analysis.
 
-This module contains functions for analyzing the three policy surfaces that
+This module contains functions for analyzing the two policy surfaces that
 authorize access to a private registry - the repository policy, which governs
-one repository; the registry policy, which AWS enforces on every ECR request
-in the region; and the repository creation template policy, which ECR attaches
-to every repository it creates from that template - specifically for
-identifying third-party account access (RCP checks).
+one repository, and the registry policy, which AWS enforces on every ECR
+request in the region - specifically for identifying third-party account
+access (RCP checks).
 """
 
 import json
@@ -36,7 +35,7 @@ from .policy_documents import (
 logger = logging.getLogger(__name__)
 
 
-PolicyScope = Literal["repository", "registry", "creation_template"]
+PolicyScope = Literal["repository", "registry"]
 
 
 @dataclass
@@ -44,24 +43,19 @@ class ECRPolicyAnalysis:
     """
     Analysis of one ECR resource policy.
 
-    ECR declares access in three policies rather than one, and they are
-    separate resources rather than parts of the same one, so each gets its own
-    analysis. `scope` says which was read.
+    ECR authorizes access through two policies rather than one, and they are
+    separate resources rather than two halves of the same one, so each gets
+    its own analysis. `scope` says which was read.
 
     Attributes:
         scope: "repository" for one repository's policy, "registry" for the
             region's registry policy, which AWS enforces on every ECR request
-            in that region, or "creation_template" for a repository creation
-            template's policy, which ECR attaches to every repository it
-            creates from that template
+            in that region
         region: AWS region the policy was read from
         third_party_account_ids: Set of account IDs not in the organization
         repository_name: Name of the ECR repository, or None for a registry
-            or creation-template policy, which governs no single repository
-        repository_arn: ARN of the ECR repository, or None for a registry or
-            creation-template policy
-        template_prefix: Prefix of the creation template it was read from, or None
-            for a repository or registry policy
+            policy, which governs no single repository
+        repository_arn: ARN of the ECR repository, or None for a registry policy
         actions_by_account: Mapping of account ID to list of ECR actions allowed
         has_wildcard_principal: True if the policy grants to principals the
             analyzer cannot enumerate - `Principal: "*"`, or an Allow with
@@ -79,7 +73,6 @@ class ECRPolicyAnalysis:
     third_party_account_ids: Set[str]
     repository_name: Optional[str] = None
     repository_arn: Optional[str] = None
-    template_prefix: Optional[str] = None
     actions_by_account: Dict[str, List[str]] = field(default_factory=dict)
     has_wildcard_principal: bool = False
     has_non_account_principals: bool = False
@@ -120,8 +113,8 @@ def _analyze_policy_statements(
     """
     Read the third-party grants out of one ECR policy document.
 
-    All three surfaces' policies share a grammar, so they share this reader.
-    What differs is reach, which the caller records as scope.
+    Repository policies and registry policies share a grammar, so they share
+    this reader. What differs is reach, which the caller records as scope.
 
     Args:
         policy: Parsed policy JSON
@@ -339,72 +332,6 @@ def _analyze_registry_policy(
     )
 
 
-def _analyze_creation_templates(
-    ecr_client: ECRClient,
-    region: str,
-    org_account_ids: Set[str],
-    org_id: str
-) -> List[ECRPolicyAnalysis]:
-    """
-    Analyze the region's repository creation templates.
-
-    A template's `repositoryPolicy` is attached to every repository ECR
-    creates from it, so a third party named here reaches repositories that
-    do not exist yet, and an RCP that omits it denies them the day the
-    repository is created.
-    Reference: https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_DescribeRepositoryCreationTemplates.html
-
-    Args:
-        ecr_client: Boto3 ECR client
-        region: AWS region
-        org_account_ids: Set of all account IDs in the organization
-        org_id: This organization's ID, deciding whether an
-            organization scope on a source guard names this organization
-
-    Returns:
-        One ECRPolicyAnalysis per template carrying a `repositoryPolicy`,
-        with scope "creation_template" and `template_prefix` set from the
-        template's `prefix`
-
-    Raises:
-        ClientError: If the templates cannot be listed, including
-            AccessDeniedException when the scan role lacks
-            ecr:DescribeRepositoryCreationTemplates
-        MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
-    """
-    analyses: List[ECRPolicyAnalysis] = []
-
-    for page in paginate(ecr_client, "describe_repository_creation_templates"):
-        for template in page.get("repositoryCreationTemplates", []):
-            prefix = template["prefix"]
-            # The field is optional, and its absence means the template
-            # attaches no policy - a fact about the template, not a failed
-            # read, so the skip is not an empty answer to an unread policy (INV-01)
-            if "repositoryPolicy" not in template:
-                logger.debug(f"No policy on creation template {prefix} in {region}")
-                continue
-
-            policy = json.loads(template["repositoryPolicy"])
-
-            findings = _analyze_policy_statements(
-                policy, f"Creation template '{prefix}' in {region}", org_account_ids, org_id
-            )
-
-            analyses.append(ECRPolicyAnalysis(
-                scope="creation_template",
-                region=region,
-                third_party_account_ids=findings.third_party_account_ids,
-                template_prefix=prefix,
-                actions_by_account=findings.actions_by_account,
-                has_wildcard_principal=findings.has_wildcard_principal,
-                has_non_account_principals=findings.has_non_account_principals,
-                service_principal_sources=findings.service_principal_sources,
-            ))
-
-    return analyses
-
-
 @memoize_per_session
 def analyze_ecr_policies(
     session: Session,
@@ -414,25 +341,22 @@ def analyze_ecr_policies(
     """
     Analyze an account's ECR policies for third-party access.
 
-    Examines the three surfaces that declare ECR access - each repository's
-    own policy, the region's registry policy, which AWS enforces on every ECR
-    request in that region, and each repository creation template's policy,
-    which ECR attaches to every repository it creates from that template - and
-    identifies account IDs that are not part of the organization.
+    Examines both surfaces that authorize ECR access - each repository's own
+    policy, and the region's registry policy, which AWS enforces on every ECR
+    request in that region - and identifies account IDs that are not part of
+    the organization.
 
     Algorithm:
     1. Get all enabled regions via get_all_regions()
     2. For each region:
        a. Get the registry policy via get_registry_policy()
-       b. List creation templates via describe_repository_creation_templates()
-          (paginated) and read each repositoryPolicy
-       c. List all repositories via describe_repositories() (paginated)
-       d. Get each repository policy via get_repository_policy()
-       e. Parse policy JSON
-       f. Extract principals and actions
-       g. Identify third-party account IDs (not in org)
-       h. Track which actions each third-party account can perform
-       i. Detect wildcard principals
+       b. List all repositories via describe_repositories() (paginated)
+       c. Get each repository policy via get_repository_policy()
+       d. Parse policy JSON
+       e. Extract principals and actions
+       f. Identify third-party account IDs (not in org)
+       g. Track which actions each third-party account can perform
+       h. Detect wildcard principals
     3. Return all results across all regions
 
     Args:
@@ -457,7 +381,7 @@ def analyze_ecr_policies(
         ecr_client: ECRClient = session.client("ecr", region_name=region)
 
         try:
-            # The registry policy is read first because it is the widest
+            # The registry policy is read first because it is the wider
             # surface: it governs every repository the region holds,
             # including repositories that carry no policy of their own
             registry_analysis = _analyze_registry_policy(
@@ -465,14 +389,6 @@ def analyze_ecr_policies(
             )
             if registry_analysis is not None and _grants_third_party_access(registry_analysis):
                 results.append(registry_analysis)
-
-            # Templates are read before repositories: a template's policy
-            # reaches repositories the repository loop will never see
-            for template_analysis in _analyze_creation_templates(
-                ecr_client, region, org_account_ids, org_id
-            ):
-                if _grants_third_party_access(template_analysis):
-                    results.append(template_analysis)
 
             for page in paginate(ecr_client, "describe_repositories"):
                 for repository in page.get("repositories", []):

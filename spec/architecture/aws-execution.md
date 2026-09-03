@@ -307,7 +307,7 @@ whether or not the request bounded the page.
 | `organizations:ListRoots` | `Roots` | defaulted | The function's own post-condition already raises on no root and on several, with a better message than a `KeyError` |
 | `organizations:ListOrganizationalUnitsForParent` | `OrganizationalUnits` | defaulted | A dropped subtree makes the placement view disagree with membership, and the snapshot cross-check aborts on that |
 | `sqs:ListQueues` | `QueueUrls` | defaulted, and must stay so | AWS omits the key on an account with no queues |
-| `s3:ListBuckets`, `kms:ListKeys`, `ecr:DescribeRepositories`, `ecr:DescribeRepositoryCreationTemplates`, `secretsmanager:ListSecrets`, `lambda:ListFunctions`, `lambda:ListFunctionUrlConfigs`, `rds:DescribeDBInstances`, `rds:DescribeDBClusters`, `eks:ListClusters` | `Buckets`, `Keys`, `repositories`, `repositoryCreationTemplates`, `SecretList`, `Functions`, `FunctionUrlConfigs`, `DBInstances`, `DBClusters`, `clusters` | defaulted | Unestablished. Neither AWS's reference nor botocore says whether the key survives an empty result |
+| `s3:ListBuckets`, `kms:ListKeys`, `ecr:DescribeRepositories`, `secretsmanager:ListSecrets`, `lambda:ListFunctions`, `lambda:ListFunctionUrlConfigs`, `rds:DescribeDBInstances`, `rds:DescribeDBClusters`, `eks:ListClusters` | `Buckets`, `Keys`, `repositories`, `SecretList`, `Functions`, `FunctionUrlConfigs`, `DBInstances`, `DBClusters`, `clusters` | defaulted | Unestablished. Neither AWS's reference nor botocore says whether the key survives an empty result |
 
 That last row is a known gap rather than a settled design, and it is a smaller
 one than it first reads. Work out what indexing would catch on a listing that

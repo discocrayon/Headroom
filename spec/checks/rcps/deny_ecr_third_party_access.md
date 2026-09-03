@@ -24,19 +24,13 @@ verification:
 ## Objective
 
 Deny ECR access by any principal outside the organization except the third-party
-accounts that repository, registry, and creation template policies already
-grant, so a container image cannot be pulled — or pushed — by a new external
-account.
+accounts that repository policies already grant, so a container image cannot be
+pulled — or pushed — by a new external account.
 
 ### Scope
 
-Private ECR repository policies, the region's registry policy, and the
-region's repository creation template policies, in every enabled region.
-
-A template's `repositoryPolicy` is attached to every repository ECR creates from
-it, so a third party it names is granted access to repositories that do not
-exist yet; an allowlist that omitted that account would deny the access the day
-the repository is created.
+Private ECR repository policies and the region's registry policy, in every
+enabled region.
 
 ### Non-goals
 
@@ -46,9 +40,6 @@ the repository is created.
   those is read; how they are configured is not.
 - Does not read ECR Public.
 - Does not evaluate `Condition`, `Resource`/`NotResource`, or `NotAction`.
-- Does not distinguish a creation template by its `appliedFor` values
-  (`REPLICATION`, `PULL_THROUGH_CACHE`) or by the `ROOT` prefix; every
-  template's `repositoryPolicy` is read.
 
 ## Enforced statement
 
@@ -67,9 +58,7 @@ Terraform variables: `deny_ecr_third_party_access` and
 
 ## Evidence
 
-Per enabled region: `ecr:GetRegistryPolicy`, then
-`ecr:DescribeRepositoryCreationTemplates` (paginated) reading each template's
-`repositoryPolicy`, then `ecr:DescribeRepositories` (paginated) with
+Per enabled region: `ecr:DescribeRepositories` (paginated), then
 `ecr:GetRepositoryPolicy` per repository.
 
 For each `Allow` statement: `NotPrincipal` presence, `Principal`, `Action`.
@@ -85,27 +74,18 @@ The `Principal` element is read by `read_principal` against
 | Compliant | Third-party account IDs only | `COMPLIANT` |
 | Exemption | — | Never produced |
 | Not recorded | Only in-organization principals or AWS services | Not in the output |
-| Not recorded | A repository or creation template with no policy, or a region with no registry policy | Not in the output |
 | Violation | A `Federated` or `CanonicalUser` principal | `VIOLATION` |
 | Violation | An ARN naming no account, under the rule [`../../contracts/policy-model.md`](../../contracts/policy-model.md#a-blocker-stops-the-account-a-document-headroom-cannot-read-stops-the-run) owns | `VIOLATION` |
 | Aborts | A principal key AWS does not document | The run aborts |
-
-Every row applies to each of the three surfaces alike. A repository policy, the
-registry policy, and a creation template's `repositoryPolicy` pass through the
-same statement walk, and the entry's `scope` — `repository`, `registry`, or
-`creation_template` — records which surface it came from.
 
 ## Failure behavior
 
 | Situation | Behavior |
 |---|---|
 | `RepositoryPolicyNotFoundException` | The repository is skipped; it grants nothing. A repository reaches this check's results list on a third-party account, a wildcard, or a principal carrying no account ID |
-| `RegistryPolicyNotFoundException` | The region has no registry policy; skipped. A registry policy reaches this check's results list on the same grounds as a repository policy |
 | Any other `ClientError` on one repository | Re-raised, aborting the run |
 | `ClientError` in any region | Logged and re-raised, aborting the run |
-| `ClientError` listing creation templates, including `AccessDeniedException` | Logged and re-raised, aborting the run. `ecr:DescribeRepositoryCreationTemplates` is a permission the scan role must hold; an unreadable template is not an absent one (INV-01) |
 | A response carrying no `policyText` | `KeyError`, aborting the run. Indexed rather than defaulted: botocore marks the field optional, but `GetRepositoryPolicy` and `GetRegistryPolicy` raise `RepositoryPolicyNotFoundException` or `RegistryPolicyNotFoundException` when there is no policy, so a response carrying neither the field nor the exception is an unread policy, not an empty one (INV-01) |
-| A template carrying no `prefix` | `KeyError`, aborting the run. Indexed rather than defaulted: botocore marks the field optional, and the prefix is the only name Headroom has for a template, so a template it cannot name is refused rather than entered untraceably (INV-01) |
 | Unparseable policy JSON | Not caught; propagates and aborts |
 | `Statement` neither object nor list | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
@@ -134,20 +114,17 @@ Summary fields beyond the common three: `total_policies_analyzed`,
 resource because a registry policy is one of the things counted, and it is
 not a repository.
 
-`total_policies_analyzed` counts the policies that produced an entry —
-violations, exemptions, and compliant together — not every policy read. A
-repository or creation template with no policy is not entered or counted, and
-neither is a repository, registry, or creation template policy naming only
-in-organization principals.
+`total_policies_analyzed` counts the policies that produced an entry — violations,
+exemptions, and compliant together — not every policy read. Neither a
+repository with no policy nor a repository or registry policy naming only
+in-organization principals is entered or counted.
 
-Entry shape: `scope`, `repository_name`, `repository_arn`, `template_prefix`,
-`region`, `third_party_account_ids`, `actions_by_account`,
-`has_wildcard_principal`, `has_non_account_principals`.
+Entry shape: `scope`, `repository_name`, `repository_arn`, `region`,
+`third_party_account_ids`, `actions_by_account`, `has_wildcard_principal`,
+`has_non_account_principals`.
 
 `repository_name` and `repository_arn` are null on a registry-scoped entry,
-which governs no single repository, and on a creation template entry, which
-governs repositories not yet created. `template_prefix` is the template's
-`prefix` on a creation template entry and null on the other two scopes.
+which governs no single repository.
 
 `service_principal_sources` is **not** written. `analyze_ecr_policies` carries
 it on the in-memory analysis only, and
@@ -238,14 +215,6 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
    grounds.
 8. A repository policy naming a principal key AWS does not document → the run
    aborts.
-9. A creation template whose `repositoryPolicy` grants `111111111111`, outside
-   the organization → compliant, entered with scope `creation_template` and
-   `template_prefix` set; the account enters the allowlist.
-10. A creation template whose `repositoryPolicy` has `Principal: "*"` →
-    violation; the account is blocked for ECR only.
-11. A creation template with no `repositoryPolicy` → not recorded.
-12. The scan role lacks `ecr:DescribeRepositoryCreationTemplates` → the run
-    aborts on `AccessDeniedException`.
 
 ## Referenced invariants
 

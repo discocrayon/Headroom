@@ -94,7 +94,7 @@ and owns the accounting.
 
 | Analyzer | Resource identifier | Region |
 |---|---|---|
-| `analyze_ecr_policies` | Repository name, the template's prefix for a creation template policy, or `"registry"` for a registry policy | Yes |
+| `analyze_ecr_policies` | Repository name, or `"registry"` for a registry policy | Yes |
 | `analyze_kms_key_policies` | Key ID | Yes |
 | `analyze_s3_bucket_policies` | Bucket name | No — global |
 | `analyze_secrets_manager_policies` | Secret name | No |

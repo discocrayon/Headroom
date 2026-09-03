@@ -539,32 +539,16 @@ class TestEveryAnalyzerFeedsTheCheck:
     def test_ecr_registry_policy_falls_back_to_registry(
         self, temp_results_dir: str
     ) -> None:
-        """A registry policy names no repository and no template, so the finding says so."""
+        """A registry policy names no repository, so the finding says so."""
         analysis = _analysis(
             service_principal_sources=[_source(accounts=[THIRD_PARTY])],
             repository_name=None,
-            template_prefix=None,
             region="us-east-1",
         )
         data = _run_single_analyzer(temp_results_dir, "analyze_ecr_policies", analysis)
 
         finding = data["compliant_instances"][0]
         assert finding["resource_identifier"] == "registry"
-
-    def test_ecr_template_policy_names_its_template(
-        self, temp_results_dir: str
-    ) -> None:
-        """A creation template's policy names no repository, so the finding names the template."""
-        analysis = _analysis(
-            service_principal_sources=[_source(accounts=[THIRD_PARTY])],
-            repository_name=None,
-            template_prefix="team-a",
-            region="us-east-1",
-        )
-        data = _run_single_analyzer(temp_results_dir, "analyze_ecr_policies", analysis)
-
-        finding = data["compliant_instances"][0]
-        assert finding["resource_identifier"] == "team-a"
 
     def test_kms_finding_names_its_key(self, temp_results_dir: str) -> None:
         """A key policy's finding names that key."""

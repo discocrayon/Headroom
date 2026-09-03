@@ -746,9 +746,9 @@ deny a grant that exists today.
 The same facts are filtered on twice, and the templates do it in both places.
 Five of the six shipped analyzers drop a resource with no finding before
 returning it: `_grants_third_party_access` in `headroom/aws/ecr.py` names the
-predicate and `analyze_ecr_policies` applies it once per surface - registry,
-creation template, and repository - and `kms.py:465`, `s3.py:313`,
-`secretsmanager.py:255` and `iam/roles.py:246` inline the same test.
+predicate and `analyze_ecr_policies` applies it once per surface - registry
+and repository - and `kms.py:465`, `s3.py:313`, `secretsmanager.py:255` and
+`iam/roles.py:246` inline the same test.
 `analyze_sqs_queue_policies` is the sixth and appends every queue carrying a
 policy, which
 [`spec/checks/rcps/deny_sqs_third_party_access.md`](spec/checks/rcps/deny_sqs_third_party_access.md)

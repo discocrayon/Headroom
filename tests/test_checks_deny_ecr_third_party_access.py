@@ -570,14 +570,12 @@ class TestCheckDenyECRThirdPartyAccess:
             assert actions == sorted(actions)
 
 
-class TestRegistryAndTemplateScopedResults:
+class TestRegistryScopedResults:
     """
-    Registry and creation template policies travel the check beside repository policies.
+    Registry policies travel the check beside repository policies.
 
-    Each is a separate resource rather than a second half of a repository,
-    so each carries its own row, distinguished by scope. Every row carries
-    the same keys, so a repository row states a null `template_prefix` as a
-    template row states a null `repository_name`.
+    They are a second resource rather than a second half of the same one, so
+    each carries its own row, distinguished by scope.
     """
 
     @pytest.fixture
@@ -666,106 +664,9 @@ class TestRegistryAndTemplateScopedResults:
 
         assert category == "violation"
 
-    def test_template_entry_is_compliant_and_names_its_prefix(
-        self, temp_results_dir: str
-    ) -> None:
+    def test_summary_counts_both_scopes(self, temp_results_dir: str) -> None:
         """
-        A template's row says creation_template and names the template by prefix.
-
-        The template governs no repository yet, so the row names none; the
-        prefix is the only handle a reader has to find the template.
-        """
-        check = self._check(temp_results_dir)
-
-        category, result_dict = check.categorize_result(
-            ECRPolicyAnalysis(
-                scope="creation_template",
-                region="us-east-1",
-                third_party_account_ids={"999999999999"},
-                template_prefix="team-a",
-            )
-        )
-
-        assert category == "compliant"
-        assert result_dict["scope"] == "creation_template"
-        assert result_dict["template_prefix"] == "team-a"
-        assert result_dict["repository_name"] is None
-        assert result_dict["repository_arn"] is None
-
-    def test_repository_entry_carries_no_template_prefix(
-        self, temp_results_dir: str
-    ) -> None:
-        """
-        A repository's row carries the key, holding None.
-
-        Every row has the same keys whatever its scope, so a reader never
-        branches on the key's presence. This passes as soon as the template
-        row's test does, since the one dict entry serves every scope; it
-        stands to pin the null rule the specification states.
-        """
-        check = self._check(temp_results_dir)
-
-        _, result_dict = check.categorize_result(
-            ECRPolicyAnalysis(
-                scope="repository",
-                repository_name="vendor-repo",
-                repository_arn="arn:aws:ecr:us-east-1:111111111111:repository/vendor-repo",
-                region="us-east-1",
-                third_party_account_ids={"999999999999"},
-            )
-        )
-
-        assert result_dict["template_prefix"] is None
-
-    def test_registry_entry_carries_no_template_prefix(
-        self, temp_results_dir: str
-    ) -> None:
-        """
-        A registry's row carries the key, holding None.
-
-        The specification states the prefix is null on both non-template
-        scopes, and the repository sibling pins only one of them. This is a
-        characterization test over the one dict entry that serves every
-        scope, so it passes at once.
-        """
-        check = self._check(temp_results_dir)
-
-        _, result_dict = check.categorize_result(
-            ECRPolicyAnalysis(
-                scope="registry",
-                region="us-east-1",
-                third_party_account_ids={"999999999999"},
-            )
-        )
-
-        assert result_dict["template_prefix"] is None
-
-    def test_template_wildcard_is_a_violation(
-        self, temp_results_dir: str
-    ) -> None:
-        """
-        A wildcard template policy withholds the RCP, as a registry or repository one does.
-
-        The check's categorization is scope-agnostic, so this is a
-        characterization test over behavior already in place and passes at once.
-        """
-        check = self._check(temp_results_dir)
-
-        category, _ = check.categorize_result(
-            ECRPolicyAnalysis(
-                scope="creation_template",
-                region="us-east-1",
-                third_party_account_ids=set(),
-                has_wildcard_principal=True,
-                template_prefix="team-a",
-            )
-        )
-
-        assert category == "violation"
-
-    def test_summary_counts_every_scope(self, temp_results_dir: str) -> None:
-        """
-        Every scope counts toward violations, which is what blocks the RCP.
+        Both scopes count toward violations, which is what blocks the RCP.
 
         The RCP generator reads only `violations` and
         `unique_third_party_accounts`, so a registry finding that missed
@@ -791,13 +692,6 @@ class TestRegistryAndTemplateScopedResults:
                 third_party_account_ids={"999999999999"},
                 actions_by_account={"999999999999": ["ecr:BatchGetImage"]},
             ),
-            ECRPolicyAnalysis(
-                scope="creation_template",
-                region="us-east-1",
-                third_party_account_ids={"888888888888"},
-                actions_by_account={"888888888888": ["ecr:BatchGetImage"]},
-                template_prefix="team-a",
-            ),
         ]
 
         with (
@@ -812,7 +706,7 @@ class TestRegistryAndTemplateScopedResults:
 
         summary = mock_write.call_args[1]["results_data"]["summary"]
 
-        assert summary["total_policies_analyzed"] == 3
+        assert summary["total_policies_analyzed"] == 2
         assert summary["policies_with_wildcards"] == 1
         assert summary["violations"] == 1
-        assert summary["unique_third_party_accounts"] == ["888888888888", "999999999999"]
+        assert summary["unique_third_party_accounts"] == ["999999999999"]

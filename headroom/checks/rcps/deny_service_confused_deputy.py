@@ -212,7 +212,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
             findings.extend(_findings_for_resource(
                 ecr_result.service_principal_sources,
                 "ecr",
-                ecr_result.repository_name or ecr_result.template_prefix or "registry",
+                ecr_result.repository_name or "registry",
                 ecr_result.region,
             ))
 

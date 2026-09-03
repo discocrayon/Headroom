@@ -46,9 +46,7 @@ addressing, so one mailbox stands up the whole organization.
 | `providers.tf`, `data.tf`, `variables.tf` | Provider and input plumbing |
 
 The `Headroom` role is granted the `ViewOnlyAccess` and `SecurityAudit` managed
-policies, plus one inline statement granting
-`ecr:DescribeRepositoryCreationTemplates`, which neither of them carries. Role
-setup for a real organization is documented in
+policies. Role setup for a real organization is documented in
 [`../documentation/SETUP.md`](../documentation/SETUP.md).
 
 ## Scenarios
