@@ -528,6 +528,11 @@ class TestParseRcpResultFiles:
         nobody - an equivalence worth demonstrating rather than assuming,
         since a reader that reached into `grants` would raise on the older
         file and no other test would notice.
+
+        The older file is read back off disk before it is parsed. The two
+        deletions are the whole of what makes it older, and nothing else
+        here depends on them, so without that assertion a refactor could
+        drop them and leave two identical files passing.
         """
         seed_all_rcp_check_dirs(temp_results_dir)
         scan_kms_grants_into_results(
@@ -555,6 +560,12 @@ class TestParseRcpResultFiles:
         current["summary"]["account_id"] = "222222222222"
         current["summary"]["account_name"] = "account2"
         (check_dir / "account2_222222222222.json").write_text(json.dumps(current))
+
+        older = json.loads(
+            (check_dir / "account2_222222222222.json").read_text()
+        )
+        older_grant = older["keys_third_parties_can_access"][0]["grants"][0]
+        assert not {"grantee_principal", "grantee_account_id_source"} & older_grant.keys()
 
         parsed = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
         kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
