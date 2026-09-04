@@ -1729,7 +1729,7 @@ test_data_standards:
     third_party_reason: "The org-vs-third-party distinction is what the RCP checks turn on, so it should be visible in the fixture"
     never_use: "123456789012"  # Old AWS convention
     never_use_style: "Sequential runs such as 234567890123 or 987654321098"
-    never_use_real: "A vendor's published account ID is still a real one. The single exception in this repository is Canonical's Ubuntu image owner in test_environment/test_deny_ec2_ami_owner/data.tf, where the lookup is live and a fake resolves to no AMI."
+    never_use_real: "A vendor's published account ID is still a real one. INV-15 in spec/invariants.md grants every standing exception, scopes it, and says what it buys; a new one is argued there and not here. This line named the set once and went stale when the set grew, so it names the invariant instead."
 
   fake_resource_ids:
     rule: "Real prefix, real length, body is one repeated digit - except iam_unique_id, whose alphabet omits 0, 1, 8, and 9"
