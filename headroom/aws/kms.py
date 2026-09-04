@@ -398,7 +398,17 @@ def _analyze_key_grants(
                     ))
                     continue
 
+                # The one exit from this loop that records nothing, so it
+                # is the one an operator cannot reconstruct from the
+                # results. DEBUG and not WARNING: the drop is correct, and
+                # a warning here would fire for every internal unique ID.
                 if decoded_account in org_account_ids:
+                    logger.debug(
+                        f"The GranteePrincipal of {grant_description} is "
+                        f"'{grant['GranteePrincipal']}', which decodes to "
+                        f"{decoded_account}, an account the organization "
+                        f"holds, so the grant is not third-party access"
+                    )
                     continue
 
                 grantee_account = decoded_account

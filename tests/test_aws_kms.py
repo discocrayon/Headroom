@@ -1996,6 +1996,42 @@ class TestKeyGrants:
 
         assert results == []
 
+    def test_a_grantee_the_organization_holds_says_so_at_debug(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        This exit records neither a finding nor an unresolved entry.
+
+        It is the only one that does not, so without a line here an
+        operator asking why a grant they can read in the console is absent
+        from the results has no artifact to answer from. DEBUG rather than
+        WARNING because the drop is correct: a warning would fire for
+        every internal unique ID in the organization and bury the grants
+        that do need finding.
+        """
+        with caplog.at_level(logging.DEBUG):
+            self._analyze(
+                [
+                    {
+                        "GrantId": "grant-abc",
+                        "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                        "Operations": ["Decrypt"],
+                    }
+                ],
+                org_account_ids={self.ORG_ACCOUNT, self.THIRD_PARTY},
+            )
+
+        dropped = [
+            record for record in caplog.records
+            if self.THIRD_PARTY_ROLE_UNIQUE_ID in record.message
+        ]
+
+        assert len(dropped) == 1
+        assert dropped[0].levelno == logging.DEBUG
+        assert self.THIRD_PARTY in dropped[0].message
+        assert "grant-abc" in dropped[0].message
+
     def test_a_decoded_grantee_is_attributed_over_a_disagreeing_issuing_account(self) -> None:
         """
         IssuingAccount names who created the grant, not who holds it.

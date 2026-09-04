@@ -94,7 +94,7 @@ table owns why.
 | Not recorded | A grant whose nonempty `Operations` is only `RetireGrant`, or a policy statement whose only action is the literal `kms:RetireGrant` | Not in the output; RCPs do not impact `kms:RetireGrant`, and the permission is not effective in a key policy at all. Such a statement is skipped whole, so `Principal: "*"` or `NotPrincipal` on it is not a blocker either, and such a grant is skipped before its `GranteePrincipal` is read, so an opaque grantee on it is not an abort either |
 | Not read | `RetiringPrincipal` and `RetiringServicePrincipal`, whatever they hold | Never classified, allowlisted, or failed on |
 | Compliant | A `GranteePrincipal` that is an IAM unique ID — `AROA` or `AIDA` followed by exactly seventeen characters from `A-Z2-7` and nothing else — decoding to an account outside the organization, on a grant with no `GranteeServicePrincipal`, with any operation other than `RetireGrant` alone, or with no `Operations` | `COMPLIANT`; the decoded account enters the allowlist, and the entry records `grantee_account_id_source: iam_unique_id` so the reading that produced it is auditable |
-| Not recorded | The same shape, decoding to an account the organization already holds | Not in the output; an in-organization grantee is not a third party, whichever form named it |
+| Not recorded | The same shape, decoding to an account the organization already holds | Not in the output; an in-organization grantee is not a third party, whichever form named it. Logged at `DEBUG` with the identifier and the account it decoded to: this is the one grant the results themselves cannot account for, so the log is all an operator asking after it has |
 | Violation | The same shape, which the encoding cannot resolve — below the offset, which is the legacy random format, or decoding to `000000000000` or past `999999999999` | `VIOLATION`; recorded under the entry's `unresolved_grants` with the complete identifier. The grantee holds access the RCP would deny and names no account, so nothing enters the allowlist and the account is blocked for KMS. The run continues |
 | Aborts | A `GranteePrincipal` that is neither an ARN, an AWS service principal, nor an IAM unique ID in the documented shape, on a grant with no `GranteeServicePrincipal`, with any operation other than `RetireGrant` alone, or with no `Operations` | The run aborts. The shape alone spares the abort: an identifier matching it is read or recorded by one of the three rows above, whether or not an account comes out of it |
 
@@ -417,10 +417,22 @@ predicates.
    `grantee_account_id_source` says a decoding rather than an ARN produced the
    account, so the RCP allowlists an account nothing granted while the real
    grantee stays denied - wrong, but visible in the results. Inside it, the
-   grant is dropped as internal, and no `grants` entry, no `unresolved_grants`
-   entry, and no log line above `DEBUG` is left behind: the RCP ships denying
-   a grantee nobody knows about. That direction is the one this check cannot
-   show its reader.
+   grant is dropped as internal: no `grants` entry and no `unresolved_grants`
+   entry, and the only trace is the `DEBUG` line naming the identifier and
+   the account it decoded to, so the RCP ships denying a grantee nobody
+   reading the results knows about. That direction is the one this check
+   cannot show its reader.
+
+   The two directions are ranked above by visibility, not by likelihood,
+   and those run opposite. Half of legacy identifiers set the format bit,
+   and around nine values in ten above it land inside twelve digits, so a
+   mis-decode falls outside the organization - the visible direction -
+   almost every time it happens at all. Falling inside additionally
+   requires the arithmetic to collide with one of the organization's own
+   accounts out of a twelve-digit space, which is rarer by many orders of
+   magnitude. The wrong allowlist entry is the outcome to plan for; the
+   silent drop is the one that is hard to see, not the one that is
+   likely.
 7. **A service-linked role a grant names by a unique ID is read as an ordinary
    principal.** The exemption keys on the reserved `role/aws-service-role/`
    path, and nothing in a bare unique ID distinguishes a service-linked role
