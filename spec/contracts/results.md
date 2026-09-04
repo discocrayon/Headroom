@@ -151,12 +151,32 @@ specified in
 | `account_name` | string | As resolved by `use_account_name_from_tags` |
 | `account_id` | string | **Absent** when `exclude_account_ids` is set |
 | `check` | string | The registered check name |
+| `scanned_at` | string | When the check finished for this account, in the scanning machine's local zone |
 | `violations` | integer | The count, written even when it is always zero |
 
 `violations` is the count every placement decision turns on, and it is written by
 all sixteen registered checks — nine SCP and seven RCP. A check whose every
 entry is compliant writes zero rather than omitting the key: a reader cannot
 tell an absent key from a genuine zero, and the two mean opposite things.
+
+`scanned_at` is written for a person opening the file, and nothing reads it.
+That is what fixes its shape: `SCAN_TIMESTAMP_FORMAT` in
+`headroom/constants.py` renders the operator's wall clock — `09-04-2026 4:15 PM
+PDT` — rather than an ISO instant, because the question it answers is "when was
+this scanned" and not "which of these two files is newer". The zone is
+whichever one the machine that ran the scan is set to, so the same run written
+from a UTC container reads `09-04-2026 11:15 PM UTC`; a scan says where it ran
+rather than claiming one team's zone. The abbreviation is the real one for the
+date, so a September scan reads `PDT` and a January scan `PST`.
+
+The value is the moment the check **finished** for that account — `execute`
+builds the summary once `analyze` has returned. It is per file rather than per
+run: resume means one directory holds files from several runs, and a single
+run-start stamp copied onto every file would misdate the ones it reused.
+
+Every check writes it, in both document shapes. `BaseCheck.execute` builds
+`summary` before it calls `_build_results_data`, so the six RCP checks that
+override that method carry the key without naming it.
 
 Everything else in `summary` comes from the check's `build_summary_fields` and is
 specified in that check's document under [`../checks/`](../checks/index.md).
@@ -302,6 +322,11 @@ Existence is tested by filename, so a renamed account is scanned again under its
 new name; [One file per account](#one-file-per-account) catches the pair at read
 time.
 
+`summary.scanned_at` does not change this. It records when a result was
+produced, and resume still turns on existence alone: a result from a year ago
+is skipped exactly as one from this morning is. Reading the timestamp as a
+freshness signal would make it load-bearing, and it is not.
+
 Resume is evaluated at two granularities, and both must agree with the writer's
 naming or a run silently re-scans or silently skips:
 
@@ -328,5 +353,14 @@ account.
 
 Result files are written with `indent=2` and a trailing newline so they can be
 committed and diffed. Two runs against unchanged infrastructure should produce
-files that differ only where the infrastructure differs; a check that emits
+files that differ in `summary.scanned_at` and nowhere else; a check that emits
 unordered collections makes its own output churn and should sort them.
+
+`scanned_at` is the one field expected to differ between runs, and it differs in
+every file of every run. That is the cost of recording when a scan happened, and
+it is paid deliberately: a one-line diff per file still reads as "nothing
+changed", while suppressing the timestamp in the artifact that gets committed
+would mean the committed files are the ones that cannot say how old they are.
+The worked examples under `test_environment/headroom_results/` pick the key up
+on the next real scan; hand-writing a value into them would state a scan time
+that never happened.

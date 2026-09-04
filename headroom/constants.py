@@ -79,6 +79,15 @@ DENY_STS_THIRD_PARTY_ASSUMEROLE = "deny_sts_third_party_assumerole"
 # restores the owning account ID over.
 REDACTED_ACCOUNT_ID = "REDACTED"
 
+# How `summary.scanned_at` renders the moment a check finished for an account.
+#
+# The value is for a human reading the file, not for a reader to compare, so it
+# is the operator's wall clock rather than an ISO instant: month-day-year, a
+# twelve-hour time, and the abbreviation of whatever zone the scanning machine
+# is set to. `%-I` drops the hour's leading zero and is a macOS and Linux
+# extension; Windows spells it `%#I`.
+SCAN_TIMESTAMP_FORMAT = "%m-%d-%Y %-I:%M %p %Z"
+
 # Terraform file generation constants
 ORG_INFO_FILENAME = "grab_org_info.tf"
 
