@@ -38,6 +38,7 @@ from headroom.checks.registry import (
     get_allowlist,
     get_check_names,
 )
+from headroom.checks.rcps.deny_kms_third_party_access import DenyKMSThirdPartyAccessCheck
 from headroom.checks.scps.deny_ec2_public_ip import DenyEc2PublicIpCheck
 from headroom.enums import TerraformSection
 from headroom.placement.hierarchy import PlacementCandidate
@@ -48,6 +49,12 @@ from headroom.types import (
     AccountOrgPlacement,
     RCPCheckParseResult,
     RCPPlacementRecommendations
+)
+from tests.constants import ORG_ID
+from tests.test_checks_deny_kms_third_party_access import (
+    decodable_grant,
+    kms_session_holding,
+    unresolvable_grant,
 )
 
 
@@ -119,6 +126,40 @@ def seed_all_rcp_check_dirs(results_dir: str) -> None:
     """
     for check_name in get_check_names("rcps"):
         (Path(results_dir) / "rcps" / check_name).mkdir(parents=True, exist_ok=True)
+
+
+def scan_kms_grants_into_results(
+    results_dir: str,
+    account_id: str,
+    account_name: str,
+    grants: List[Dict[str, object]],
+    org_account_ids: Set[str],
+) -> None:
+    """
+    Leave behind the KMS result file a real scan of these grants writes.
+
+    The analyzer, the check, and the writer all run, so the summary the
+    reader then parses is the one the pipeline hands it. A summary written
+    by hand can claim a grantee's account was decoded out of a unique ID;
+    only a scan can show that it was, which is the whole of what these
+    tests are for.
+
+    Args:
+        results_dir: Base results directory
+        account_id: Account the scan ran against, which owns the key
+        account_name: Account name, which the filename is built from
+        grants: ListGrants entries the key carries, verbatim
+        org_account_ids: Every account in the organization
+    """
+    check = DenyKMSThirdPartyAccessCheck(
+        check_name=DENY_KMS_THIRD_PARTY_ACCESS,
+        account_name=account_name,
+        account_id=account_id,
+        results_dir=results_dir,
+        org_account_ids=org_account_ids,
+        org_id=ORG_ID,
+    )
+    check.execute(kms_session_holding(grants, key_account_id=account_id))
 
 
 class TestParseRcpResultFiles:
@@ -312,6 +353,217 @@ class TestParseRcpResultFiles:
         # The account with a blocking violation should be in the blocked set
         assert len(sts.accounts_with_blockers) == 1
         assert "111111111111" in sts.accounts_with_blockers
+
+    def test_an_unresolved_kms_grant_blocks_only_the_account_holding_it(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A key whose grantee cannot be attributed blocks one account, not the run.
+
+        The KMS check records a grantee whose IAM unique ID carries no
+        account as a violation rather than aborting, so the account holding
+        the key is blocked for the KMS RCP and every other account is still
+        placed. An identifier the account can be read out of is an ordinary
+        third party and blocks nobody. Both accounts share one OU, so
+        neither root nor the OU is safe and the clean account is placed on
+        its own, with its own allowlist.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        write_rcp_result(
+            temp_results_dir,
+            DENY_KMS_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=[],
+            violations=1,
+        )
+        write_rcp_result(
+            temp_results_dir,
+            DENY_KMS_THIRD_PARTY_ACCESS,
+            account_id="222222222222",
+            account_name="account2",
+            third_party_account_ids=["999999999999"],
+        )
+
+        parsed = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+        kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
+
+        assert kms.accounts_with_blockers == {"111111111111"}
+        assert kms.account_third_party_map == {"222222222222": {"999999999999"}}
+
+        recommendations = determine_rcp_placement([kms], sample_org_hierarchy)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].check_name == DENY_KMS_THIRD_PARTY_ACCESS
+        assert recommendations[0].recommended_level == "account"
+        assert recommendations[0].affected_accounts == ["222222222222"]
+        assert recommendations[0].third_party_account_ids == ["999999999999"]
+
+    def test_a_decoded_kms_grant_is_allowlisted_and_blocks_nobody(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A grantee named only by unique ID reaches the allowlist unblocked.
+
+        Nothing but the identifier says which account holds the grant, and
+        the key's policy names nobody outside the organization, so an
+        allowlist entry here is the account the analyzer read out of that
+        identifier and out of nothing else. Blocking the account instead
+        would cost the organization root-level placement and every OU above
+        the account the OU level, which is what reading the identifier
+        exists to avoid.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        scan_kms_grants_into_results(
+            temp_results_dir,
+            account_id="111111111111",
+            account_name="test-account",
+            grants=decodable_grant(),
+            org_account_ids=set(sample_org_hierarchy.accounts),
+        )
+
+        parsed = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+        kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
+
+        assert kms.accounts_with_blockers == set()
+        assert kms.account_third_party_map == {"111111111111": {"999999999999"}}
+
+    def test_a_decoded_kms_grant_still_reaches_root_level_placement(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        Reading the grantee's account buys back the whole organization.
+
+        Root is the level this organization loses when a grantee cannot be
+        attributed. `test_an_unresolved_kms_grant_blocks_only_the_account_holding_it`
+        runs over these same two accounts and lands on one account-level
+        policy covering one of them; here a single root-level policy covers
+        both, and the decoded account rides in its allowlist rather than
+        being denied by it.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        scan_kms_grants_into_results(
+            temp_results_dir,
+            account_id="111111111111",
+            account_name="test-account",
+            grants=decodable_grant(),
+            org_account_ids=set(sample_org_hierarchy.accounts),
+        )
+        scan_kms_grants_into_results(
+            temp_results_dir,
+            account_id="222222222222",
+            account_name="account2",
+            grants=[],
+            org_account_ids=set(sample_org_hierarchy.accounts),
+        )
+
+        parsed = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+        kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
+        recommendations = determine_rcp_placement([kms], sample_org_hierarchy)
+
+        assert len(recommendations) == 1
+        assert recommendations[0].recommended_level == "root"
+        assert recommendations[0].affected_accounts == ["111111111111", "222222222222"]
+        assert recommendations[0].third_party_account_ids == ["999999999999"]
+
+    def test_one_unreadable_grantee_does_not_block_the_account_beside_it(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        The two kinds of unique ID part company in the same run.
+
+        Both accounts hold a grant whose grantee is named by nothing but a
+        bare identifier, and the two identifiers differ only in whether the
+        encoding carries an account. Reading them alike in either direction
+        is a failure with a direction: block both and the readable grantee
+        costs its account an RCP it should have; allowlist both and the
+        unreadable one ships an RCP that denies a grantee nobody can name.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        scan_kms_grants_into_results(
+            temp_results_dir,
+            account_id="111111111111",
+            account_name="test-account",
+            grants=unresolvable_grant(),
+            org_account_ids=set(sample_org_hierarchy.accounts),
+        )
+        scan_kms_grants_into_results(
+            temp_results_dir,
+            account_id="222222222222",
+            account_name="account2",
+            grants=decodable_grant(),
+            org_account_ids=set(sample_org_hierarchy.accounts),
+        )
+
+        parsed = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+        kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
+
+        assert kms.accounts_with_blockers == {"111111111111"}
+        assert kms.account_third_party_map == {"222222222222": {"999999999999"}}
+
+    def test_a_grant_written_before_it_named_its_grantee_reads_the_same(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        Losing the two newest fields on a grant costs a reader nothing (INV-14).
+
+        A results directory outlives the code that wrote it, so the reader
+        meets files written before a grant carried `grantee_principal` and
+        `grantee_account_id_source`. Both files here hold the same scan;
+        the second is the first re-filed under the other account, with
+        those two fields deleted from its one grant, which is exactly what
+        an earlier run left behind. They come
+        back equal because the allowlist and the blocker verdict are read
+        out of the summary and a persisted grant is deserialized by
+        nobody - an equivalence worth demonstrating rather than assuming,
+        since a reader that reached into `grants` would raise on the older
+        file and no other test would notice.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        scan_kms_grants_into_results(
+            temp_results_dir,
+            account_id="111111111111",
+            account_name="test-account",
+            grants=decodable_grant(),
+            org_account_ids=set(sample_org_hierarchy.accounts),
+        )
+
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_KMS_THIRD_PARTY_ACCESS
+        current = json.loads(
+            (check_dir / "test-account_111111111111.json").read_text()
+        )
+        scanned_key = current["keys_third_parties_can_access"][0]
+        written_grants = scanned_key["grants"]
+        assert len(written_grants) == 1
+        assert {"grantee_principal", "grantee_account_id_source"} <= written_grants[0].keys()
+
+        del written_grants[0]["grantee_principal"]
+        del written_grants[0]["grantee_account_id_source"]
+        scanned_key["key_arn"] = scanned_key["key_arn"].replace(
+            "111111111111", "222222222222"
+        )
+        current["summary"]["account_id"] = "222222222222"
+        current["summary"]["account_name"] = "account2"
+        (check_dir / "account2_222222222222.json").write_text(json.dumps(current))
+
+        parsed = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+        kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
+
+        assert kms.accounts_with_blockers == set()
+        assert kms.account_third_party_map == {
+            "111111111111": {"999999999999"},
+            "222222222222": {"999999999999"},
+        }
 
     def test_parse_looks_up_missing_account_id(
         self,

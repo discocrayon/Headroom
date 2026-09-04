@@ -370,10 +370,35 @@ allowlist key aborts — replaces two.
 Every AWS identifier committed to this repository — in code, tests,
 documentation, examples, and commit messages — uses a real prefix, a real
 length, and a body of one repeated digit: `111111111111`,
-`i-11111111111111111`, `ami-11111111111111111`.
+`i-11111111111111111`, `ami-11111111111111111`. Where no repeated digit will
+do, the body is one repeated letter instead. The IAM unique ID is that case,
+and today the only one: AWS encodes it in a Base32
+alphabet that omits `0`, `1`, `8`, and `9`, so `AROA11111111111111111` is not
+a value AWS could have issued, and a body of repeated `2`, `3`, `4`, or `5`
+decodes to a plausible twelve-digit account rather than to nothing. Repeated
+`6` and `7` resolve to nothing too, but only by overrunning the twelve-digit
+range. Most letters are no safer: a body of any letter from `Q` to `Z` sits
+above the encoding's offset and decodes to a plausible account, exactly as
+repeated `2` through `5` do, and only `A` through `P` fall below it. One
+letter form is the rule so that no fixture body has to be run through the
+decoder to learn what it does. The form is
+`AROAAAAAAAAAAAAAAAAAA` for a role and `AIDAAAAAAAAAAAAAAAAAA` for a user,
+whose bodies sit below the encoding's offset and resolve to no account.
 
-The table below is the one place the kinds are named. Each row is a kind this
-invariant covers, and the shape it is recognized by:
+**An identifier that has to decode is fake by the account it names.** A
+fixture about a grantee whose account can be read cannot use a body that
+reads back as nothing, so that identifier is built by inverting
+`headroom/aws/iam_unique_ids.py` until it resolves to a placeholder account:
+`AROA6RVFFB77QAAAAAAAA` decodes to `999999999999`. Its body is opaque, and
+what makes it obviously fake is the account it hands back rather than the
+shape it is written in.
+[`../HOW_TO_ADD_A_CHECK.md`](../HOW_TO_ADD_A_CHECK.md) states both forms as a
+practitioner's checklist, under `test_data_standards`.
+
+The table below is the one place the scanned kinds are named. Each row is a
+kind `tests/data_standards.py` carries a matcher for, and the shape that
+matcher reads it by. The rule above is wider than the table: a kind can be
+covered by the invariant and have no row, and one is.
 
 | Kind | Recognized by |
 |---|---|
@@ -392,22 +417,59 @@ issued.
 `tests/test_data_standards.py` reads this table, so a kind added here without a
 matcher fails the suite.
 
+**The IAM unique ID and the access key ID are covered by the rule and have no
+row, so nothing scans for either.** A real `AROA`, `AIDA`, `AKIA`, or `ASIA`
+value pasted from a console or an API response enters the repository with every
+gate green, and the placeholders above are held by review alone. The rows are
+absent as a consequence rather than an oversight: adding one forces a matcher,
+and a matcher would report the published vectors the second standing exception
+below sanctions. Nobody has written one that exempts those vectors and nothing
+else, so these kinds stay unguarded, and a value of either is caught only by
+the reader.
+
 An identifier arriving from a bug report, error message, console screenshot, or
 API response is real. Rewrite it before it enters the repository.
 
-**One standing exception.** `test_environment/` commits one real twelve-digit
-account ID: the operating-system publisher that owns the public Ubuntu images,
-named as the owner filter in
+**Two standing exceptions.** Each is scoped — one to a directory, one to a
+single test — and each is granted for what it buys. A third would need the
+same argument made here, in the same place.
+
+`test_environment/` commits one real twelve-digit account ID: the
+operating-system publisher that owns the public Ubuntu images, named as the
+owner filter in
 [`../test_environment/test_deny_ec2_ami_owner/data.tf`](../test_environment/test_deny_ec2_ami_owner/data.tf).
 It is load-bearing. That data source resolves a live AMI by owner, so a
 fabricated owner matches no image and the lookup fails at `terraform plan`: the
 scenario would launch nothing, and `deny_ec2_ami_owner` — the check it exists to
 exercise — would have nothing to find. The identifier is one its publisher
 documents for customers to name in exactly this filter, never the operator's
-own, which is what makes the trade acceptable and does not make it compliant. No
-new one may be added, and no identifier outside `test_environment/` is covered.
+own, which is what makes the trade acceptable and does not make it compliant.
+The exception is the directory's and not the identifier's: the same value in
+code, tests, or documentation is a leak rather than an instance of it.
 [`../test_environment/README.md`](../test_environment/README.md) describes where
 it appears.
+
+`tests/test_aws_iam_unique_ids.py` commits nine real values, all of them in
+`test_the_published_vectors_decode`: three `ASIA` access key IDs with the three
+accounts they decode to, one `AROA` unique ID with the account it decodes to,
+and a second `AROA` that decodes to nothing. They buy the decoder its only
+independent oracle. Every other expected value in that file is obtained by
+inverting the decoder under test, and an assertion derived that way agrees with
+the code by construction
+([`verification/strategy.md`](verification/strategy.md#assertions-must-be-independently-derived)),
+so the suite would pass with the offset, the doubling, or the displaced low bit
+all wrong. Fabricating a tenth value would only re-derive the arithmetic again.
+
+The two halves are not interchangeable, which is why the exception is this
+wide. The access key vectors are what the research documenting the encoding
+publishes, so they are what attests the arithmetic; all three decode to an even
+account, so none of them reaches the displaced low bit. The `AROA` pair carries
+the claim the access key vectors cannot: that a principal unique ID is encoded
+the same way as an access key ID, which no AWS documentation states, and the
+one whose account is odd is also what pins the displacement. Dropping either
+half leaves a load-bearing claim resting on this repository's own say-so. The
+exception covers those nine values in that one file: none of them may appear
+elsewhere, and a tenth is a new exception rather than an extension of this one.
 
 **The operator's own identifiers are not covered, and two reached the repository
 anyway.** `headroom_results/` recorded S3 bucket names ending in the account ID
@@ -423,7 +485,10 @@ refresh until the scenarios stop naming buckets after the account.
 The count above is not maintained by hand. `tests/test_data_standards.py` reads
 it back and fails when it disagrees with what the directory holds, which is how
 it came to say thirteen while sixteen were committed; the same test fails when
-an identifier from the exception appears anywhere outside it.
+an identifier from the `test_environment/` exception appears outside that
+directory. Nothing mechanical reads the second exception at all: the account
+gate reports only identifiers that also appear under `test_environment/`, and
+the `AROA` kind has no matcher.
 
 The scan behind that test carries one matcher per row of the table. A body
 reads as fabricated when each of its hyphen-separated parts uses few enough
@@ -432,8 +497,8 @@ naming the fixture it belongs to. `r-root` and `ou-fake-payments` are
 legible for that last reason, and are accepted by that named rule rather than by
 leaving their kind unmatched.
 
-The standing exception above is granted for account IDs and for nothing else,
-so every other kind the table names is held to that standard everywhere,
+The `test_environment/` exception is granted for account IDs and for nothing
+else, so every other kind the table names is held to that standard everywhere,
 `test_environment/` included — an AMI ID or an OU ID gains nothing by sitting in
 that directory. Only the account kind keeps the narrower, exception-scoped rule,
 and not because the sandbox earns it: a twelve-digit number a test fabricates

@@ -747,8 +747,10 @@ The same facts are filtered on twice, and the templates do it in both places.
 Five of the six shipped analyzers drop a resource with no finding before
 returning it: `_grants_third_party_access` in `headroom/aws/ecr.py` names the
 predicate and `analyze_ecr_policies` applies it once per surface - registry
-and repository - and `kms.py:465`, `s3.py:313`, `secretsmanager.py:255` and
-`iam/roles.py:246` inline the same test.
+and repository - and `analyze_kms_key_policies` in `kms.py`,
+`analyze_s3_bucket_policies` in `s3.py`, `_analyze_secret_policy` in
+`secretsmanager.py` and `analyze_iam_roles_trust_policies` in `iam/roles.py`
+inline the same test.
 `analyze_sqs_queue_policies` is the sixth and appends every queue carrying a
 policy, which
 [`spec/checks/rcps/deny_sqs_third_party_access.md`](spec/checks/rcps/deny_sqs_third_party_access.md)
@@ -819,9 +821,9 @@ more than one code. Per service, from the tree:
 
 | Read | Codes |
 |---|---|
-| `secretsmanager.get_resource_policy` | `ResourceNotFoundException` (`secretsmanager.py:156`) |
-| `s3.get_bucket_policy` | `NoSuchBucketPolicy` (`s3.py:196`) |
-| `kms.get_key_policy` | `NotFoundException` (`kms.py:277`) |
+| `secretsmanager.get_resource_policy` | `ResourceNotFoundException` (`_analyze_secrets_in_region` in `secretsmanager.py`) |
+| `s3.get_bucket_policy` | `NoSuchBucketPolicy` (`_read_bucket_policy` in `s3.py`) |
+| `kms.get_key_policy` | `NotFoundException` (`_read_key_policy` in `kms.py`) |
 | `ecr.get_repository_policy` | `RepositoryPolicyNotFoundException` (`_analyze_repository_in_region` in `ecr.py`) |
 | `ecr.get_registry_policy` | `RegistryPolicyNotFoundException` (`_analyze_registry_policy` in `ecr.py`) |
 | `sqs.get_queue_attributes` | `AWS.SimpleQueueService.NonExistentQueue` **and** `QueueDoesNotExist` - one condition, two spellings (`sqs.py:36-39`) |
@@ -1708,10 +1710,11 @@ test_data_standards:
   principle: |
     Every identifier in a test, fixture, docstring, or doc example must be
     impossible to mistake for one from a real account. Correct prefix, correct
-    length, one repeated digit for the body. An identifier that arrives from a
-    bug report, console screenshot, API response, or error message gets rewritten
-    to its placeholder before it enters the repo -- including in the commit
-    message.
+    length, one repeated digit for the body -- except iam_unique_id, whose body
+    is the one repeated letter A, for the reason iam_unique_id_reason gives.
+    An identifier that arrives from a bug report, console screenshot, API
+    response, or error message gets rewritten to its placeholder before it
+    enters the repo -- including in the commit message.
   applies_to: ["headroom/", "spec/", "tests/", "test_environment/", "documentation/", "docstrings", "sample_config.yaml", "commit messages", "PR descriptions"]
   not_sensitive: ["region names", "service names", "AWS-owned owner aliases: amazon, aws-marketplace"]
 
@@ -1729,7 +1732,7 @@ test_data_standards:
     never_use_real: "A vendor's published account ID is still a real one. The single exception in this repository is Canonical's Ubuntu image owner in test_environment/test_deny_ec2_ami_owner/data.tf, where the lookup is live and a fake resolves to no AMI."
 
   fake_resource_ids:
-    rule: "Real prefix, real length, body is one repeated digit"
+    rule: "Real prefix, real length, body is one repeated digit - except iam_unique_id, whose alphabet omits 0, 1, 8, and 9"
     ec2_instance: "i-11111111111111111"                      # i- plus 17 hex
     ec2_ami: "ami-11111111111111111"                         # ami- plus 17 hex
     kms_key: "11111111-1111-1111-1111-111111111111"          # UUID
@@ -1737,6 +1740,19 @@ test_data_standards:
     organizations_ou: "ou-1111-11111111"                     # ou-<root>-<suffix>
     organizations_org: "o-11111111111"
     iam_access_key: "AKIAIOSFODNN7EXAMPLE"                   # AWS's own example key
+    iam_unique_id: "AROAAAAAAAAAAAAAAAAAA"                   # AROA/AIDA plus 17, body one repeated LETTER
+    iam_unique_id_user: "AIDAAAAAAAAAAAAAAAAAA"
+    iam_unique_id_decodable: "AROA6RVFFB77QAAAAAAAA"         # Decodes to 999999999999
+    iam_unique_id_reason: |
+      The one body that is not a repeated digit. A repeated A resolves to no
+      account, and AROA11111111111111111 is not a value AWS could have issued
+      at all, so it aborts the run before the fixture reaches its path. Copy
+      the literal above rather than picking your own letter: repeated Q
+      through Z decode to a plausible account, and only A through P do not.
+      Use iam_unique_id_decodable where the grantee has to resolve to an
+      account, built by inverting headroom/aws/iam_unique_ids.py onto a
+      placeholder one. INV-15 in spec/invariants.md owns both forms and which
+      repeated bodies decode.
     ipv4_address: "111.111.111.111"                          # every octet one repeated digit
     ipv4_second: "222.222.222.222"                           # when a test needs a second host
     never_use_style: "AWS documentation's own hex bodies - the 1234567890abcdef0 and 0abcdef1234567890 its EC2 examples print"
