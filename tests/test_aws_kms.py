@@ -908,42 +908,110 @@ class TestKeyGrants:
         results = self._analyze([
             {
                 "GrantId": "grant-abc",
-                "GranteePrincipal": (
-                    f"arn:aws:iam::{self.ORG_ACCOUNT}:role/aws-service-role/"
-                    "autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
-                ),
+                "GranteePrincipal": f"arn:aws:iam::{self.ORG_ACCOUNT}:role/App",
                 "Operations": ["Decrypt"],
             }
         ])
 
         assert results == []
 
-    def test_cross_account_retiring_principal_reports_retire_grant(self) -> None:
+    def test_a_key_policy_naming_a_service_linked_role_is_not_recorded(self) -> None:
         """
-        An external retiring principal is recorded, with only RetireGrant.
+        The service-linked-role exemption does not depend on the surface.
 
-        Retiring is the only thing that principal can do, so attributing the
-        grant's operations to it would overstate its access.
+        RCPs do not impact any service-linked role, whether a key policy or a
+        grant names it, so a policy statement granting a foreign one puts
+        nothing in the results and nothing in the allowlist.
+        """
+        results = self._analyze([], policy={
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": (
+                            f"arn:aws:iam::{self.THIRD_PARTY}:role/aws-service-role/"
+                            "example.amazonaws.com/AWSServiceRoleForExample"
+                        )
+                    },
+                    "Action": "kms:Decrypt",
+                    "Resource": "*",
+                }
+            ],
+        })
+
+        assert results == []
+
+    def test_a_key_policy_statement_granting_only_retire_grant_is_not_recorded(self) -> None:
+        """
+        kms:RetireGrant is not effective in a key policy, so a statement
+        granting only it authorizes nothing.
+
+        AWS documents that the grant itself decides who may retire it and
+        that the permission has no effect in a key policy or an RCP. Reading
+        the statement anyway allowlisted an account the RCP could not have
+        denied anything to.
+        """
+        results = self._analyze([], policy={
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                    },
+                    "Action": "kms:RetireGrant",
+                    "Resource": "*",
+                }
+            ],
+        })
+
+        assert results == []
+
+    def test_a_wildcard_statement_granting_only_retire_grant_is_not_a_violation(self) -> None:
+        """
+        An ineffective statement cannot be a blocker either.
+
+        `Principal: "*"` with only kms:RetireGrant hands nobody anything the
+        RCP could deny, so it must not withhold the RCP from the account.
+        """
+        results = self._analyze([], policy={
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": ["kms:RetireGrant"],
+                    "Resource": "*",
+                }
+            ],
+        })
+
+        assert results == []
+
+    def test_an_opaque_retiring_principal_does_not_abort_the_scan(self) -> None:
+        """
+        A service-created grant naming "AWS Internal" as its retiring
+        principal is not a finding and not an abort.
+
+        A retiring principal can only call RetireGrant, and AWS documents
+        that RCPs do not impact kms:RetireGrant, so nothing in that field
+        bears on what the RCP will deny. Reading it through the grantee's
+        classifier aborted the whole organization scan over a display value.
         """
         results = self._analyze([
             {
                 "GrantId": "grant-abc",
-                "GranteePrincipal": f"arn:aws:iam::{self.ORG_ACCOUNT}:role/App",
-                "RetiringPrincipal": (
-                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.ORG_ACCOUNT}:role/aws-service-role/"
+                    "example.amazonaws.com/AWSServiceRoleForExample"
                 ),
-                "Operations": ["Decrypt"],
+                "RetiringPrincipal": "AWS Internal",
+                "Operations": ["Decrypt", "GenerateDataKey", "RetireGrant"],
             }
         ])
 
-        assert len(results) == 1
-        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
-        assert results[0].actions_by_account[self.THIRD_PARTY] == [
-            "kms:RetireGrant"
-        ]
-        grant = results[0].grants[0]
-        assert grant.grantee_account_id is None
-        assert grant.retiring_principal_account_id == self.THIRD_PARTY
+        assert results == []
 
     def test_encryption_context_constraints_are_recorded(self) -> None:
         """
@@ -1036,30 +1104,209 @@ class TestKeyGrants:
         assert "grant-abc" in message
         assert "arn:aws:kms:us-east-1:111111111111:key/key-123" in message
 
-    def test_unrecognized_retiring_principal_names_that_field(self) -> None:
+    def test_an_external_service_linked_role_grantee_is_exempt(self) -> None:
         """
-        The message says which of the grant's two principals it could not
-        read.
+        A service-linked role in another account is not a third party.
 
-        GranteePrincipal and RetiringPrincipal take the same shapes and
-        raise the same error, so a message naming neither sends the
-        operator to inspect a grantee that was never the problem.
+        RCPs do not impact the effective permissions of any service-linked
+        role, so the RCP cannot deny it and its account has no business in
+        the allowlist. IAM reserves the `aws-service-role/` role path to
+        AWS services, so the path is what identifies the role; a role named
+        to look like one, outside that path, is an ordinary role.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/aws-service-role/"
+                    "example.amazonaws.com/AWSServiceRoleForExample"
+                ),
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results == []
+
+    def test_a_grantee_service_principal_is_exempt_without_reading_the_display_principal(self) -> None:
+        """
+        A typed GranteeServicePrincipal settles the grantee's identity.
+
+        AWS documents that a grant created with GranteeServicePrincipal is
+        listed with that field, and that the RCP exempts AWS services with
+        aws:PrincipalIsAWSService. Whatever display value sits beside it in
+        GranteePrincipal is not read, so it cannot abort the scan.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteeServicePrincipal": "example.amazonaws.com",
+                "GranteePrincipal": "AWS Internal",
+                "Operations": ["Encrypt", "Decrypt", "GenerateDataKey"],
+            }
+        ])
+
+        assert results == []
+
+    def test_a_retire_grant_only_grant_is_not_a_third_party(self) -> None:
+        """
+        An external grantee holding only RetireGrant is not a third party.
+
+        RCPs do not impact kms:RetireGrant, so the RCP cannot deny the one
+        thing this grant lets its grantee do. An allowlist entry for it
+        would open kms:* to an account the RCP was never going to block.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "Operations": ["RetireGrant"],
+            }
+        ])
+
+        assert results == []
+
+    def test_a_mixed_operation_grant_is_analyzed_normally(self) -> None:
+        """
+        RetireGrant beside other operations does not exempt the grant.
+
+        The grantee's Decrypt is what the RCP would deny, so the account
+        enters the allowlist, and the operations are recorded as listed,
+        RetireGrant included.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "Operations": ["RetireGrant", "Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert results[0].actions_by_account[self.THIRD_PARTY] == [
+            "kms:Decrypt", "kms:RetireGrant"
+        ]
+        assert results[0].grants[0].operations == [
+            "kms:Decrypt", "kms:RetireGrant"
+        ]
+
+    def test_a_grant_with_no_operations_is_still_recorded(self) -> None:
+        """
+        Missing Operations is not the same as RetireGrant only.
+
+        Nothing in such a grant says what it authorizes, and INV-01 forbids
+        reading that silence as safe, so the grantee is recorded with an
+        empty operations list rather than dropped.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert results[0].grants[0].operations == []
+
+    def test_a_service_role_name_outside_the_reserved_path_is_ordinary(self) -> None:
+        """
+        A role is service-linked by its path, not by its name.
+
+        Anyone can name a role AWSServiceRoleForExample; only AWS can put
+        one under the `aws-service-role/` path. A look-alike outside that
+        path is an ordinary role the RCP would deny, so its account enters
+        the allowlist.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/"
+                    "AWSServiceRoleForExample"
+                ),
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+
+    def test_an_opaque_grantee_principal_still_raises(self) -> None:
+        """
+        "AWS Internal" as the grantee, with no typed field beside it, aborts.
+
+        The grantee holds Decrypt, which the RCP would deny, and nothing
+        says which account it belongs to. Only a typed GranteeServicePrincipal
+        proves the grantee exempt; the retiring fields say nothing about it.
         """
         with pytest.raises(UnknownGrantPrincipalError) as raised:
             self._analyze([
                 {
                     "GrantId": "grant-abc",
-                    "GranteePrincipal": (
-                        f"arn:aws:iam::{self.ORG_ACCOUNT}:role/App"
-                    ),
-                    "RetiringPrincipal": "not-a-principal",
+                    "GranteePrincipal": "AWS Internal",
+                    "RetiringPrincipal": "AWS Internal",
                     "Operations": ["Decrypt"],
                 }
             ])
 
         message = str(raised.value)
-        assert "RetiringPrincipal" in message
-        assert "GranteePrincipal" not in message
+        assert "GranteePrincipal" in message
+        assert "grant-abc" in message
+        assert f"arn:aws:kms:us-east-1:{self.ORG_ACCOUNT}:key/key-123" in message
+
+    def test_an_external_grantee_beside_an_opaque_retiring_principal_is_recorded(self) -> None:
+        """
+        Ignoring the retiring field does not depend on who the grantee is.
+
+        The external grantee holds Decrypt, so it is recorded like any other,
+        and the opaque retiring value beside it neither aborts the scan nor
+        fills the compatibility field.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "RetiringPrincipal": "AWS Internal",
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        grant = results[0].grants[0]
+        assert grant.grantee_account_id == self.THIRD_PARTY
+        assert grant.retiring_principal_account_id is None
+
+    def test_an_external_retiring_principal_is_not_a_third_party(self) -> None:
+        """
+        An external retiring principal enters neither the results nor the
+        allowlist.
+
+        It can call RetireGrant and nothing else, and RCPs do not impact
+        kms:RetireGrant, so the RCP cannot deny it. Allowlisting its account
+        would open kms:* to a vendor the RCP was never going to block.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": f"arn:aws:iam::{self.ORG_ACCOUNT}:role/App",
+                "RetiringPrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results == []
 
     def test_a_grant_with_no_id_raises(self) -> None:
         """
@@ -1075,6 +1322,23 @@ class TestKeyGrants:
                     "GranteePrincipal": (
                         f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
                     ),
+                    "Operations": ["Decrypt"],
+                }
+            ])
+
+    def test_a_grant_with_no_grantee_raises(self) -> None:
+        """
+        A grant naming no grantee at all is a response Headroom has misread.
+
+        ListGrants returns GranteeServicePrincipal or GranteePrincipal on
+        every grant. Dropping one carrying neither would read a missing
+        grantee as no grantee, which INV-01 forbids, so it aborts like a
+        grant with no ID.
+        """
+        with pytest.raises(KeyError, match="GranteePrincipal"):
+            self._analyze([
+                {
+                    "GrantId": "grant-abc",
                     "Operations": ["Decrypt"],
                 }
             ])

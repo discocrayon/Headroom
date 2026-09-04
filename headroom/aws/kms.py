@@ -27,6 +27,7 @@ from .policy_documents import (
     ServicePrincipalSource,
     has_actionable_service_principal_source,
     has_not_principal,
+    is_service_linked_role_arn,
     normalize_statements,
     read_principal,
     read_service_principal_sources,
@@ -40,11 +41,9 @@ class UnknownGrantPrincipalError(Exception):
     Raised when a grant names a principal the analyzer cannot classify.
 
     Dropping it silently would leave its account out of the allowlist,
-    which is the failure this analysis exists to prevent.
-
-    Grant rather than grantee: `GranteePrincipal` and `RetiringPrincipal`
-    take the same shapes and raise this from the same reader, so the
-    message says which of the two it read, on which grant, on which key.
+    which is the failure this analysis exists to prevent. Only
+    `GranteePrincipal` is read; the message names the grant and the key
+    carrying it.
     """
 
 
@@ -53,8 +52,9 @@ class UnknownGrantPrincipalError(Exception):
 # so they are never denied and never need an allowlist entry.
 AWS_SERVICE_PRINCIPAL_SUFFIX = ".amazonaws.com"
 
-# The only thing a retiring principal can do with a grant. Attributing the
-# grant's own operations to it would overstate its access.
+# The one KMS permission RCPs do not impact, so a statement or grant carrying
+# only it authorizes nothing the RCP can deny. The check's specification owns
+# the argument, and why the retiring principal is not read at all.
 KMS_RETIRE_GRANT_ACTION = "kms:RetireGrant"
 
 # DescribeKey reports this KeyManager for a key an AWS service created and
@@ -68,26 +68,22 @@ class KMSGrantFinding:
     """
     One grant on a key that reaches outside the organization.
 
-    Both account fields record only out-of-organization accounts, so a
-    finding exists when at least one of them is set and each says which
-    side of the grant reaches outside.
-
     Attributes:
         grant_id: The grant's ID, which is what RetireGrant takes
-        grantee_account_id: Account of the grantee, when it is outside the
-            organization. None for an AWS service principal, which the RCP
-            exempts, and None for an in-organization grantee
-        retiring_principal_account_id: Account of the retiring principal,
-            when it is outside the organization. That principal can call
-            RetireGrant and nothing else
+        grantee_account_id: Account of the grantee, which is outside the
+            organization
+        retiring_principal_account_id: Always None. The retiring principal
+            is not read; the field is kept so persisted results keep their
+            shape (INV-14)
         operations: The grant's operations, prefixed with `kms:` to match
-            the spelling a key policy uses
+            the spelling a key policy uses. Empty when the grant listed
+            none, which is kept rather than read as harmless
         has_constraints: True if the grant carries an encryption context
             constraint. The constraint itself is not parsed, so this records
             that real access may be narrower than the operations suggest
     """
     grant_id: str
-    grantee_account_id: Optional[str]
+    grantee_account_id: str
     retiring_principal_account_id: Optional[str]
     operations: List[str]
     has_constraints: bool
@@ -141,24 +137,30 @@ class KMSKeyPolicyAnalysis:
 
 def _grant_principal_account_id(principal: str, principal_description: str) -> Optional[str]:
     """
-    Resolve a grant principal to an account ID.
+    Resolve a grantee principal to an account ID.
 
-    Serves both GranteePrincipal and RetiringPrincipal, which take the same
-    shapes. An AWS service principal has no account and is exempt from the
-    RCP, so it resolves to None rather than to a third party.
+    Two kinds of grantee resolve to None because the RCP cannot deny them:
+    an AWS service principal, which has no account and which the RCP
+    exempts with aws:PrincipalIsAWSService, and a service-linked role,
+    recognized by the same rule `read_principal` applies to a policy's
+    Principal element, before its account is read.
 
     Args:
-        principal: Principal string from a ListGrants entry
-        principal_description: Which field of which grant on which key
-            named this principal, opening the error message
+        principal: GranteePrincipal string from a ListGrants entry
+        principal_description: Which grant on which key named this
+            principal, opening the error message
 
     Returns:
-        The 12-digit account ID, or None for an AWS service principal
+        The 12-digit account ID, or None for an AWS service principal or
+        a service-linked role
 
     Raises:
         UnknownGrantPrincipalError: If the principal is neither an ARN
             nor an AWS service principal
     """
+    if is_service_linked_role_arn(principal):
+        return None
+
     arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
     if arn_match:
         return arn_match.group(1)
@@ -175,19 +177,18 @@ def _grant_principal_account_id(principal: str, principal_description: str) -> O
 
 
 def _external_grant_account(
-    principal: Optional[str],
+    principal: str,
     org_account_ids: Set[str],
     principal_description: str
 ) -> Optional[str]:
     """
-    Resolve a grant principal, keeping it only if it is outside the org.
+    Resolve a grantee principal, keeping it only if it is outside the org.
 
     Args:
-        principal: Principal string from a ListGrants entry, or None when
-            the grant does not carry that field
+        principal: GranteePrincipal string from a ListGrants entry
         org_account_ids: Set of all account IDs in the organization
-        principal_description: Which field of which grant on which key
-            named this principal, for the error message
+        principal_description: Which grant on which key named this
+            principal, for the error message
 
     Returns:
         The account ID if it is outside the organization, else None
@@ -195,9 +196,6 @@ def _external_grant_account(
     Raises:
         UnknownGrantPrincipalError: If the principal cannot be classified
     """
-    if not principal:
-        return None
-
     account_id = _grant_principal_account_id(principal, principal_description)
     if account_id is None or account_id in org_account_ids:
         return None
@@ -231,8 +229,9 @@ def _analyze_key_grants(
 
     Raises:
         ClientError: If the grants cannot be listed
-        KeyError: If a grant carries no GrantId
-        UnknownGrantPrincipalError: If a grant names a principal the
+        KeyError: If a grant carries no GrantId, or neither
+            GranteeServicePrincipal nor GranteePrincipal
+        UnknownGrantPrincipalError: If a grant names a grantee the
             analyzer cannot classify
     """
     findings: List[KMSGrantFinding] = []
@@ -244,28 +243,40 @@ def _analyze_key_grants(
             # description below is worth nothing without it.
             grant_description = f"grant '{grant['GrantId']}' on key {key_arn}"
 
+            # A grant created for a service is listed with this typed field,
+            # and the RCP exempts services with aws:PrincipalIsAWSService.
+            # Whatever display value sits in GranteePrincipal beside it is
+            # not read.
+            if grant.get("GranteeServicePrincipal"):
+                continue
+
+            # Every grant not listed with the typed field carries this one.
+            # Dropping a grant with neither would read a missing grantee as
+            # no grantee.
             grantee_account = _external_grant_account(
-                grant.get("GranteePrincipal"),
+                grant["GranteePrincipal"],
                 org_account_ids,
                 f"The GranteePrincipal of {grant_description}",
             )
-            retiring_account = _external_grant_account(
-                grant.get("RetiringPrincipal"),
-                org_account_ids,
-                f"The RetiringPrincipal of {grant_description}",
+
+            if grantee_account is None:
+                continue
+
+            operations = sorted(
+                f"kms:{operation}"
+                for operation in grant.get("Operations", [])
             )
 
-            if grantee_account is None and retiring_account is None:
+            # A grant carrying no operations is not one carrying only
+            # RetireGrant: nothing says what it authorizes, so it is kept.
+            if operations == [KMS_RETIRE_GRANT_ACTION]:
                 continue
 
             findings.append(KMSGrantFinding(
                 grant_id=grant["GrantId"],
                 grantee_account_id=grantee_account,
-                retiring_principal_account_id=retiring_account,
-                operations=sorted(
-                    f"kms:{operation}"
-                    for operation in grant.get("Operations", [])
-                ),
+                retiring_principal_account_id=None,
+                operations=operations,
                 has_constraints=bool(grant.get("Constraints")),
             ))
 
@@ -361,7 +372,8 @@ def _analyze_key_in_region(
         KMSKeyPolicyAnalysis result for this key
 
     Raises:
-        KeyError: If a grant carries no GrantId
+        KeyError: If a grant carries no GrantId, or neither
+            GranteeServicePrincipal nor GranteePrincipal
         UnknownGrantPrincipalError: If a grant names a principal the analyzer
             cannot classify
         MalformedPolicyError: If a Statement is neither an object nor a list,
@@ -391,6 +403,13 @@ def _analyze_key_in_region(
         if statement.get("Effect") != "Allow":
             continue
 
+        # kms:RetireGrant is not effective in a key policy, so a statement
+        # granting only it authorizes nothing, whoever it names - not even
+        # a wildcard is a blocker here.
+        actions = normalize_actions(statement.get("Action", []))
+        if actions == {KMS_RETIRE_GRANT_ACTION}:
+            continue
+
         # An Allow with NotPrincipal reaches everyone it does not name,
         # which is what the wildcard flag records
         if has_not_principal(statement):
@@ -411,11 +430,7 @@ def _analyze_key_in_region(
         )
 
         has_wildcard = has_wildcard or reading.has_wildcard
-        account_ids = reading.account_ids
-
-        actions = normalize_actions(statement.get("Action", []))
-
-        for account_id in account_ids:
+        for account_id in reading.account_ids:
             if account_id in org_account_ids:
                 continue
 
@@ -425,15 +440,8 @@ def _analyze_key_in_region(
     grants = _analyze_key_grants(kms_client, key_id, key_arn, org_account_ids)
 
     for grant in grants:
-        if grant.grantee_account_id is not None:
-            third_party_accounts.add(grant.grantee_account_id)
-            actions_by_account[grant.grantee_account_id].update(grant.operations)
-
-        if grant.retiring_principal_account_id is not None:
-            third_party_accounts.add(grant.retiring_principal_account_id)
-            actions_by_account[grant.retiring_principal_account_id].add(
-                KMS_RETIRE_GRANT_ACTION
-            )
+        third_party_accounts.add(grant.grantee_account_id)
+        actions_by_account[grant.grantee_account_id].update(grant.operations)
 
     actions_by_account_serializable = {
         account_id: sorted(actions)
@@ -477,7 +485,9 @@ def analyze_kms_key_policies(
        d. Parse policy JSON
        e. Extract principals and actions
        f. List the key's grants via list_grants() (paginated)
-       g. Resolve each grantee and retiring principal to an account
+       g. Resolve each grantee to an account, skipping a grant held by a
+          service or a service-linked role, or carrying only RetireGrant.
+          The retiring principal is not read
        h. Identify third-party account IDs (not in org) from both surfaces
        i. Track which actions each third-party account can perform
        j. Detect wildcard principals, which only a policy can carry
@@ -495,7 +505,8 @@ def analyze_kms_key_policies(
 
     Raises:
         ClientError: If AWS API calls fail
-        KeyError: If a grant carries no GrantId
+        KeyError: If a grant carries no GrantId, or neither
+            GranteeServicePrincipal nor GranteePrincipal
         UnknownGrantPrincipalError: If a grant names a principal the
             analyzer cannot classify
     """

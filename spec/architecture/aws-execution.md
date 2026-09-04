@@ -423,7 +423,8 @@ traceback, with no log line at all: `MalformedPolicyError`,
 `UnknownGrantPrincipalError`, `InvalidFederatedPrincipalError`, and
 `MalformedStatementError` each subclass `Exception` directly, an `Action`
 that is neither a string nor an array raises `TypeError`, and a KMS grant
-carrying no `GrantId` raises `KeyError`. Of row 1's four examples, only
+carrying no `GrantId`, or neither `GranteeServicePrincipal` nor
+`GranteePrincipal`, raises `KeyError`. Of row 1's four examples, only
 unparseable JSON reaches a handler, because `json.JSONDecodeError` subclasses
 `ValueError`.
 
@@ -432,7 +433,10 @@ whole, and INV-01 is met because the abort itself keeps a missing observation
 from being read as clean — not because every message is equally informative.
 All six classes name the resource whose policy or grant could not be read,
 `UnknownGrantPrincipalError` since it was given the key ARN and the grant ID
-alongside the principal it could not classify; the bare `TypeError` names only
+alongside the grantee it could not classify — only the grantee, since a
+grant's retiring principal is not read at all, for the reason
+[`../checks/rcps/deny_kms_third_party_access.md`](../checks/rcps/deny_kms_third_party_access.md)
+owns; the bare `TypeError` names only
 the value's Python type, and the `KeyError` only the absent field. None of the
 eight lets the run finish and report the account clean, which is the property
 that matters.
