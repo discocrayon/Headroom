@@ -1,14 +1,17 @@
 """Tests for headroom.aws.kms module."""
 
 import json
-from typing import Any
+import logging
+from typing import Any, Optional, Set
 
 import pytest
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
 from headroom.aws.kms import (
+    KMSGrantFinding,
     UnknownGrantPrincipalError,
+    UnresolvedKMSGrantFinding,
     analyze_kms_key_policies,
 )
 from headroom.aws.policy_documents import (
@@ -761,6 +764,13 @@ class TestKeyGrants:
     ORG_ACCOUNT = "111111111111"
     THIRD_PARTY = "999999999999"
 
+    # Unique IDs in the current format. The account each one carries is
+    # THIRD_PARTY, behind either prefix, so a test that names one of these
+    # as a grantee and then asserts THIRD_PARTY is reading the account back
+    # out of the identifier and out of nothing else on the grant.
+    THIRD_PARTY_ROLE_UNIQUE_ID = "AROA6RVFFB77QAAAAAAAA"
+    THIRD_PARTY_USER_UNIQUE_ID = "AIDA6RVFFB77QAAAAAAAA"
+
     ORG_ONLY_POLICY = {
         "Version": "2012-10-17",
         "Statement": [
@@ -779,12 +789,14 @@ class TestKeyGrants:
         policy: Any = None,
         policy_error: Any = None,
         grants_error: Any = None,
+        org_account_ids: Optional[Set[str]] = None,
     ) -> Any:
         """
         Run the analyzer over one key with the given grants and policy.
 
         The key policy defaults to one naming only an organization account,
-        so anything the analyzer reports came from a grant.
+        so anything the analyzer reports came from a grant, and the
+        organization defaults to the one account that policy names.
         """
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
@@ -835,7 +847,9 @@ class TestKeyGrants:
             }
 
         return analyze_kms_key_policies(
-            mock_session, {TestKeyGrants.ORG_ACCOUNT}, ORG_ID
+            mock_session,
+            {TestKeyGrants.ORG_ACCOUNT} if org_account_ids is None else org_account_ids,
+            ORG_ID,
         )
 
     def test_cross_account_grantee_reaches_the_allowlist(self) -> None:
@@ -864,6 +878,38 @@ class TestKeyGrants:
         assert grant.retiring_principal_account_id is None
         assert grant.operations == ["kms:Decrypt", "kms:GenerateDataKey"]
         assert grant.has_constraints is False
+
+    def test_an_arn_grantee_records_the_arn_and_says_the_arn_named_the_account(self) -> None:
+        """
+        An account AWS spelled out is recorded as having come from the ARN.
+
+        The other way an account reaches a finding is arithmetic on a unique
+        ID, which is reverse-engineered rather than an AWS contract. A reader
+        who cannot tell the two apart has to treat every entry in the
+        allowlist as if it might have been computed. The principal is kept
+        whole beside the source, so the ARN the account was read out of is
+        there to check it against.
+        """
+        grantee_arn = f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": grantee_arn,
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results[0].grants == [
+            KMSGrantFinding(
+                grant_id="grant-abc",
+                grantee_account_id=self.THIRD_PARTY,
+                grantee_principal=grantee_arn,
+                grantee_account_id_source="arn",
+                retiring_principal_account_id=None,
+                operations=["kms:Decrypt"],
+                has_constraints=False,
+            )
+        ]
 
     def test_grant_operations_are_kms_prefixed(self) -> None:
         """
@@ -1035,12 +1081,14 @@ class TestKeyGrants:
 
         assert results[0].grants[0].has_constraints is True
 
-    def test_a_grant_is_never_a_violation(self) -> None:
+    def test_a_grant_does_not_set_the_wildcard_flag(self) -> None:
         """
-        Grants can widen the allowlist but never withhold the RCP.
+        CreateGrant requires a concrete principal, so no grant is a wildcard.
 
-        CreateGrant requires a concrete principal, so no grant can be a
-        wildcard, and the wildcard flag is what blocks deployment.
+        The flag is all this pins. A grant can withhold the RCP now, by
+        naming a grantee whose account the encoding cannot read, and that
+        route leaves this flag false - so the flag being false is no longer
+        the same statement as the key being compliant.
         """
         results = self._analyze([
             {
@@ -1161,6 +1209,25 @@ class TestKeyGrants:
                 "GranteePrincipal": (
                     f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
                 ),
+                "Operations": ["RetireGrant"],
+            }
+        ])
+
+        assert results == []
+
+    def test_a_retire_grant_only_grant_with_no_grantee_is_skipped(self) -> None:
+        """
+        The RetireGrant skip is read before the grantee, so neither is missing.
+
+        A grant carrying neither GranteeServicePrincipal nor GranteePrincipal
+        aborts the run, because dropping it would read a missing grantee as
+        no grantee. This one does not reach that read: what the permission
+        does not authorize cannot depend on who holds it, so the operations
+        are settled first and the grant is gone before the grantee matters.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
                 "Operations": ["RetireGrant"],
             }
         ])
@@ -1392,6 +1459,636 @@ class TestKeyGrants:
         assert [g.grantee_account_id for g in results[0].grants] == [
             self.THIRD_PARTY
         ]
+
+    def test_a_bare_role_unique_id_grantee_is_recorded_rather_than_aborting(self) -> None:
+        """
+        A grantee named by unique ID blocks the key's account without a guess.
+
+        The grantee holds Decrypt, which the RCP would deny, and nothing in
+        the grant says which account it belongs to. Aborting cost the whole
+        organization its results over one grant, and guessing an account
+        would be worse: IssuingAccount names who created the grant, not who
+        holds it, so nothing about the grant may reach the allowlist.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                # An all-A body is the shape of a legacy identifier: it
+                # sits below the offset the account encoding starts at, so
+                # no account can be read out of it. Every unresolved-grant
+                # fixture below is built that way on purpose. Modernizing
+                # one to a body that does encode an account would send its
+                # grant to the allowlist and invert what the test asserts
+                # while its name still says the grant was recorded.
+                "GranteePrincipal": "AROAAAAAAAAAAAAAAAAAA",
+                "Operations": ["Decrypt"],
+                "IssuingAccount": f"arn:aws:iam::{self.THIRD_PARTY}:root",
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == [
+            UnresolvedKMSGrantFinding(
+                grant_id="grant-abc",
+                grantee_principal="AROAAAAAAAAAAAAAAAAAA",
+                principal_kind="iam_role_unique_id",
+                operations=["kms:Decrypt"],
+                has_constraints=False,
+            )
+        ]
+        assert results[0].third_party_account_ids == set()
+        assert results[0].actions_by_account == {}
+        assert results[0].grants == []
+
+    def test_a_bare_user_unique_id_grantee_is_recorded_as_a_user(self) -> None:
+        """
+        The two unique-ID prefixes are recorded apart, not collapsed.
+
+        AROA names a role and AIDA a user, and an operator chasing the
+        recorded grant looks the two up through different IAM calls. A
+        finding that called every unique ID a role would send them to the
+        wrong one.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "AIDAAAAAAAAAAAAAAAAAA",
+                "Operations": ["Decrypt"],
+                "IssuingAccount": f"arn:aws:iam::{self.THIRD_PARTY}:root",
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == [
+            UnresolvedKMSGrantFinding(
+                grant_id="grant-abc",
+                grantee_principal="AIDAAAAAAAAAAAAAAAAAA",
+                principal_kind="iam_user_unique_id",
+                operations=["kms:Decrypt"],
+                has_constraints=False,
+            )
+        ]
+        assert results[0].third_party_account_ids == set()
+        assert results[0].actions_by_account == {}
+        assert results[0].grants == []
+
+    def test_an_unresolved_grant_with_no_operations_is_still_recorded(self) -> None:
+        """
+        Missing Operations does not make an unattributable grantee harmless.
+
+        Nothing in such a grant says what it authorizes, and INV-01 forbids
+        reading that silence as safe. The grantee is recorded with an empty
+        operations list, exactly as an external grantee with no operations
+        is, rather than dropped for saying nothing.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "AROAAAAAAAAAAAAAAAAAA",
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants[0].operations == []
+
+    def test_a_decoded_grant_with_no_operations_is_still_recorded(self) -> None:
+        """
+        Missing Operations is not the same as RetireGrant only.
+
+        Nothing in such a grant says what it authorizes, and INV-01 forbids
+        reading that silence as safe. Being able to name the grantee's
+        account changes none of that, so the decoded account enters the
+        allowlist with an empty operations list, exactly as an external ARN
+        grantee with no operations does.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == []
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert results[0].grants[0].grantee_account_id == self.THIRD_PARTY
+        assert results[0].grants[0].operations == []
+
+    def test_an_unresolved_grantee_holding_only_retire_grant_reports_nothing(self) -> None:
+        """
+        An unattributable grantee holding only RetireGrant is not a blocker.
+
+        RCPs do not impact kms:RetireGrant, so the grant authorizes nothing
+        the RCP could deny and there is nothing to block the account over -
+        the same exemption an external grantee holding only RetireGrant
+        gets. Whether the grantee can be attributed does not change what
+        the permission does, so the exemption is read before the grantee is.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "AROAAAAAAAAAAAAAAAAAA",
+                "Operations": ["RetireGrant"],
+            }
+        ])
+
+        assert results == []
+
+    def test_a_mixed_operation_unresolved_grant_records_every_operation(self) -> None:
+        """
+        RetireGrant beside another operation does not exempt the grant.
+
+        The grantee's Decrypt is what the RCP would deny, so the grant is
+        recorded, and its operations are recorded as listed rather than
+        filtered down to the ones the RCP acts on - the operator retiring
+        the grant needs to see everything it hands out.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "AROAAAAAAAAAAAAAAAAAA",
+                "Operations": ["RetireGrant", "Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants[0].operations == [
+            "kms:Decrypt", "kms:RetireGrant"
+        ]
+
+    def test_a_mixed_operation_decoded_grant_records_every_operation(self) -> None:
+        """
+        RetireGrant beside another operation does not exempt the grant.
+
+        The grantee's Decrypt is what the RCP would deny, so the decoded
+        account enters the allowlist, and the operations are recorded as
+        listed rather than filtered down to the ones the RCP acts on - the
+        operator retiring the grant needs to see everything it hands out.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                "Operations": ["RetireGrant", "Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == []
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert results[0].grants[0].operations == [
+            "kms:Decrypt", "kms:RetireGrant"
+        ]
+        assert results[0].actions_by_account[self.THIRD_PARTY] == [
+            "kms:Decrypt", "kms:RetireGrant"
+        ]
+
+    def test_an_unresolved_grant_records_that_it_is_constrained(self) -> None:
+        """
+        A constrained unresolved grant is flagged, though the constraint is
+        not parsed.
+
+        The operator reading the finding has to decide what the grant really
+        hands out before retiring it, and an encryption context subset can
+        make the access far narrower than the operations suggest. Recording
+        that one exists keeps the finding honest about what was not read.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "AROAAAAAAAAAAAAAAAAAA",
+                "Operations": ["Decrypt"],
+                "Constraints": {
+                    "EncryptionContextSubset": {"purpose": "example"}
+                },
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants[0].has_constraints is True
+
+    def test_a_grantee_service_principal_beside_a_unique_id_reports_nothing(self) -> None:
+        """
+        A typed GranteeServicePrincipal still settles the grantee's identity.
+
+        AWS documents that a grant created for a service is listed with that
+        field, and the RCP exempts services with aws:PrincipalIsAWSService.
+        The unique ID sitting beside it is a display value for an exempt
+        grantee, so recording it would block the key's account over a grant
+        the RCP was never going to deny - and, unlike the "AWS Internal"
+        display value the sibling test uses, it would do so silently,
+        because a unique ID is a shape the analyzer records rather than
+        aborts on.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteeServicePrincipal": "example.amazonaws.com",
+                "GranteePrincipal": "AROAAAAAAAAAAAAAAAAAA",
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results == []
+
+    def test_a_grantee_service_principal_beside_a_decodable_unique_id_reports_nothing(self) -> None:
+        """
+        The typed field settles the grantee even when the display value
+        names an account.
+
+        AWS documents that a grant created for a service is listed with
+        GranteeServicePrincipal, and the RCP exempts services with
+        aws:PrincipalIsAWSService. Reading the unique ID beside it would
+        write whatever account that display value happens to spell into the
+        allowlist - opening kms:* to an account nothing on this key names,
+        which is worse than the blocked account the same mistake costs when
+        no account can be read out of the identifier.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteeServicePrincipal": "example.amazonaws.com",
+                "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results == []
+
+    def test_an_opaque_grantee_holding_only_retire_grant_does_not_abort(self) -> None:
+        """
+        An unclassifiable grantee holding only RetireGrant aborts nothing.
+
+        RCPs do not impact kms:RetireGrant, so the analyzer never has to
+        decide whose account this grantee belongs to: whatever the answer,
+        the RCP denies it nothing. Resolving the grantee first aborted the
+        whole organization scan over a display value on a grant that could
+        not have mattered.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "AWS Internal",
+                "Operations": ["RetireGrant"],
+            }
+        ])
+
+        assert results == []
+
+    @pytest.mark.parametrize("principal", [
+        pytest.param("aroaaaaaaaaaaaaaaaaaa", id="lowercase-copy"),
+        pytest.param("AROAAAAAAAAAAAAAAAAA", id="sixteen-character-body"),
+        pytest.param("AROAAAAAAAAAAAAAAAAAAA", id="eighteen-character-body"),
+        pytest.param("AROAAAAAAAAAAAAAAAAAA:session-name", id="role-session-suffix"),
+        pytest.param("AROA11111111111111111", id="digit-outside-the-alphabet"),
+    ])
+    def test_a_near_miss_unique_id_aborts_rather_than_being_recorded(self, principal: str) -> None:
+        """
+        A value that only resembles a unique ID is not read as one.
+
+        Recording it would claim the analyzer knows what the string is,
+        when a lowercase copy, a short body, a long body, a session
+        suffix, or a body holding one of the four digits AWS Base32 omits
+        could equally be some identifier Headroom has never seen. Each
+        case is a valid identifier altered in exactly one way, so each one
+        pins one rule on its own: the four whose bodies are in the
+        alphabet would all survive a loosened alphabet, and the last one,
+        being the right length behind the right prefix, would survive a
+        loosened case, length, or end anchor. The abort says which grant
+        on which key carries it, and names the one shape the analyzer does
+        accept, so the operator can tell a near miss from something new.
+        """
+        with pytest.raises(UnknownGrantPrincipalError) as raised:
+            self._analyze([
+                {
+                    "GrantId": "grant-abc",
+                    "GranteePrincipal": principal,
+                    "Operations": ["Decrypt"],
+                }
+            ])
+
+        message = str(raised.value)
+        assert principal in message
+        assert "grant-abc" in message
+        assert f"arn:aws:kms:us-east-1:{self.ORG_ACCOUNT}:key/key-123" in message
+        assert "IAM unique ID" in message
+
+    def test_an_arn_grantee_is_never_read_as_a_unique_id(self) -> None:
+        """
+        A resolvable grantee is allowlisted, not recorded as unresolved.
+
+        An ARN and a unique ID both name a principal, and the classifier
+        is asked first, so a classifier that matched an ARN would move
+        this vendor out of the allowlist and into unresolved_grants -
+        blocking the key's own account for KMS over a grantee whose
+        account the ARN states outright. That is the inversion the
+        allowlist exists to prevent, and it is the one shape whose
+        misclassification loses access rather than merely aborting. The
+        near-miss cases above pin what the classifier declines; this pins
+        the shape it must never claim.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": f"arn:aws:iam::{self.THIRD_PARTY}:role/vendor",
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == []
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert [g.grant_id for g in results[0].grants] == ["grant-abc"]
+
+    def test_a_key_carrying_both_kinds_of_grant_records_each_in_its_own_list(self) -> None:
+        """
+        One unattributable grant does not cost the key its resolved ones.
+
+        The external grantee still belongs in the allowlist, or the RCP
+        deploys and denies it; the unattributable one still blocks the
+        account. Folding either into the other list would lose one of the
+        two, and stopping at the first unresolved grant would lose the rest
+        of the key's grants along with it.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "AROAAAAAAAAAAAAAAAAAA",
+                "Operations": ["Decrypt"],
+                "IssuingAccount": f"arn:aws:iam::{self.THIRD_PARTY}:root",
+            },
+            {
+                "GrantId": "grant-ext",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/vendor"
+                ),
+                "Operations": ["Decrypt"],
+            },
+        ])
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert len(results[0].grants) == 1
+        assert results[0].grants[0].grant_id == "grant-ext"
+        assert len(results[0].unresolved_grants) == 1
+        assert results[0].unresolved_grants[0].grant_id == "grant-abc"
+
+    def test_an_unresolved_grant_is_logged_where_the_operator_will_see_it(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        The grant is named in the run's log, not only in the results file.
+
+        The account is blocked for KMS and the operator has to go find the
+        grant to clear it. ListGrants is per key per region, so a warning
+        that omitted the key ARN or the grant ID would leave them searching
+        every key in the organization - which is what the abort this
+        replaces at least told them.
+        """
+        with caplog.at_level(logging.WARNING):
+            self._analyze([
+                {
+                    "GrantId": "grant-abc",
+                    "GranteePrincipal": "AROAAAAAAAAAAAAAAAAAA",
+                    "Operations": ["Decrypt"],
+                }
+            ])
+
+        warnings = [
+            record for record in caplog.records
+            if record.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        assert "AROAAAAAAAAAAAAAAAAAA" in warnings[0].message
+        assert "grant-abc" in warnings[0].message
+        assert (
+            f"arn:aws:kms:us-east-1:{self.ORG_ACCOUNT}:key/key-123"
+            in warnings[0].message
+        )
+
+    def test_a_decoded_grant_is_not_logged_as_unattributable(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        The warning belongs to the grants nobody can attribute.
+
+        It tells the operator to go find a grant and clear a blocked
+        account, and a decoded grantee gives them neither errand. Logging
+        one per decodable grant would bury the grants that do need finding
+        under a line for every unique ID in the organization.
+        """
+        with caplog.at_level(logging.WARNING):
+            self._analyze([
+                {
+                    "GrantId": "grant-abc",
+                    "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                    "Operations": ["Decrypt"],
+                }
+            ])
+
+        assert [
+            record for record in caplog.records
+            if record.levelno == logging.WARNING
+        ] == []
+
+    def test_a_decodable_role_unique_id_grantee_reaches_the_allowlist(self) -> None:
+        """
+        A unique ID in the current format names its own account, so its
+        grantee is attributed rather than blocked.
+
+        The account the identifier carries is outside the organization, so
+        the grant belongs in the allowlist like any external ARN. Recording
+        it as unresolved would block the key's own account for KMS over a
+        grantee the grant already identifies.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == []
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert [g.grantee_account_id for g in results[0].grants] == [self.THIRD_PARTY]
+        assert results[0].grants[0].grant_id == "grant-abc"
+        assert results[0].actions_by_account[self.THIRD_PARTY] == ["kms:Decrypt"]
+
+    def test_a_decoded_grantee_records_the_identifier_and_says_it_was_decoded(self) -> None:
+        """
+        An account nothing spelled out is recorded as having been computed.
+
+        This account was not read off the grant; it was decoded from the
+        identifier by an encoding AWS does not document and could change
+        without notice. A finding that recorded it the way it records an
+        account out of an ARN would hide the one entry in the allowlist an
+        operator should check by hand. The identifier is kept whole, because
+        it is what they would search IAM for.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert results[0].grants == [
+            KMSGrantFinding(
+                grant_id="grant-abc",
+                grantee_account_id=self.THIRD_PARTY,
+                grantee_principal=self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                grantee_account_id_source="iam_unique_id",
+                retiring_principal_account_id=None,
+                operations=["kms:Decrypt"],
+                has_constraints=False,
+            )
+        ]
+
+    def test_a_decodable_user_unique_id_grantee_reaches_the_allowlist(self) -> None:
+        """
+        An IAM user's unique ID names its account the way a role's does.
+
+        The account sits in the same characters behind either prefix, so an
+        AIDA grantee whose account can be read is allowlisted rather than
+        blocked. Reading only AROA would leave every grant to a user
+        blocking its key's account for KMS.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": self.THIRD_PARTY_USER_UNIQUE_ID,
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == []
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert [g.grantee_account_id for g in results[0].grants] == [self.THIRD_PARTY]
+
+    def test_a_decodable_unique_id_grantee_inside_the_organization_reports_nothing(self) -> None:
+        """
+        An account read out of an identifier is not a third party when the
+        organization holds it.
+
+        The grantee resolves to an account the RCP already exempts, so the
+        grant belongs in neither list. Allowlisting it would name an
+        organization account, and recording it as unresolved would block
+        the key's account over access that never leaves the organization -
+        exactly what an in-organization ARN grantee reports, which is
+        nothing.
+        """
+        results = self._analyze(
+            [
+                {
+                    "GrantId": "grant-abc",
+                    "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                    "Operations": ["Decrypt"],
+                }
+            ],
+            org_account_ids={self.ORG_ACCOUNT, self.THIRD_PARTY},
+        )
+
+        assert results == []
+
+    def test_a_grantee_the_organization_holds_says_so_at_debug(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """
+        This exit records neither a finding nor an unresolved entry.
+
+        It is the only one that does not, so without a line here an
+        operator asking why a grant they can read in the console is absent
+        from the results has no artifact to answer from. DEBUG rather than
+        WARNING because the drop is correct: a warning would fire for
+        every internal unique ID in the organization and bury the grants
+        that do need finding.
+        """
+        with caplog.at_level(logging.DEBUG):
+            self._analyze(
+                [
+                    {
+                        "GrantId": "grant-abc",
+                        "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                        "Operations": ["Decrypt"],
+                    }
+                ],
+                org_account_ids={self.ORG_ACCOUNT, self.THIRD_PARTY},
+            )
+
+        dropped = [
+            record for record in caplog.records
+            if self.THIRD_PARTY_ROLE_UNIQUE_ID in record.message
+        ]
+
+        assert len(dropped) == 1
+        assert dropped[0].levelno == logging.DEBUG
+        assert self.THIRD_PARTY in dropped[0].message
+        assert "grant-abc" in dropped[0].message
+
+    def test_a_decoded_grantee_is_attributed_over_a_disagreeing_issuing_account(self) -> None:
+        """
+        IssuingAccount names who created the grant, not who holds it.
+
+        The identifier is the only thing on the grant that says whose the
+        grantee is, so a disagreeing IssuingAccount must not displace it.
+        Allowlisting the issuer would open kms:* to an account that merely
+        created the grant while the account really holding Decrypt stayed
+        denied.
+        """
+        issuing_account = "222222222222"
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": self.THIRD_PARTY_ROLE_UNIQUE_ID,
+                "Operations": ["Decrypt"],
+                "IssuingAccount": f"arn:aws:iam::{issuing_account}:root",
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == []
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        assert [g.grantee_account_id for g in results[0].grants] == [self.THIRD_PARTY]
+        assert issuing_account not in results[0].actions_by_account
+
+    def test_a_unique_id_decoding_out_of_range_is_recorded_rather_than_allowlisted(self) -> None:
+        """
+        A decoding landing outside the accounts AWS can issue is not an
+        account.
+
+        Allowlisting the number would name an account that cannot exist
+        while the real grantee stayed denied, so the grant is recorded as
+        unresolved, exactly as an identifier the encoding does not support
+        for any other reason is.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": "AROA77777777AAAAAAAAA",
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].unresolved_grants == [
+            UnresolvedKMSGrantFinding(
+                grant_id="grant-abc",
+                grantee_principal="AROA77777777AAAAAAAAA",
+                principal_kind="iam_role_unique_id",
+                operations=["kms:Decrypt"],
+                has_constraints=False,
+            )
+        ]
+        assert results[0].grants == []
+        assert results[0].third_party_account_ids == set()
+        assert results[0].actions_by_account == {}
 
 
 class TestAWSManagedKeys:

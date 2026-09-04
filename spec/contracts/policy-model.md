@@ -212,7 +212,11 @@ its account has no business in an allowlist. `is_service_linked_role_arn` in
 `headroom/aws/policy_documents.py` is the one rule, read by `read_principal`
 for a `Principal` element and by `headroom/aws/kms.py` for a grant's
 `GranteePrincipal`, so a policy and a grant agree on what a service-linked
-role is. Pinned by
+role is — wherever one is named by ARN. The rule matches a path and a bare IAM
+unique ID carries none, so a grant naming a service-linked role that way is
+classified by the account the identifier decodes to, like any other grantee;
+[`../checks/rcps/deny_kms_third_party_access.md`](../checks/rcps/deny_kms_third_party_access.md)
+records that as an accepted limitation of decoding. Pinned by
 `test_a_service_linked_role_names_no_account_and_blocks_nothing` and
 `test_a_role_named_like_a_service_role_outside_the_path_is_an_account`.
 
@@ -246,6 +250,21 @@ entry then grants no one access — a replacement with the same name gets a new
 ID — so nothing lives behind it for an RCP to deny, and reading it as naming
 nothing is the reading, not a gap. Pinned by
 `test_a_unique_id_names_nothing_and_blocks_nothing`.
+
+That reading is for a `Principal` element, and rests on the transformation IAM
+documents for policies. A KMS grant's `GranteePrincipal` is read by
+`headroom/aws/kms.py`, not by `read_principal`, and the same bare unique ID
+there names something rather than nothing: `ListGrants` documents no such
+transformation for a grant, so nothing says the entry is dead, and INV-01
+forbids assuming it. Three outcomes follow there instead of one. The eight
+characters after the prefix carry an owning account where the encoding resolves
+them, and that account decides: one outside the organization is an ordinary
+third party and enters the allowlist, and one inside it is not recorded at all.
+Where the encoding resolves nothing the grant is a blocker, recorded under the
+entry's `unresolved_grants`, because access exists that the RCP would deny and
+no allowlist entry can preserve it.
+[`../checks/rcps/deny_kms_third_party_access.md`](../checks/rcps/deny_kms_third_party_access.md)
+owns the argument, the strict classifier, and what a decoding is worth.
 
 The permitted keys are a parameter, because the two policy types differ in one
 key and only one:

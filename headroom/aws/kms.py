@@ -11,7 +11,7 @@ import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Literal, Optional, Set, Tuple
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
@@ -21,6 +21,7 @@ from mypy_boto3_kms.type_defs import KeyListEntryTypeDef
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..types import JsonDict
 from .helpers import get_all_regions, memoize_per_session, paginate
+from .iam_unique_ids import IAMUniqueIDKind, decode_account_id, iam_unique_id_kind
 from .policy_documents import (
     normalize_actions,
     RESOURCE_POLICY_PRINCIPAL_TYPES,
@@ -40,10 +41,13 @@ class UnknownGrantPrincipalError(Exception):
     """
     Raised when a grant names a principal the analyzer cannot classify.
 
-    Dropping it silently would leave its account out of the allowlist,
-    which is the failure this analysis exists to prevent. Only
-    `GranteePrincipal` is read; the message names the grant and the key
-    carrying it.
+    An identifier in the documented IAM unique ID shape does not reach
+    here: its account is read out of it, or, when the encoding does not
+    support it, the grant is recorded as unresolved. What reaches here
+    matched no shape the analyzer reads at all. Dropping it silently would
+    leave its account out of the allowlist, which is the failure this
+    analysis exists to prevent. Only `GranteePrincipal` is read; the
+    message names the grant and the key carrying it.
     """
 
 
@@ -63,6 +67,20 @@ KMS_RETIRE_GRANT_ACTION = "kms:RetireGrant"
 AWS_MANAGED_KEY_MANAGER = "AWS"
 
 
+# How KMSGrantFinding.grantee_account_id was arrived at: "arn" when the
+# GranteePrincipal spelled the account out, "iam_unique_id" when the account
+# was decoded from a bare identifier instead. It sits here rather than in
+# iam_unique_ids.py because "arn" has nothing to do with unique IDs.
+#
+# Both values are written verbatim into the results file as
+# grants[].grantee_account_id_source, which the check's specification
+# enumerates, so they are part of the contract operators, greps, and
+# downstream tooling read those files by. Headroom's own readers take only
+# the summary block, so renaming one would fail no test - which is why the
+# constraint is written down here.
+GranteeAccountIDSource = Literal["arn", "iam_unique_id"]
+
+
 @dataclass
 class KMSGrantFinding:
     """
@@ -72,6 +90,15 @@ class KMSGrantFinding:
         grant_id: The grant's ID, which is what RetireGrant takes
         grantee_account_id: Account of the grantee, which is outside the
             organization
+        grantee_principal: The complete GranteePrincipal string exactly as
+            ListGrants returned it, never truncated, so the account above
+            can be checked against what the grant says. An ARN-backed one
+            is redacted on the way to disk like every other ARN, under
+            --exclude-account-ids
+        grantee_account_id_source: Which of the two readings produced that
+            account: an ARN stated it, or a unique ID encoded it.
+            iam_unique_ids.py owns what the second reading is worth and what
+            a wrong one would cost
         retiring_principal_account_id: Always None. The retiring principal
             is not read; the field is kept so persisted results keep their
             shape (INV-14)
@@ -84,7 +111,47 @@ class KMSGrantFinding:
     """
     grant_id: str
     grantee_account_id: str
+    grantee_principal: str
+    grantee_account_id_source: GranteeAccountIDSource
     retiring_principal_account_id: Optional[str]
+    operations: List[str]
+    has_constraints: bool
+
+
+@dataclass
+class UnresolvedKMSGrantFinding:
+    """
+    One grant whose grantee is an IAM unique ID no account can be read
+    out of.
+
+    Two identifiers land here: one in the older random format, which sits
+    below the offset the account encoding starts at, and one that decodes
+    past the largest account ID AWS can issue. Neither carries an account.
+
+    The grantee holds whatever the grant's operations authorize, which the
+    RCP would deny, and nothing in the grant says which account it belongs
+    to. IAM documents that a *policy* naming a deleted user or role is
+    rewritten to the unique ID and then grants no one access; KMS documents
+    no such rule for a grant, so the grant is not read as dead (INV-01). It
+    is recorded so the key's account is blocked for KMS and the operator can
+    find the grant, and nothing about it enters the allowlist.
+
+    Attributes:
+        grant_id: The grant's ID, which is what RetireGrant takes
+        grantee_principal: The complete GranteePrincipal string exactly as
+            ListGrants returned it, never truncated, and never redacted
+            either - not because the field is exempt, but because a bare
+            unique ID has no ARN account field for the redactor to match
+        principal_kind: Which prefix the identifier carries
+        operations: The grant's operations, prefixed with `kms:`, sorted.
+            Empty when the grant listed none, which is kept rather than
+            read as harmless
+        has_constraints: True if the grant carries an encryption context
+            constraint, which is recorded and not read
+    """
+    grant_id: str
+    grantee_principal: str
+    principal_kind: IAMUniqueIDKind
     operations: List[str]
     has_constraints: bool
 
@@ -119,6 +186,12 @@ class KMSKeyPolicyAnalysis:
         grants: The key's grants that reach outside the organization, which
             is where a reader looks when the key policy alone does not
             explain an entry in third_party_account_ids
+        unresolved_grants: The key's grants whose grantee is an IAM unique
+            ID the encoding does not support, so no account can be read out
+            of it. Each one is a blocker for this key's account, the
+            grant-surface counterpart of has_non_account_principals: access
+            exists that the RCP would deny, and no allowlist entry can
+            preserve it
         service_principal_sources: Service principals this policy trusts,
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
@@ -132,6 +205,7 @@ class KMSKeyPolicyAnalysis:
     has_wildcard_principal: bool = False
     has_non_account_principals: bool = False
     grants: List[KMSGrantFinding] = field(default_factory=list)
+    unresolved_grants: List[UnresolvedKMSGrantFinding] = field(default_factory=list)
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
 
 
@@ -144,6 +218,12 @@ def _grant_principal_account_id(principal: str, principal_description: str) -> O
     exempts with aws:PrincipalIsAWSService, and a service-linked role,
     recognized by the same rule `read_principal` applies to a policy's
     Principal element, before its account is read.
+
+    An identifier in the documented IAM unique ID shape never reaches
+    here either: the caller sets it aside and reads the account out of it
+    or records the grant as unresolved. The message still names that
+    shape, because an operator reading the abort has to be able to tell a
+    near miss from a shape the analyzer has never seen.
 
     Args:
         principal: GranteePrincipal string from a ListGrants entry
@@ -169,10 +249,11 @@ def _grant_principal_account_id(principal: str, principal_description: str) -> O
         return None
 
     raise UnknownGrantPrincipalError(
-        f"{principal_description} is '{principal}', which is neither an ARN "
-        f"nor an AWS service principal. The analyzer cannot tell whether it "
-        f"belongs to a third-party account, and guessing would risk "
-        f"omitting that account from the RCP allowlist."
+        f"{principal_description} is '{principal}', which is neither an "
+        f"ARN, an AWS service principal, nor an IAM unique ID in the "
+        f"documented shape. The analyzer cannot tell whether it belongs "
+        f"to a third-party account, and guessing would risk omitting that "
+        f"account from the RCP allowlist."
     )
 
 
@@ -208,14 +289,30 @@ def _analyze_key_grants(
     key_id: str,
     key_arn: str,
     org_account_ids: Set[str]
-) -> List[KMSGrantFinding]:
+) -> Tuple[List[KMSGrantFinding], List[UnresolvedKMSGrantFinding]]:
     """
-    Read a key's grants and return those reaching outside the organization.
+    Read a key's grants: those reaching outside the organization, and those
+    whose grantee is an IAM unique ID no account can be read out of.
 
     Grants authorize access independently of the key policy, so a key whose
     policy is clean can still be reachable by a vendor. GetKeyPolicy does
     not report them, which makes an unread grant access that breaks on
     apply with nothing in the results to explain why.
+
+    A grant is skipped before its grantee is read when it is listed with
+    GranteeServicePrincipal, or when its only operation is RetireGrant.
+
+    A grantee named by IAM unique ID is attributed from the identifier
+    alone, which carries its owning account when it is in the current
+    format - a decoding is evidence of that format rather than proof of
+    it, and iam_unique_ids.py owns what the difference costs. Whatever
+    account comes back, that account and its membership in the
+    organization decide the outcome and nothing else does: IssuingAccount
+    names who created the grant, not who holds it, and the key's own
+    account and the key's other grants say nothing about this grantee.
+    Which of the two readings produced the account is recorded on the
+    finding, so the difference reaches the results file rather than dying
+    here.
 
     Args:
         kms_client: Boto3 KMS client
@@ -225,16 +322,21 @@ def _analyze_key_grants(
         org_account_ids: Set of all account IDs in the organization
 
     Returns:
-        List of KMSGrantFinding, one per grant reaching outside the org
+        Two lists: one KMSGrantFinding per grant reaching outside the
+        organization, and one UnresolvedKMSGrantFinding per grant whose
+        GranteePrincipal is an IAM unique ID the encoding does not support
 
     Raises:
         ClientError: If the grants cannot be listed
         KeyError: If a grant carries no GrantId, or neither
-            GranteeServicePrincipal nor GranteePrincipal
-        UnknownGrantPrincipalError: If a grant names a grantee the
-            analyzer cannot classify
+            GranteeServicePrincipal nor GranteePrincipal, unless the grant
+            carries only RetireGrant
+        UnknownGrantPrincipalError: If a grant names a grantee that is
+            neither an ARN, an AWS service principal, nor an IAM unique ID
+            in the documented shape, which is read or recorded instead
     """
     findings: List[KMSGrantFinding] = []
+    unresolved: List[UnresolvedKMSGrantFinding] = []
 
     logger.debug(f"Listing grants for key {key_arn}")
     for page in paginate(kms_client, "list_grants", KeyId=key_id):
@@ -250,18 +352,6 @@ def _analyze_key_grants(
             if grant.get("GranteeServicePrincipal"):
                 continue
 
-            # Every grant not listed with the typed field carries this one.
-            # Dropping a grant with neither would read a missing grantee as
-            # no grantee.
-            grantee_account = _external_grant_account(
-                grant["GranteePrincipal"],
-                org_account_ids,
-                f"The GranteePrincipal of {grant_description}",
-            )
-
-            if grantee_account is None:
-                continue
-
             operations = sorted(
                 f"kms:{operation}"
                 for operation in grant.get("Operations", [])
@@ -269,18 +359,86 @@ def _analyze_key_grants(
 
             # A grant carrying no operations is not one carrying only
             # RetireGrant: nothing says what it authorizes, so it is kept.
+            # Read before the grantee, because what the permission does not
+            # authorize does not depend on who holds it.
             if operations == [KMS_RETIRE_GRANT_ACTION]:
                 continue
+
+            # Every grant not listed with the typed field carries this one.
+            # Dropping a grant with neither would read a missing grantee as
+            # no grantee - of the grants that reach this line, since one
+            # carrying only RetireGrant was already skipped above.
+            principal_kind = iam_unique_id_kind(grant["GranteePrincipal"])
+            grantee_account: Optional[str]
+            account_source: GranteeAccountIDSource
+
+            if principal_kind is not None:
+                # Reached only once the shape has been classified,
+                # because decode_account_id does not re-check it.
+                decoded_account = decode_account_id(grant["GranteePrincipal"])
+
+                # No account to allowlist and none to compare against the
+                # organization. Recorded as a blocker rather than raised
+                # on, which cost the whole organization its results, and
+                # rather than dropped, which INV-01 forbids.
+                if decoded_account is None:
+                    logger.warning(
+                        f"The GranteePrincipal of {grant_description} is "
+                        f"'{grant['GranteePrincipal']}', an IAM unique ID the "
+                        f"encoding does not support, so the key's account is "
+                        f"blocked for KMS and no account is inferred for the "
+                        f"allowlist"
+                    )
+                    unresolved.append(UnresolvedKMSGrantFinding(
+                        grant_id=grant["GrantId"],
+                        grantee_principal=grant["GranteePrincipal"],
+                        principal_kind=principal_kind,
+                        operations=operations,
+                        has_constraints=bool(grant.get("Constraints")),
+                    ))
+                    continue
+
+                # The one exit from this loop that records nothing, so it
+                # is the one an operator cannot reconstruct from the
+                # results. DEBUG and not WARNING: the drop is correct, and
+                # a warning here would fire for every internal unique ID.
+                if decoded_account in org_account_ids:
+                    logger.debug(
+                        f"The GranteePrincipal of {grant_description} is "
+                        f"'{grant['GranteePrincipal']}', which decodes to "
+                        f"{decoded_account}, an account the organization "
+                        f"holds, so the grant is not third-party access"
+                    )
+                    continue
+
+                grantee_account = decoded_account
+                account_source = "iam_unique_id"
+            else:
+                grantee_account = _external_grant_account(
+                    grant["GranteePrincipal"],
+                    org_account_ids,
+                    f"The GranteePrincipal of {grant_description}",
+                )
+
+                # An AWS service principal, a service-linked role, or an
+                # account the organization already holds. Nothing is
+                # recorded, so no reading produced an account to source.
+                if grantee_account is None:
+                    continue
+
+                account_source = "arn"
 
             findings.append(KMSGrantFinding(
                 grant_id=grant["GrantId"],
                 grantee_account_id=grantee_account,
+                grantee_principal=grant["GranteePrincipal"],
+                grantee_account_id_source=account_source,
                 retiring_principal_account_id=None,
                 operations=operations,
                 has_constraints=bool(grant.get("Constraints")),
             ))
 
-    return findings
+    return findings, unresolved
 
 
 def _is_aws_managed_key(kms_client: KMSClient, key_id: str) -> bool:
@@ -373,9 +531,11 @@ def _analyze_key_in_region(
 
     Raises:
         KeyError: If a grant carries no GrantId, or neither
-            GranteeServicePrincipal nor GranteePrincipal
+            GranteeServicePrincipal nor GranteePrincipal, unless the grant
+            carries only RetireGrant
         UnknownGrantPrincipalError: If a grant names a principal the analyzer
-            cannot classify
+            cannot classify, an IAM unique ID excepted, which is read or
+            recorded instead
         MalformedPolicyError: If a Statement is neither an object nor a list,
             or a Principal is neither a string, a list, nor an object
     """
@@ -437,7 +597,7 @@ def _analyze_key_in_region(
             third_party_accounts.add(account_id)
             actions_by_account[account_id].update(actions)
 
-    grants = _analyze_key_grants(kms_client, key_id, key_arn, org_account_ids)
+    grants, unresolved_grants = _analyze_key_grants(kms_client, key_id, key_arn, org_account_ids)
 
     for grant in grants:
         third_party_accounts.add(grant.grantee_account_id)
@@ -457,6 +617,7 @@ def _analyze_key_in_region(
         has_wildcard_principal=has_wildcard,
         has_non_account_principals=has_non_account_principals,
         grants=grants,
+        unresolved_grants=unresolved_grants,
         service_principal_sources=sources,
     )
 
@@ -486,8 +647,10 @@ def analyze_kms_key_policies(
        e. Extract principals and actions
        f. List the key's grants via list_grants() (paginated)
        g. Resolve each grantee to an account, skipping a grant held by a
-          service or a service-linked role, or carrying only RetireGrant.
-          The retiring principal is not read
+          service or a service-linked role, or carrying only RetireGrant,
+          reading the account a grantee's IAM unique ID encodes and
+          recording one the encoding does not support as unresolved. The
+          retiring principal is not read
        h. Identify third-party account IDs (not in org) from both surfaces
        i. Track which actions each third-party account can perform
        j. Detect wildcard principals, which only a policy can carry
@@ -500,15 +663,17 @@ def analyze_kms_key_policies(
             organization scope on a source guard names this organization
 
     Returns:
-        List of KMSKeyPolicyAnalysis for keys with third-party
-        access or wildcards
+        List of KMSKeyPolicyAnalysis for keys with third-party access,
+        wildcards, or a grant to an IAM unique ID the encoding does not
+        support
 
     Raises:
         ClientError: If AWS API calls fail
         KeyError: If a grant carries no GrantId, or neither
-            GranteeServicePrincipal nor GranteePrincipal
+            GranteeServicePrincipal nor GranteePrincipal, unless the grant
+            carries only RetireGrant
         UnknownGrantPrincipalError: If a grant names a principal the
-            analyzer cannot classify
+            analyzer cannot classify, an IAM unique ID excepted
     """
     results: List[KMSKeyPolicyAnalysis] = []
     aws_managed_keys_skipped = 0
@@ -538,8 +703,14 @@ def analyze_kms_key_policies(
                         org_id
                     )
 
+                    # The union of what both consumers of this analyzer
+                    # look for: deny_kms_third_party_access reads every term
+                    # but has_service_source, deny_service_confused_deputy
+                    # reads that one. A key dropped here reaches neither, so
+                    # a term added to either check's own filter has to be
+                    # added here too or that check silently stops seeing it.
                     has_service_source = has_actionable_service_principal_source(analysis.service_principal_sources)
-                    if analysis.third_party_account_ids or analysis.has_wildcard_principal or analysis.has_non_account_principals or has_service_source:
+                    if analysis.third_party_account_ids or analysis.has_wildcard_principal or analysis.has_non_account_principals or has_service_source or analysis.unresolved_grants:
                         results.append(analysis)
 
         except ClientError:
@@ -548,7 +719,8 @@ def analyze_kms_key_policies(
 
     logger.info(
         f"Analyzed KMS keys across {len(regions)} regions, "
-        f"found {len(results)} keys with third-party access or wildcards, "
-        f"skipped {aws_managed_keys_skipped} AWS-managed keys"
+        f"found {len(results)} keys with third-party access, wildcards, or "
+        f"unresolved grants, skipped {aws_managed_keys_skipped} "
+        f"AWS-managed keys"
     )
     return results

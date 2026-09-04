@@ -424,7 +424,10 @@ traceback, with no log line at all: `MalformedPolicyError`,
 `MalformedStatementError` each subclass `Exception` directly, an `Action`
 that is neither a string nor an array raises `TypeError`, and a KMS grant
 carrying no `GrantId`, or neither `GranteeServicePrincipal` nor
-`GranteePrincipal`, raises `KeyError`. Of row 1's four examples, only
+`GranteePrincipal` while carrying any operation other than `RetireGrant`
+alone, raises `KeyError`. A grant carrying only `RetireGrant` is skipped
+before either grantee field is read, so a missing grantee cannot abort it;
+its `GrantId` is read first and still can. Of row 1's four examples, only
 unparseable JSON reaches a handler, because `json.JSONDecodeError` subclasses
 `ValueError`.
 
@@ -434,12 +437,14 @@ from being read as clean — not because every message is equally informative.
 All six classes name the resource whose policy or grant could not be read,
 `UnknownGrantPrincipalError` since it was given the key ARN and the grant ID
 alongside the grantee it could not classify — only the grantee, since a
-grant's retiring principal is not read at all, for the reason
+grant's retiring principal is not read at all. Nor is the grantee ever an IAM
+unique ID in the documented shape: a value the two patterns match is attributed
+or recorded rather than raised on, whether or not an account comes out of it.
+Both are for reasons
 [`../checks/rcps/deny_kms_third_party_access.md`](../checks/rcps/deny_kms_third_party_access.md)
-owns; the bare `TypeError` names only
-the value's Python type, and the `KeyError` only the absent field. None of the
-eight lets the run finish and report the account clean, which is the property
-that matters.
+owns. The bare `TypeError` names only the value's Python type, and the
+`KeyError` only the absent field. None of the eight lets the run finish and
+report the account clean, which is the property that matters.
 
 `UnknownPrincipalTypeError` was for a time the one type on that list with a
 catch site: `headroom/aws/sqs.py` caught it and recorded the queue as a read

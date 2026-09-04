@@ -1683,6 +1683,12 @@ class TestOneReaderPerStatementElement:
             # statement's Principal element, and no allowlist reads it.
             "aws/kms.py._grant_principal_account_id",
             "aws/kms.py._external_grant_account",
+            # Classifies a grant's GranteePrincipal, not a statement's
+            # Principal element. A Principal element can hold a bare unique
+            # ID too, and read_principal is the one rule for that surface;
+            # kms.py reads the grantee through this module rather than
+            # keeping a second copy of the shape.
+            "aws/iam_unique_ids.py.iam_unique_id_kind",
         }
 
     def test_only_policy_documents_normalizes_a_statement_action(self) -> None:
