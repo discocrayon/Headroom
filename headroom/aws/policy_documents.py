@@ -91,6 +91,11 @@ NULL_OPERATOR = "Null"
 
 ACCOUNT_ID_PATTERN = re.compile(r"\d{12}")
 
+# The resource path IAM reserves to AWS services. A role under it is a
+# service-linked role, whatever partition or account the ARN names, and the
+# partition and account are matched by AWS_ARN_ACCOUNT_ID_PATTERN.
+AWS_SERVICE_LINKED_ROLE_PATH_PREFIX = "role/aws-service-role/"
+
 # The keys AWS documents for the Principal element, split by the policy type
 # that accepts them. A canonical user ID is an Amazon S3 identifier and appears
 # only in the policies of services that accept one; a role trust policy does
@@ -827,6 +832,32 @@ def has_actionable_service_principal_source(
     )
 
 
+def is_service_linked_role_arn(principal: str) -> bool:
+    """
+    Report whether a principal string is a service-linked role's ARN.
+
+    IAM reserves the `aws-service-role/` role path to AWS services, so the
+    path identifies the role in any partition and its name is not consulted.
+    RCPs do not impact the permissions of any service-linked role, so no
+    statement Headroom generates can deny one, and its account is never a
+    third party to preserve. Read by `read_principal` for a policy's
+    Principal element and by the KMS grant reader for a grantee, so the two
+    surfaces agree on what a service-linked role is.
+
+    Args:
+        principal: One principal string, from a Principal element or a
+            ListGrants entry
+
+    Returns:
+        True if the string is an ARN whose resource is under the reserved path
+    """
+    arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
+    if not arn_match:
+        return False
+
+    return principal[arn_match.end():].startswith(AWS_SERVICE_LINKED_ROLE_PATH_PREFIX)
+
+
 def _account_ids_in_string(principal: str) -> Set[str]:
     """
     Return the account ID a principal string names, if it names one.
@@ -890,6 +921,15 @@ def read_principal(
             or one this policy type does not accept
     """
     if isinstance(principal, str):
+        # Neither an account nor a blocker: RCPs do not impact a
+        # service-linked role, so there is nothing behind it to preserve.
+        if is_service_linked_role_arn(principal):
+            return PrincipalReading(
+                account_ids=set(),
+                has_wildcard=False,
+                has_non_account_principals=False,
+            )
+
         accounts_named = _account_ids_in_string(principal)
         return PrincipalReading(
             account_ids=accounts_named,

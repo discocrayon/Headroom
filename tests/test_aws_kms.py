@@ -908,13 +908,84 @@ class TestKeyGrants:
         results = self._analyze([
             {
                 "GrantId": "grant-abc",
-                "GranteePrincipal": (
-                    f"arn:aws:iam::{self.ORG_ACCOUNT}:role/aws-service-role/"
-                    "autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
-                ),
+                "GranteePrincipal": f"arn:aws:iam::{self.ORG_ACCOUNT}:role/App",
                 "Operations": ["Decrypt"],
             }
         ])
+
+        assert results == []
+
+    def test_a_key_policy_naming_a_service_linked_role_is_not_recorded(self) -> None:
+        """
+        The service-linked-role exemption does not depend on the surface.
+
+        RCPs do not impact any service-linked role, whether a key policy or a
+        grant names it, so a policy statement granting a foreign one puts
+        nothing in the results and nothing in the allowlist.
+        """
+        results = self._analyze([], policy={
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": (
+                            f"arn:aws:iam::{self.THIRD_PARTY}:role/aws-service-role/"
+                            "example.amazonaws.com/AWSServiceRoleForExample"
+                        )
+                    },
+                    "Action": "kms:Decrypt",
+                    "Resource": "*",
+                }
+            ],
+        })
+
+        assert results == []
+
+    def test_a_key_policy_statement_granting_only_retire_grant_is_not_recorded(self) -> None:
+        """
+        kms:RetireGrant is not effective in a key policy, so a statement
+        granting only it authorizes nothing.
+
+        AWS documents that the grant itself decides who may retire it and
+        that the permission has no effect in a key policy or an RCP. Reading
+        the statement anyway allowlisted an account the RCP could not have
+        denied anything to.
+        """
+        results = self._analyze([], policy={
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                    },
+                    "Action": "kms:RetireGrant",
+                    "Resource": "*",
+                }
+            ],
+        })
+
+        assert results == []
+
+    def test_a_wildcard_statement_granting_only_retire_grant_is_not_a_violation(self) -> None:
+        """
+        An ineffective statement cannot be a blocker either.
+
+        `Principal: "*"` with only kms:RetireGrant hands nobody anything the
+        RCP could deny, so it must not withhold the RCP from the account.
+        """
+        results = self._analyze([], policy={
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": ["kms:RetireGrant"],
+                    "Resource": "*",
+                }
+            ],
+        })
 
         assert results == []
 
@@ -1189,6 +1260,31 @@ class TestKeyGrants:
         assert "GranteePrincipal" in message
         assert "grant-abc" in message
         assert f"arn:aws:kms:us-east-1:{self.ORG_ACCOUNT}:key/key-123" in message
+
+    def test_an_external_grantee_beside_an_opaque_retiring_principal_is_recorded(self) -> None:
+        """
+        Ignoring the retiring field does not depend on who the grantee is.
+
+        The external grantee holds Decrypt, so it is recorded like any other,
+        and the opaque retiring value beside it neither aborts the scan nor
+        fills the compatibility field.
+        """
+        results = self._analyze([
+            {
+                "GrantId": "grant-abc",
+                "GranteePrincipal": (
+                    f"arn:aws:iam::{self.THIRD_PARTY}:role/VendorRole"
+                ),
+                "RetiringPrincipal": "AWS Internal",
+                "Operations": ["Decrypt"],
+            }
+        ])
+
+        assert len(results) == 1
+        assert results[0].third_party_account_ids == {self.THIRD_PARTY}
+        grant = results[0].grants[0]
+        assert grant.grantee_account_id == self.THIRD_PARTY
+        assert grant.retiring_principal_account_id is None
 
     def test_an_external_retiring_principal_is_not_a_third_party(self) -> None:
         """

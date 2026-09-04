@@ -989,6 +989,43 @@ class TestReadPrincipal:
 
         assert reading.account_ids == {"222222222222"}
 
+    def test_a_service_linked_role_names_no_account_and_blocks_nothing(self) -> None:
+        """
+        A service-linked role is neither an account nor a blocker.
+
+        RCPs do not impact the permissions of any service-linked role, so
+        no statement Headroom generates can deny one and its account has no
+        business in an allowlist. IAM reserves the `aws-service-role/` role
+        path to AWS services, so the path identifies the role in any
+        partition; the name is not consulted.
+        """
+        reading = read_principal(
+            {
+                "AWS": [
+                    "arn:aws:iam::222222222222:role/aws-service-role/"
+                    "example.amazonaws.com/AWSServiceRoleForExample",
+                    "arn:aws-cn:iam::222222222222:role/aws-service-role/"
+                    "example.amazonaws.com.cn/AWSServiceRoleForExample",
+                ]
+            },
+            RESOURCE_POLICY_PRINCIPAL_TYPES,
+            "Queue 'example'",
+        )
+
+        assert reading.account_ids == set()
+        assert reading.has_wildcard is False
+        assert reading.has_non_account_principals is False
+
+    def test_a_role_named_like_a_service_role_outside_the_path_is_an_account(self) -> None:
+        """Anyone can name a role AWSServiceRoleForExample; only the path is reserved."""
+        reading = read_principal(
+            {"AWS": "arn:aws:iam::222222222222:role/AWSServiceRoleForExample"},
+            RESOURCE_POLICY_PRINCIPAL_TYPES,
+            "Queue 'example'",
+        )
+
+        assert reading.account_ids == {"222222222222"}
+
     def test_a_bare_wildcard_is_a_wildcard_naming_no_account(self) -> None:
         """`Principal: "*"` reaches everyone, so it names nobody in particular."""
         reading = read_principal(
@@ -1639,6 +1676,9 @@ class TestOneReaderPerStatementElement:
             "aws/policy_documents.py._account_ids_in_string",
             "aws/policy_documents.py.read_principal",
             "aws/policy_documents.py._service_principals",
+            # The one rule for a service-linked role, read by read_principal
+            # for a Principal element and by kms.py for a grantee.
+            "aws/policy_documents.py.is_service_linked_role_arn",
             # A grant's principal is a plain ARN string from ListGrants, not a
             # statement's Principal element, and no allowlist reads it.
             "aws/kms.py._grant_principal_account_id",

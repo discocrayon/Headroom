@@ -27,6 +27,7 @@ from .policy_documents import (
     ServicePrincipalSource,
     has_actionable_service_principal_source,
     has_not_principal,
+    is_service_linked_role_arn,
     normalize_statements,
     read_principal,
     read_service_principal_sources,
@@ -51,17 +52,9 @@ class UnknownGrantPrincipalError(Exception):
 # so they are never denied and never need an allowlist entry.
 AWS_SERVICE_PRINCIPAL_SUFFIX = ".amazonaws.com"
 
-# A service-linked role, in any partition. IAM reserves the `aws-service-role/`
-# role path to AWS services, so the path identifies the role and its name is
-# not consulted. RCPs do not impact the permissions of any service-linked
-# role, so a grant to one is never denied and never needs an allowlist entry.
-AWS_SERVICE_LINKED_ROLE_ARN_PATTERN = (
-    r'^arn:aws[a-z0-9-]*:iam::\d{12}:role/aws-service-role/'
-)
-
-# The one KMS permission AWS documents RCPs as not impacting. A grant whose
-# operations are only this authorizes nothing the RCP can deny, and the
-# retiring principal, who can do only this, is not read at all.
+# The one KMS permission RCPs do not impact, so a statement or grant carrying
+# only it authorizes nothing the RCP can deny. The check's specification owns
+# the argument, and why the retiring principal is not read at all.
 KMS_RETIRE_GRANT_ACTION = "kms:RetireGrant"
 
 # DescribeKey reports this KeyManager for a key an AWS service created and
@@ -75,17 +68,13 @@ class KMSGrantFinding:
     """
     One grant on a key that reaches outside the organization.
 
-    A finding exists when the grantee is outside the organization, so
-    `grantee_account_id` is always set on one.
-
     Attributes:
         grant_id: The grant's ID, which is what RetireGrant takes
         grantee_account_id: Account of the grantee, which is outside the
             organization
-        retiring_principal_account_id: Always None. Kept so persisted
-            results keep their shape (INV-14). The retiring principal can
-            call RetireGrant and nothing else, and RCPs do not impact
-            kms:RetireGrant, so the field is no longer read
+        retiring_principal_account_id: Always None. The retiring principal
+            is not read; the field is kept so persisted results keep their
+            shape (INV-14)
         operations: The grant's operations, prefixed with `kms:` to match
             the spelling a key policy uses. Empty when the grant listed
             none, which is kept rather than read as harmless
@@ -94,7 +83,7 @@ class KMSGrantFinding:
             that real access may be narrower than the operations suggest
     """
     grant_id: str
-    grantee_account_id: Optional[str]
+    grantee_account_id: str
     retiring_principal_account_id: Optional[str]
     operations: List[str]
     has_constraints: bool
@@ -153,9 +142,8 @@ def _grant_principal_account_id(principal: str, principal_description: str) -> O
     Two kinds of grantee resolve to None because the RCP cannot deny them:
     an AWS service principal, which has no account and which the RCP
     exempts with aws:PrincipalIsAWSService, and a service-linked role,
-    whose permissions AWS documents RCPs as not impacting. The role is
-    recognized by its reserved `aws-service-role/` path, before its
-    account is read, so its account is never a third party.
+    recognized by the same rule `read_principal` applies to a policy's
+    Principal element, before its account is read.
 
     Args:
         principal: GranteePrincipal string from a ListGrants entry
@@ -170,7 +158,7 @@ def _grant_principal_account_id(principal: str, principal_description: str) -> O
         UnknownGrantPrincipalError: If the principal is neither an ARN
             nor an AWS service principal
     """
-    if re.match(AWS_SERVICE_LINKED_ROLE_ARN_PATTERN, principal):
+    if is_service_linked_role_arn(principal):
         return None
 
     arn_match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, principal)
@@ -281,7 +269,7 @@ def _analyze_key_grants(
 
             # A grant carrying no operations is not one carrying only
             # RetireGrant: nothing says what it authorizes, so it is kept.
-            if operations and set(operations) == {KMS_RETIRE_GRANT_ACTION}:
+            if operations == [KMS_RETIRE_GRANT_ACTION]:
                 continue
 
             findings.append(KMSGrantFinding(
@@ -415,6 +403,13 @@ def _analyze_key_in_region(
         if statement.get("Effect") != "Allow":
             continue
 
+        # kms:RetireGrant is not effective in a key policy, so a statement
+        # granting only it authorizes nothing, whoever it names - not even
+        # a wildcard is a blocker here.
+        actions = normalize_actions(statement.get("Action", []))
+        if actions == {KMS_RETIRE_GRANT_ACTION}:
+            continue
+
         # An Allow with NotPrincipal reaches everyone it does not name,
         # which is what the wildcard flag records
         if has_not_principal(statement):
@@ -435,11 +430,7 @@ def _analyze_key_in_region(
         )
 
         has_wildcard = has_wildcard or reading.has_wildcard
-        account_ids = reading.account_ids
-
-        actions = normalize_actions(statement.get("Action", []))
-
-        for account_id in account_ids:
+        for account_id in reading.account_ids:
             if account_id in org_account_ids:
                 continue
 
@@ -449,9 +440,8 @@ def _analyze_key_in_region(
     grants = _analyze_key_grants(kms_client, key_id, key_arn, org_account_ids)
 
     for grant in grants:
-        if grant.grantee_account_id is not None:
-            third_party_accounts.add(grant.grantee_account_id)
-            actions_by_account[grant.grantee_account_id].update(grant.operations)
+        third_party_accounts.add(grant.grantee_account_id)
+        actions_by_account[grant.grantee_account_id].update(grant.operations)
 
     actions_by_account_serializable = {
         account_id: sorted(actions)
@@ -496,9 +486,8 @@ def analyze_kms_key_policies(
        e. Extract principals and actions
        f. List the key's grants via list_grants() (paginated)
        g. Resolve each grantee to an account, skipping a grant held by a
-          service or a service-linked role, or carrying only RetireGrant,
-          none of which the RCP can deny. The retiring principal is not
-          read: RCPs do not impact kms:RetireGrant
+          service or a service-linked role, or carrying only RetireGrant.
+          The retiring principal is not read
        h. Identify third-party account IDs (not in org) from both surfaces
        i. Track which actions each third-party account can perform
        j. Detect wildcard principals, which only a policy can carry

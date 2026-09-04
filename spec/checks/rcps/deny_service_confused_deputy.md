@@ -144,6 +144,7 @@ own `Null` clause makes an `...IfExists` guard on that one key safe — see
 | Failure | Behavior |
 |---|---|
 | Any `ClientError` from the six analyzers | Propagates, aborting the run (INV-02) |
+| Any other abort one of the six analyzers raises — `MalformedPolicyError`, `UnknownPrincipalTypeError`, `UnknownGranteeTypeError`, `UnknownGrantPrincipalError`, `InvalidFederatedPrincipalError`, a `TypeError` on an `Action`, or a `KeyError` on a KMS grant missing its ID or its grantee | Propagates, aborting the run. This check re-runs the analyzers, so it inherits every abort they have; each analyzer's own specification owns when it raises |
 | A source key under an operator that does not pin it, an `aws:SourceAccount` value that is neither an account ID nor a wildcard, or an unreadable organization scope | Recorded as `read_failure` on the finding, which makes it a violation |
 
 The second row is deliberate and is the one place this check does not abort. The

@@ -181,6 +181,7 @@ is not a safe guess (INV-01).
 | An account ID or an ARN | The 12-digit account ID it names |
 | An ARN whose account field is not twelve digits | Carries no account ID — a blocker. CloudFront's origin access identity user, `arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity <id>`, is the documented case |
 | A bare unique ID, `AROA…` or `AIDA…` | Nothing. AWS writes it in place of a deleted user's or role's ARN and documents that the entry then grants no one access, so it is neither an account nor a blocker |
+| A service-linked role ARN — a resource under `role/aws-service-role/`, in any partition | Nothing. RCPs do not impact the permissions of any service-linked role, so no statement Headroom generates can deny one and it is neither an account nor a blocker. IAM reserves that path to AWS services, so the path identifies the role and its name is not consulted |
 | `Service` | Not an account principal, and not a blocker |
 | `Federated` | Carries no account ID — a blocker. A SAML provider ARN does contain twelve digits, but they name the provider's host account, not the caller's. |
 | `CanonicalUser` | An opaque identifier that maps to an account only through an API call the scan does not make — a blocker |
@@ -200,6 +201,20 @@ Callers must apply their own `Effect` gate **before** consulting `NotPrincipal`.
 A statement carrying both `Principal` and `NotPrincipal` is not valid IAM and
 cannot be stored; were one to arrive, it is treated as a wildcard rather than
 letting the `Principal` half stand in for a broader grant.
+
+A service-linked role ARN is the other account-less string that is not a
+blocker, and the one ARN that does name an account without that account being
+recorded. AWS states in the
+[RCP documentation](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_rcps.html#actions-not-restricted-by-rcps)
+that RCPs do not impact the effective permissions of any service-linked role,
+so a statement granting one is never denied by anything Headroom generates and
+its account has no business in an allowlist. `is_service_linked_role_arn` in
+`headroom/aws/policy_documents.py` is the one rule, read by `read_principal`
+for a `Principal` element and by `headroom/aws/kms.py` for a grant's
+`GranteePrincipal`, so a policy and a grant agree on what a service-linked
+role is. Pinned by
+`test_a_service_linked_role_names_no_account_and_blocks_nothing` and
+`test_a_role_named_like_a_service_role_outside_the_path_is_an_account`.
 
 The account ID is extracted from an ARN with a deliberately loose pattern: the
 service segment is unconstrained, because a resource-policy principal can be an

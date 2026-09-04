@@ -87,8 +87,8 @@ table owns why.
 | Aborts | A principal key AWS does not document | The run aborts |
 | Compliant | A grant whose `GranteePrincipal` is an ordinary ARN outside the organization, with any operation other than `RetireGrant` alone, or with no `Operations` | `COMPLIANT`; the grantee's account enters the allowlist |
 | Not recorded | A grant listed with `GranteeServicePrincipal`, or whose `GranteePrincipal` is an AWS service principal | Not in the output; the RCP exempts services with `aws:PrincipalIsAWSService`. When the typed field is present the display `GranteePrincipal` beside it is not read |
-| Not recorded | A grant whose `GranteePrincipal` is a service-linked role, in any partition, identified by the reserved `role/aws-service-role/` path | Not in the output, whichever account holds the role; RCPs do not impact service-linked roles |
-| Not recorded | A grant whose nonempty `Operations` is only `RetireGrant` | Not in the output; RCPs do not impact `kms:RetireGrant` |
+| Not recorded | A policy statement or a grant naming a service-linked role, in any partition, identified by the reserved `role/aws-service-role/` path | Not in the output, whichever account holds the role; RCPs do not impact service-linked roles. [`../../contracts/policy-model.md`](../../contracts/policy-model.md#principals) owns the rule, and both surfaces read it |
+| Not recorded | A grant whose nonempty `Operations` is only `RetireGrant`, or a policy statement whose only action is the literal `kms:RetireGrant` | Not in the output; RCPs do not impact `kms:RetireGrant`, and the permission is not effective in a key policy at all. Such a statement is skipped whole, so `Principal: "*"` or `NotPrincipal` on it is not a blocker either |
 | Not read | `RetiringPrincipal` and `RetiringServicePrincipal`, whatever they hold | Never classified, allowlisted, or failed on |
 | Aborts | A `GranteePrincipal` that is neither an ARN nor an AWS service principal, on a grant with no `GranteeServicePrincipal` | The run aborts |
 
@@ -109,16 +109,22 @@ opaque display value such as `AWS Internal` there, and reading it through the
 grantee's classifier aborted the whole organization scan over a value that
 bears on nothing the RCP does. The same reasoning drops a grant whose only
 operation is `RetireGrant`, since the grantee then holds nothing the RCP can
-deny. Neither exemption is a statement about grants in general — an SCP or an
-identity policy can deny `kms:RetireGrant` — only about this check's RCP.
+deny, and a key policy statement whose only action is `kms:RetireGrant`, which
+AWS documents as not effective in a key policy and so authorizes nothing to
+anyone — the statement is skipped before its principal is read, so a wildcard
+on it blocks nothing. The action is matched literally, as every action in this
+corpus is: `kms:retiregrant` in another case, or `kms:Retire*`, is read as an
+ordinary statement and errs toward recording. Neither exemption is a statement
+about `kms:RetireGrant` in general — an SCP or an identity policy can deny it —
+only about this check's RCP.
 
-A service-linked role is recognized by its path, not its name. IAM reserves
-the `aws-service-role/` role path to AWS services, so a role under it was
-created by a service, while a role named `AWSServiceRoleForExample` outside
-that path is an ordinary role anyone can create and is classified by its
-account like any other. The path is matched in every partition. A
-service-linked role in another account is still not a third party: RCPs do not
-impact the permissions of any service-linked role, so the RCP cannot deny it.
+A service-linked role is exempt on both surfaces by the one rule
+[`../../contracts/policy-model.md`](../../contracts/policy-model.md#principals)
+owns: the reserved `aws-service-role/` path, in any partition, and never the
+name. A role named `AWSServiceRoleForExample` outside that path is an ordinary
+role anyone can create and is classified by its account like any other. A
+service-linked role in another account is still not a third party, since the
+RCP cannot deny it.
 
 A grant with no `Operations` is not one carrying only `RetireGrant`. Nothing in
 it says what it authorizes, and INV-01 forbids reading that silence as safe,
@@ -297,6 +303,15 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
     grant ID.
 20. A grant with neither `GranteeServicePrincipal` nor `GranteePrincipal` →
     the run aborts with `KeyError`.
+21. A key policy statement granting `kms:Decrypt` to a service-linked role in
+    `999999999999` → not recorded, as the same role would be as a grantee.
+22. A key policy statement granting only `kms:RetireGrant` to an ordinary role
+    in `999999999999` → not recorded.
+23. A key policy statement granting only `kms:RetireGrant` to `Principal: "*"`
+    → not recorded, and not a violation.
+24. A grant to an ordinary role in `999999999999` with
+    `RetiringPrincipal: "AWS Internal"` → compliant; the grantee's account
+    enters the allowlist and `retiring_principal_account_id` is `null`.
 
 ## Referenced invariants
 
