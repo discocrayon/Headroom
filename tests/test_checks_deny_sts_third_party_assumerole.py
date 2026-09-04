@@ -284,7 +284,7 @@ class TestCheckThirdPartyAssumeRole:
 
             summary = results_data["summary"]
             expected_summary_keys = {
-                "account_name", "account_id", "check", "total_roles_analyzed",
+                "account_name", "account_id", "check", "scanned_at", "total_roles_analyzed",
                 "roles_third_parties_can_access", "roles_with_wildcards",
                 "violations", "unique_third_party_accounts", "third_party_account_count"
             }

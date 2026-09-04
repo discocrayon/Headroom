@@ -8,10 +8,12 @@ implement three methods: analyze(), categorize_result(), and build_summary_field
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Generic, List, TypeVar
 
 from boto3.session import Session
 
+from ..constants import SCAN_TIMESTAMP_FORMAT
 from ..enums import CheckCategory
 from ..types import JsonDict
 from ..write_results import write_check_results
@@ -171,6 +173,7 @@ class BaseCheck(ABC, Generic[T]):
             "account_name": self.account_name,
             "account_id": self.account_id,
             "check": self.check_name,
+            "scanned_at": datetime.now().astimezone().strftime(SCAN_TIMESTAMP_FORMAT),
             **self.build_summary_fields(check_result),
         }
         check_result.summary = summary

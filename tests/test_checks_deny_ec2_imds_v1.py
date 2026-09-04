@@ -424,8 +424,8 @@ class TestCheckDenyEc2ImdsV1:
             # Verify summary structure
             summary = results_data["summary"]
             expected_summary_keys = {
-                "account_name", "account_id", "check", "total_instances", "violations",
-                "exemptions", "compliant", "compliance_percentage"
+                "account_name", "account_id", "check", "scanned_at", "total_instances",
+                "violations", "exemptions", "compliant", "compliance_percentage"
             }
             assert set(summary.keys()) == expected_summary_keys
 
