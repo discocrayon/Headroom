@@ -258,7 +258,8 @@ generated statement carries the matching exemption condition.
       "third_party_account_ids": [
         "111111111111"
       ],
-      "has_wildcard_principal": false
+      "has_wildcard_principal": false,
+      "confined_by": []
     }
   ],
   "roles_with_wildcards": []
@@ -267,7 +268,9 @@ generated statement carries the matching exemption condition.
 
 A third-party account here is a finding, not a violation: it becomes an entry in
 the generated allowlist. A wildcard principal is the violation, because no
-allowlist can preserve it.
+allowlist can preserve it. `confined_by` names the condition keys that bounded
+a wildcard back to a set the allowlist could carry, and is empty when no
+statement held one.
 
 ## Directory layout after a run
 

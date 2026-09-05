@@ -67,7 +67,6 @@ class CheckSpecification:
         frontmatter: Parsed frontmatter mapping, empty if the document has none
         kind_directory: The checks/ subdirectory the document was found in
     """
-
     path: Path
     frontmatter: Dict[str, Any]
     kind_directory: str

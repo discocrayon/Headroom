@@ -19,6 +19,7 @@ from mypy_boto3_kms.client import KMSClient
 from mypy_boto3_kms.type_defs import KeyListEntryTypeDef
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+from ..enums import PolicyService
 from ..types import JsonDict
 from .helpers import get_all_regions, memoize_per_session, paginate
 from .iam_unique_ids import IAMUniqueIDKind, decode_account_id, iam_unique_id_kind
@@ -30,8 +31,8 @@ from .policy_documents import (
     has_not_principal,
     is_service_linked_role_arn,
     normalize_statements,
-    read_principal,
     read_service_principal_sources,
+    read_statement_principals,
 )
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,10 @@ class KMSKeyPolicyAnalysis:
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
             analysis's own third-party accounts or wildcard flag.
+        confined_by: The condition keys, lower-cased, that each bounded a
+            statement on their own, unioned across this policy's statements.
+            Recorded whether or not the resource still blocks, and whether or
+            not the statement they bounded named a wildcard.
     """
     key_id: str
     key_arn: str
@@ -207,6 +212,7 @@ class KMSKeyPolicyAnalysis:
     grants: List[KMSGrantFinding] = field(default_factory=list)
     unresolved_grants: List[UnresolvedKMSGrantFinding] = field(default_factory=list)
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+    confined_by: Set[str] = field(default_factory=set)
 
 
 def _grant_principal_account_id(principal: str, principal_description: str) -> Optional[str]:
@@ -216,7 +222,7 @@ def _grant_principal_account_id(principal: str, principal_description: str) -> O
     Two kinds of grantee resolve to None because the RCP cannot deny them:
     an AWS service principal, which has no account and which the RCP
     exempts with aws:PrincipalIsAWSService, and a service-linked role,
-    recognized by the same rule `read_principal` applies to a policy's
+    recognized by the same rule `_read_principal` applies to a policy's
     Principal element, before its account is read.
 
     An identifier in the documented IAM unique ID shape never reaches
@@ -449,11 +455,12 @@ def _is_aws_managed_key(kms_client: KMSClient, key_id: str) -> bool:
     generates can reach one, and nothing about one is worth reading. Its
     policy is written by the owning service and cannot be changed, and it
     grants `Principal: {"AWS": "*"}` narrowed by `kms:CallerAccount` to the
-    key's own account - which `read_principal` reads as a wildcard, so
-    reading it blocked every account holding such a key for the KMS RCP
-    over a policy the operator could not fix. The key is described before
-    its policy and grants are read, so a skipped key costs one call rather
-    than three.
+    key's own account - a wildcard that blocked every account holding such
+    a key for the KMS RCP over a policy the operator could not fix, before
+    that narrowing was read. The skip does not rest on the narrowing being
+    read: the key type is the answer whatever its policy says. The key is
+    described before its policy and grants are read, so a skipped key costs
+    one call rather than three.
 
     Args:
         kms_client: Boto3 KMS client
@@ -524,7 +531,8 @@ def _analyze_key_in_region(
         region: AWS region
         org_account_ids: Set of all account IDs in the organization
         org_id: This organization's ID, deciding whether an
-            organization scope on a source guard names this organization
+            organization scope on a source guard or on a confining
+            principal key names this organization
 
     Returns:
         KMSKeyPolicyAnalysis result for this key
@@ -551,6 +559,7 @@ def _analyze_key_in_region(
     has_wildcard = False
     has_non_account_principals = False
     sources: List[ServicePrincipalSource] = []
+    confined_by: Set[str] = set()
 
     policy = _read_key_policy(kms_client, key_id, region)
     statements = (
@@ -576,11 +585,9 @@ def _analyze_key_in_region(
             has_wildcard = True
             continue
 
-        principal = statement.get("Principal")
-        if not principal:
-            continue
-
-        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
+        reading = read_statement_principals(
+            statement, RESOURCE_POLICY_PRINCIPAL_TYPES, PolicyService.KMS, org_id, resource_description
+        )
         sources.extend(
             read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
         )
@@ -590,6 +597,8 @@ def _analyze_key_in_region(
         )
 
         has_wildcard = has_wildcard or reading.has_wildcard
+        confined_by.update(reading.confined_by)
+
         for account_id in reading.account_ids:
             if account_id in org_account_ids:
                 continue
@@ -619,6 +628,7 @@ def _analyze_key_in_region(
         grants=grants,
         unresolved_grants=unresolved_grants,
         service_principal_sources=sources,
+        confined_by=confined_by,
     )
 
 

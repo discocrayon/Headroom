@@ -291,9 +291,53 @@ class TestCheckThirdPartyAssumeRole:
             assert set(summary.keys()) == expected_summary_keys
 
             for role in results_data["roles_third_parties_can_access"]:
-                expected_keys = {"role_name", "role_arn", "third_party_account_ids", "has_wildcard_principal"}
+                expected_keys = {"role_name", "role_arn", "third_party_account_ids", "has_wildcard_principal", "confined_by"}
                 assert set(role.keys()) == expected_keys
 
             for role in results_data["roles_with_wildcards"]:
-                expected_keys = {"role_name", "role_arn", "third_party_account_ids", "has_wildcard_principal"}
+                expected_keys = {"role_name", "role_arn", "third_party_account_ids", "has_wildcard_principal", "confined_by"}
                 assert set(role.keys()) == expected_keys
+
+    def test_the_role_entry_names_the_key_that_confined_the_wildcard(self) -> None:
+        """
+        The entry records why the trust policy stopped counting as a wildcard.
+
+        Without the key, a reader of the result file sees a role with
+        `has_wildcard_principal: false` and no way to tell a trust policy
+        that never named a wildcard from one whose wildcard a condition
+        bounded.
+        """
+        mock_session = MagicMock()
+        org_account_ids: Set[str] = {"111111111111"}
+
+        trust_policy_results = [
+            TrustPolicyAnalysis(
+                role_name="ConfinedRole",
+                role_arn="arn:aws:iam::111111111111:role/ConfinedRole",
+                third_party_account_ids={"333333333333"},
+                has_wildcard_principal=False,
+                confined_by={"aws:principalarn"},
+            )
+        ]
+
+        with (
+            patch("headroom.checks.rcps.deny_sts_third_party_assumerole.analyze_iam_roles_trust_policies") as mock_analyze,
+            patch("headroom.checks.base.write_check_results") as mock_write,
+            patch("builtins.print")
+        ):
+            mock_analyze.return_value = trust_policy_results
+
+            check = ThirdPartyAssumeRoleCheck(
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                account_name="test-account",
+                account_id="111111111111",
+                results_dir=DEFAULT_RESULTS_DIR,
+                org_account_ids=org_account_ids,
+                org_id=ORG_ID,
+            )
+            check.execute(mock_session)
+
+            results_data = mock_write.call_args[1]["results_data"]
+
+        role = results_data["roles_third_parties_can_access"][0]
+        assert role["confined_by"] == ["aws:principalarn"]

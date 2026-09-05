@@ -431,7 +431,6 @@ class TestMalformedFrontmatterValues:
 
 class TestConflictRegister:
     """The register and the check documents are two views of one set."""
-
     CONFLICT = (
         "## Known conflict: the summary omits violations\n\n"
         "**Status: unresolved.**\n\n"

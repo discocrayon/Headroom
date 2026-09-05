@@ -19,6 +19,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_ecr.client import ECRClient
 from mypy_boto3_ecr.type_defs import RepositoryTypeDef
 
+from ..enums import PolicyService
 from ..types import JsonDict
 from .helpers import get_all_regions, memoize_per_session, paginate
 from .policy_documents import (
@@ -28,8 +29,8 @@ from .policy_documents import (
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
-    read_principal,
     read_service_principal_sources,
+    read_statement_principals,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,10 @@ class ECRPolicyAnalysis:
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
             analysis's own third-party accounts or wildcard flag.
+        confined_by: The condition keys, lower-cased, that each bounded a
+            statement on their own, unioned across this policy's statements.
+            Recorded whether or not the resource still blocks, and whether or
+            not the statement they bounded named a wildcard.
     """
     scope: PolicyScope
     region: str
@@ -77,6 +82,7 @@ class ECRPolicyAnalysis:
     has_wildcard_principal: bool = False
     has_non_account_principals: bool = False
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+    confined_by: Set[str] = field(default_factory=set)
 
 
 class PolicyFindings(NamedTuple):
@@ -96,12 +102,17 @@ class PolicyFindings(NamedTuple):
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
             analysis's own third-party accounts or wildcard flag.
+        confined_by: The condition keys, lower-cased, that each bounded a
+            statement on their own, unioned across this policy's statements.
+            Recorded whether or not the resource still blocks, and whether or
+            not the statement they bounded named a wildcard.
     """
     third_party_account_ids: Set[str]
     actions_by_account: Dict[str, List[str]]
     has_wildcard_principal: bool
     has_non_account_principals: bool
     service_principal_sources: List[ServicePrincipalSource]
+    confined_by: Set[str]
 
 
 def _analyze_policy_statements(
@@ -121,7 +132,8 @@ def _analyze_policy_statements(
         context: Human-readable name for the policy, used in error messages
         org_account_ids: Set of all account IDs in the organization
         org_id: This organization's ID, deciding whether an
-            organization scope on a source guard names this organization
+            organization scope on a source guard or on a confining
+            principal key names this organization
 
     Returns:
         PolicyFindings summarizing the policy's third-party grants
@@ -135,6 +147,7 @@ def _analyze_policy_statements(
     has_wildcard = False
     has_non_account_principals = False
     sources: List[ServicePrincipalSource] = []
+    confined_by: Set[str] = set()
 
     for statement in normalize_statements(policy, context):
         if statement.get("Effect") != "Allow":
@@ -146,11 +159,9 @@ def _analyze_policy_statements(
             has_wildcard = True
             continue
 
-        principal = statement.get("Principal")
-        if not principal:
-            continue
-
-        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, context)
+        reading = read_statement_principals(
+            statement, RESOURCE_POLICY_PRINCIPAL_TYPES, PolicyService.ECR, org_id, context
+        )
         sources.extend(
             read_service_principal_sources(statement, org_account_ids, org_id, context)
         )
@@ -161,6 +172,8 @@ def _analyze_policy_statements(
 
         if reading.has_wildcard:
             has_wildcard = True
+
+        confined_by.update(reading.confined_by)
 
         account_ids = reading.account_ids
 
@@ -182,6 +195,7 @@ def _analyze_policy_statements(
         has_wildcard_principal=has_wildcard,
         has_non_account_principals=has_non_account_principals,
         service_principal_sources=sources,
+        confined_by=confined_by,
     )
 
 
@@ -249,6 +263,7 @@ def _analyze_repository_in_region(
         has_wildcard_principal=findings.has_wildcard_principal,
         has_non_account_principals=findings.has_non_account_principals,
         service_principal_sources=findings.service_principal_sources,
+        confined_by=findings.confined_by,
     )
 
 
@@ -329,6 +344,7 @@ def _analyze_registry_policy(
         has_wildcard_principal=findings.has_wildcard_principal,
         has_non_account_principals=findings.has_non_account_principals,
         service_principal_sources=findings.service_principal_sources,
+        confined_by=findings.confined_by,
     )
 
 

@@ -39,13 +39,19 @@ other statements cover.
 - Does not reach a call populating only `aws:SourceArn`, or no source key at
   all. `Null` on `aws:SourceAccount` scopes the deny to calls carrying that one
   key.
-- Does not evaluate `Condition`, `Resource`, or `NotAction` — no RCP check
-  simulates whether a condition would match a request at runtime. That is
-  different from not reading `Condition` at all, which is true of the six
-  third-party-access checks
-  ([`../../contracts/policy-model.md`](../../contracts/policy-model.md)) but
-  not of this one: it reads the block structurally, for the four source keys
-  named in that document's Source guards section.
+- Does not simulate whether a `Condition` would match a request at runtime,
+  and does not read `Resource` or `NotAction`. No RCP check simulates. All
+  seven read a `Condition` structurally, and what separates this one is which
+  keys it reads and what it does with them: this check reads the four source
+  keys
+  ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#source-guards))
+  to build an allowlist out of the accounts a service acted for, and the six
+  third-party-access checks read the principal keys
+  ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards))
+  to bound how far a statement's principals reach. That difference decides
+  what an unreadable clause costs — here it makes the recorded set incomplete
+  and poisons the whole block, there it can only fail to prove its own key's
+  bound — and that document owns the argument.
 - Does not report a service principal trusted with no source guard at all. See
   limitation 1, which is this check's principal deployment risk.
 
@@ -112,9 +118,11 @@ carries a source key, so such a statement is a grant to whichever service
 delivers for those sources, and the guard names who it is for even though the
 `Principal` element does not. AWS's own cross-account SNS-to-SQS queue policy
 is written that way. A wildcard under no source key is not a source here; it is
-the plain wildcard the six third-party-access checks block the account for. The
-same wildcard under a guard this check cannot read is a `read_failure`, by the
-same rules a `Service` principal's guard is read by.
+the plain wildcard the six third-party-access checks block the account for,
+unless a confining key bounds it
+([`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)).
+The same wildcard under a guard this check cannot read is a `read_failure`, by
+the same rules a `Service` principal's guard is read by.
 
 A finding is kept only when it names out-of-organization source accounts, names
 a source no allowlist can enumerate, or could not be read. Everything else is
@@ -284,10 +292,20 @@ that procedure.
    SNS subscription → compliant, with `service_principal` `*`, and the topic's
    account reaches `unique_third_party_accounts`. The queue is separately a
    wildcard violation for
-   [`deny_sqs_third_party_access`](deny_sqs_third_party_access.md), which does
-   not read `Condition`.
-10. The same `Principal: "*"` under `aws:PrincipalOrgID` alone → not recorded
-    here; the wildcard is that other check's to block.
+   [`deny_sqs_third_party_access`](deny_sqs_third_party_access.md):
+   `aws:SourceArn` names the resource that originated the call and not the
+   caller that made it, so it bounds no principal set and the wildcard stands
+   there
+   ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#what-is-deliberately-not-read)).
+10. The same `Principal: "*"` under `aws:PrincipalOrgID` naming this
+    organization → not recorded here; no source key, no source. That other
+    check no longer records it either: an organization scope naming **this**
+    organization bounds the wildcard to callers the deployed statement already
+    spares
+    ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)),
+    so the shape now clears both. One naming **another** organization bounds it
+    to a set no account allowlist can enumerate, which confines nothing, so the
+    queue stays a violation there.
 11. A queue policy whose `Allow` trusts `sns.amazonaws.com` with no guard,
     beside a `Deny` on the same action written `StringNotEquals
     aws:SourceAccount` naming an out-of-organization account → not recorded;

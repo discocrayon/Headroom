@@ -552,9 +552,10 @@ from .policy_documents import (
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
-    read_principal,
     read_service_principal_sources,
+    read_statement_principals,
 )
+from ..enums import PolicyService
 from ..types import JsonDict
 
 logger = logging.getLogger(__name__)
@@ -576,6 +577,10 @@ class {DataModel}:
     has_non_account_principals: bool
     region: str
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+    # The condition keys that each bounded a wildcard back to a set the
+    # allowlist can carry. Diagnostic: the operator reading the result sees
+    # why a wildcard stopped being a violation.
+    confined_by: Set[str] = field(default_factory=set)
 
 
 def analyze_{service}_{resource}_policies(
@@ -700,6 +705,7 @@ def _analyze_policy(
     has_wildcard = False
     has_non_account_principals = False
     sources: List[ServicePrincipalSource] = []
+    confined_by: Set[str] = set()
 
     # Read every Allow statement's Principal through the one shared reader.
     # Do not write your own: see AP-007.
@@ -709,22 +715,29 @@ def _analyze_policy(
         if has_not_principal(statement):
             has_wildcard = True
             continue
-        principal = statement.get("Principal")
-        if not principal:
-            continue
 
+        # read_statement_principals reads the Principal against its
+        # Condition, so a wildcard bounded by aws:PrincipalOrgID reads as the
+        # accounts it admits rather than blocking the account for a grant
+        # that reaches nobody outside the organization.
+        # PolicyService names the service whose policy this is, which decides
+        # whether a service-scoped key such as kms:CallerAccount confines
+        # here; naming the wrong one reads a clause that admits nobody as a
+        # bound. Do not read Principal yourself to skip a statement without
+        # one: AWS stores no such statement, and the reader raises on it.
+        reading = read_statement_principals(
+            statement, RESOURCE_POLICY_PRINCIPAL_TYPES, PolicyService.{SERVICE},
+            org_id, resource_description
+        )
         sources.extend(read_service_principal_sources(
             statement, org_account_ids, org_id, resource_description
         ))
-
-        reading = read_principal(
-            principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description
-        )
         all_account_ids.update(reading.account_ids)
         has_wildcard = has_wildcard or reading.has_wildcard
         has_non_account_principals = (
             has_non_account_principals or reading.has_non_account_principals
         )
+        confined_by.update(reading.confined_by)
 
     return {DataModel}(
         resource_arn=resource_arn,
@@ -735,6 +748,7 @@ def _analyze_policy(
         has_non_account_principals=has_non_account_principals,
         region=region,
         service_principal_sources=sources,
+        confined_by=confined_by,
     )
 ```
 
@@ -1040,9 +1054,14 @@ arn_match = re.match(r'^arn:aws:[^:]+:[^:]*:(\d{12}):', principal)
 if isinstance(principal, dict) and "AWS" in principal:
     ...
 
+# ❌ ALSO BAD - the element reader, which cannot see the Condition
+reading = _read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, description)
+
 # ✅ GOOD - one reader, for every analyzer
-from .policy_documents import RESOURCE_POLICY_PRINCIPAL_TYPES, read_principal
-reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, description)
+from .policy_documents import RESOURCE_POLICY_PRINCIPAL_TYPES, read_statement_principals
+reading = read_statement_principals(
+    statement, RESOURCE_POLICY_PRINCIPAL_TYPES, PolicyService.{SERVICE}, org_id, description
+)
 ```
 
 The copies drift, and they drift narrower. `roles.py`, `kms.py` and `ecr.py`
@@ -1051,13 +1070,21 @@ each carried `r'^arn:aws:iam::(\d{12}):'` while `s3.py`, `sqs.py` and
 STS session principal and every non-commercial partition, so the accounts
 never reached the allowlist and the RCP denied them.
 
+`_read_principal` is still that one reader for a `Principal` element, and it
+is private because no analyzer has any business calling it:
+`read_statement_principals` composes it with the statement's `Condition`, and
+an analyzer that reaches past it reads every condition-confined wildcard as
+unconfined. `test_only_policy_documents_calls_the_element_reader_directly`
+fails by module name when one does anyway.
+
 The regex was the first half of that lesson and the whole `Principal` walk was
 the second. Six analyzers each carried their own, and they diverged on more than
 a pattern: which principal types they permitted, whether an unreadable one
 aborted the run or was skipped, and whether one carrying no account ID was a
-finding at all. Four answers to one question. `read_principal` in
-`headroom/aws/policy_documents.py` is now the only place a
-`Principal` element is interpreted; call it rather than writing the walk again.
+finding at all. Four answers to one question. `_read_principal` in
+`headroom/aws/policy_documents.py` is now the only place a `Principal`
+element is interpreted, and nothing outside that module calls it; reach
+`read_statement_principals` rather than writing the walk again.
 
 ---
 
@@ -1569,7 +1596,8 @@ def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict
 # COPY: This exact pattern
 # _read_policy and _analyze_policy are the two helpers from
 # "Template: RCP AWS Analysis (Policy Extraction)" above. _analyze_policy is
-# where read_principal does the work - never write your own walk (AP-007).
+# where read_statement_principals does the work - never write your own walk
+# (AP-007).
 
 def analyze_policies(
     session: boto3.Session,

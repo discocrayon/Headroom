@@ -6,7 +6,7 @@ Tests cover IAM role trust policy analysis and SAML provider enumeration helpers
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, Set
+from typing import Any, Dict, Sequence, Set
 from unittest.mock import MagicMock
 from urllib.parse import quote
 
@@ -17,6 +17,7 @@ from headroom.aws.iam import (
     InvalidFederatedPrincipalError,
     MalformedStatementError,
     SamlProviderAnalysis,
+    TrustPolicyAnalysis,
     analyze_iam_roles_trust_policies,
     get_saml_providers_analysis,
 )
@@ -25,6 +26,7 @@ from headroom.aws.policy_documents import (
     MalformedPolicyError,
     UnknownPrincipalTypeError,
 )
+from headroom.types import JsonDict
 from tests.constants import ORG_ID
 
 
@@ -154,6 +156,13 @@ class TestAnalyzeIamRolesTrustPolicies:
         org_account_ids = {"111111111111", "222222222222"}
         results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
+        # A partial guard only. It catches a listing that never happened,
+        # but not a page that came back empty: the trust policy rides in the
+        # ListRoles response, so no per-role call exists to assert on, and
+        # nothing here can tell "read and found nothing" from "never seen".
+        # Closing that needs a trust-policy reader this test could call.
+        mock_iam_client.get_paginator.return_value.paginate.assert_called_once()
+
         assert len(results) == 0
 
     def test_role_with_service_principal(self) -> None:
@@ -187,6 +196,13 @@ class TestAnalyzeIamRolesTrustPolicies:
 
         org_account_ids = {"111111111111"}
         results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
+
+        # A partial guard only. It catches a listing that never happened,
+        # but not a page that came back empty: the trust policy rides in the
+        # ListRoles response, so no per-role call exists to assert on, and
+        # nothing here can tell "read and found nothing" from "never seen".
+        # Closing that needs a trust-policy reader this test could call.
+        mock_iam_client.get_paginator.return_value.paginate.assert_called_once()
 
         assert len(results) == 0
 
@@ -274,6 +290,13 @@ class TestAnalyzeIamRolesTrustPolicies:
         org_account_ids = {"111111111111"}
         results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
+        # A partial guard only. It catches a listing that never happened,
+        # but not a page that came back empty: the trust policy rides in the
+        # ListRoles response, so no per-role call exists to assert on, and
+        # nothing here can tell "read and found nothing" from "never seen".
+        # Closing that needs a trust-policy reader this test could call.
+        mock_iam_client.get_paginator.return_value.paginate.assert_called_once()
+
         assert len(results) == 0
 
     def test_unknown_principal_type_raises_error(self) -> None:
@@ -352,6 +375,50 @@ class TestAnalyzeIamRolesTrustPolicies:
         assert "BadFederatedRole" in str(exc_info.value)
         assert "AssumeRoleWithSAML" in str(exc_info.value) or "AssumeRoleWithWebIdentity" in str(exc_info.value)
 
+    def test_a_federated_principal_beside_a_wildcard_still_raises(self) -> None:
+        """
+        The Federated check reads the type keys off the reading, on every path.
+
+        A wildcard beside the provider sends the statement through the
+        Condition read and a rebuilt reading, so this is the shape that goes
+        blind if the rebuild drops the type keys. The bare `{"Federated": ...}`
+        above takes the early return and cannot catch that.
+        """
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        trust_policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "AWS": "*",
+                        "Federated": "arn:aws:iam::111111111111:saml-provider/ExampleProvider",
+                    },
+                    "Action": "sts:AssumeRole"
+                }
+            ]
+        }
+
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Roles": [
+                    {
+                        "RoleName": "WildcardFederatedRole",
+                        "Arn": "arn:aws:iam::111111111111:role/WildcardFederatedRole",
+                        "AssumeRolePolicyDocument": quote(json.dumps(trust_policy))
+                    }
+                ]
+            }
+        ]
+
+        org_account_ids = {"111111111111"}
+
+        with pytest.raises(InvalidFederatedPrincipalError, match="WildcardFederatedRole"):
+            analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
+
     def test_federated_with_assume_role_with_saml_allowed(self) -> None:
         """Test that Federated principal with sts:AssumeRoleWithSAML is allowed."""
         mock_session = MagicMock()
@@ -385,6 +452,13 @@ class TestAnalyzeIamRolesTrustPolicies:
 
         # Should not raise any exception
         results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
+
+        # A partial guard only. It catches a listing that never happened,
+        # but not a page that came back empty: the trust policy rides in the
+        # ListRoles response, so no per-role call exists to assert on, and
+        # nothing here can tell "read and found nothing" from "never seen".
+        # Closing that needs a trust-policy reader this test could call.
+        mock_iam_client.get_paginator.return_value.paginate.assert_called_once()
 
         # No third-party accounts, no wildcards, so results should be empty
         assert len(results) == 0
@@ -434,11 +508,23 @@ class TestAnalyzeIamRolesTrustPolicies:
         # Should not raise; the literal-match gate does not fire on sts:*
         results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
+        # A partial guard only. It catches a listing that never happened,
+        # but not a page that came back empty: the trust policy rides in the
+        # ListRoles response, so no per-role call exists to assert on, and
+        # nothing here can tell "read and found nothing" from "never seen".
+        # Closing that needs a trust-policy reader this test could call.
+        mock_iam_client.get_paginator.return_value.paginate.assert_called_once()
+
         # No third-party accounts, no wildcards, so results should be empty
         assert len(results) == 0
 
-    def test_role_without_principal_skipped(self) -> None:
-        """Test that statements without Principal are skipped."""
+    def test_a_statement_with_no_principal_aborts_the_run(self) -> None:
+        """
+        An Allow carrying neither Principal nor NotPrincipal is a document AWS never stored.
+
+        The analyzer once skipped it with a read of its own; the shared
+        statement reader raises instead, naming the role.
+        """
         mock_session = MagicMock()
         mock_iam_client = MagicMock()
         mock_session.client.return_value = mock_iam_client
@@ -466,10 +552,9 @@ class TestAnalyzeIamRolesTrustPolicies:
         ]
 
         org_account_ids = {"111111111111"}
-        results = analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
-        # Statement without principal should be skipped
-        assert len(results) == 0
+        with pytest.raises(MalformedPolicyError, match="Role 'NoPrincipalRole' has an Allow statement carrying neither"):
+            analyze_iam_roles_trust_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_role_with_invalid_json_raises(self) -> None:
         """Test that roles with invalid trust policies raise JSONDecodeError."""
@@ -888,7 +973,7 @@ class TestTrustPolicyGrammar:
     """Trust policy elements the analyzer must read the way IAM does."""
 
     @staticmethod
-    def _analyze(trust_policy: Any) -> Any:
+    def _analyze(trust_policy: JsonDict) -> Sequence[TrustPolicyAnalysis]:
         mock_session = MagicMock()
         mock_iam_client = MagicMock()
         mock_session.client.return_value = mock_iam_client
@@ -905,7 +990,14 @@ class TestTrustPolicyGrammar:
             }
         ]
 
-        return analyze_iam_roles_trust_policies(mock_session, {"111111111111"}, ORG_ID)
+        results = analyze_iam_roles_trust_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        # A partial guard only, for the reason the inline copies give: the
+        # trust policy rides in the ListRoles response, so an empty page and
+        # a document read to no findings are indistinguishable from here.
+        mock_iam_client.get_paginator.return_value.paginate.assert_called_once()
+
+        return results
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -1026,3 +1118,145 @@ class TestTrustPolicyGrammar:
         })
 
         assert results[0].service_principal_sources == []
+
+    def test_a_wildcard_confined_to_a_third_party_account_names_that_account(self) -> None:
+        """
+        A confined wildcard has to carry its account into the allowlist.
+
+        `Principal: {"AWS": "*"}` under `StringEquals aws:PrincipalAccount`
+        reaches exactly the account named and nobody else. Clearing the
+        wildcard without recording the account generates an RCP that denies
+        the one grant this trust policy makes.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": "sts:AssumeRole",
+                "Condition": {
+                    "StringEquals": {"aws:PrincipalAccount": ["333333333333"]}
+                },
+            }],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is False
+        assert results[0].third_party_account_ids == {"333333333333"}
+        assert results[0].confined_by == {"aws:principalaccount"}
+
+    def test_a_wildcard_confined_to_this_organization_reports_nothing(self) -> None:
+        """
+        A wildcard bounded to our own organization leaves nothing to report.
+
+        `StringEquals aws:PrincipalOrgID` naming this organization admits
+        only callers already inside it, so the role has no third-party
+        account and no surviving wildcard. The reporting gate wants one of
+        those or an actionable service source, so the role is dropped and
+        `confined_by` never reaches a caller.
+
+        Dropping out is also what a role nobody read looks like, so a
+        control role sits in the same page carrying the same statement
+        without the Condition. The two differ in the Condition alone, so
+        the surviving listing is what proves the Condition dropped the
+        first role.
+        """
+        assume_role: Dict[str, Any] = {
+            "Effect": "Allow",
+            "Principal": {"AWS": "*"},
+            "Action": "sts:AssumeRole",
+        }
+        confined = {
+            "Version": "2012-10-17",
+            "Statement": [dict(
+                assume_role,
+                Condition={"StringEquals": {"aws:PrincipalOrgID": ORG_ID}},
+            )],
+        }
+        unconfined = {"Version": "2012-10-17", "Statement": [assume_role]}
+
+        mock_session = MagicMock()
+        mock_iam_client = MagicMock()
+        mock_session.client.return_value = mock_iam_client
+
+        mock_iam_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Roles": [
+                    {
+                        "RoleName": "OrgConfinedRole",
+                        "Arn": "arn:aws:iam::111111111111:role/OrgConfinedRole",
+                        "AssumeRolePolicyDocument": quote(json.dumps(confined))
+                    },
+                    {
+                        "RoleName": "UnconfinedControlRole",
+                        "Arn": "arn:aws:iam::111111111111:role/UnconfinedControlRole",
+                        "AssumeRolePolicyDocument": quote(json.dumps(unconfined))
+                    },
+                ]
+            }
+        ]
+
+        results = analyze_iam_roles_trust_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        assert [result.role_name for result in results] == ["UnconfinedControlRole"]
+        assert results[0].has_wildcard_principal is True
+
+    def test_a_wildcard_under_kms_caller_account_is_still_a_wildcard(self) -> None:
+        """
+        kms:CallerAccount bounds a KMS key policy and nothing else.
+
+        No STS request carries the key, so the clause admits nobody and the
+        statement grants nobody anything. Reading it as a bound would clear
+        the role and put an account no policy granted into the allowlist.
+
+        The value is a well-formed twelve-digit account ID on purpose: a
+        value the reader would reject anyway proves only that some rule
+        refused the shape, not that the service is what refused it.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": "sts:AssumeRole",
+                "Condition": {
+                    "StringEquals": {"kms:CallerAccount": "333333333333"}
+                },
+            }],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+        assert results[0].confined_by == set()
+
+    def test_a_federated_principal_contributes_neither_account(self) -> None:
+        """
+        Neither the Federated principal nor its Condition names a caller.
+
+        A SAML provider ARN holds twelve digits, but they are the account
+        hosting the provider rather than the caller's, so 444444444444 must
+        not reach the allowlist. Neither may 333333333333: a federated
+        session's aws:PrincipalAccount is the provider's account, so the
+        clause and the Principal admit nobody between them, and an entry
+        for it would exempt an account from the Deny that no grant reaches.
+        A Condition is read to narrow a wildcard, and this Principal is not
+        one.
+
+        `sts:*` is the shape that clears the AssumeRole gate while missing
+        the literal Federated gate, so the statement reaches the reader and
+        this is a live path rather than a hypothetical.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "arn:aws:iam::444444444444:saml-provider/ExampleIdP"},
+                "Action": "sts:*",
+                "Condition": {
+                    "StringEquals": {"aws:PrincipalAccount": "333333333333"}
+                },
+            }],
+        })
+
+        assert results == []

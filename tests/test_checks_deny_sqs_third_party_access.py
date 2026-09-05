@@ -12,6 +12,7 @@ from headroom.checks.rcps.deny_sqs_third_party_access import DenySQSThirdPartyAc
 from headroom.constants import DENY_SQS_THIRD_PARTY_ACCESS
 from headroom.aws.policy_documents import unreadable_service_principal_source
 from headroom.aws.sqs import SQSQueuePolicyAnalysis
+from headroom.enums import CheckCategory
 from tests.constants import ORG_ID
 
 
@@ -538,3 +539,40 @@ class TestDenySQSThirdPartyAccessCheck:
             )
 
             assert check.analyze(mock_session) == []
+
+    def test_categorize_result_names_the_key_that_confined_the_wildcard(
+        self,
+        org_account_ids: set[str],
+        temp_results_dir: str,
+    ) -> None:
+        """
+        The entry records why the queue stopped counting as a wildcard.
+
+        Without the key, a reader of the result file sees a queue with
+        `has_wildcard_principal: false` and no way to tell a policy that
+        never named a wildcard from one whose wildcard a condition bounded.
+        """
+        check = DenySQSThirdPartyAccessCheck(
+            check_name=DENY_SQS_THIRD_PARTY_ACCESS,
+            account_name="test",
+            account_id="111111111111",
+            results_dir=temp_results_dir,
+            org_account_ids=org_account_ids,
+            org_id=ORG_ID,
+        )
+
+        result = SQSQueuePolicyAnalysis(
+            queue_url="https://sqs.us-east-1.amazonaws.com/111111111111/confined-queue",
+            queue_arn="arn:aws:sqs:us-east-1:111111111111:confined-queue",
+            region="us-east-1",
+            third_party_account_ids={"333333333333"},
+            has_wildcard_principal=False,
+            has_non_account_principals=False,
+            actions_by_account={"333333333333": {"sqs:SendMessage"}},
+            confined_by={"aws:principalaccount"},
+        )
+
+        category, result_dict = check.categorize_result(result)
+
+        assert category == CheckCategory.COMPLIANT
+        assert result_dict["confined_by"] == ["aws:principalaccount"]

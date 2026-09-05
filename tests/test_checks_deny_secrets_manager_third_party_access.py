@@ -391,3 +391,39 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             assert len(secrets_arns) == 2
             assert "arn:aws:secretsmanager:us-east-1:111111111111:secret:secret-1" in secrets_arns
             assert "arn:aws:secretsmanager:us-east-1:111111111111:secret:secret-2" in secrets_arns
+
+    def test_categorize_result_names_the_key_that_confined_the_wildcard(
+        self,
+        temp_results_dir: str,
+        org_account_ids: Set[str],
+    ) -> None:
+        """
+        The entry records why the secret stopped counting as a wildcard.
+
+        Without the key, a reader of the result file sees a secret with
+        `has_wildcard_principal: false` and no way to tell a policy that
+        never named a wildcard from one whose wildcard a condition bounded.
+        """
+        check = DenySecretsManagerThirdPartyAccessCheck(
+            check_name=DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
+            account_name="test",
+            account_id="111111111111",
+            results_dir=temp_results_dir,
+            org_account_ids=org_account_ids,
+            org_id=ORG_ID,
+        )
+
+        result = SecretsPolicyAnalysis(
+            secret_name="confined-secret",
+            secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:confined-secret",
+            third_party_account_ids={"333333333333"},
+            has_wildcard_principal=False,
+            has_non_account_principals=False,
+            actions_by_account={"333333333333": {"secretsmanager:GetSecretValue"}},
+            confined_by={"aws:principalaccount"},
+        )
+
+        category, result_dict = check.categorize_result(result)
+
+        assert category.value == "compliant"
+        assert result_dict["confined_by"] == ["aws:principalaccount"]

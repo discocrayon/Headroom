@@ -16,6 +16,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_iam.client import IAMClient
 
+from ...enums import PolicyService
 from ..helpers import memoize_per_session
 from ..policy_documents import (
     ServicePrincipalSource,
@@ -24,8 +25,8 @@ from ..policy_documents import (
     has_not_principal,
     normalize_actions,
     normalize_statements,
-    read_principal,
     read_service_principal_sources,
+    read_statement_principals,
 )
 
 # Set up logging
@@ -59,12 +60,17 @@ class TrustPolicyAnalysis:
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
             analysis's own third-party accounts or wildcard flag.
+        confined_by: The condition keys, lower-cased, that each bounded a
+            statement on their own, unioned across this policy's statements.
+            Recorded whether or not the resource still blocks, and whether or
+            not the statement they bounded named a wildcard.
     """
     role_name: str
     role_arn: str
     third_party_account_ids: Set[str]
     has_wildcard_principal: bool
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+    confined_by: Set[str] = field(default_factory=set)
 
 
 def _action_pattern_matches(pattern: str, action: str) -> bool:
@@ -187,6 +193,7 @@ def analyze_iam_roles_trust_policies(
                 third_party_accounts: Set[str] = set()
                 has_wildcard = False
                 sources: List[ServicePrincipalSource] = []
+                confined_by: Set[str] = set()
 
                 # Analyze each statement in the trust policy
                 statements = normalize_statements(trust_policy, f"Role '{role_name}'")
@@ -205,28 +212,6 @@ def analyze_iam_roles_trust_policies(
                         has_wildcard = True
                         continue
 
-                    # Extract principal
-                    principal = statement.get("Principal")
-                    if not principal:
-                        continue
-
-                    # Validate that Federated principals don't have sts:AssumeRole
-                    # Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity
-                    #
-                    # This stays an exact match while the gate above matches
-                    # IAM's wildcards. A Federated principal paired with
-                    # `sts:*` is sloppy rather than wrong - AWS will not let a
-                    # federated identity call plain AssumeRole - and aborting
-                    # the run over it would cost more than it catches. The
-                    # literal pairing is a clearer sign of real confusion.
-                    names_federated_principal = isinstance(principal, dict) and "Federated" in principal
-                    grants_literal_assume_role = "Action" in statement and ASSUME_ROLE_ACTION in normalize_actions(statement["Action"])
-                    if names_federated_principal and grants_literal_assume_role:
-                        raise InvalidFederatedPrincipalError(
-                            f"Role '{role_name}' has Federated principal with sts:AssumeRole action. "
-                            f"Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity."
-                        )
-
                     # A trust policy is not a resource policy, so the
                     # permitted principal keys are the trust-policy set: a
                     # canonical user ID is an Amazon S3 identifier and cannot
@@ -234,17 +219,36 @@ def analyze_iam_roles_trust_policies(
                     # the reading's has_non_account_principals is discarded:
                     # TrustPolicyAnalysis carries no field for it.
                     #
-                    # The Federated gate above is not what makes that safe.
-                    # That gate is a literal membership test, so `sts:*`
-                    # clears _grants_assume_role, misses the gate, and leaves
-                    # no trace at all. What makes it safe is that this RCP
-                    # denies sts:AssumeRole alone and a federated identity
-                    # cannot call it, so the grant the RCP could break is not
-                    # one a Federated principal holds. See
+                    # The Federated gate below is not what makes that safe.
+                    # That gate is a literal membership test on the actions,
+                    # so `sts:*` clears _grants_assume_role, misses the gate,
+                    # and leaves no trace at all. What makes it safe is that
+                    # this RCP denies sts:AssumeRole alone and a federated
+                    # identity cannot call it, so the grant the RCP could
+                    # break is not one a Federated principal holds. See
                     # spec/checks/rcps/deny_sts_third_party_assumerole.md.
-                    reading = read_principal(
-                        principal, TRUST_POLICY_PRINCIPAL_TYPES, f"Role '{role_name}'"
+                    reading = read_statement_principals(
+                        statement, TRUST_POLICY_PRINCIPAL_TYPES, PolicyService.STS, org_id, f"Role '{role_name}'"
                     )
+
+                    # Validate that Federated principals don't have sts:AssumeRole
+                    # Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity
+                    #
+                    # This stays an exact match while _grants_assume_role
+                    # matches IAM's wildcards. A Federated principal paired
+                    # with `sts:*` is sloppy rather than wrong - AWS will not
+                    # let a federated identity call plain AssumeRole - and
+                    # aborting the run over it would cost more than it
+                    # catches. The literal pairing is a clearer sign of real
+                    # confusion. The principal type is read off the reading:
+                    # the element itself is read in policy_documents.py alone.
+                    names_federated_principal = "Federated" in reading.principal_types
+                    grants_literal_assume_role = "Action" in statement and ASSUME_ROLE_ACTION in normalize_actions(statement["Action"])
+                    if names_federated_principal and grants_literal_assume_role:
+                        raise InvalidFederatedPrincipalError(
+                            f"Role '{role_name}' has Federated principal with sts:AssumeRole action. "
+                            f"Federated principals should use sts:AssumeRoleWithSAML or sts:AssumeRoleWithWebIdentity."
+                        )
                     sources.extend(
                         read_service_principal_sources(statement, org_account_ids, org_id, f"Role '{role_name}'")
                     )
@@ -252,6 +256,8 @@ def analyze_iam_roles_trust_policies(
                     if reading.has_wildcard:
                         has_wildcard = True
                         # TODO: Check CloudTrail logs to find which accounts actually assume this role
+
+                    confined_by.update(reading.confined_by)
 
                     # Filter to only third-party accounts (not in org)
                     for account_id in reading.account_ids:
@@ -267,6 +273,7 @@ def analyze_iam_roles_trust_policies(
                         third_party_account_ids=third_party_accounts,
                         has_wildcard_principal=has_wildcard,
                         service_principal_sources=sources,
+                        confined_by=confined_by,
                     ))
     except ClientError as e:
         logger.error(f"Failed to list IAM roles from AWS API: {e}")

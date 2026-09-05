@@ -14,6 +14,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_secretsmanager.client import SecretsManagerClient
 
+from ..enums import PolicyService
 from ..types import JsonDict
 from .helpers import get_all_regions, memoize_per_session
 from .policy_documents import (
@@ -23,8 +24,8 @@ from .policy_documents import (
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
-    read_principal,
     read_service_principal_sources,
+    read_statement_principals,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,10 @@ class SecretsPolicyAnalysis:
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
             analysis's own third-party accounts or wildcard flag.
+        confined_by: The condition keys, lower-cased, that each bounded a
+            statement on their own, unioned across this policy's statements.
+            Recorded whether or not the resource still blocks, and whether or
+            not the statement they bounded named a wildcard.
     """
     secret_name: str
     secret_arn: str
@@ -56,6 +61,7 @@ class SecretsPolicyAnalysis:
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+    confined_by: Set[str] = field(default_factory=set)
 
 
 @memoize_per_session
@@ -195,7 +201,8 @@ def _analyze_secret_policy(
         policy: Parsed policy JSON
         org_account_ids: Set of all account IDs in the organization
         org_id: This organization's ID, deciding whether an
-            organization scope on a source guard names this organization
+            organization scope on a source guard or on a confining
+            principal key names this organization
 
     Returns:
         SecretsPolicyAnalysis if secret has third-party access, None otherwise
@@ -211,6 +218,7 @@ def _analyze_secret_policy(
     has_non_account_principals = False
     actions_by_account: Dict[str, Set[str]] = {}
     sources: List[ServicePrincipalSource] = []
+    confined_by: Set[str] = set()
 
     statements = normalize_statements(policy, f"Secret '{secret_name}' ({secret_arn})")
 
@@ -224,12 +232,10 @@ def _analyze_secret_policy(
             has_wildcard = True
             continue
 
-        principal = statement.get("Principal")
-        if not principal:
-            continue
-
         resource_description = f"Secret '{secret_name}' ({secret_arn})"
-        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
+        reading = read_statement_principals(
+            statement, RESOURCE_POLICY_PRINCIPAL_TYPES, PolicyService.SECRETS_MANAGER, org_id, resource_description
+        )
         sources.extend(
             read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
         )
@@ -238,6 +244,7 @@ def _analyze_secret_policy(
             has_non_account_principals = True
 
         has_wildcard = has_wildcard or reading.has_wildcard
+        confined_by.update(reading.confined_by)
 
         account_ids = reading.account_ids
         actions = normalize_actions(statement.get("Action", []))
@@ -259,6 +266,7 @@ def _analyze_secret_policy(
             has_non_account_principals=has_non_account_principals,
             actions_by_account=actions_by_account,
             service_principal_sources=sources,
+            confined_by=confined_by,
         )
 
     return None

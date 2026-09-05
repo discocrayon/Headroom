@@ -70,6 +70,34 @@ released bug for a version;
 [`../invariants.md`](../invariants.md#inv-08--record-the-value-the-condition-key-will-hold)
 states the case that settled it.
 
+### A "nothing was reported" assertion needs a positive control
+
+Five of the six third-party-access analyzers drop a resource that produced no
+finding, so `assert results == []` is true both when the document was read and
+found harmless and when it was never read at all. A test asserting the first
+while only the second holds passes for the wrong reason and keeps passing after
+the reader breaks. Every such assertion therefore carries one of two
+companions, and both are better than either alone:
+
+- the API call that fetches the document, asserted to have happened —
+  `get_repository_policy`, `get_key_policy`, `get_bucket_policy`,
+  `get_bucket_acl`; and
+- the same document put through the reader directly, ahead of the reporting
+  gate, with the reading itself asserted — `_analyze_policy_statements` in
+  `headroom/aws/ecr.py`, `_analyze_secret_policy` in
+  `headroom/aws/secretsmanager.py`, `_analyze_key_in_region` in
+  `headroom/aws/kms.py`.
+
+`headroom/aws/iam/roles.py` can offer neither. A trust policy rides inside the
+`ListRoles` response, so there is no per-role call to assert, and the reader is
+inline in `analyze_iam_roles_trust_policies` rather than in a function a test
+can reach. Its "nothing was reported" assertions are pinned by the listing
+alone, which an empty page satisfies. Extracting a trust-policy reader is what
+would close it. `headroom/aws/sqs.py` needs none of this: it appends every
+queue carrying a policy, so nothing is reported away
+([`../checks/rcps/deny_sqs_third_party_access.md`](../checks/rcps/deny_sqs_third_party_access.md)
+records that as its own limitation).
+
 ## Layout
 
 Tests are flat under `tests/`, one file per module, with one subdirectory,

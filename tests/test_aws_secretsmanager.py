@@ -74,6 +74,78 @@ class TestAnalyzeSecretPolicy:
         assert result is not None
         assert result.has_wildcard_principal is True
 
+    def test_a_wildcard_confined_to_a_third_party_account_is_allowlisted(self) -> None:
+        """
+        The account the condition names reaches the allowlist, not the wildcard flag.
+
+        Dropping the wildcard without recording the account would generate
+        an RCP that denies the very access this statement grants.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "secretsmanager:GetSecretValue",
+                    "Condition": {
+                        "StringEquals": {"aws:PrincipalAccount": ["333333333333"]}
+                    },
+                }
+            ]
+        }
+
+        result = _analyze_secret_policy(
+            "confined-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:confined-secret",
+            policy,  # type: ignore[arg-type]
+            {"111111111111"},
+            ORG_ID
+        )
+
+        assert result is not None
+        assert result.has_wildcard_principal is False
+        assert result.third_party_account_ids == {"333333333333"}
+        assert result.actions_by_account["333333333333"] == {"secretsmanager:GetSecretValue"}
+        assert result.confined_by == {"aws:principalaccount"}
+
+    def test_an_if_exists_principal_arn_guard_does_not_confine(self) -> None:
+        """
+        ArnLikeIfExists is satisfied by a request that omits the key.
+
+        The clause names one real account, so a reader that took the
+        operator as a bound would drop the wildcard and allowlist
+        333333333333 - while the statement still admits every caller whose
+        request carries no aws:PrincipalArn at all. The wildcard has to
+        stand.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "secretsmanager:GetSecretValue",
+                    "Condition": {
+                        "ArnLikeIfExists": {
+                            "aws:PrincipalArn": "arn:aws:iam::333333333333:role/Example"
+                        }
+                    },
+                }
+            ]
+        }
+
+        result = _analyze_secret_policy(
+            "if-exists-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:if-exists-secret",
+            policy,  # type: ignore[arg-type]
+            {"111111111111"},
+            ORG_ID
+        )
+
+        assert result is not None
+        assert result.has_wildcard_principal is True
+        assert result.third_party_account_ids == set()
+        assert result.confined_by == set()
+
     def test_not_principal_is_read_as_a_wildcard(self) -> None:
         """
         An Allow with NotPrincipal grants to everyone it does not name.
@@ -292,8 +364,13 @@ class TestAnalyzeSecretPolicy:
         assert "secretsmanager:GetSecretValue" in result.actions_by_account["999999999999"]
         assert "secretsmanager:DescribeSecret" in result.actions_by_account["999999999999"]
 
-    def test_statement_without_principal(self) -> None:
-        """Test statement without Principal is skipped."""
+    def test_a_statement_with_no_principal_aborts_the_run(self) -> None:
+        """
+        An Allow carrying neither Principal nor NotPrincipal is a document AWS never stored.
+
+        The analyzer once skipped it with a read of its own; the shared
+        statement reader raises instead, naming the secret.
+        """
         policy = {
             "Statement": [
                 {
@@ -304,15 +381,17 @@ class TestAnalyzeSecretPolicy:
         }
         org_account_ids = {"111111111111"}
 
-        result = _analyze_secret_policy(
-            "no-principal-secret",
-            "arn:aws:secretsmanager:us-east-1:111111111111:secret:no-principal-secret",
-            policy,  # type: ignore[arg-type]
-            org_account_ids,
-            ORG_ID
-        )
-
-        assert result is None
+        with pytest.raises(
+            MalformedPolicyError,
+            match=r"Secret 'no-principal-secret' \(arn:aws:secretsmanager:us-east-1:111111111111:secret:no-principal-secret\) has an Allow statement carrying neither",
+        ):
+            _analyze_secret_policy(
+                "no-principal-secret",
+                "arn:aws:secretsmanager:us-east-1:111111111111:secret:no-principal-secret",
+                policy,  # type: ignore[arg-type]
+                org_account_ids,
+                ORG_ID
+            )
 
     def test_action_as_dict_raises_type_error(self) -> None:
         """Test that action as dict raises TypeError (fail fast)."""
@@ -493,6 +572,47 @@ class TestAnalyzeSecretPolicy:
 
         assert result is not None
         assert result.service_principal_sources == []
+
+    def test_a_wildcard_under_kms_caller_account_is_still_a_wildcard(self) -> None:
+        """
+        kms:CallerAccount bounds a KMS key policy and nothing else.
+
+        No Secrets Manager request carries the key, so the clause admits
+        nobody and the statement grants nobody anything. Reading it as a
+        bound would clear the secret and put an account no policy granted
+        into the allowlist, so this pins the PolicyService this analyzer
+        declares: passing PolicyService.KMS from here reads the clause as a
+        bound.
+
+        The value is a well-formed twelve-digit account ID on purpose: a
+        value the reader would reject anyway proves only that some rule
+        refused the shape, not that the service is what refused it.
+        """
+        policy = {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "secretsmanager:GetSecretValue",
+                    "Condition": {
+                        "StringEquals": {"kms:CallerAccount": "333333333333"}
+                    },
+                }
+            ]
+        }
+
+        result = _analyze_secret_policy(
+            "test-secret",
+            "arn:aws:secretsmanager:us-east-1:111111111111:secret:test-secret",
+            policy,  # type: ignore[arg-type]
+            {"111111111111"},
+            ORG_ID,
+        )
+
+        assert result is not None
+        assert result.has_wildcard_principal is True
+        assert result.third_party_account_ids == set()
+        assert result.confined_by == set()
 
 
 class TestAnalyzeSecretsManagerPolicies:

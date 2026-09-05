@@ -316,7 +316,6 @@ class _RecordingOrganizationsClient(Mock):
     `describe_organization` are overridden below; every other attribute this
     client is asked for resolves through Mock's own auto-attribute behavior.
     """
-
     ACCOUNTS: List[Dict[str, str]] = [
         {"Id": "111111111111", "Name": "management", "Status": "ACTIVE"},
         {"Id": "222222222222", "Name": "payments", "Status": "ACTIVE"},
