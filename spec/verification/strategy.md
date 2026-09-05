@@ -116,15 +116,17 @@ sometimes exercised.
 | `tests/test_<helper>.py` | `tests/<helper>.py` — the suite's own helpers, which is what 100% coverage of `tests/` is for |
 | `tests/performance/test_call_counts.py` | the three per-session memos and the one-time organization read, by call count |
 
-Four of the five helper modules have a test file by that rule: `conftest.py`,
+Four of the seven helper modules have a test file by that rule: `conftest.py`,
 `data_standards.py`, `documentation_links.py`, and `spec_corpus.py`.
-`constants.py` is shared fixture data with no logic of its own, covered by the
-files that import it. Two test files cover neither a `headroom/` module nor a
-helper, because what they check is a repository convention rather than code:
-`tests/test_pytest_configuration.py`, that pytest reads the settings `pytest.ini`
-declares, and `tests/test_committed_terraform_examples.py`, that the committed
-Terraform under `test_environment/` still plans and that each module declares
-every variable the registry will make the generator pass.
+`constants.py`, `coverage_maps.py`, and `hierarchies.py` are shared fixture
+data, and the functions that build it, with no logic of their own to assert on;
+each is covered by the files that import it. Two test files cover neither a
+`headroom/` module nor a helper, because what they check is a repository
+convention rather than code: `tests/test_pytest_configuration.py`, that pytest
+reads the settings `pytest.ini` declares, and
+`tests/test_committed_terraform_examples.py`, that the committed Terraform under
+`test_environment/` still plans and that each module declares every variable the
+registry will make the generator pass.
 
 Four cases depart from that, each deliberate:
 
