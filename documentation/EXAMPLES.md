@@ -75,14 +75,24 @@ module "scps_root" {
     "333333333333",
     "amazon",
   ]
+  # Enforced below at OU acme_acquisition, account fort-knox; blocked
+  # elsewhere by 2 of 4 analyzed accounts (security-tooling, shared-foo-bar)
   deny_ec2_imds_hop_limit = false
+  # Enforced below at OU acme_acquisition, OU high_value_assets; blocked
+  # elsewhere by 1 of 4 analyzed accounts (shared-foo-bar)
   deny_ec2_imds_v1 = false
+  # Enforced below at OU shared_services; blocked elsewhere by 3 of 4
+  # analyzed accounts (acme-co, fort-knox, security-tooling)
   deny_ec2_public_ip = false
 
   # EKS
+  # Blocked by all 4 analyzed accounts (acme-co, fort-knox,
+  # security-tooling, shared-foo-bar)
   deny_eks_create_cluster_without_tag = false
 
   # IAM
+  # Enforced below at OU high_value_assets, OU shared_services; blocked
+  # elsewhere by 1 of 4 analyzed accounts (acme-co)
   deny_iam_saml_provider_not_aws_sso = false
   deny_iam_user_creation = true
   iam_allowed_users = [
@@ -91,17 +101,39 @@ module "scps_root" {
   ]
 
   # Lambda
+  # Enforced below at OU high_value_assets; blocked elsewhere by 2 of 4
+  # analyzed accounts (acme-co, shared-foo-bar)
   deny_lambda_auth_type_none = false
 
   # RDS
+  # Enforced below at OU high_value_assets; blocked elsewhere by 2 of 4
+  # analyzed accounts (acme-co, shared-foo-bar)
   deny_rds_unencrypted = false
 }
 ```
 
-Two things to read here. All nine registered SCP checks appear, so `false`
-records "scanned, not safe to enforce here" rather than "not considered". And an
-allowlist is the union across every account the target covers — `iam_allowed_users`
-names users in two accounts because the statement attaches at the root.
+Three things to read here. All nine registered SCP checks appear, and a comment
+above every `false` says why it is `false`. Five different comments can sit
+there, and this block shows two. Six checks are enforced at targets below the
+root, and each comment names those targets and the accounts that kept the check
+off the root. A target is an OU when every analyzed account under it was safe,
+and a single account when a sibling in its OU was not, which is why
+`deny_ec2_imds_hop_limit` names `fort-knox` rather than `high_value_assets`.
+`deny_eks_create_cluster_without_tag` is blocked here outright, because every
+analyzed account had a violation, and the comment names them all. The other
+three do not appear in this file. "Enforced at a target above" cannot, because
+the root has no ancestor; `acme_acquisition_ou_scps.tf` from the same run shows
+it, where `deny_iam_user_creation` is enforced at the root. "No results for this
+check" appears when no account under the target has a result file for the
+check. A run scans every registered check in every account, so it shows up on
+results older than the registry, as the committed
+`test_environment/scps/root_scps.tf` shows four times: its results predate four
+of the nine checks. The check's own comment for an allowlist that came back
+empty (INV-06) does not, because both allowlists here have entries.
+[`../spec/contracts/terraform.md`](../spec/contracts/terraform.md#why-a-check-renders-false)
+defines the four shapes and the INV-06 case. And an allowlist is the union
+across every account the target covers — `iam_allowed_users` names users in
+two accounts because the statement attaches at the root.
 
 ### RCP module call
 
@@ -145,6 +177,13 @@ module "rcps_acme_acquisition_ou" {
 All seven registered RCP checks appear, for the same reason the SCP module names
 all nine. An enabled RCP check carries its own allowlist variable; a disabled one
 carries none.
+
+The bare `false` booleans here are the one way this excerpt is out of date. The
+RCP generator emits the same reason comments the SCP module call shows, but
+`test_environment/rcps/` cannot be regenerated to prove it: four registered RCP
+checks have no results directory and `parse_rcp_result_files` raises on a
+missing one, so no run against this fixture reaches rendering. Conflict 9 in
+[`../spec/checks/index.md`](../spec/checks/index.md) tracks it.
 
 ### Organization data sources
 
@@ -341,9 +380,10 @@ produced rather than of how the tool behaves today.
 They are **older than the current registry**. A scan needs live AWS credentials
 and costs real money, so these are not regenerated on every change. Sixteen
 checks are registered — nine SCP and seven RCP — while the committed results
-hold five SCP and three RCP check directories, and `scps/root_scps.tf` names six
-of the nine. That is why the two module blocks above are labelled "shape of":
-they show what today's generator emits, which is every registered check.
+hold five SCP and three RCP check directories, so four of the nine SCP booleans
+in `scps/root_scps.tf` carry the no-results comment rather than a placement.
+That is why the two module blocks above are labelled "shape of": they show what
+today's generator emits, which is every registered check.
 
 They were produced with `exclude_account_ids: true`, the setting
 [`sample_config.yaml`](../sample_config.yaml) ships. Result filenames therefore

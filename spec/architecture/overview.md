@@ -36,7 +36,7 @@ prevent, reached by a different route than a naming mismatch.
 | Organization discovery | `aws/organization_snapshot.py`, `aws/organization.py` | One frozen `OrganizationSnapshot` | [`aws-execution.md`](aws-execution.md) |
 | Checks | `checks/`, `aws/<service>.py` | Per-resource verdicts | [`check-framework.md`](check-framework.md) |
 | Result artifacts | `write_results.py` | One JSON per check per account | [`../contracts/results.md`](../contracts/results.md) |
-| Placement | `parse_results.py`, `placement/`, `generate_rcps.py` | Recommendations naming a target | [`../contracts/placement.md`](../contracts/placement.md) |
+| Placement | `parse_results.py`, `placement/`, `generate_rcps.py` | Recommendations naming a target, and per-check coverage of who was judged and who blocked it | [`../contracts/placement.md`](../contracts/placement.md) |
 | Terraform compilation | `terraform/generate_*.py`, `terraform/plan.py` | One validated whole-run plan, written nowhere | [`../contracts/terraform.md`](../contracts/terraform.md) |
 | Terraform application | `terraform/apply.py` | The files, the reserved link, and the stale deletions | [`../contracts/terraform.md`](../contracts/terraform.md) |
 

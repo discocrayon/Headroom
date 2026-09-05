@@ -73,8 +73,9 @@ graph TD
   headroom.parse_results --> headroom.aws.organization
   headroom.parse_results --> headroom.checks.registry
   headroom.parse_results --> headroom.placement
+  headroom.parse_results --> headroom.placement.hierarchy
+  headroom.parse_results --> headroom.write_results
   headroom.parse_results --> headroom.types
-  headroom.parse_results --> headroom.constants
   headroom.parse_results --> headroom.output
   headroom.parse_results --> headroom.utils
 
@@ -88,6 +89,8 @@ graph TD
   headroom.terraform --> headroom.terraform.plan
   headroom.terraform --> headroom.terraform.utils
 
+  headroom.terraform.generate_org_info --> headroom.terraform.models
+
   headroom.terraform.plan --> headroom.terraform.generate_org_info
   headroom.terraform.plan --> headroom.terraform.generate_scps
   headroom.terraform.plan --> headroom.terraform.generate_rcps
@@ -97,9 +100,18 @@ graph TD
   headroom.terraform.plan --> headroom.constants
   headroom.terraform.plan --> headroom.types
 
+  headroom.terraform.disabled_reasons --> headroom.terraform.models
+  headroom.terraform.disabled_reasons --> headroom.terraform.parameters
+  headroom.terraform.disabled_reasons --> headroom.checks.registry
+  headroom.terraform.disabled_reasons --> headroom.terraform.utils
+  headroom.terraform.disabled_reasons --> headroom.placement.hierarchy
+  headroom.terraform.disabled_reasons --> headroom.enums
+  headroom.terraform.disabled_reasons --> headroom.types
+
   headroom.terraform.apply --> headroom.terraform.plan
   headroom.terraform.apply --> headroom.constants
 
+  headroom.terraform.generate_scps --> headroom.terraform.disabled_reasons
   headroom.terraform.generate_scps --> headroom.terraform.models
   headroom.terraform.generate_scps --> headroom.terraform.parameters
   headroom.terraform.generate_scps --> headroom.terraform.utils
@@ -111,6 +123,7 @@ graph TD
   headroom.terraform.generate_rcps --> headroom.parse_results
   headroom.terraform.generate_rcps --> headroom.placement
   headroom.terraform.generate_rcps --> headroom.placement.hierarchy
+  headroom.terraform.generate_rcps --> headroom.terraform.disabled_reasons
   headroom.terraform.generate_rcps --> headroom.terraform.models
   headroom.terraform.generate_rcps --> headroom.terraform.parameters
   headroom.terraform.generate_rcps --> headroom.terraform.utils
@@ -156,6 +169,7 @@ graph TD
   headroom.aws.ecr --> headroom.aws.policy_documents
   headroom.aws.ecr --> headroom.types
   headroom.aws.kms --> headroom.aws.helpers
+  headroom.aws.kms --> headroom.aws.iam_unique_ids
   headroom.aws.kms --> headroom.aws.policy_documents
   headroom.aws.kms --> headroom.constants
   headroom.aws.kms --> headroom.types

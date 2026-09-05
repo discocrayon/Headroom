@@ -1417,6 +1417,8 @@ if_check_has_allowlist:
           terraform_variable="{service}_allowed_{thing}s",
           restores_account_ids=<True when the values are ARNs>,
           empty_allowlist_comment="{check_name} stays off here: <why the covered accounts observed nothing, and what an empty list would do>",
+          # Renders in this module and in every module below it, so it must
+          # read true of any subset of those accounts and at any target kind.
       )
     purpose: |
       Parsing reads summary_key and aborts when it is absent - an absent key

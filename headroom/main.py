@@ -1,4 +1,4 @@
-from typing import Dict, Iterator, List
+from typing import Dict, Iterator, List, Tuple
 import argparse
 from contextlib import contextmanager
 import logging
@@ -11,11 +11,16 @@ from .usage import load_yaml_config, parse_cli_args, merge_configs
 from .analysis import perform_analysis, get_security_analysis_session, get_management_account_session
 from .parse_results import analyze_scp_compliance, print_policy_recommendations
 from .terraform.apply import apply_terraform_plan
-from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement
+from .terraform.generate_rcps import parse_rcp_result_files, determine_rcp_placement, rcp_check_coverage
 from .terraform.plan import compile_terraform_plan
 from .aws.organization import get_organizations_client
 from .aws.organization_snapshot import discover_organization
-from .types import OrganizationHierarchy, RCPPlacementRecommendations, SCPPlacementRecommendations
+from .types import (
+    CheckCoverage,
+    OrganizationHierarchy,
+    RCPPlacementRecommendations,
+    SCPPlacementRecommendations,
+)
 from .output import OutputHandler
 
 logger = logging.getLogger(__name__)
@@ -49,7 +54,7 @@ def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> Head
 def handle_scp_workflow(
     final_config: HeadroomConfig,
     org_hierarchy: OrganizationHierarchy
-) -> List[SCPPlacementRecommendations]:
+) -> Tuple[List[SCPPlacementRecommendations], Dict[str, CheckCoverage]]:
     """
     Parse SCP results, place them, and report them.
 
@@ -61,23 +66,25 @@ def handle_scp_workflow(
         org_hierarchy: Organization hierarchy structure
 
     Returns:
-        This run's SCP placement recommendations
+        This run's SCP placement recommendations, alongside the coverage map
+        recording which accounts each check judged and which of them it
+        judged unsafe
 
     Raises:
         ValueError: If management_account_id is not set in config
         RuntimeError: If no SCP result files were parsed
     """
-    scp_recommendations = analyze_scp_compliance(final_config, org_hierarchy)
+    scp_recommendations, coverage = analyze_scp_compliance(final_config, org_hierarchy)
     print_policy_recommendations(
         scp_recommendations, org_hierarchy, "SCP PLACEMENT RECOMMENDATIONS"
     )
-    return scp_recommendations
+    return scp_recommendations, coverage
 
 
 def handle_rcp_workflow(
     final_config: HeadroomConfig,
     org_hierarchy: OrganizationHierarchy
-) -> List[RCPPlacementRecommendations]:
+) -> Tuple[List[RCPPlacementRecommendations], Dict[str, CheckCoverage]]:
     """
     Parse RCP results, place them, and report them.
 
@@ -89,7 +96,9 @@ def handle_rcp_workflow(
         org_hierarchy: Organization hierarchy structure
 
     Returns:
-        This run's RCP placement recommendations
+        This run's RCP placement recommendations, alongside the coverage map
+        recording which accounts each check judged and which of them it
+        judged unsafe
 
     Raises:
         RuntimeError: If no RCP result files were parsed
@@ -114,11 +123,12 @@ def handle_rcp_workflow(
             "this directory before generating Terraform."
         )
 
+    coverage = rcp_check_coverage(parse_results)
     rcp_recommendations = determine_rcp_placement(parse_results, org_hierarchy)
     print_policy_recommendations(
         rcp_recommendations, org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS"
     )
-    return rcp_recommendations
+    return rcp_recommendations, coverage
 
 
 @contextmanager
@@ -185,12 +195,14 @@ def main() -> None:
         perform_analysis(final_config, security_session, snapshot)
 
     with _failures_reported("Terraform generation"):
-        scp_recommendations = handle_scp_workflow(final_config, snapshot.hierarchy)
-        rcp_recommendations = handle_rcp_workflow(final_config, snapshot.hierarchy)
+        scp_recommendations, scp_coverage = handle_scp_workflow(final_config, snapshot.hierarchy)
+        rcp_recommendations, rcp_coverage = handle_rcp_workflow(final_config, snapshot.hierarchy)
         plan = compile_terraform_plan(
             final_config,
             snapshot.hierarchy,
             scp_recommendations,
             rcp_recommendations,
+            scp_coverage,
+            rcp_coverage,
         )
         apply_terraform_plan(plan)

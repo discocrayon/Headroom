@@ -14,7 +14,7 @@ from headroom.checks.registry import Allowlist, CheckDefinition
 from headroom.checks.scps.deny_ec2_public_ip import DenyEc2PublicIpCheck
 from headroom.enums import TerraformSection
 from headroom.terraform.models import TerraformComment, TerraformParameter
-from headroom.terraform.parameters import render_check_parameters
+from headroom.terraform.parameters import empty_allowlist_comments, render_check_parameters, renders_enabled
 from headroom.types import AccountOrgPlacement, OrganizationHierarchy
 
 
@@ -77,9 +77,10 @@ def test_one_section_with_nothing_enabled_renders_a_comment_then_false() -> None
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements == [
@@ -99,9 +100,10 @@ def test_two_sections_are_separated_by_a_blank_line() -> None:
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements == [
@@ -136,9 +138,10 @@ def test_check_with_no_allowlist_renders_only_its_boolean() -> None:
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements == [
@@ -162,9 +165,10 @@ def test_enabled_allowlist_renders_its_values_in_the_order_given() -> None:
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements == [
@@ -187,9 +191,10 @@ def test_disabled_check_with_an_allowlist_renders_only_its_boolean() -> None:
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements == [
@@ -223,9 +228,10 @@ def test_empty_allowlist_with_a_comment_leaves_the_check_off(
     with caplog.at_level(logging.WARNING):
         elements = render_check_parameters(
             definitions,
-            allowlists,
-            "scps_test",
-            make_hierarchy(),
+            allowlists=allowlists,
+            module_name="scps_test",
+            organization_hierarchy=make_hierarchy(),
+            reasons={},
         )
 
     assert elements == [
@@ -261,9 +267,10 @@ def test_none_value_for_a_check_that_declares_an_allowlist_aborts() -> None:
     ) as raised:
         render_check_parameters(
             definitions,
-            allowlists,
-            "scps_test",
-            make_hierarchy(),
+            allowlists=allowlists,
+            module_name="scps_test",
+            organization_hierarchy=make_hierarchy(),
+            reasons={},
         )
 
     assert str(raised.value).endswith(
@@ -292,9 +299,10 @@ def test_empty_allowlist_without_a_comment_renders_the_empty_list(
     with caplog.at_level(logging.WARNING):
         elements = render_check_parameters(
             definitions,
-            allowlists,
-            "scps_test",
-            make_hierarchy(),
+            allowlists=allowlists,
+            module_name="scps_test",
+            organization_hierarchy=make_hierarchy(),
+            reasons={},
         )
 
     assert elements == [
@@ -329,9 +337,10 @@ def test_restores_account_ids_rewrites_arns_for_accounts_in_the_hierarchy() -> N
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements == [
@@ -371,9 +380,10 @@ def test_restores_account_ids_rewrites_the_account_field_of_any_service_arn() ->
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements == [
@@ -413,9 +423,10 @@ def test_restores_account_ids_escapes_every_segment_but_the_reference() -> None:
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements[-1].render() == (
@@ -442,9 +453,10 @@ def test_allowlist_that_does_not_restore_account_ids_renders_arns_literally() ->
 
     elements = render_check_parameters(
         definitions,
-        allowlists,
-        "scps_test",
-        make_hierarchy(),
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
     )
 
     assert elements == [
@@ -473,9 +485,10 @@ def test_recommendation_for_an_unregistered_check_aborts() -> None:
     ):
         render_check_parameters(
             definitions,
-            allowlists,
-            "scps_test",
-            make_hierarchy(),
+            allowlists=allowlists,
+            module_name="scps_test",
+            organization_hierarchy=make_hierarchy(),
+            reasons={},
         )
 
 
@@ -504,9 +517,10 @@ def test_disabled_check_with_an_empty_allowlist_comment_stays_silent(
     with caplog.at_level(logging.WARNING):
         elements = render_check_parameters(
             definitions,
-            allowlists,
-            "scps_test",
-            make_hierarchy(),
+            allowlists=allowlists,
+            module_name="scps_test",
+            organization_hierarchy=make_hierarchy(),
+            reasons={},
         )
 
     assert elements == [
@@ -514,3 +528,193 @@ def test_disabled_check_with_an_empty_allowlist_comment_stays_silent(
         TerraformParameter("deny_ec2_alpha", False),
     ]
     assert caplog.records == []
+
+
+def test_a_reason_renders_above_the_boolean_it_explains() -> None:
+    """
+    The reason belongs to the parameter, so it sits directly above it.
+
+    The renderer does not derive it: `disabled_reasons` did that, and giving
+    the shared renderer the hierarchy relationships would make it a
+    placement reader as well.
+    """
+    definitions = [
+        make_definition("deny_ec2_public_ip", TerraformSection.EC2),
+        make_definition("deny_ec2_imds_v1", TerraformSection.EC2),
+    ]
+    reasons = {
+        "deny_ec2_public_ip": [
+            "Blocked by 2 of 4 analyzed accounts (acme-co,",
+            "shared-foo-bar)",
+        ]
+    }
+
+    elements = render_check_parameters(
+        definitions,
+        allowlists={"deny_ec2_imds_v1": None},
+        module_name="scps_root",
+        organization_hierarchy=make_hierarchy(),
+        reasons=reasons,
+    )
+
+    assert elements == [
+        TerraformComment("EC2"),
+        TerraformComment("Blocked by 2 of 4 analyzed accounts (acme-co,"),
+        TerraformComment("shared-foo-bar)"),
+        TerraformParameter("deny_ec2_public_ip", False),
+        TerraformParameter("deny_ec2_imds_v1", True),
+    ]
+
+
+def test_an_empty_allowlist_keeps_its_own_comment() -> None:
+    """
+    INV-06's comment is not displaced by this mechanism.
+
+    A check forced off by an empty allowlist has a recommendation for the
+    target, so it never appears in the reasons map at all.
+    """
+    allowlist = Allowlist(
+        summary_key="unique_ami_owners",
+        terraform_variable="ec2_allowed_ami_owners",
+        empty_allowlist_comment="No AMI owners observed - leaving this off",
+    )
+    definitions = [
+        make_definition("deny_ec2_ami_owner", TerraformSection.EC2, allowlist)
+    ]
+
+    elements = render_check_parameters(
+        definitions,
+        allowlists={"deny_ec2_ami_owner": []},
+        module_name="scps_root",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
+    )
+
+    assert elements == [
+        TerraformComment("EC2"),
+        TerraformComment("No AMI owners observed - leaving this off"),
+        TerraformParameter("deny_ec2_ami_owner", False),
+    ]
+
+
+def test_a_long_empty_allowlist_comment_wraps_like_every_reason_beside_it(
+    caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    INV-06's comment renders among wrapped ones, so it wraps the same way.
+
+    `deny_ec2_ami_owner` writes a two-hundred-column sentence, and it sat as
+    one line directly above 76-column comments in the most-read generated
+    example in the repository. The warning still carries the whole sentence:
+    a log line has no width to keep.
+    """
+    allowlist = Allowlist(
+        summary_key="unique_things",
+        terraform_variable="ec2_allowed_things",
+        empty_allowlist_comment=(
+            "deny_ec2_alpha stays off here: no instance in the accounts this "
+            "module covers had a resolvable owner, so the allowlist would be "
+            "empty."
+        ),
+    )
+    definitions = [make_definition("deny_ec2_alpha", TerraformSection.EC2, allowlist)]
+
+    with caplog.at_level(logging.WARNING):
+        elements = render_check_parameters(
+            definitions,
+            allowlists={"deny_ec2_alpha": []},
+            module_name="scps_root",
+            organization_hierarchy=make_hierarchy(),
+            reasons={},
+        )
+
+    assert elements == [
+        TerraformComment("EC2"),
+        TerraformComment(
+            "deny_ec2_alpha stays off here: no instance in the accounts this module"
+        ),
+        TerraformComment("covers had a resolvable owner, so the allowlist would be empty."),
+        TerraformParameter("deny_ec2_alpha", False),
+    ]
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert warnings[0].message == (
+        "Module scps_root: deny_ec2_alpha stays off here: no instance in the "
+        "accounts this module covers had a resolvable owner, so the allowlist "
+        "would be empty."
+    )
+
+
+def test_only_a_check_that_declares_the_comment_is_mapped_to_one() -> None:
+    """
+    The map holds exactly the checks an empty allowlist turns off.
+
+    A check with no allowlist cannot be turned off by one, and a check whose
+    empty allowlist renders as `[]` is not turned off either - it renders
+    true with an empty list. Either one in this map would put a comment
+    below a placement that is in force.
+    """
+    definitions = [
+        make_definition("deny_ec2_alpha", TerraformSection.EC2),
+        make_definition(
+            "deny_ec2_beta",
+            TerraformSection.EC2,
+            Allowlist("unique_things", "ec2_allowed_things"),
+        ),
+        make_definition(
+            "deny_ec2_gamma",
+            TerraformSection.EC2,
+            Allowlist(
+                "unique_widgets",
+                "ec2_allowed_widgets",
+                empty_allowlist_comment="deny_ec2_gamma stays off here: no widgets",
+            ),
+        ),
+    ]
+
+    assert empty_allowlist_comments(definitions) == {
+        "deny_ec2_gamma": "deny_ec2_gamma stays off here: no widgets"
+    }
+
+
+def test_a_reason_for_an_enabled_check_aborts() -> None:
+    """
+    A comment saying why a check is off, above a check that is on, is a lie.
+
+    The reasons map holds only checks with no recommendation for the target
+    and the allowlists map only checks with one, so a name in both means the
+    two were assembled from different placements. Rendering both would put
+    "No results for this check" above `= true`.
+    """
+    definitions = [make_definition("deny_ec2_imds_v1", TerraformSection.EC2)]
+
+    with pytest.raises(
+        RuntimeError,
+        match="scps_root: deny_ec2_imds_v1 is enabled here and also carries a reason for being off",
+    ):
+        render_check_parameters(
+            definitions,
+            allowlists={"deny_ec2_imds_v1": None},
+            module_name="scps_root",
+            organization_hierarchy=make_hierarchy(),
+            reasons={"deny_ec2_imds_v1": ["No results for this check - not evidence of safety"]},
+        )
+
+
+def test_renders_enabled_rejects_none_for_a_declaring_check() -> None:
+    """
+    The one rule that classifies a placement must refuse lost data too.
+
+    The generators ask this before any module is built, to split placements
+    into live and flipped. Reading None as an empty list here would file the
+    recommendation as flipped, compute every other module's comments from
+    that wrong split, and only abort when the check's own module rendered.
+    """
+    definition = make_definition(
+        "deny_ec2_alpha",
+        TerraformSection.EC2,
+        Allowlist("unique_things", "ec2_allowed_things"),
+    )
+
+    with pytest.raises(RuntimeError, match="deny_ec2_alpha declares an allowlist but its recommendation carries None"):
+        renders_enabled(definition, None)

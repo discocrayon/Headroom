@@ -142,11 +142,13 @@ artifact claims to be the output of — and
 [`../README.md`](../README.md) requires reporting a conflict rather than guessing
 which side is right.
 
-**One is open.**
+**Three are open.**
 
 | # | Where | Conflict |
 |---|---|---|
 | 7 | [`deny_ecr_third_party_access`](rcps/deny_ecr_third_party_access.md) | Four committed result files still carry `repositories_third_parties_can_access`, `repositories_with_wildcards`, and `total_repositories_analyzed`, which the check renamed to `policies_third_parties_can_access`, `policies_with_wildcards`, and `total_policies_analyzed`. Rewriting them would make evidence claim to be the output of a code version that never wrote it, and regenerating them needs a live run of the test organization |
+| 9 | `test_environment/rcps/` | Four registered RCP checks have no results directory under `test_environment/headroom_results/rcps/`, and `parse_rcp_result_files` raises on a missing directory. A run against this fixture aborts before rendering, so the committed RCP examples cannot be the output of any run of the current code. Regenerating them needs a live run of the test organization |
+| 10 | `test_environment/rcps/` | The committed calls disagree with what placement would produce from the committed results. `deny_s3_third_party_access` blocks only in fort-knox, so it is safe at OU `acme_acquisition` and at the account `security-tooling`, yet `acme_acquisition_ou_rcps.tf` and `security_tooling_rcps.tf` both render it `false`. `deny_ecr_third_party_access` is clean in all four results, which places it at the root, and no `root_rcps.tf` is committed at all — the `false` it shows in the two committed calls is what a root-placed check correctly renders below its target, so that boolean is not itself the defect. This is a spot check and not an inventory: conflict 9 means no run can produce the directory to compare against |
 
 A resolved conflict leaves nothing behind here. What it was and how it was
 settled is in git history, and the rule it produced is in the document that owns
@@ -154,7 +156,7 @@ that rule — so a row kept after the fact would be a second copy of a settled
 rule, going stale on its own schedule.
 
 A number is allocated once and never reused, because commit messages cite them
-and git history cannot be edited. **The next conflict is 9.** Whoever opens it
+and git history cannot be edited. **The next conflict is 11.** Whoever opens it
 advances that number here.
 
 ## Statements with no check

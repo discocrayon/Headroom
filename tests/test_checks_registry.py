@@ -606,14 +606,21 @@ def test_registering_one_class_under_two_names_raises(
     assert "deny_ec2_public_ip_again" not in get_check_names()
 
 
-def test_registering_an_empty_allowlist_comment_raises(isolated_registry: None) -> None:
+@pytest.mark.parametrize("comment", ["", "   ", "\n"], ids=["empty", "spaces", "newline"])
+def test_registering_an_empty_allowlist_comment_raises(
+    isolated_registry: None,
+    comment: str,
+) -> None:
     """
-    An empty comment is neither of the two things the field can mean.
+    A comment with nothing in it is neither of the two things the field can mean.
 
     None says an empty allowlist renders as [] and the module omits the
     clause; a comment says the empty allowlist turns the statement off and
     explains why. The empty string is falsy, so it rendered the first way
-    while reading as though the author had asked for the second.
+    while reading as though the author had asked for the second. Whitespace
+    is truthy, so it turned the statement off and then wrapped to zero
+    comment lines - a bare false in the declaring module and in every module
+    below the flipped placement, with nothing above it to say why.
     """
 
     class EmptyCommentCheck(DenyEc2PublicIpCheck):
@@ -622,16 +629,16 @@ def test_registering_an_empty_allowlist_comment_raises(isolated_registry: None) 
     with pytest.raises(
         ValueError,
         match=re.escape(
-            "Check 'deny_ec2_empty_comment' allowlist empty_allowlist_comment is empty; "
-            "pass None to render an empty allowlist as [], or a comment saying why the "
-            "statement stays off"
+            "Check 'deny_ec2_empty_comment' allowlist empty_allowlist_comment is empty or "
+            "only whitespace; pass None to render an empty allowlist as [], or a comment "
+            "saying why the statement stays off"
         ),
     ):
         register_check(
             "scps",
             "deny_ec2_empty_comment",
             terraform_section=TerraformSection.EC2,
-            allowlist=Allowlist("unique_widgets", "ec2_allowed_widgets", empty_allowlist_comment=""),
+            allowlist=Allowlist("unique_widgets", "ec2_allowed_widgets", empty_allowlist_comment=comment),
         )(EmptyCommentCheck)
 
     assert "deny_ec2_empty_comment" not in get_check_names()

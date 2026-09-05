@@ -19,10 +19,12 @@ from headroom.constants import (
     DENY_SQS_THIRD_PARTY_ACCESS,
     DENY_STS_THIRD_PARTY_ASSUMEROLE,
 )
+from headroom.terraform.disabled_reasons import placed_targets
 from headroom.terraform.generate_rcps import (
     parse_rcp_result_files,
     determine_rcp_placement,
     render_rcp_terraform,
+    rcp_check_coverage,
     _render_account_rcp_terraform,
     _render_ou_rcp_terraform,
     _render_root_rcp_terraform,
@@ -44,6 +46,7 @@ from headroom.enums import TerraformSection
 from headroom.placement.hierarchy import PlacementCandidate
 from headroom.types import (
     AccountThirdPartyMap,
+    CheckCoverage,
     OrganizationHierarchy,
     OrganizationalUnit,
     AccountOrgPlacement,
@@ -51,15 +54,13 @@ from headroom.types import (
     RCPPlacementRecommendations
 )
 from tests.constants import ORG_ID
+from tests.coverage_maps import coverage_for
+from tests.hierarchies import make_nested_org, make_org_empty
 from tests.test_checks_deny_kms_third_party_access import (
     decodable_grant,
     kms_session_holding,
     unresolvable_grant,
 )
-
-
-def make_org_empty() -> OrganizationHierarchy:
-    return OrganizationHierarchy(root_id="r-1111", organizational_units={}, accounts={})
 
 
 def make_org_holding_one_account() -> OrganizationHierarchy:
@@ -2201,7 +2202,7 @@ class TestRenderRcpTerraform:
         ]
 
         rendered = render_rcp_terraform(
-            recommendations, sample_org_hierarchy, Path(temp_output_dir)
+            recommendations, sample_org_hierarchy, Path(temp_output_dir), coverage_for("rcps")
         )
 
         root_file = Path(temp_output_dir) / "root_rcps.tf"
@@ -2232,7 +2233,7 @@ class TestRenderRcpTerraform:
         ]
 
         rendered = render_rcp_terraform(
-            recommendations, sample_org_hierarchy, Path(temp_output_dir)
+            recommendations, sample_org_hierarchy, Path(temp_output_dir), coverage_for("rcps")
         )
 
         ou_file = Path(temp_output_dir) / "production_ou_rcps.tf"
@@ -2262,7 +2263,7 @@ class TestRenderRcpTerraform:
         ]
 
         rendered = render_rcp_terraform(
-            recommendations, sample_org_hierarchy, Path(temp_output_dir)
+            recommendations, sample_org_hierarchy, Path(temp_output_dir), coverage_for("rcps")
         )
 
         account_file = Path(temp_output_dir) / "prod_account_1_rcps.tf"
@@ -2293,7 +2294,7 @@ class TestRenderRcpTerraform:
 
         # Should raise exception for missing OU
         with pytest.raises(RuntimeError, match="OU ou-9999 not found in organization hierarchy"):
-            render_rcp_terraform(recommendations, sample_org_hierarchy, Path(temp_output_dir))
+            render_rcp_terraform(recommendations, sample_org_hierarchy, Path(temp_output_dir), coverage_for("rcps"))
 
     def test_generate_skips_missing_account(
         self,
@@ -2314,7 +2315,7 @@ class TestRenderRcpTerraform:
 
         # Should raise exception for missing account
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
-            render_rcp_terraform(recommendations, sample_org_hierarchy, Path(temp_output_dir))
+            render_rcp_terraform(recommendations, sample_org_hierarchy, Path(temp_output_dir), coverage_for("rcps"))
 
     def test_render_raises_when_an_account_collides_with_root(
         self,
@@ -2360,7 +2361,7 @@ class TestRenderRcpTerraform:
         ]
 
         with pytest.raises(RuntimeError, match="root_rcps.tf"):
-            render_rcp_terraform(recommendations, org, Path(temp_output_dir))
+            render_rcp_terraform(recommendations, org, Path(temp_output_dir), coverage_for("rcps"))
 
         output_path = Path(temp_output_dir)
         assert not output_path.exists() or len(list(output_path.glob("*.tf"))) == 0
@@ -2374,10 +2375,72 @@ class TestRenderRcpTerraform:
         recommendations: List[RCPPlacementRecommendations] = []
 
         rendered = render_rcp_terraform(
-            recommendations, sample_org_hierarchy, Path(temp_output_dir)
+            recommendations, sample_org_hierarchy, Path(temp_output_dir), coverage_for("rcps")
         )
 
         assert rendered == {}
+
+
+def test_an_ou_file_says_the_root_already_enforces_the_check(tmp_path: Path) -> None:
+    """
+    The case this feature was asked for, end to end through the generator.
+
+    Mirrors test_an_ou_file_says_the_root_already_enforces_the_check in
+    test_generate_scps.py: the OU's file exists because one check placed
+    there; every other check renders false, and a reader cannot otherwise
+    tell which of those the root already covers.
+
+    `DENY_STS_THIRD_PARTY_ASSUMEROLE` needs an account outside the OU that
+    blocked it, or the OU placement could not have happened: the traversal
+    only descends past the root when something under the root is unsafe. One
+    account cannot be both the OU's safe placement and the root's reason to
+    descend.
+    """
+    org = make_nested_org()
+    org.accounts["222222222222"] = AccountOrgPlacement(
+        account_id="222222222222",
+        account_name="fort-knox",
+        parent_ou_id=None,
+        ou_path=[],
+    )
+    recommendations = [
+        RCPPlacementRecommendations(
+            check_name=DENY_KMS_THIRD_PARTY_ACCESS,
+            recommended_level="root",
+            target_ou_id=None,
+            affected_accounts=["111111111111"],
+            third_party_account_ids=["999999999999"],
+            reasoning="test",
+        ),
+        RCPPlacementRecommendations(
+            check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+            recommended_level="ou",
+            target_ou_id="ou-1111-11111111",
+            affected_accounts=["111111111111"],
+            third_party_account_ids=["888888888888"],
+            reasoning="test",
+        ),
+    ]
+    coverage = coverage_for("rcps", **{
+        DENY_KMS_THIRD_PARTY_ACCESS: CheckCoverage(
+            analyzed_accounts=frozenset({"111111111111", "222222222222"}),
+            unsafe_accounts=frozenset(),
+        ),
+        DENY_STS_THIRD_PARTY_ASSUMEROLE: CheckCoverage(
+            analyzed_accounts=frozenset({"111111111111", "222222222222"}),
+            unsafe_accounts=frozenset({"222222222222"}),
+        ),
+    })
+
+    plan = render_rcp_terraform(recommendations, org, tmp_path, coverage)
+    content = plan[tmp_path / "production_ou_rcps.tf"]
+
+    assert "  # Enforced at the organization root\n  deny_kms_third_party_access = false" in content
+    assert "  deny_sts_third_party_assumerole = true" in content
+    assert (
+        "  # No results for this check - not evidence of safety\n  deny_s3_third_party_access = false"
+        in content
+    )
 
 
 class TestBuildRcpTerraformModule:
@@ -2424,6 +2487,11 @@ class TestBuildRcpTerraformModule:
             recommendations=[recommendation],
             comment="Organization Root",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed=placed_targets([recommendation], make_org_empty()),
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert 'kms_unrendered_account_ids_allowlist = [\n    "333333333333",\n  ]' in result
@@ -2451,6 +2519,11 @@ class TestBuildRcpTerraformModule:
             recommendations=[rec],
             comment="Test Account",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed={rec.check_name: frozenset({"r-1111"})},
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert 'module "rcps_test_account"' in result
@@ -2487,6 +2560,11 @@ class TestBuildRcpTerraformModule:
             recommendations=recommendations,
             comment="Organization Root",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed=placed_targets(recommendations, make_org_empty()),
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         for check_name in get_check_names("rcps"):
@@ -2512,6 +2590,11 @@ class TestBuildRcpTerraformModule:
             recommendations=[rec],
             comment="Organization Root",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed=placed_targets([rec], make_org_empty()),
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert "# Auto-generated RCP Terraform configuration for Organization Root" in result
@@ -2539,29 +2622,40 @@ class TestBuildRcpTerraformModule:
             recommendations=[assume_role_rec],
             comment="Test OU",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed=placed_targets([assume_role_rec], make_org_empty()),
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
-        expected = '''# Code generated by Headroom. DO NOT EDIT.
+        no_results = "  # No results for this check - not evidence of safety"
+        expected = f'''# Code generated by Headroom. DO NOT EDIT.
 # Auto-generated RCP Terraform configuration for Test OU
 # Generated by Headroom based on third-party account analysis
 
-module "rcps_test" {
+module "rcps_test" {{
   source = "../modules/rcps"
   target_id = local.test_ou_id
 
   # ECR
+{no_results}
   deny_ecr_third_party_access = false
 
   # KMS
+{no_results}
   deny_kms_third_party_access = false
 
   # S3
+{no_results}
   deny_s3_third_party_access = false
 
   # Secrets Manager
+{no_results}
   deny_secrets_manager_third_party_access = false
 
   # SQS
+{no_results}
   deny_sqs_third_party_access = false
 
   # STS
@@ -2571,8 +2665,9 @@ module "rcps_test" {
   ]
 
   # Service confused deputy
+{no_results}
   deny_service_confused_deputy = false
-}
+}}
 '''
         assert result == expected
 
@@ -2592,6 +2687,11 @@ module "rcps_test" {
             recommendations=[s3_rec],
             comment="Test Account",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed={s3_rec.check_name: frozenset({"r-1111"})},
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert 'module "rcps_test_account"' in result
@@ -2608,6 +2708,11 @@ module "rcps_test" {
             recommendations=[],
             comment="Test",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed=placed_targets([], make_org_empty()),
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert 'module "rcps_test"' in result
@@ -2630,6 +2735,11 @@ module "rcps_test" {
             recommendations=[ecr_rec],
             comment="Test",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed={ecr_rec.check_name: frozenset({"r-1111"})},
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert "ecr_third_party_access_account_ids_allowlist" in result
@@ -2654,6 +2764,11 @@ module "rcps_test" {
             recommendations=[kms_rec],
             comment="Test",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed={kms_rec.check_name: frozenset({"r-1111"})},
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert "kms_third_party_access_account_ids_allowlist" in result
@@ -2677,6 +2792,11 @@ module "rcps_test" {
             recommendations=[secrets_manager_rec],
             comment="Test",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed={secrets_manager_rec.check_name: frozenset({"r-1111"})},
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert "secrets_manager_third_party_account_ids_allowlist" in result
@@ -2707,6 +2827,11 @@ module "rcps_test" {
             recommendations=[ecr_rec, iam_rec],
             comment="Test",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed={ecr_rec.check_name: frozenset({"r-1111"}), iam_rec.check_name: frozenset({"r-1111"})},
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert "ecr_third_party_access_account_ids_allowlist" in result
@@ -2735,10 +2860,15 @@ module "rcps_test" {
 
         rendered = _build_rcp_terraform_module(
             "rcps_root",
-            "local.root_ou_id",
-            [recommendation],
-            "Organization Root",
-            make_org_empty(),
+            target_id_reference="local.root_ou_id",
+            recommendations=[recommendation],
+            comment="Organization Root",
+            organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed=placed_targets([recommendation], make_org_empty()),
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert "deny_service_confused_deputy" in rendered
@@ -2790,7 +2920,14 @@ class TestRenderAccountRcpTerraform:
         output_path = Path("/nonexistent")
 
         filepath, content = _render_account_rcp_terraform(
-            "000000000000", [sample_rcp_rec], sample_org, output_path
+            "000000000000",
+            [sample_rcp_rec],
+            sample_org,
+            output_path,
+            placed_targets([sample_rcp_rec], sample_org),
+            coverage_for("rcps"),
+            {},
+            {},
         )
 
         # Rendering touches no filesystem, so a directory that does not exist is fine.
@@ -2833,7 +2970,14 @@ class TestRenderAccountRcpTerraform:
 
         with pytest.raises(RuntimeError, match="prod_us"):
             _render_account_rcp_terraform(
-                "000000000000", [sample_rcp_rec], org, Path("/nonexistent")
+                "000000000000",
+                [sample_rcp_rec],
+                org,
+                Path("/nonexistent"),
+                placed_targets([sample_rcp_rec], org),
+                coverage_for("rcps"),
+                {},
+                {},
             )
 
     def test_raises_error_for_missing_account(
@@ -2845,7 +2989,14 @@ class TestRenderAccountRcpTerraform:
 
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
             _render_account_rcp_terraform(
-                "999999999999", [sample_rcp_rec], empty_org, Path("/nonexistent")
+                "999999999999",
+                [sample_rcp_rec],
+                empty_org,
+                Path("/nonexistent"),
+                placed_targets([sample_rcp_rec], empty_org),
+                coverage_for("rcps"),
+                {},
+                {},
             )
 
 
@@ -2897,7 +3048,14 @@ class TestRenderOuRcpTerraform:
         output_path = Path("/nonexistent")
 
         filepath, content = _render_ou_rcp_terraform(
-            "ou-12345", [sample_ou_rec], sample_org, output_path
+            "ou-12345",
+            [sample_ou_rec],
+            sample_org,
+            output_path,
+            placed_targets([sample_ou_rec], sample_org),
+            coverage_for("rcps"),
+            {},
+            {},
         )
 
         assert filepath == output_path / "test_ou_ou_rcps.tf"
@@ -2914,7 +3072,14 @@ class TestRenderOuRcpTerraform:
 
         with pytest.raises(RuntimeError, match="OU ou-unknown not found in organization hierarchy"):
             _render_ou_rcp_terraform(
-                "ou-unknown", [sample_ou_rec], empty_org, Path("/nonexistent")
+                "ou-unknown",
+                [sample_ou_rec],
+                empty_org,
+                Path("/nonexistent"),
+                placed_targets([sample_ou_rec], empty_org),
+                coverage_for("rcps"),
+                {},
+                {},
             )
 
 
@@ -2941,7 +3106,13 @@ class TestRenderRootRcpTerraform:
         output_path = Path("/nonexistent")
 
         filepath, content = _render_root_rcp_terraform(
-            [sample_root_rec], make_org_empty(), output_path
+            [sample_root_rec],
+            make_org_empty(),
+            output_path,
+            placed_targets([sample_root_rec], make_org_empty()),
+            coverage_for("rcps"),
+            {},
+            {},
         )
 
         assert filepath == output_path / "root_rcps.tf"
@@ -2967,6 +3138,11 @@ class TestRenderRootRcpTerraform:
             recommendations=[sqs_rec],
             comment="Test Account",
             organization_hierarchy=make_org_empty(),
+            target_id="r-1111",
+            placed={sqs_rec.check_name: frozenset({"r-1111"})},
+            coverage=coverage_for("rcps"),
+            flipped={},
+            flipped_comment={},
         )
 
         assert "test_module" in terraform
@@ -2985,7 +3161,7 @@ class TestRenderRootRcpTerraform:
         """
         org = OrganizationHierarchy(root_id="r-root", organizational_units={}, accounts={})
 
-        plan = render_rcp_terraform([], org, tmp_path)
+        plan = render_rcp_terraform([], org, tmp_path, coverage_for("rcps"))
 
         assert plan == {}
 
@@ -3056,7 +3232,7 @@ class TestEveryRcpCheckReachesTerraform:
         parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
         recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
         rendered = render_rcp_terraform(
-            recommendations, single_account_hierarchy, Path(temp_output_dir)
+            recommendations, single_account_hierarchy, Path(temp_output_dir), coverage_for("rcps")
         )
 
         content = rendered[Path(temp_output_dir) / "root_rcps.tf"]
@@ -3103,7 +3279,7 @@ class TestEveryRcpCheckReachesTerraform:
         parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
         recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
         rendered = render_rcp_terraform(
-            recommendations, single_account_hierarchy, Path(temp_output_dir)
+            recommendations, single_account_hierarchy, Path(temp_output_dir), coverage_for("rcps")
         )
 
         content = rendered[Path(temp_output_dir) / "root_rcps.tf"]
@@ -3135,10 +3311,64 @@ class TestEveryRcpCheckReachesTerraform:
         parse_results = parse_rcp_result_files(temp_results_dir, single_account_hierarchy)
         recommendations = determine_rcp_placement(parse_results, single_account_hierarchy)
         rendered = render_rcp_terraform(
-            recommendations, single_account_hierarchy, Path(temp_output_dir)
+            recommendations, single_account_hierarchy, Path(temp_output_dir), coverage_for("rcps")
         )
 
         content = rendered[Path(temp_output_dir) / "root_rcps.tf"]
 
         assert "deny_sts_third_party_assumerole = true" in content
         assert "deny_s3_third_party_access = false" in content
+
+
+def test_rcp_check_coverage_unions_cleared_and_blocked_accounts() -> None:
+    """
+    An account produced a result whether or not it blocked the policy.
+
+    Parsing splits the two apart - cleared accounts into the third-party map,
+    blocked ones into their own set - so coverage has to put them back
+    together to count how many accounts the check actually judged.
+    """
+    parsed = [
+        RCPCheckParseResult(
+            check_name="deny_s3_third_party_access",
+            account_third_party_map={
+                "111111111111": {"999911114444"},
+                "222222222222": set(),
+            },
+            accounts_with_blockers={"333333333333"},
+        )
+    ]
+
+    assert rcp_check_coverage(parsed) == {
+        "deny_s3_third_party_access": CheckCoverage(
+            analyzed_accounts=frozenset(
+                {"111111111111", "222222222222", "333333333333"}
+            ),
+            unsafe_accounts=frozenset({"333333333333"}),
+        )
+    }
+
+
+def test_rcp_check_coverage_keeps_a_check_that_read_nothing() -> None:
+    """
+    A present-but-empty check directory is coverage of zero accounts.
+
+    RCP parsing aborts on a missing directory, so a check reaching here with
+    nothing read is one whose directory exists and holds no files. It is
+    still a check that was looked at, and it renders the same shape a check
+    with no results does.
+    """
+    parsed = [
+        RCPCheckParseResult(
+            check_name="deny_sqs_third_party_access",
+            account_third_party_map={},
+            accounts_with_blockers=set(),
+        )
+    ]
+
+    assert rcp_check_coverage(parsed) == {
+        "deny_sqs_third_party_access": CheckCoverage(
+            analyzed_accounts=frozenset(),
+            unsafe_accounts=frozenset(),
+        )
+    }

@@ -152,7 +152,7 @@ specified in
 | `account_id` | string | **Absent** when `exclude_account_ids` is set |
 | `check` | string | The registered check name |
 | `scanned_at` | string | When the check finished for this account, in the scanning machine's local zone |
-| `violations` | integer | The count, written even when it is always zero |
+| `violations` | non-negative integer | The count, written even when it is always zero. Parsing rejects a negative, boolean, or non-integer count with the remedy an absent key gets |
 
 `violations` is the count every placement decision turns on, and it is written by
 all sixteen registered checks — nine SCP and seven RCP. A check whose every

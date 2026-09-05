@@ -62,6 +62,51 @@ def ou_subtree_ids(
     return subtree
 
 
+def ancestor_ou_ids(
+    parent_ou_id: Optional[str],
+    organizational_units: Dict[str, OrganizationalUnit],
+    root_id: str
+) -> List[str]:
+    """
+    Return an OU or account's parent OU and every OU above it, nearest first.
+
+    Placement reads this to decide which OUs a result belongs under, and
+    Terraform generation reads it to decide whether a check is already
+    enforced above the target being rendered. One walk, so the two answers
+    cannot disagree.
+
+    Args:
+        parent_ou_id: The direct parent OU, or None for something attached
+            to the organization root
+        organizational_units: All OUs in the organization
+        root_id: The organization root, where the walk stops
+
+    Returns:
+        OU IDs governing the target, empty when it hangs off the root
+
+    Raises:
+        RuntimeError: If the parent chain loops
+    """
+    ancestors: List[str] = []
+    seen: Set[str] = set()
+    current = parent_ou_id
+
+    while current is not None and current != root_id:
+        if current in seen:
+            raise RuntimeError(
+                f"OU hierarchy contains a cycle: {current} is its own ancestor"
+            )
+        seen.add(current)
+        ancestors.append(current)
+
+        ou = organizational_units.get(current)
+        if ou is None:
+            break
+        current = ou.parent_ou_id
+
+    return ancestors
+
+
 def accounts_under_ou(
     ou_id: str,
     organization_hierarchy: OrganizationHierarchy
@@ -228,6 +273,8 @@ class HierarchyPlacementAnalyzer(Generic[T]):
         """
         Return an account's parent OU and every OU above it, nearest first.
 
+        The walk itself lives at module level, as ancestor_ou_ids.
+
         Args:
             parent_ou_id: The account's direct parent OU, or None for accounts
                 attached to the organization root
@@ -238,24 +285,11 @@ class HierarchyPlacementAnalyzer(Generic[T]):
         Raises:
             RuntimeError: If the parent chain loops
         """
-        ancestors: List[str] = []
-        seen: Set[str] = set()
-        current = parent_ou_id
-
-        while current is not None and current != self.org.root_id:
-            if current in seen:
-                raise RuntimeError(
-                    f"OU hierarchy contains a cycle: {current} is its own ancestor"
-                )
-            seen.add(current)
-            ancestors.append(current)
-
-            ou = self.org.organizational_units.get(current)
-            if ou is None:
-                break
-            current = ou.parent_ou_id
-
-        return ancestors
+        return ancestor_ou_ids(
+            parent_ou_id,
+            self.org.organizational_units,
+            self.org.root_id
+        )
 
     def _group_results_by_ou_subtree(
         self,

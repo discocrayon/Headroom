@@ -20,6 +20,7 @@ from .utils import claim_plan_path
 from ..config import HeadroomConfig
 from ..constants import GENERATED_MARKER, ORG_INFO_FILENAME
 from ..types import (
+    CheckCoverage,
     OrganizationHierarchy,
     RCPPlacementRecommendations,
     SCPPlacementRecommendations,
@@ -162,6 +163,8 @@ def compile_terraform_plan(
     organization_hierarchy: OrganizationHierarchy,
     scp_recommendations: List[SCPPlacementRecommendations],
     rcp_recommendations: List[RCPPlacementRecommendations],
+    scp_coverage: Mapping[str, CheckCoverage],
+    rcp_coverage: Mapping[str, CheckCoverage],
 ) -> TerraformPlan:
     """
     Render and validate everything this run wants on disk, writing none of it.
@@ -177,6 +180,10 @@ def compile_terraform_plan(
         organization_hierarchy: The run's captured organization hierarchy
         scp_recommendations: This run's SCP placements
         rcp_recommendations: This run's RCP placements
+        scp_coverage: Every registered SCP check, mapped to its
+            coverage, for explaining a check any target renders false
+        rcp_coverage: Every registered RCP check, mapped to its
+            coverage, for explaining a check any target renders false
 
     Returns:
         The validated whole-run plan
@@ -199,11 +206,11 @@ def compile_terraform_plan(
         "the organization data sources",
     )
     for destination, content in render_scp_terraform(
-        scp_recommendations, organization_hierarchy, scps
+        scp_recommendations, organization_hierarchy, scps, scp_coverage
     ).items():
         claim_plan_path(files, destination, content, "an SCP file")
     for destination, content in render_rcp_terraform(
-        rcp_recommendations, organization_hierarchy, rcps
+        rcp_recommendations, organization_hierarchy, rcps, rcp_coverage
     ).items():
         claim_plan_path(files, destination, content, "an RCP file")
 

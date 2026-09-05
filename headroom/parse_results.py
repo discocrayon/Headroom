@@ -9,12 +9,12 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import HeadroomConfig
 from .types import (
-    OrganizationalUnit, OrganizationHierarchy, PolicyRecommendation, SCPCheckResult,
-    SCPPlacementRecommendations, RCPPlacementRecommendations
+    CheckCoverage, OrganizationalUnit, OrganizationHierarchy, PolicyRecommendation,
+    SCPCheckResult, SCPPlacementRecommendations, RCPPlacementRecommendations
 )
 from .aws.organization import lookup_account_id_by_name
 from .checks.registry import Allowlist, CheckDefinition, get_check_definition, get_check_names
@@ -318,6 +318,20 @@ def _parse_single_scp_result_file(
             f"the run. {delete_and_rerun_remedy(result_file, resolved_check_name)}"
         )
 
+    violations = summary["violations"]
+    # The count is the one field placement reads, so it has to be the one
+    # kind of value placement can read. A negative count is unsafe to
+    # placement (not zero) and safe to coverage (not above zero), so the run
+    # would abort blaming the coverage map; a string count raises a TypeError
+    # the run does not catch. Headroom wrote the file, so anything but a
+    # non-negative integer is corruption, and it gets the absent key's remedy.
+    if isinstance(violations, bool) or not isinstance(violations, int) or violations < 0:
+        raise RuntimeError(
+            f"{result_file} carries a violations count of {violations!r}. Placement "
+            f"reads that count as a non-negative integer and nothing else. "
+            f"{delete_and_rerun_remedy(result_file, resolved_check_name)}"
+        )
+
     allowlist_values = _read_allowlist_values(
         summary,
         definition,
@@ -329,7 +343,7 @@ def _parse_single_scp_result_file(
         account_id=account_id,
         account_name=summary.get("account_name", ""),
         check_name=resolved_check_name,
-        violations=summary["violations"],
+        violations=violations,
         exemptions=summary.get("exemptions", 0),
         compliant=summary.get("compliant", 0),
         total_instances=summary.get("total_instances"),
@@ -411,11 +425,39 @@ def _group_results_by_check_name(
     return check_groups
 
 
+def scp_check_coverage(
+    results_data: List[SCPCheckResult]
+) -> Dict[str, CheckCoverage]:
+    """
+    Record, per check, which accounts it judged and which it judged unsafe.
+
+    Args:
+        results_data: Every parsed SCP result, across all checks
+
+    Returns:
+        Every registered SCP check, mapped to its coverage. A check that
+        produced no result is present with empty sets, the encoding
+        `rcp_check_coverage` already uses, so a name missing from the map is
+        a bug rather than a check that scanned nothing - which is what lets
+        `disabled_reasons` index it instead of defaulting.
+    """
+    grouped = _group_results_by_check_name(results_data)
+    return {
+        check_name: CheckCoverage(
+            analyzed_accounts=frozenset(r.account_id for r in grouped.get(check_name, [])),
+            unsafe_accounts=frozenset(
+                r.account_id for r in grouped.get(check_name, []) if not r.is_safe
+            ),
+        )
+        for check_name in get_check_names("scps")
+    }
+
+
 def _get_safe_results(
     check_results: List[SCPCheckResult]
 ) -> List[SCPCheckResult]:
     """Filter results to only those with zero violations."""
-    return [r for r in check_results if r.violations == 0]
+    return [r for r in check_results if r.is_safe]
 
 
 def _ensure_account_ids_present(
@@ -647,8 +689,8 @@ def _determine_check_placement(
 
     candidates = analyzer.determine_placement(
         check_results=check_results,
-        is_safe_for_root=lambda results: all(r.violations == 0 for r in results),
-        is_safe_for_ou=lambda ou_id, results: all(r.violations == 0 for r in results),
+        is_safe_for_root=lambda results: all(r.is_safe for r in results),
+        is_safe_for_ou=lambda ou_id, results: all(r.is_safe for r in results),
         get_account_id=lambda r: r.account_id
     )
 
@@ -789,7 +831,7 @@ def print_policy_recommendations(
 def analyze_scp_compliance(
     config: HeadroomConfig,
     organization_hierarchy: OrganizationHierarchy
-) -> List[SCPPlacementRecommendations]:
+) -> Tuple[List[SCPPlacementRecommendations], Dict[str, CheckCoverage]]:
     """
     Analyze SCP compliance results and determine optimal placement recommendations.
 
@@ -802,7 +844,9 @@ def analyze_scp_compliance(
         organization_hierarchy: Organization structure (from main.py)
 
     Returns:
-        List of SCP placement recommendations for each check
+        SCP placement recommendations for each check, alongside the coverage
+        map recording which accounts each check judged and which of them it
+        judged unsafe
 
     Raises:
         ValueError: If management_account_id is not set in config
@@ -843,4 +887,4 @@ def analyze_scp_compliance(
     )
 
     logger.info("SCP placement analysis completed")
-    return recommendations
+    return recommendations, scp_check_coverage(results_data)

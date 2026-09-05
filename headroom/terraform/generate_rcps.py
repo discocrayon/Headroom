@@ -7,10 +7,11 @@ Generates Terraform files for RCP deployment based on third-party account analys
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, FrozenSet, List, Mapping, Set
 
+from .disabled_reasons import disabled_reasons, split_placements
 from .models import RenderedTerraformFiles, TerraformModule
-from .parameters import render_check_parameters
+from .parameters import empty_allowlist_comments, render_check_parameters
 from .utils import (
     account_id_local_name,
     claim_plan_path,
@@ -23,6 +24,7 @@ from ..utils import delete_and_rerun_remedy
 from ..checks.registry import get_allowlist, get_check_definitions, get_check_names
 from ..types import (
     AccountThirdPartyMap,
+    CheckCoverage,
     OrganizationHierarchy,
     RCPCheckParseResult,
     RCPCheckResult,
@@ -217,6 +219,33 @@ def parse_rcp_result_files(
         )
 
     return parse_results
+
+
+def rcp_check_coverage(
+    parse_results: List[RCPCheckParseResult]
+) -> Dict[str, CheckCoverage]:
+    """
+    Record, per RCP check, which accounts it judged and which blocked it.
+
+    Parsing splits an account into one of two places - the third-party map
+    when the policy is deployable there, `accounts_with_blockers` when a
+    principal no allowlist can express rules it out - so the accounts that
+    produced a result are the union of the two.
+
+    Args:
+        parse_results: One entry per registered RCP check
+
+    Returns:
+        Each check, mapped to its coverage. A check whose directory existed
+        but held no files is present with empty sets.
+    """
+    return {
+        parsed.check_name: CheckCoverage(
+            analyzed_accounts=frozenset(parsed.account_third_party_map) | frozenset(parsed.accounts_with_blockers),
+            unsafe_accounts=frozenset(parsed.accounts_with_blockers),
+        )
+        for parsed in parse_results
+    }
 
 
 def _should_skip_ou_for_rcp(
@@ -529,10 +558,16 @@ def determine_rcp_placement(
 
 def _build_rcp_terraform_module(
     module_name: str,
+    *,
     target_id_reference: str,
     recommendations: List[RCPPlacementRecommendations],
     comment: str,
     organization_hierarchy: OrganizationHierarchy,
+    target_id: str,
+    placed: Mapping[str, FrozenSet[str]],
+    coverage: Mapping[str, CheckCoverage],
+    flipped: Mapping[str, FrozenSet[str]],
+    flipped_comment: Mapping[str, str],
 ) -> str:
     """
     Build Terraform module call for RCP deployment.
@@ -551,6 +586,21 @@ def _build_rcp_terraform_module(
             generated locals. No RCP allowlist declares
             `restores_account_ids` today, so the rewrite is a no-op for
             every RCP module
+        target_id: The real organization root, OU, or account ID this
+            module targets - not `target_id_reference`, which is the HCL
+            local the rendered module attaches to
+        placed: Each check mapped to the target IDs carrying it and
+            rendering true there, for explaining a check this target does
+            not carry
+        coverage: Every registered check of this policy type, mapped to its coverage,
+            for explaining a check this target does not carry
+        flipped: Each check mapped to the target IDs carrying it and
+            rendering false there anyway, because the allowlist its
+            statement is scoped by came back empty (INV-06). No registered
+            RCP check declares that comment, so this is empty for every RCP
+            run today
+        flipped_comment: Each check in `flipped`, mapped to the comment its
+            own registration gives for an empty allowlist
 
     Returns:
         Complete Terraform module block as a string
@@ -563,12 +613,22 @@ def _build_rcp_terraform_module(
     allowlists = {
         rec.check_name: rec.third_party_account_ids for rec in recommendations
     }
+    definitions = get_check_definitions("rcps")
 
     parameters = render_check_parameters(
-        get_check_definitions("rcps"),
-        allowlists,
-        module_name,
-        organization_hierarchy,
+        definitions,
+        allowlists=allowlists,
+        module_name=module_name,
+        organization_hierarchy=organization_hierarchy,
+        reasons=disabled_reasons(
+            target_id,
+            check_names=[definition.check_name for definition in definitions],
+            placed=placed,
+            coverage=coverage,
+            organization_hierarchy=organization_hierarchy,
+            flipped=flipped,
+            flipped_comment=flipped_comment,
+        ),
     )
 
     module = TerraformModule(
@@ -587,7 +647,11 @@ def _render_account_rcp_terraform(
     account_id: str,
     recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
+    output_path: Path,
+    placed: Mapping[str, FrozenSet[str]],
+    coverage: Mapping[str, CheckCoverage],
+    flipped: Mapping[str, FrozenSet[str]],
+    flipped_comment: Mapping[str, str],
 ) -> tuple[Path, str]:
     """
     Render the Terraform file for one account's RCPs.
@@ -597,6 +661,13 @@ def _render_account_rcp_terraform(
         recs: List of RCP recommendations for this account
         organization_hierarchy: Organization structure information
         output_path: Directory the file belongs in
+        placed: Each check mapped to the target IDs carrying it and
+            rendering true there
+        coverage: Every registered check of this policy type, mapped to its coverage
+        flipped: Each check mapped to the target IDs carrying it and
+            rendering false there anyway (INV-06)
+        flipped_comment: Each check in `flipped`, mapped to the comment its
+            own registration gives for an empty allowlist
 
     Returns:
         Tuple of (destination path, rendered content)
@@ -620,6 +691,11 @@ def _render_account_rcp_terraform(
         recommendations=recs,
         comment=account_info.account_name,
         organization_hierarchy=organization_hierarchy,
+        target_id=account_id,
+        placed=placed,
+        coverage=coverage,
+        flipped=flipped,
+        flipped_comment=flipped_comment,
     )
 
     return filepath, terraform_content
@@ -629,7 +705,11 @@ def _render_ou_rcp_terraform(
     ou_id: str,
     recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
+    output_path: Path,
+    placed: Mapping[str, FrozenSet[str]],
+    coverage: Mapping[str, CheckCoverage],
+    flipped: Mapping[str, FrozenSet[str]],
+    flipped_comment: Mapping[str, str],
 ) -> tuple[Path, str]:
     """
     Render the Terraform file for one OU's RCPs.
@@ -639,6 +719,13 @@ def _render_ou_rcp_terraform(
         recs: List of RCP recommendations for this OU
         organization_hierarchy: Organization structure information
         output_path: Directory the file belongs in
+        placed: Each check mapped to the target IDs carrying it and
+            rendering true there
+        coverage: Every registered check of this policy type, mapped to its coverage
+        flipped: Each check mapped to the target IDs carrying it and
+            rendering false there anyway (INV-06)
+        flipped_comment: Each check in `flipped`, mapped to the comment its
+            own registration gives for an empty allowlist
 
     Returns:
         Tuple of (destination path, rendered content)
@@ -667,6 +754,11 @@ def _render_ou_rcp_terraform(
         recommendations=recs,
         comment=f"OU {path_label}",
         organization_hierarchy=organization_hierarchy,
+        target_id=ou_id,
+        placed=placed,
+        coverage=coverage,
+        flipped=flipped,
+        flipped_comment=flipped_comment,
     )
 
     return filepath, terraform_content
@@ -675,7 +767,11 @@ def _render_ou_rcp_terraform(
 def _render_root_rcp_terraform(
     recs: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
+    output_path: Path,
+    placed: Mapping[str, FrozenSet[str]],
+    coverage: Mapping[str, CheckCoverage],
+    flipped: Mapping[str, FrozenSet[str]],
+    flipped_comment: Mapping[str, str],
 ) -> tuple[Path, str]:
     """
     Render the Terraform file for root-level RCPs.
@@ -688,6 +784,13 @@ def _render_root_rcp_terraform(
             `restores_account_ids` today, so the rewrite is a no-op for
             every RCP module
         output_path: Directory the file belongs in
+        placed: Each check mapped to the target IDs carrying it and
+            rendering true there
+        coverage: Every registered check of this policy type, mapped to its coverage
+        flipped: Each check mapped to the target IDs carrying it and
+            rendering false there anyway (INV-06)
+        flipped_comment: Each check in `flipped`, mapped to the comment its
+            own registration gives for an empty allowlist
 
     Returns:
         Tuple of (destination path, rendered content)
@@ -700,6 +803,11 @@ def _render_root_rcp_terraform(
         recommendations=recs,
         comment="Organization Root",
         organization_hierarchy=organization_hierarchy,
+        target_id=organization_hierarchy.root_id,
+        placed=placed,
+        coverage=coverage,
+        flipped=flipped,
+        flipped_comment=flipped_comment,
     )
 
     return filepath, terraform_content
@@ -708,7 +816,8 @@ def _render_root_rcp_terraform(
 def render_rcp_terraform(
     recommendations: List[RCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
+    output_path: Path,
+    coverage: Mapping[str, CheckCoverage],
 ) -> RenderedTerraformFiles:
     """
     Render every RCP file this run's recommendations call for.
@@ -721,11 +830,22 @@ def render_rcp_terraform(
         recommendations: List of RCP placement recommendations
         organization_hierarchy: Organization structure information
         output_path: Directory the files belong in
+        coverage: Every registered check of this policy type, mapped to its coverage,
+            for explaining a check any target renders false
 
     Returns:
         Rendered file contents, keyed by destination path. Nothing is
         written; the caller compiles these into the run's plan.
     """
+    # No registered RCP check declares the comment an empty-allowlist flip
+    # needs, so `flipped` is empty for every RCP run today; the split is here
+    # so that a check declaring one tomorrow is explained below its target
+    # without an edit.
+    placed, flipped = split_placements(
+        recommendations, lambda rec: rec.third_party_account_ids, organization_hierarchy
+    )
+    flipped_comment = empty_allowlist_comments(get_check_definitions("rcps"))
+
     account_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     ou_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)
     root_recommendations: List[RCPPlacementRecommendations] = []
@@ -747,19 +867,22 @@ def render_rcp_terraform(
 
     if root_recommendations:
         filepath, content = _render_root_rcp_terraform(
-            root_recommendations, organization_hierarchy, output_path
+            root_recommendations, organization_hierarchy, output_path, placed, coverage,
+            flipped, flipped_comment,
         )
         claim_plan_path(plan, filepath, content, "the organization root")
 
     for account_id, recs in account_recommendations.items():
         filepath, content = _render_account_rcp_terraform(
-            account_id, recs, organization_hierarchy, output_path
+            account_id, recs, organization_hierarchy, output_path, placed, coverage,
+            flipped, flipped_comment,
         )
         claim_plan_path(plan, filepath, content, f"account {organization_hierarchy.accounts[account_id].account_name!r}")
 
     for ou_id, recs in ou_recommendations.items():
         filepath, content = _render_ou_rcp_terraform(
-            ou_id, recs, organization_hierarchy, output_path
+            ou_id, recs, organization_hierarchy, output_path, placed, coverage,
+            flipped, flipped_comment,
         )
         claim_plan_path(plan, filepath, content, f"OU {organization_hierarchy.organizational_units[ou_id].name!r}")
 

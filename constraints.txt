@@ -38,6 +38,12 @@ mypy-boto3-sts<=1.43.69
 # Not boto3 packages, but subject to the same index refusal. Each is an
 # unpinned dependency that floats to a release the index will not serve.
 # Raise in step with upstream.
+#
+# `ast-serialize` is the one mypy itself pulls in, as `<1.0.0,>=0.6.0`. mypy is
+# servable at its newest, so a ceiling on mypy would not have helped: every 2.x
+# resolves that range to the same newest release. The ceiling belongs on the
+# dependency that floats.
+ast-serialize<=0.8.0
 coverage<=7.15.4
 filelock<=3.32.3
 platformdirs<=4.11.3

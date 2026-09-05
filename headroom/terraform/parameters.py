@@ -9,9 +9,9 @@ check (INV-13).
 
 import logging
 from itertools import groupby
-from typing import List, Mapping, Optional
+from typing import Dict, List, Mapping, Optional, Sequence
 
-from .models import TerraformComment, TerraformElement, TerraformParameter, hcl_escape
+from .models import TerraformComment, TerraformElement, TerraformParameter, hcl_escape, wrap_comment
 from .utils import account_id_local_name
 from ..checks.registry import CheckDefinition
 from ..enums import TerraformSection
@@ -19,6 +19,78 @@ from ..types import OrganizationHierarchy
 from ..utils import make_safe_variable_name
 
 logger = logging.getLogger(__name__)
+
+
+def renders_enabled(
+    definition: CheckDefinition,
+    values: Optional[List[str]]
+) -> bool:
+    """
+    Say whether a recommendation for this check actually renders enabled.
+
+    A check whose statement takes no allowlist always does. One that takes
+    an allowlist and observed nothing renders disabled where the check
+    declares a comment for that case, because an empty allowlist denies
+    everything rather than narrowing anything (INV-06).
+
+    Args:
+        definition: The check being rendered
+        values: The allowlist values its recommendation carries
+
+    Returns:
+        True where the boolean renders true
+
+    Raises:
+        RuntimeError: If the check declares an allowlist and values is None,
+            which is lost data rather than an observed-empty allowlist
+    """
+    allowlist = definition.allowlist
+    if allowlist is None:
+        return True
+    # Parsing gives a declaring check a list, empty when the covered accounts
+    # observed nothing, or aborts before placement (INV-01). The generators
+    # ask this to split placements into live and flipped before any module
+    # is built, so reading None as empty here would file the placement as
+    # flipped and compute every other module's comments from that.
+    if values is None:
+        raise RuntimeError(
+            f"{definition.check_name} declares an allowlist but its recommendation "
+            f"carries None instead of a list - an observed-empty allowlist is []."
+        )
+    if values:
+        return True
+    return not allowlist.empty_allowlist_comment
+
+
+def empty_allowlist_comments(
+    definitions: Sequence[CheckDefinition]
+) -> Dict[str, str]:
+    """
+    Map each check that keeps its statement off on an empty allowlist to why.
+
+    These are the checks `renders_enabled` can answer False for, and the
+    sentence each one wrote for that case. A generator hands the map to
+    `disabled_reasons`, which reads a check name only as data (INV-13), so
+    the targets below a flipped placement can say what the flipped target's
+    own file says.
+
+    Args:
+        definitions: Every definition of one policy type
+
+    Returns:
+        Each declaring check's name, mapped to its comment. A check whose
+        statement takes no allowlist, or whose empty allowlist renders as
+        `[]`, is absent
+    """
+    comments: Dict[str, str] = {}
+    for definition in definitions:
+        allowlist = definition.allowlist
+        if allowlist is None:
+            continue
+        if not allowlist.empty_allowlist_comment:
+            continue
+        comments[definition.check_name] = allowlist.empty_allowlist_comment
+    return comments
 
 
 def _definition_section(definition: CheckDefinition) -> TerraformSection:
@@ -80,9 +152,11 @@ def _replace_account_id_in_arn(
 
 def _render_definition(
     definition: CheckDefinition,
+    *,
     allowlists: Mapping[str, Optional[List[str]]],
     module_name: str,
     organization_hierarchy: OrganizationHierarchy,
+    reasons: Mapping[str, List[str]],
 ) -> List[TerraformElement]:
     """
     Render the parameters of one check.
@@ -97,6 +171,9 @@ def _render_definition(
             the error
         organization_hierarchy: Organization structure, for rewriting
             account IDs in ARN allowlists to generated locals
+        reasons: Each check rendering false, mapped to the lines of the
+            comment saying why, already wrapped. A check with a
+            recommendation for this target is absent.
 
     Returns:
         The check's boolean, preceded by an explanatory comment and followed
@@ -104,12 +181,26 @@ def _render_definition(
 
     Raises:
         RuntimeError: If this check declares an allowlist and its
-            recommendation carries None rather than a list
+            recommendation carries None rather than a list, or if it is
+            enabled here and the reasons map names it anyway
     """
-    enabled = definition.check_name in allowlists
+    explanation: List[TerraformElement] = [
+        TerraformComment(line) for line in reasons.get(definition.check_name, [])
+    ]
+
+    recommended = definition.check_name in allowlists
+    # The reasons map holds the checks with no recommendation here and the
+    # allowlists map the checks with one, so a name in both means the two
+    # were assembled from different placements - and rendering both would
+    # put a reason for being off above `= true`.
+    if recommended and definition.check_name in reasons:
+        raise RuntimeError(
+            f"Module {module_name}: {definition.check_name} is enabled here and also "
+            f"carries a reason for being off - the placements and the reasons disagree"
+        )
     allowlist = definition.allowlist
-    if allowlist is None or not enabled:
-        return [TerraformParameter(definition.check_name, enabled)]
+    if allowlist is None or not recommended:
+        return explanation + [TerraformParameter(definition.check_name, recommended)]
 
     values = allowlists[definition.check_name]
     # Parsing gives a declaring check a list, empty when the covered accounts
@@ -129,15 +220,18 @@ def _render_definition(
             for value in values
         ]
 
-    elements: List[TerraformElement] = []
+    elements: List[TerraformElement] = explanation
 
     # An empty allowlist is not a narrower statement. It is one that denies
     # everything, or one Organizations rejects as malformed, so a check
-    # declaring a comment for that case stays off and says why (INV-06).
-    if not values and allowlist.empty_allowlist_comment:
-        logger.warning(f"Module {module_name}: {allowlist.empty_allowlist_comment}")
-        elements.append(TerraformComment(allowlist.empty_allowlist_comment))
-        enabled = False
+    # declaring a comment for that case stays off and says why (INV-06). The
+    # comment is the check's own sentence, wrapped to the width every other
+    # comment in the file is wrapped to.
+    enabled = renders_enabled(definition, values)
+    comment = allowlist.empty_allowlist_comment
+    if not enabled and comment:
+        logger.warning(f"Module {module_name}: {comment}")
+        elements.extend(TerraformComment(line) for line in wrap_comment(comment))
 
     elements.append(TerraformParameter(definition.check_name, enabled))
     if enabled:
@@ -151,9 +245,11 @@ def _render_definition(
 
 def render_check_parameters(
     definitions: List[CheckDefinition],
+    *,
     allowlists: Mapping[str, Optional[List[str]]],
     module_name: str,
     organization_hierarchy: OrganizationHierarchy,
+    reasons: Mapping[str, List[str]],
 ) -> List[TerraformElement]:
     """
     Render one module's parameters from its definitions.
@@ -169,6 +265,9 @@ def render_check_parameters(
             the error
         organization_hierarchy: Organization structure, for rewriting
             account IDs in ARN allowlists to generated locals
+        reasons: Each check rendering false, mapped to the lines of the
+            comment saying why, already wrapped. A check with a
+            recommendation for this target is absent.
 
     Returns:
         Section comments, booleans, and allowlists in render order
@@ -197,7 +296,13 @@ def render_check_parameters(
         elements.append(TerraformComment(section.value))
         for definition in group:
             elements.extend(
-                _render_definition(definition, allowlists, module_name, organization_hierarchy)
+                _render_definition(
+                    definition,
+                    allowlists=allowlists,
+                    module_name=module_name,
+                    organization_hierarchy=organization_hierarchy,
+                    reasons=reasons,
+                )
             )
 
     return elements

@@ -3,8 +3,7 @@ import logging
 import pytest
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch, mock_open
-from typing import Any, Callable, Dict, List, Optional
-from pathlib import Path
+from typing import Any, Callable, Dict, List
 from headroom.usage import load_yaml_config, parse_cli_args, merge_configs
 from headroom.main import (
     main,
@@ -16,6 +15,7 @@ from headroom.config import AccountTagLayout, HeadroomConfig
 from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
 from headroom.checks.registry import get_check_names
 from headroom.types import (
+    CheckCoverage,
     OrganizationHierarchy,
     OrganizationSnapshot,
     RCPCheckParseResult,
@@ -25,10 +25,10 @@ from pydantic import ValidationError
 
 
 def _record(
-    seen: List[object], returns: Optional[List[Path]] = None
-) -> Callable[..., Optional[List[Path]]]:
+    seen: List[object], returns: object = None
+) -> Callable[..., object]:
     """Record the hierarchy a generator was handed, and return `returns`."""
-    def recorder(*args: object) -> Optional[List[Path]]:
+    def recorder(*args: object) -> object:
         seen.extend(arg for arg in args if isinstance(arg, OrganizationHierarchy))
         return returns
     return recorder
@@ -453,17 +453,19 @@ class TestMainDiscoversOnce:
             account_tag_layout=AccountTagLayout(environment="env", name="name", owner="owner"),
         )
 
-        with patch("headroom.main.get_security_analysis_session"), \
-             patch("headroom.main.get_management_account_session"), \
-             patch("headroom.main.discover_organization", return_value=snapshot) as discover, \
-             patch("headroom.main.perform_analysis"), \
-             patch("headroom.main.parse_cli_args"), \
-             patch("headroom.main.load_yaml_config"), \
-             patch("headroom.main.setup_configuration", return_value=config), \
-             patch("headroom.main.compile_terraform_plan", side_effect=_record(seen)), \
-             patch("headroom.main.apply_terraform_plan"), \
-             patch("headroom.main.handle_scp_workflow", side_effect=_record(seen, returns=[])), \
-             patch("headroom.main.handle_rcp_workflow", side_effect=_record(seen, returns=[])):
+        with (
+            patch("headroom.main.get_security_analysis_session"),
+            patch("headroom.main.get_management_account_session"),
+            patch("headroom.main.discover_organization", return_value=snapshot) as discover,
+            patch("headroom.main.perform_analysis"),
+            patch("headroom.main.parse_cli_args"),
+            patch("headroom.main.load_yaml_config"),
+            patch("headroom.main.setup_configuration", return_value=config),
+            patch("headroom.main.compile_terraform_plan", side_effect=_record(seen)),
+            patch("headroom.main.apply_terraform_plan"),
+            patch("headroom.main.handle_scp_workflow", side_effect=_record(seen, returns=([], {}))),
+            patch("headroom.main.handle_rcp_workflow", side_effect=_record(seen, returns=([], {}))),
+        ):
             main()
 
         discover.assert_called_once()
@@ -495,17 +497,19 @@ class TestMainDiscoversOnce:
         )
         security_session = MagicMock()
 
-        with patch("headroom.main.get_security_analysis_session", return_value=security_session), \
-             patch("headroom.main.get_management_account_session"), \
-             patch("headroom.main.discover_organization", return_value=snapshot), \
-             patch("headroom.main.perform_analysis") as scan, \
-             patch("headroom.main.parse_cli_args"), \
-             patch("headroom.main.load_yaml_config"), \
-             patch("headroom.main.setup_configuration", return_value=config), \
-             patch("headroom.main.compile_terraform_plan"), \
-             patch("headroom.main.apply_terraform_plan"), \
-             patch("headroom.main.handle_scp_workflow", return_value=[]), \
-             patch("headroom.main.handle_rcp_workflow", return_value=[]):
+        with (
+            patch("headroom.main.get_security_analysis_session", return_value=security_session),
+            patch("headroom.main.get_management_account_session"),
+            patch("headroom.main.discover_organization", return_value=snapshot),
+            patch("headroom.main.perform_analysis") as scan,
+            patch("headroom.main.parse_cli_args"),
+            patch("headroom.main.load_yaml_config"),
+            patch("headroom.main.setup_configuration", return_value=config),
+            patch("headroom.main.compile_terraform_plan"),
+            patch("headroom.main.apply_terraform_plan"),
+            patch("headroom.main.handle_scp_workflow", return_value=([], {})),
+            patch("headroom.main.handle_rcp_workflow", return_value=([], {})),
+        ):
             main()
 
         scan.assert_called_once_with(config, security_session, snapshot)
@@ -534,17 +538,19 @@ class TestMainDiscoversOnce:
             ),
         )
 
-        with patch("headroom.main.get_security_analysis_session"), \
-             patch("headroom.main.get_management_account_session"), \
-             patch("headroom.main.discover_organization", return_value=snapshot), \
-             patch("headroom.main.perform_analysis"), \
-             patch("headroom.main.parse_cli_args"), \
-             patch("headroom.main.load_yaml_config"), \
-             patch("headroom.main.setup_configuration", return_value=config), \
-             patch("headroom.main.handle_scp_workflow", return_value=[]), \
-             patch("headroom.main.handle_rcp_workflow", return_value=[]), \
-             patch("headroom.main.apply_terraform_plan"), \
-             patch("headroom.main.compile_terraform_plan") as compile_plan:
+        with (
+            patch("headroom.main.get_security_analysis_session"),
+            patch("headroom.main.get_management_account_session"),
+            patch("headroom.main.discover_organization", return_value=snapshot),
+            patch("headroom.main.perform_analysis"),
+            patch("headroom.main.parse_cli_args"),
+            patch("headroom.main.load_yaml_config"),
+            patch("headroom.main.setup_configuration", return_value=config),
+            patch("headroom.main.handle_scp_workflow", return_value=([], {})),
+            patch("headroom.main.handle_rcp_workflow", return_value=([], {})),
+            patch("headroom.main.apply_terraform_plan"),
+            patch("headroom.main.compile_terraform_plan") as compile_plan,
+        ):
             main()
 
         assert compile_plan.call_args.args[1] is hierarchy
@@ -559,11 +565,14 @@ class TestHandleScpWorkflow:
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
         config = MagicMock()
 
-        with patch('headroom.main.analyze_scp_compliance', return_value=recommendations), \
-             patch('headroom.main.print_policy_recommendations') as mock_print:
-            result = handle_scp_workflow(config, org_hierarchy)
+        with (
+            patch('headroom.main.analyze_scp_compliance', return_value=(recommendations, {})),
+            patch('headroom.main.print_policy_recommendations') as mock_print,
+        ):
+            result, coverage = handle_scp_workflow(config, org_hierarchy)
 
         assert result == recommendations
+        assert coverage == {}
         mock_print.assert_called_once_with(
             recommendations, org_hierarchy, "SCP PLACEMENT RECOMMENDATIONS"
         )
@@ -579,12 +588,45 @@ class TestHandleScpWorkflow:
         config = MagicMock()
         org_hierarchy = MagicMock(spec=OrganizationHierarchy)
 
-        with patch('headroom.main.analyze_scp_compliance', return_value=[]), \
-             patch('headroom.main.print_policy_recommendations') as mock_print:
-            result = handle_scp_workflow(config, org_hierarchy)
+        with (
+            patch('headroom.main.analyze_scp_compliance', return_value=([], {})),
+            patch('headroom.main.print_policy_recommendations') as mock_print,
+        ):
+            result, coverage = handle_scp_workflow(config, org_hierarchy)
 
         assert result == []
+        assert coverage == {}
         mock_print.assert_called_once_with([], org_hierarchy, "SCP PLACEMENT RECOMMENDATIONS")
+
+    def test_the_scp_workflow_returns_coverage_beside_its_recommendations(self) -> None:
+        """
+        Coverage is a workflow output, not something generation can re-derive.
+
+        Generation never reads a result file; if the workflow drops the map,
+        every comment in the run degrades to the no-results shape and nothing
+        fails.
+        """
+        recommendations = [MagicMock(), MagicMock(), MagicMock()]
+        coverage = {
+            "deny_ec2_imds_v1": CheckCoverage(
+                analyzed_accounts=frozenset({"111111111111"}),
+                unsafe_accounts=frozenset(),
+            )
+        }
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+        config = MagicMock()
+
+        with (
+            patch(
+                'headroom.main.analyze_scp_compliance',
+                return_value=(recommendations, coverage),
+            ),
+            patch('headroom.main.print_policy_recommendations'),
+        ):
+            result, result_coverage = handle_scp_workflow(config, org_hierarchy)
+
+        assert result == recommendations
+        assert result_coverage == coverage
 
 
 class TestHandleRcpWorkflow:
@@ -605,12 +647,20 @@ class TestHandleRcpWorkflow:
         ]
         recommendations = [MagicMock()]
 
-        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result), \
-             patch('headroom.main.determine_rcp_placement', return_value=recommendations), \
-             patch('headroom.main.print_policy_recommendations') as mock_print:
-            result = handle_rcp_workflow(config, org_hierarchy)
+        with (
+            patch('headroom.main.parse_rcp_result_files', return_value=parse_result),
+            patch('headroom.main.determine_rcp_placement', return_value=recommendations),
+            patch('headroom.main.print_policy_recommendations') as mock_print,
+        ):
+            result, coverage = handle_rcp_workflow(config, org_hierarchy)
 
         assert result == recommendations
+        assert coverage == {
+            DENY_STS_THIRD_PARTY_ASSUMEROLE: CheckCoverage(
+                analyzed_accounts=frozenset({"111111111111"}),
+                unsafe_accounts=frozenset(),
+            )
+        }
         mock_print.assert_called_once_with(
             recommendations, org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS"
         )
@@ -655,11 +705,20 @@ class TestHandleRcpWorkflow:
             )
         ]
 
-        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result), \
-             patch('headroom.main.determine_rcp_placement', return_value=[]), \
-             patch('headroom.main.print_policy_recommendations') as mock_print:
-            assert handle_rcp_workflow(config, org_hierarchy) == []
+        with (
+            patch('headroom.main.parse_rcp_result_files', return_value=parse_result),
+            patch('headroom.main.determine_rcp_placement', return_value=[]),
+            patch('headroom.main.print_policy_recommendations') as mock_print,
+        ):
+            result, coverage = handle_rcp_workflow(config, org_hierarchy)
 
+        assert result == []
+        assert coverage == {
+            DENY_STS_THIRD_PARTY_ASSUMEROLE: CheckCoverage(
+                analyzed_accounts=frozenset({"111111111111"}),
+                unsafe_accounts=frozenset({"111111111111"}),
+            )
+        }
         mock_print.assert_called_once_with([], org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS")
 
     def test_handle_rcp_workflow_all_checks_empty(self) -> None:
@@ -698,11 +757,20 @@ class TestHandleRcpWorkflow:
             )
         ]
 
-        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result), \
-             patch('headroom.main.determine_rcp_placement', return_value=[]), \
-             patch('headroom.main.print_policy_recommendations') as mock_print:
-            assert handle_rcp_workflow(config, org_hierarchy) == []
+        with (
+            patch('headroom.main.parse_rcp_result_files', return_value=parse_result),
+            patch('headroom.main.determine_rcp_placement', return_value=[]),
+            patch('headroom.main.print_policy_recommendations') as mock_print,
+        ):
+            result, coverage = handle_rcp_workflow(config, org_hierarchy)
 
+        assert result == []
+        assert coverage == {
+            DENY_STS_THIRD_PARTY_ASSUMEROLE: CheckCoverage(
+                analyzed_accounts=frozenset({"111111111111"}),
+                unsafe_accounts=frozenset(),
+            )
+        }
         mock_print.assert_called_once_with([], org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS")
 
     def test_handle_rcp_workflow_none_recommendations(self) -> None:
@@ -719,12 +787,57 @@ class TestHandleRcpWorkflow:
             )
         ]
 
-        with patch('headroom.main.parse_rcp_result_files', return_value=parse_result), \
-             patch('headroom.main.determine_rcp_placement', return_value=None), \
-             patch('headroom.main.print_policy_recommendations') as mock_print:
-            assert handle_rcp_workflow(config, org_hierarchy) is None
+        with (
+            patch('headroom.main.parse_rcp_result_files', return_value=parse_result),
+            patch('headroom.main.determine_rcp_placement', return_value=None),
+            patch('headroom.main.print_policy_recommendations') as mock_print,
+        ):
+            result, coverage = handle_rcp_workflow(config, org_hierarchy)
 
+        assert coverage == {
+            DENY_STS_THIRD_PARTY_ASSUMEROLE: CheckCoverage(
+                analyzed_accounts=frozenset({"111111111111"}),
+                unsafe_accounts=frozenset(),
+            )
+        }
         mock_print.assert_called_once_with(None, org_hierarchy, "RCP PLACEMENT RECOMMENDATIONS")
+        # Last of the three: the signature returns a list of recommendations,
+        # so narrowing `result` to None leaves mypy reading everything after
+        # this as unreachable.
+        assert result is None
+
+    def test_the_rcp_workflow_returns_coverage_beside_its_recommendations(self) -> None:
+        """
+        Mirror of the SCP case: coverage comes from the same parse results
+        placement already read, not a second pass over the results directory.
+        """
+        config = MagicMock(spec=HeadroomConfig)
+        config.results_dir = "/test/results"
+        org_hierarchy = MagicMock(spec=OrganizationHierarchy)
+
+        parse_result = [
+            RCPCheckParseResult(
+                check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                account_third_party_map={"111111111111": {"999999999999"}},
+                accounts_with_blockers=set(),
+            )
+        ]
+        recommendations = [MagicMock(), MagicMock(), MagicMock()]
+
+        with (
+            patch('headroom.main.parse_rcp_result_files', return_value=parse_result),
+            patch('headroom.main.determine_rcp_placement', return_value=recommendations),
+            patch('headroom.main.print_policy_recommendations'),
+        ):
+            result, coverage = handle_rcp_workflow(config, org_hierarchy)
+
+        assert result == recommendations
+        assert coverage == {
+            DENY_STS_THIRD_PARTY_ASSUMEROLE: CheckCoverage(
+                analyzed_accounts=frozenset({"111111111111"}),
+                unsafe_accounts=frozenset(),
+            )
+        }
 
 
 class TestMain:

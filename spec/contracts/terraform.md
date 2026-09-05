@@ -4,12 +4,15 @@ Owns what a run writes to the SCP and RCP directories, what it deletes, and the
 interface between the generated files and the policy modules.
 
 Implementation: `headroom/terraform/` — `generate_scps.py`, `generate_rcps.py`,
-`generate_org_info.py`, `plan.py`, `apply.py`, `models.py`, `utils.py`. The
-three `generate_*` modules render and write nothing, `plan.py` merges and
-validates what they rendered, and `apply.py` is the only one that touches the
-filesystem. Modules: `test_environment/modules/scps/`,
+`generate_org_info.py`, `parameters.py`, `disabled_reasons.py`, `plan.py`,
+`apply.py`, `models.py`, `utils.py`. The three `generate_*` modules render and
+write nothing, `parameters.py` is the one parameter renderer two of them share
+and `disabled_reasons.py` the one derivation of why a check is off, `plan.py`
+merges and validates what they rendered, and `apply.py` is the only one that
+touches the filesystem. Modules: `test_environment/modules/scps/`,
 `test_environment/modules/rcps/`. Tests: `tests/test_generate_scps.py`,
 `tests/test_generate_rcps.py`, `tests/test_generate_org_info.py`,
+`tests/test_terraform_parameters.py`, `tests/test_terraform_disabled_reasons.py`,
 `tests/test_terraform_plan.py`, `tests/test_terraform_apply.py`,
 `tests/test_terraform_utils.py`, `tests/test_terraform_models.py`,
 `tests/test_nested_ou_hierarchy.py`, `tests/test_committed_terraform_examples.py`.
@@ -424,6 +427,224 @@ A manual `false` does not survive the next run: generation rewrites the file
 exactly when the run still recommends `true` — the case it was made for — and
 holds only where the run would have rendered `false` anyway.
 
+## Why a check renders false
+
+Every registered check renders in every generated module call (INV-13), so most
+booleans in most files are `false` for reasons that have nothing to do with
+that file's target. Three unrelated facts once rendered identically: a
+guardrail already in force further up the tree, one held off by a violation
+somewhere below, and one no account was ever scanned for. INV-01 makes the
+third the one a reader must never take for the other two.
+
+Every `false` that has no recommendation behind it therefore carries a comment
+above it saying which. `headroom/terraform/disabled_reasons.py` derives them,
+and it names no check: a check name reaches it only as data, from `check_names`
+and from the keys of the maps it is handed (INV-13). `placed_targets` reduces
+a run's recommendations to the target IDs each check attaches at, once per run
+rather than once per target — a `none` recommendation attaches nowhere and
+contributes nothing. `split_placements` beside it drops the `none`
+recommendation the same way, before asking what any allowlist renders — a
+`none` recommendation carries no allowlist, since placement unioned one over no
+accounts, and reading that as lost data would abort generation for the whole
+organization over one check no account is safe for. It then calls
+`placed_targets` twice, over the recommendations that render `true` and over
+the ones an empty allowlist turned off ([The empty-allowlist
+boundary](#the-empty-allowlist-boundary)), because a placement that renders
+`false` enforces nothing and must not be reported as enforcing anything. Each
+generator calls the split once, telling it which field carries the allowlist,
+since that is the one thing the two recommendation types disagree on. The split
+is per recommendation rather than per check name: one check can be placed at
+two targets with only one of the two allowlists empty.
+`disabled_reasons` then answers for one target, from those two maps, the
+coverage map ([`placement.md`](placement.md#check-coverage)), and the
+hierarchy. A check with a recommendation naming this target is absent from what
+it returns, and that absence is what the renderer keys on: the map is keyed on
+*no recommendation names this target*, not on *renders false*.
+
+A root file's target is the organization root's own ID rather than `None`, so
+ancestry is one set-membership question at every level instead of three cases
+to enumerate, and no separate level argument can fall out of step with it. The
+three ID namespaces do not overlap, so the hierarchy alone says whether an ID
+is the root, an OU, or an account, and an ID the hierarchy does not hold aborts
+the run the way every other read of the hierarchy in generation does. Nothing
+here is caught and turned into a missing comment: a silently absent reason
+would read as a shape the grammar does not define.
+
+### The four shapes
+
+For a target `T` and a check `C` that no recommendation places at `T`, exactly
+one shape applies. `T`'s own accounts are the frame for every count and every name:
+the root file counts the whole organization, an OU file counts that OU's
+subtree, an account file counts itself.
+
+| # | Condition | Rendered text |
+|---|---|---|
+| 1 | A recommendation for `C` names a strict **ancestor** of `T` | `Enforced at the organization root`, or `Enforced at OU high_value_assets` |
+| 2 | A recommendation for `C` names a strict **descendant** of `T` | `Enforced below at OU acme_acquisition, OU high_value_assets; blocked elsewhere by 1 of 4 analyzed accounts (shared-foo-bar)` |
+| 3 | Neither, and `C` analyzed at least one account under `T` | `Blocked by 2 of 4 analyzed accounts (acme-co, shared-foo-bar)` |
+| 4 | `C` analyzed no account under `T` | `No results for this check - not evidence of safety` |
+
+A target is named `the organization root`, `OU <path>`, or `account <name>`.
+The OU path is the same root-down label the file header carries, built by
+`ou_path_names`, so a nested OU reads `OU Production / Data` and two OUs
+sharing a name stay apart (INV-12).
+
+Shape 1 names one ancestor. The traversal places a check at most once on any
+root-to-leaf chain — a safe root ends the walk, and a safe OU marks its whole
+subtree covered — so no target has two placed ancestors.
+
+Shape 2's descendants are any targets below `T`, which for a root or an OU file
+may be OUs, accounts, or both: `Enforced below at OU high_value_assets, account
+acme-co`. An account is a leaf, so **shape 2 never appears in an account file**;
+an account's `false` is shape 1, 3, or 4.
+
+The blocked clause collapses grammatically, the way placement's own `reasoning`
+collapses its analyzed-of-reached counts:
+
+| Situation | Clause |
+|---|---|
+| Some of the analyzed accounts | `blocked by 2 of 4 analyzed accounts (acme-co, shared-foo-bar)` |
+| All of them, and more than one | `blocked by all 4 analyzed accounts (acme-co, fort-knox, security-tooling, shared-foo-bar)` |
+| One analyzed account, `T` an OU or the root | `blocked by the only analyzed account (acme-co)` |
+| `T` an account | `blocked by this account's violations` — the count is always one of one and the account is `T`, which the filename already names |
+
+Shape 3 capitalizes the clause and stands alone. Shape 2 appends it after `; `
+in lower case and leads it with `blocked elsewhere by`, because the targets it
+has just named are where the check is in force.
+
+### Exactly one shape applies
+
+The traversal in `HierarchyPlacementAnalyzer.determine_placement`
+([`placement.md`](placement.md#the-traversal)) is what makes the four
+exhaustive and mutually exclusive, and that is why the grammar is four fixed
+shapes rather than a free combination of clauses.
+
+1. **Shape 1 excludes 2 and 3.** An ancestor placement required every analyzed
+   account in that ancestor's subtree — a superset of `T`'s — to be safe. No
+   violation under `T`, and no placement below `T`, can coexist with it.
+2. **Shape 2 always carries its second clause.** `T` was passed over only
+   because an analyzed account under it was unsafe, so a descendant placement
+   implies a violation under `T`. The clause is never omitted.
+3. **Shape 3 can never report none blocked.** If every analyzed account under
+   `T` were safe and `T` had results, `is_safe_for_ou(T)` holds, `T` takes the
+   placement, and `C` renders `true`. So at least one account is unsafe
+   whenever at least one was analyzed.
+4. **Shape 4 is exactly "no analyzed account under `T`".** It covers a check
+   that produced no results at all — four of the nine SCP checks in the
+   committed examples, since SCP parsing tolerates a missing check directory
+   where RCP parsing aborts ([`placement.md`](placement.md#rcp-placement)) —
+   and an OU whose every account was skipped or non-ACTIVE. One INV-01
+   statement serves both.
+
+### Formatting
+
+| Rule | Why |
+|---|---|
+| Names sort lexicographically, on the rendered phrase rather than the ID | Two runs over one result set render identical bytes, the determinism [Parameter order](#parameter-order) already keeps |
+| At most five names, then `and N more` | A committed file must not scale with the size of the organization. The cap applies independently to shape 2's target list, to the off-below list shapes 2 and 3 can carry, and to the blocked-account list |
+| Wrapped at 72 characters **of comment text** | `TerraformComment.render` prepends `  # `, so a wrapped line occupies 76 columns |
+| A name never splits across lines | Hyphens are not break points, and a name's own spaces are non-breaking while wrapping, so `security-tooling-production` and `Prod US` each stay whole. A name longer than the width overflows its line rather than breaking, because a corrupted identifier is worse than a long comment |
+| Each wrapped line is its own `TerraformComment` | `comment_text` folds a real line break into the two-character sequence `\n` ([Escaping](#escaping)), so a comment that spans lines has to arrive as separate lines |
+
+### The empty-allowlist boundary
+
+A check forced off by an empty allowlist (INV-06) is none of the four shapes.
+It **has** a recommendation naming `T`: placement cleared the target, and
+generation turned the statement off because the covered accounts observed no
+value at all. `disabled_reasons` returns nothing for it, and the comment
+rendered is the check's own `empty_allowlist_comment`, the sentence the check
+wrote rather than one the grammar composed, wrapped to the same width as every
+comment beside it. `renders_enabled` in `parameters.py` is the one place that
+decides the flip; `_render_definition` and `split_placements` read it.
+`deny_ec2_ami_owner` in `test_environment/scps/root_scps.tf` is the committed
+example.
+
+Per file, the two mechanisms can never both fire, because the reasons map is
+keyed on the absence of a recommendation and not on the boolean's value. Across
+files they meet, and that is what the flipped map exists for. A flipped
+placement at `T` enforces nothing at all, so every target under `T` renders the
+**same `empty_allowlist_comment`** rather than shape 1: `Enforced at the
+organization root` above a root file that itself renders `false` is the INV-01
+failure these comments exist to remove, stated more confidently than the bare
+`false` it replaced. The committed examples carried exactly that until this
+was fixed, on `deny_ec2_ami_owner` in both OU files.
+
+Repeating the sentence below `T` is sound because emptiness is monotone
+downward. The allowlist at `T` is the union of what the accounts under `T`
+observed, and the union over any subset of them is a subset of that: empty at
+`T` means empty at every descendant. A descendant of a **live** placement still
+gets shape 1, which is why shape 1 is asked before the flipped map — the two
+can be siblings under one root.
+
+Monotonicity carries the sentence only as far as the accounts something looked
+at. `empty_allowlist_comment` is a claim about what the covered accounts held —
+no resolvable AMI owner, no third-party principal — and a descendant whose own
+accounts produced no result contributed nothing to the union it generalises
+from. Repeating it there would report absence of evidence as evidence of safety,
+so **shape 4 outranks the flipped map**: a target with no results of its own
+says so, whatever a flipped ancestor found. Shape 1 keeps its place above both,
+because it names where the policy attaches rather than what was observed, and
+that stays true of a target whatever was scanned under it. The resulting
+precedence is shape 1, shape 4, the flipped map, then shapes 2 and 3.
+
+This widens what a check author signs up for. A sentence written for the module
+the check was placed in now renders in every module below it, over a smaller
+account set and at a target of a different kind, so it must read true for any
+subset of the accounts it was written about. `empty_allowlist_comment` in
+[`../architecture/check-framework.md`](../architecture/check-framework.md) owns
+that requirement.
+
+Above a flipped placement the correction runs the other way. A target whose only
+descendant placement was flipped off stops getting shape 2, because `Enforced
+below at OU sandbox` would name a target that enforces nothing; it falls to
+shape 3, which is the true statement, since a violation somewhere under it is
+why the placement went below it at all. Shape 3 still names the flipped
+targets, the way shape 2 does: `Blocked by 1 of 3 analyzed accounts (fort-knox);
+off below at OU sandbox`. A shape 3 count with safe accounts in it arises only
+this way — a safe account under an unplaced target sits under some placement
+below it, and were that placement live the target would be shape 2 — so leaving
+the flipped targets unnamed would leave the reader to guess where the safe
+accounts went, and to guess wrong.
+
+A target with **both** kinds of placement below it keeps shape 2 and names them
+both: `Enforced below at OU acme_acquisition; off below at OU shared_services;
+blocked elsewhere by 1 of 3 analyzed accounts (fort-knox)`. Naming only the live
+half leaves the reader to subtract — three analyzed, one blocking, one covered
+below, so the third must be covered too — and the third is protected nowhere,
+because a flipped placement enforces nothing. That is the same false belief
+shape 1 above a flipped root would create outright, reached by omission instead,
+which is why the count alone is not enough even though every number in it is
+right.
+
+The blocked clause always has an account to name, in shape 2 as much as in
+shape 3. A target takes no placement of its own only when some analyzed account
+under it is unsafe, and that premise is what both shapes rest on: it is equally
+why a shape-2 target holds a placement below rather than at itself. So the
+clause can never come back with an empty list of accounts, and
+`_blocked_clause` **raises** rather than rendering one. Only a coverage map
+disagreeing with the placements it was built beside can reach that, and the
+sentence it would otherwise compose — `blocked by the only analyzed account ()`
+— names nobody while blaming them.
+
+### Where the derivation lives
+
+`parameters.py` derives no reasons. `reasons` is a
+`Mapping[str, List[str]]` from check name to already-wrapped comment lines, and
+the renderer emits one `TerraformComment` per line above the check's boolean —
+a list rather than a string, because a comment that spans lines cannot be one
+`TerraformComment`. It is the one renderer both generators call, and handing it
+the target, the recommendation list, and the hierarchy relationships would make
+it a placement reader as well as a renderer. Each generator calls
+`disabled_reasons` itself, once per target, and passes the result down.
+
+The one sentence `parameters.py` does render itself is the check's own
+`empty_allowlist_comment`, which belongs to the boolean it is flipping and
+reaches no other target's file from there. Wrapping it is presentation, not
+derivation, and `wrap_comment` in `models.py` is the shared primitive both
+modules call — it lives beside `TerraformComment` because that is what it
+produces lines for, and because a renderer reaching into another module's
+private helper for it would be the coupling this section exists to prevent.
+
 ## Committed worked examples
 
 `test_environment/scps/` and `test_environment/rcps/` are committed as worked
@@ -463,3 +684,21 @@ policy ignores, so the check would report its policy in place while the module
 attached nothing for it. Neither guard reads the statement itself. Whether it
 names the right actions, resource type, or condition key is the check
 specification's `verification` list to catch.
+
+None of the three guards asks whether a committed call is the output of a run,
+and only one half of the examples currently is. `test_environment/scps/` was
+regenerated from the committed results and carries the comments
+[Why a check renders false](#why-a-check-renders-false) describes.
+`test_environment/rcps/` was not: its bare `false` booleans are output from
+before those comments existed, not a counterexample to the grammar. It cannot
+be regenerated as the SCP half was, because four registered RCP checks have no
+results directory and `parse_rcp_result_files` raises on a missing one, so no
+run against this fixture reaches rendering at all. Its calls also disagree with
+what placement would produce from the results that are committed:
+`deny_s3_third_party_access` blocks only in fort-knox, which makes it safe at OU
+`acme_acquisition` and at the account `security-tooling`, and both files render
+it `false`. `deny_ecr_third_party_access` is not one of those — it is clean in
+all four results, so it places at the root, and `false` below its target is
+exactly what a root placement renders; what is missing there is a committed
+`root_rcps.tf`. [`../checks/index.md`](../checks/index.md#unresolved-conflicts)
+carries the two as conflicts 9 and 10.

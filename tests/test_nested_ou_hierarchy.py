@@ -38,6 +38,7 @@ from headroom.types import (
     OrganizationalUnit,
     SCPCheckResult,
 )
+from tests.coverage_maps import coverage_for
 
 ROOT_ID = "r-fake"
 PRODUCTION_OU = "ou-fake-production"
@@ -584,7 +585,7 @@ class TestGeneratedTerraformResolves:
         org = make_nested_hierarchy()
         recommendations = determine_scp_placement(self.make_results(), org, MANAGEMENT_ACCOUNT_ID)
 
-        rendered = render_scp_terraform(recommendations, org, tmp_path)
+        rendered = render_scp_terraform(recommendations, org, tmp_path, coverage_for("scps"))
 
         declared = declared_locals(_generate_terraform_content(org))
         for path, content in rendered.items():
@@ -596,7 +597,7 @@ class TestGeneratedTerraformResolves:
         org = make_nested_hierarchy()
         recommendations = determine_scp_placement(self.make_results(), org, MANAGEMENT_ACCOUNT_ID)
 
-        rendered = render_scp_terraform(recommendations, org, tmp_path)
+        rendered = render_scp_terraform(recommendations, org, tmp_path, coverage_for("scps"))
 
         assert tmp_path / "production_payments_ou_scps.tf" in rendered
 
@@ -622,7 +623,7 @@ class TestGeneratedTerraformResolves:
             ),
         ]
 
-        rendered = render_rcp_terraform(recommendations, org, tmp_path)
+        rendered = render_rcp_terraform(recommendations, org, tmp_path, coverage_for("rcps"))
 
         declared = declared_locals(_generate_terraform_content(org))
         generated = sorted(path.name for path in rendered)

@@ -18,10 +18,13 @@ from headroom.parse_results import (
     determine_scp_placement,
     analyze_scp_compliance,
     print_policy_recommendations,
+    scp_check_coverage,
     verify_one_result_file_per_account,
 )
+from headroom.checks.registry import get_check_names
 from headroom.terraform.generate_scps import render_scp_terraform
 from headroom.types import (
+    CheckCoverage,
     OrganizationHierarchy,
     OrganizationalUnit,
     AccountOrgPlacement,
@@ -30,6 +33,7 @@ from headroom.types import (
     RCPPlacementRecommendations,
 )
 from headroom.config import HeadroomConfig, AccountTagLayout
+from tests.coverage_maps import coverage_for
 
 
 MANAGEMENT_ACCOUNT_ID = "777777777777"
@@ -857,6 +861,88 @@ class TestOUReasoning:
         assert production[0].reasoning == "The only account under OU 'Production', including those in its child OUs, was analyzed, with zero violations - safe to deploy at OU level"
 
 
+def test_scp_check_coverage_separates_analyzed_from_unsafe() -> None:
+    """
+    Coverage records who was judged and who was judged unsafe.
+
+    Placement carries only the safe targets, so the accounts that blocked a
+    check are named nowhere else by the time Terraform is rendered.
+    """
+    results = [
+        SCPCheckResult(
+            account_id="111111111111",
+            account_name="acme-co",
+            check_name="deny_rds_unencrypted",
+            violations=2,
+            exemptions=0,
+            compliant=0,
+            compliance_percentage=0.0,
+        ),
+        SCPCheckResult(
+            account_id="222222222222",
+            account_name="fort-knox",
+            check_name="deny_rds_unencrypted",
+            violations=0,
+            exemptions=1,
+            compliant=3,
+            compliance_percentage=100.0,
+        ),
+    ]
+
+    coverage = scp_check_coverage(results)
+
+    assert coverage["deny_rds_unencrypted"] == CheckCoverage(
+        analyzed_accounts=frozenset({"111111111111", "222222222222"}),
+        unsafe_accounts=frozenset({"111111111111"}),
+    )
+    others = {
+        name: judged for name, judged in coverage.items()
+        if name != "deny_rds_unencrypted"
+    }
+    assert set(others.values()) == {CheckCoverage(frozenset(), frozenset())}
+
+
+def test_scp_check_coverage_names_every_registered_check() -> None:
+    """
+    A check that produced nothing is present with empty sets, not absent.
+
+    `rcp_check_coverage` already encodes it this way, and a reader of the map
+    cannot tell a check that scanned nothing from one a caller forgot unless
+    both halves agree. With the encodings agreed, absence means a bug and
+    `disabled_reasons` can index the map instead of defaulting.
+    """
+    coverage = scp_check_coverage([])
+
+    assert set(coverage) == set(get_check_names("scps"))
+    assert set(coverage.values()) == {CheckCoverage(frozenset(), frozenset())}
+
+
+def test_analyze_scp_compliance_returns_coverage_beside_recommendations() -> None:
+    """
+    The coverage map travels with the recommendations to Terraform generation.
+
+    Recommendations name only safe targets, so coverage is the run's one
+    record of who was analyzed and who blocked a check.
+    """
+    config = HeadroomConfig(
+        use_account_name_from_tags=False,
+        account_tag_layout=AccountTagLayout(
+            environment="Environment",
+            name="Name",
+            owner="Owner"
+        ),
+        security_analysis_account_id="111111111111",
+        management_account_id="222222222222"
+    )
+    parsed = [make_scp_result("111111111111", "deny_ec2_imds_v1", None)]
+
+    with patch('headroom.parse_results.parse_scp_result_files', return_value=parsed):
+        recommendations, coverage = analyze_scp_compliance(config, make_test_org_hierarchy())
+
+    assert isinstance(recommendations, list)
+    assert coverage["deny_ec2_imds_v1"].analyzed_accounts == frozenset({"111111111111"})
+
+
 class TestParseResultsIntegration:
     """Test integration of analyze_scp_compliance function."""
 
@@ -896,7 +982,7 @@ class TestParseResultsIntegration:
         ]
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=parsed):
-            recommendations = analyze_scp_compliance(config, mock_hierarchy)
+            recommendations, _ = analyze_scp_compliance(config, mock_hierarchy)
 
         assert [rec.check_name for rec in recommendations] == ["deny_ec2_imds_v1"]
 
@@ -1026,7 +1112,7 @@ class TestParseResultsIntegration:
         ]
 
         with patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results):
-            recommendations = analyze_scp_compliance(config, mock_hierarchy)
+            recommendations, _ = analyze_scp_compliance(config, mock_hierarchy)
 
             # Verify recommendations were returned
             assert len(recommendations) == 1
@@ -1078,7 +1164,7 @@ class TestParseResultsIntegration:
         with patch('headroom.parse_results.parse_scp_result_files', return_value=mock_results), \
              patch('builtins.print'):
 
-            recommendations = analyze_scp_compliance(config, mock_hierarchy)
+            recommendations, _ = analyze_scp_compliance(config, mock_hierarchy)
 
             # Verify that recommendations were returned
             assert isinstance(recommendations, list)
@@ -1143,7 +1229,7 @@ class TestGenerateSCPTerraform:
             ]
 
             # Render Terraform files
-            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir), coverage_for("scps"))
 
             # Check that files were rendered
             output_path = Path(temp_dir)
@@ -1191,7 +1277,7 @@ class TestGenerateSCPTerraform:
                 )
             ]
 
-            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir), coverage_for("scps"))
 
             output_path = Path(temp_dir)
             fort_knox_file = output_path / "fort_knox_scps.tf"
@@ -1231,7 +1317,7 @@ class TestGenerateSCPTerraform:
             ]
 
             # Render Terraform files
-            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir), coverage_for("scps"))
 
             # Check that the OU file was rendered
             output_path = Path(temp_dir)
@@ -1272,7 +1358,7 @@ class TestGenerateSCPTerraform:
             ]
 
             # Render Terraform files
-            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir), coverage_for("scps"))
 
             # Check that the root file was rendered
             output_path = Path(temp_dir)
@@ -1332,7 +1418,7 @@ class TestGenerateSCPTerraform:
             ]
 
             # Render Terraform files
-            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir))
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(temp_dir), coverage_for("scps"))
 
             # Check that all files were rendered
             output_path = Path(temp_dir)
@@ -1586,7 +1672,7 @@ class TestRootParentedAccountPlacement:
         recommendations = determine_scp_placement(self.make_results(), hierarchy, MANAGEMENT_ACCOUNT_ID)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            rendered = render_scp_terraform(recommendations, hierarchy, Path(tmp_dir))
+            rendered = render_scp_terraform(recommendations, hierarchy, Path(tmp_dir), coverage_for("scps"))
 
             generated = {path.name for path in rendered}
             assert generated == {"workloads_ou_scps.tf", "sandbox_scps.tf"}
@@ -1922,6 +2008,33 @@ class TestAMissingViolationCountIsRejected:
             parsed = parse_scp_result_files(temp_dir, self.hierarchy())
 
         assert [result.violations for result in parsed] == [0]
+
+    @pytest.mark.parametrize("violations", [-1, "1", 1.0, True], ids=["negative", "string", "float", "bool"])
+    def test_a_count_that_is_not_a_non_negative_integer_is_rejected(self, violations: object) -> None:
+        """
+        The one field placement reads has to be the one kind of value it reads.
+
+        Every safety decision downstream asks whether this count is zero, and
+        coverage asks whether it is above zero. A negative count answers the
+        two differently and a string answers the second with a TypeError the
+        run does not catch. Headroom wrote the file, so anything else here is
+        corruption, and the remedy is the one an absent key gets.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.write_summary(Path(temp_dir), {
+                "account_name": "test-account",
+                "account_id": "111111111111",
+                "check": "deny_ec2_imds_v1",
+                "violations": violations,
+                "compliant": 4,
+            })
+
+            with pytest.raises(RuntimeError, match="non-negative integer") as exc_info:
+                parse_scp_result_files(temp_dir, self.hierarchy())
+
+        message = str(exc_info.value)
+        assert repr(violations) in message
+        assert "delete" in message.lower()
 
 
 class TestAllowlistValuesFollowTheRegistry:
@@ -2287,7 +2400,7 @@ class TestPlacementUnionsAllowlistValues:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir)
-            rendered = render_scp_terraform(recommendations, hierarchy, output_path)
+            rendered = render_scp_terraform(recommendations, hierarchy, output_path, coverage_for("scps"))
 
             alpha_content = rendered[output_path / "alpha_scps.tf"]
             beta_content = rendered[output_path / "beta_scps.tf"]

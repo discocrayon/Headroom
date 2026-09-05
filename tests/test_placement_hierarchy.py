@@ -11,7 +11,7 @@ from typing import List
 
 import pytest
 
-from headroom.placement.hierarchy import HierarchyPlacementAnalyzer
+from headroom.placement.hierarchy import HierarchyPlacementAnalyzer, ancestor_ou_ids
 from headroom.types import (
     AccountOrgPlacement,
     OrganizationHierarchy,
@@ -345,3 +345,56 @@ class TestUncoveredAccountsAfterOUPlacement:
         )
 
         assert [c.level for c in candidates] == ["ou", "ou"]
+
+
+def test_ancestor_ou_ids_walks_up_nearest_first() -> None:
+    """The walk names the parent, then its parent, and stops below the root."""
+    ous = {
+        "ou-1111-11111111": OrganizationalUnit(
+            ou_id="ou-1111-11111111",
+            name="production",
+            parent_ou_id=None,
+            child_ous=["ou-1111-22222222"],
+            accounts=[],
+        ),
+        "ou-1111-22222222": OrganizationalUnit(
+            ou_id="ou-1111-22222222",
+            name="data",
+            parent_ou_id="ou-1111-11111111",
+            child_ous=[],
+            accounts=["111111111111"],
+        ),
+    }
+
+    assert ancestor_ou_ids("ou-1111-22222222", ous, "r-1111") == [
+        "ou-1111-22222222",
+        "ou-1111-11111111",
+    ]
+
+
+def test_ancestor_ou_ids_is_empty_for_a_root_parented_account() -> None:
+    """An account attached to the root has no OU above it."""
+    assert ancestor_ou_ids(None, {}, "r-1111") == []
+
+
+def test_ancestor_ou_ids_raises_on_a_cycle() -> None:
+    """A loop in the parent chain is a broken hierarchy, not a long walk."""
+    ous = {
+        "ou-1111-11111111": OrganizationalUnit(
+            ou_id="ou-1111-11111111",
+            name="a",
+            parent_ou_id="ou-1111-22222222",
+            child_ous=[],
+            accounts=[],
+        ),
+        "ou-1111-22222222": OrganizationalUnit(
+            ou_id="ou-1111-22222222",
+            name="b",
+            parent_ou_id="ou-1111-11111111",
+            child_ous=[],
+            accounts=[],
+        ),
+    }
+
+    with pytest.raises(RuntimeError, match="is its own ancestor"):
+        ancestor_ou_ids("ou-1111-11111111", ous, "r-1111")
