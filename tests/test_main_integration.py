@@ -18,6 +18,7 @@ from headroom.config import AccountTagLayout, HeadroomConfig
 from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, GENERATED_MARKER, ORG_INFO_FILENAME
 from headroom.types import (
     AccountOrgPlacement,
+    CheckCoverage,
     RCPCheckParseResult,
     RCPPlacementRecommendations,
     OrganizationHierarchy,
@@ -150,7 +151,7 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.analyze_scp_compliance', return_value=None), \
+        with patch('headroom.main.analyze_scp_compliance', return_value=(None, {})), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
@@ -194,7 +195,7 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.analyze_scp_compliance', return_value=None), \
+        with patch('headroom.main.analyze_scp_compliance', return_value=(None, {})), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
@@ -243,7 +244,7 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.analyze_scp_compliance', return_value=None), \
+        with patch('headroom.main.analyze_scp_compliance', return_value=(None, {})), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
@@ -566,7 +567,7 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.analyze_scp_compliance', return_value=None), \
+        with patch('headroom.main.analyze_scp_compliance', return_value=(None, {})), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
@@ -607,7 +608,7 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         # Act
-        with patch('headroom.main.analyze_scp_compliance', return_value=None), \
+        with patch('headroom.main.analyze_scp_compliance', return_value=(None, {})), \
              patch('headroom.main.perform_analysis'), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
@@ -664,7 +665,7 @@ class TestMainIntegration:
         mocks['merge'].return_value = mock_final_config
 
         with (
-            patch('headroom.main.analyze_scp_compliance', return_value=[]),
+            patch('headroom.main.analyze_scp_compliance', return_value=([], {})),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
             patch('headroom.main.get_management_account_session'),
             patch('headroom.main.parse_rcp_result_files', return_value=rcp_evidence()),
@@ -677,7 +678,17 @@ class TestMainIntegration:
         # Both recommendation lists are empty, and the plan is still compiled
         # and applied rather than the run returning early.
         mocks['compile'].assert_called_once_with(
-            mock_final_config, mock_discover.return_value.hierarchy, [], []
+            mock_final_config,
+            mock_discover.return_value.hierarchy,
+            [],
+            [],
+            {},
+            {
+                DENY_STS_THIRD_PARTY_ASSUMEROLE: CheckCoverage(
+                    analyzed_accounts=frozenset({"111111111111"}),
+                    unsafe_accounts=frozenset(),
+                )
+            },
         )
         mocks['apply'].assert_called_once_with(mocks['compile'].return_value)
 
@@ -698,7 +709,7 @@ class TestMainIntegration:
         mock_final_config.management_account_id = None
         mocks['merge'].return_value = mock_final_config
 
-        with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
+        with patch('headroom.main.analyze_scp_compliance', return_value=([MagicMock()], {})), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess:
             with pytest.raises(SystemExit) as exc_info:
                 main()
@@ -736,7 +747,7 @@ class TestMainIntegration:
 
         err = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "AssumeRole")
 
-        with patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]), \
+        with patch('headroom.main.analyze_scp_compliance', return_value=([MagicMock()], {})), \
              patch('headroom.main.get_security_analysis_session') as mock_get_sess, \
              patch('headroom.main.discover_organization'):
             # cause sts.assume_role to raise
@@ -823,8 +834,8 @@ class TestMainIntegration:
         # Compiling the plan is what can fail on bad input; make it do so.
         mocks['compile'].side_effect = RuntimeError("Failed to generate Terraform")
 
-        with patch('headroom.main.handle_scp_workflow', return_value=[]), \
-             patch('headroom.main.handle_rcp_workflow', return_value=[]), \
+        with patch('headroom.main.handle_scp_workflow', return_value=([], {})), \
+             patch('headroom.main.handle_rcp_workflow', return_value=([], {})), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.discover_organization'):
@@ -864,8 +875,8 @@ class TestMainIntegration:
 
         mocks['apply'].side_effect = PermissionError(13, "Permission denied")
 
-        with patch('headroom.main.handle_scp_workflow', return_value=[]), \
-             patch('headroom.main.handle_rcp_workflow', return_value=[]), \
+        with patch('headroom.main.handle_scp_workflow', return_value=([], {})), \
+             patch('headroom.main.handle_rcp_workflow', return_value=([], {})), \
              patch('headroom.main.get_security_analysis_session'), \
              patch('headroom.main.get_management_account_session'), \
              patch('headroom.main.discover_organization'):
@@ -961,7 +972,7 @@ class TestMainIntegration:
         )
 
         with (
-            patch('headroom.main.analyze_scp_compliance', return_value=[MagicMock()]),
+            patch('headroom.main.analyze_scp_compliance', return_value=([MagicMock()], {})),
             patch('headroom.main.get_security_analysis_session') as mock_get_sess,
             patch('headroom.main.get_management_account_session'),
             patch('headroom.main.parse_rcp_result_files', return_value=[
@@ -1197,8 +1208,8 @@ class TestGenerationLeavesTheTreeWholeOnFailure:
              patch("headroom.main.get_management_account_session"), \
              patch("headroom.main.discover_organization", return_value=snapshot), \
              patch("headroom.main.perform_analysis"), \
-             patch("headroom.main.handle_scp_workflow", return_value=[]), \
-             patch("headroom.main.handle_rcp_workflow", return_value=[unknown_ou]), \
+             patch("headroom.main.handle_scp_workflow", return_value=([], {})), \
+             patch("headroom.main.handle_rcp_workflow", return_value=([unknown_ou], {})), \
              pytest.raises(SystemExit) as exc_info:
             main()
 

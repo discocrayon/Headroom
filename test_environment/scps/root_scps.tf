@@ -7,32 +7,39 @@ module "scps_root" {
   target_id = local.root_ou_id
 
   # EC2
-  deny_ec2_ami_owner = true
-  ec2_allowed_ami_owners = [
-    "444444444444",
-    "amazon",
-  ]
+  # deny_ec2_ami_owner stays off here: no instance in the accounts this
+  # module covers had a resolvable AMI owner, so the allowlist would be
+  # empty - and an empty allowlist denies every launch, not none.
+  deny_ec2_ami_owner = false
+  # No results for this check - not evidence of safety
   deny_ec2_imds_hop_limit = false
+  # Enforced below at OU acme_acquisition, OU high_value_assets; blocked
+  # elsewhere by 1 of 4 analyzed accounts (shared-foo-bar)
   deny_ec2_imds_v1 = false
+  # No results for this check - not evidence of safety
   deny_ec2_public_ip = false
 
   # EKS
   deny_eks_create_cluster_without_tag = true
 
   # IAM
-  deny_iam_saml_provider_not_aws_sso = true
+  # No results for this check - not evidence of safety
+  deny_iam_saml_provider_not_aws_sso = false
   deny_iam_user_creation = true
   iam_allowed_users = [
-    "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
-    "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
     "arn:aws:iam::${local.acme_co_account_id}:user/contractors/temp-contractor",
     "arn:aws:iam::${local.acme_co_account_id}:user/terraform-user",
+    "arn:aws:iam::${local.fort_knox_account_id}:user/service/github-actions",
     "arn:aws:iam::${local.shared_foo_bar_account_id}:user/legacy-developer",
+    "arn:aws:iam::${local.security_tooling_account_id}:user/automation/cicd-deployer",
   ]
 
   # Lambda
+  # No results for this check - not evidence of safety
   deny_lambda_auth_type_none = false
 
   # RDS
+  # Enforced below at OU high_value_assets; blocked elsewhere by 2 of 4
+  # analyzed accounts (acme-co, shared-foo-bar)
   deny_rds_unencrypted = false
 }

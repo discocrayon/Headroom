@@ -385,8 +385,8 @@ class TestOrganizationsIsReadOnce:
              patch("headroom.main.parse_cli_args"), \
              patch("headroom.main.load_yaml_config"), \
              patch("headroom.main.setup_configuration", return_value=_snapshot_config()), \
-             patch("headroom.main.handle_scp_workflow", return_value=[]), \
-             patch("headroom.main.handle_rcp_workflow", return_value=[]), \
+             patch("headroom.main.handle_scp_workflow", return_value=([], {})), \
+             patch("headroom.main.handle_rcp_workflow", return_value=([], {})), \
              patch("headroom.main.compile_terraform_plan"), \
              patch("headroom.main.apply_terraform_plan"):
             main()

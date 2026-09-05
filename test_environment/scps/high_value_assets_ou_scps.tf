@@ -7,19 +7,28 @@ module "scps_high_value_assets_ou" {
   target_id = local.high_value_assets_ou_id
 
   # EC2
+  # deny_ec2_ami_owner stays off here: no instance in the accounts this
+  # module covers had a resolvable AMI owner, so the allowlist would be
+  # empty - and an empty allowlist denies every launch, not none.
   deny_ec2_ami_owner = false
+  # No results for this check - not evidence of safety
   deny_ec2_imds_hop_limit = false
   deny_ec2_imds_v1 = true
+  # No results for this check - not evidence of safety
   deny_ec2_public_ip = false
 
   # EKS
+  # Enforced at the organization root
   deny_eks_create_cluster_without_tag = false
 
   # IAM
+  # No results for this check - not evidence of safety
   deny_iam_saml_provider_not_aws_sso = false
+  # Enforced at the organization root
   deny_iam_user_creation = false
 
   # Lambda
+  # No results for this check - not evidence of safety
   deny_lambda_auth_type_none = false
 
   # RDS

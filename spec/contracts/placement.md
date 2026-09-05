@@ -166,6 +166,62 @@ IAM trust policies and must not suppress the STS RCP.
 A check with no cleared accounts at all produces no recommendations and no
 Terraform — distinct from the SCP `none` recommendation, which is materialized.
 
+## Check coverage
+
+Placement hands Terraform generation a `Mapping[str, CheckCoverage]` keyed by
+check name, alongside the recommendations. A `CheckCoverage`, in
+`headroom/types.py`, holds two frozen sets of account IDs:
+`analyzed_accounts`, the accounts that produced a result for that check, and
+`unsafe_accounts`, those of them the check judged unsafe — an SCP violation, or
+an RCP blocker no allowlist can express.
+
+The recommendations cannot carry this. They describe only the targets a policy
+*reaches*, so nothing in them names an account that kept a check off, and for
+RCPs nothing separates "blocked in every account" from "never scanned": both
+yield no recommendation at all. Generation reads the coverage map to say why a
+check renders `false`
+([`terraform.md`](terraform.md#why-a-check-renders-false)). It derives no
+safety from the map and re-decides no placement — a recommendation is still the
+one signal that enables a policy.
+
+Both sides enter **every registered check** of their policy type. A check that
+produced no results arrives with both sets empty, and that empty set is the
+encoding rather than a flag beside a count that could disagree with it. A name
+absent from the map is therefore never a check that scanned nothing; it is a
+map assembled wrong, and generation indexes the map rather than defaulting so
+that an absent name raises instead of rendering "no results" - a sentence
+indistinguishable from the honest one. What generation asks is whether the
+check analyzed any account the target being rendered reaches: an empty set and
+a set holding only accounts outside that target's subtree both answer no.
+
+Each side builds the map from what it has already read, and neither makes a
+second pass over the results:
+
+| Policy type | Built by | `analyzed_accounts` | `unsafe_accounts` |
+|---|---|---|---|
+| SCP | `scp_check_coverage` in `headroom/parse_results.py` | Every account with a result in that check's group | Those whose result is not `is_safe`, the one predicate placement itself reads |
+| RCP | `rcp_check_coverage` in `headroom/terraform/generate_rcps.py` | The keys of `account_third_party_map`, unioned with `accounts_with_blockers` | `accounts_with_blockers` |
+
+The union is the RCP definition of "produced a result" because parsing puts an
+account in exactly one of the two: the third-party map when the policy is
+deployable there, `accounts_with_blockers` when a principal no allowlist can
+express rules it out.
+
+Both workflows return the map with their recommendations, and
+`compile_terraform_plan` takes one of each. The persisted results format is
+untouched, so INV-14 is not engaged.
+
+### One upward walk
+
+`ancestor_ou_ids` is a module-level function in
+`headroom/placement/hierarchy.py`, and
+`HierarchyPlacementAnalyzer._ancestor_ou_ids` delegates to it. Placement reads
+it to decide which OUs a result belongs under
+([Subtree grouping](#subtree-grouping)), and Terraform generation reads the
+same function to decide whether a check is already enforced above the target it
+is rendering. One definition of the walk, cycle guard included, so the two
+answers cannot disagree.
+
 ## Allowlist union
 
 The allowlist attached to a placement is the **union** of the allowlist values

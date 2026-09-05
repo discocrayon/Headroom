@@ -158,6 +158,42 @@ class SCPCheckResult(CheckResult):
     total_instances: Optional[int] = None
     allowlist_values: Optional[List[str]] = None
 
+    @property
+    def is_safe(self) -> bool:
+        """
+        Whether a policy may attach over this account for this check.
+
+        The one predicate placement and coverage both read, so the two
+        cannot drift: an account is safe exactly when its count is zero,
+        and parsing has already refused any count that is not a
+        non-negative integer.
+        """
+        return self.violations == 0
+
+
+@dataclass(frozen=True)
+class CheckCoverage:
+    """
+    Which accounts a check judged, and which of them it judged unsafe.
+
+    Placement recommendations describe only the targets a policy reaches, so
+    by the time Terraform is rendered nothing names the accounts that kept a
+    check off. Generation reads this to say why a boolean is false.
+
+    The map names every registered check of its policy type. A check that
+    produced no results arrives with both sets empty, and that empty set is
+    the encoding: there is no separate flag that could disagree with it, and
+    a name absent from the map is a map assembled wrong, never a check that
+    scanned nothing.
+
+    Attributes:
+        analyzed_accounts: Accounts that produced a result for this check
+        unsafe_accounts: Those of them the check judged unsafe - an SCP
+            violation, or an RCP blocker no allowlist can express
+    """
+    analyzed_accounts: frozenset[str]
+    unsafe_accounts: frozenset[str]
+
 
 @dataclass
 class SCPPlacementRecommendations:

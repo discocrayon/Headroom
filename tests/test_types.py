@@ -5,6 +5,7 @@ import dataclasses
 import pytest
 
 from headroom.types import (
+    SCPCheckResult,
     AccountInfo,
     AccountOrgPlacement,
     OrganizationHierarchy,
@@ -105,3 +106,25 @@ def test_an_analyzable_account_cannot_be_edited_in_place() -> None:
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         snapshot.analyzable_accounts[0].name = "renamed-in-place"  # type: ignore[misc]
+
+
+def test_an_scp_result_is_safe_exactly_when_its_count_is_zero() -> None:
+    """
+    One predicate, read by placement and by coverage alike.
+
+    Placement clears an account on zero violations and coverage counts it
+    unsafe otherwise. Both read this, so the two cannot disagree about a
+    count parsing let through, and a third spelling cannot appear.
+    """
+    safe = SCPCheckResult(
+        account_id="111111111111",
+        account_name="acme-co",
+        check_name="deny_ec2_public_ip",
+        violations=0,
+        exemptions=0,
+        compliant=1,
+        compliance_percentage=100.0,
+    )
+
+    assert safe.is_safe is True
+    assert dataclasses.replace(safe, violations=3).is_safe is False

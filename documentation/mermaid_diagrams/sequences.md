@@ -14,6 +14,7 @@ sequenceDiagram
   participant TFSCP as headroom.terraform.generate_scps
   participant TFRCP as headroom.terraform.generate_rcps
   participant TFParams as headroom.terraform.parameters
+  participant TFReasons as headroom.terraform.disabled_reasons
   participant TFOrg as headroom.terraform.generate_org_info
   participant TFPlan as headroom.terraform.plan
   participant TFApply as headroom.terraform.apply
@@ -34,21 +35,27 @@ sequenceDiagram
 
   Note over CLI: SCP Workflow
   CLI->>ParseSCP: analyze_scp_compliance(config, hierarchy)
-  ParseSCP-->>CLI: List[SCPPlacementRecommendations]
+  ParseSCP-->>CLI: List[SCPPlacementRecommendations], Dict[str, CheckCoverage]
 
   Note over CLI: RCP Workflow
   CLI->>ParseRCP: parse_rcp_result_files(results_dir, hierarchy)
   ParseRCP-->>CLI: List[RCPCheckParseResult]
+  CLI->>ParseRCP: rcp_check_coverage(parse_results)
+  ParseRCP-->>CLI: Dict[str, CheckCoverage]
   CLI->>ParseRCP: determine_rcp_placement(parse_results, hierarchy)
   ParseRCP-->>CLI: List[RCPPlacementRecommendations]
 
   Note over CLI: Nothing has been written yet
-  CLI->>TFPlan: compile_terraform_plan(config, hierarchy, scp_recs, rcp_recs)
+  CLI->>TFPlan: compile_terraform_plan(config, hierarchy, scp_recs, rcp_recs,<br/>scp_coverage, rcp_coverage)
   TFPlan->>TFOrg: render_terraform_org_info(hierarchy)
-  TFPlan->>TFSCP: render_scp_terraform(scp_recs, hierarchy, scps)
-  TFSCP->>TFParams: render_check_parameters(definitions, allowlists, module_name, hierarchy)
-  TFPlan->>TFRCP: render_rcp_terraform(rcp_recs, hierarchy, rcps)
-  TFRCP->>TFParams: render_check_parameters(definitions, allowlists, module_name, hierarchy)
+  TFPlan->>TFSCP: render_scp_terraform(scp_recs, hierarchy, scps, scp_coverage)
+  TFSCP->>TFReasons: disabled_reasons(target_id, check_names, placed, scp_coverage,<br/>hierarchy, flipped, flipped_comment)
+  TFReasons-->>TFSCP: Dict[str, List[str]] (comment lines per check rendering false)
+  TFSCP->>TFParams: render_check_parameters(definitions, allowlists, module_name, hierarchy, reasons)
+  TFPlan->>TFRCP: render_rcp_terraform(rcp_recs, hierarchy, rcps, rcp_coverage)
+  TFRCP->>TFReasons: disabled_reasons(target_id, check_names, placed, rcp_coverage,<br/>hierarchy, flipped, flipped_comment)
+  TFReasons-->>TFRCP: Dict[str, List[str]] (comment lines per check rendering false)
+  TFRCP->>TFParams: render_check_parameters(definitions, allowlists, module_name, hierarchy, reasons)
   TFPlan-->>CLI: validated TerraformPlan
   CLI->>TFApply: apply_terraform_plan(plan)
   TFApply-->>CLI: files written, link updated, stale files deleted

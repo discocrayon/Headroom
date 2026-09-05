@@ -22,6 +22,7 @@ from headroom.types import (
     OrganizationalUnit,
     SCPPlacementRecommendations,
 )
+from tests.coverage_maps import coverage_for
 
 
 def generated(body: str = 'module "x" {}\n') -> str:
@@ -129,7 +130,7 @@ def scp_rec(
 def converge(recommendations: list, scps: Path, rcps: Path) -> None:
     """Compile SCP recommendations into a plan, then apply it."""
     apply_terraform_plan(compile_terraform_plan(
-        config_at(scps, rcps), org_with_one_ou(), recommendations, [],
+        config_at(scps, rcps), org_with_one_ou(), recommendations, [], coverage_for("scps"), coverage_for("rcps"),
     ))
 
 

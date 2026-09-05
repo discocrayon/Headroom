@@ -37,6 +37,8 @@ this file, so these rules are loaded on every change.
 - Never use dynamic imports, apart from the check discovery exception above
 - Do not add extra defensive checks or try/catch blocks
 - Only specify the value of keyword arguments if the value being passed is different from the default
+- Past a function's first parameter, any parameter a caller could pass an empty literal for - `{}`, `[]`, `None`, `True`, `False`, or a bare string naming a module or target - is keyword-only, declared after `*`. The signature enforces what a call-site rule could only ask for; `register_check` in `headroom/checks/registry.py` and `disabled_reasons` in `headroom/terraform/disabled_reasons.py` are the standing examples.
+- When calling an existing function that is not keyword-only, name any argument that is such a literal.
 - FAIL FAST: Never add defensive code that silently returns empty sets, empty lists, or default values when data is unexpected. If the data is wrong, let it fail with a clear error. Do not check "if isinstance" and then return empty set/list for the "else" case - just let the code crash.
 - FAIL FAST: Do not add "else: return set()" or "else: return []" branches after type checks. If the type is wrong, the code should raise an exception, not silently return empty.
 - FAIL FAST: Never add fallback branches like "return set()", "return []", or "return None" after checking expected types. Let Python raise TypeError/AttributeError naturally.

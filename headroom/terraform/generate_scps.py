@@ -6,10 +6,11 @@ Generates Terraform files for SCP deployment based on compliance analysis recomm
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, FrozenSet, List, Mapping, Optional
 
+from .disabled_reasons import disabled_reasons, split_placements
 from .models import RenderedTerraformFiles, TerraformModule
-from .parameters import render_check_parameters
+from .parameters import empty_allowlist_comments, render_check_parameters
 from .utils import (
     account_id_local_name,
     claim_plan_path,
@@ -20,7 +21,12 @@ from .utils import (
 )
 from ..checks.registry import get_check_definitions
 from ..enums import PlacementLevel
-from ..types import GroupedSCPRecommendations, OrganizationHierarchy, SCPPlacementRecommendations
+from ..types import (
+    CheckCoverage,
+    GroupedSCPRecommendations,
+    OrganizationHierarchy,
+    SCPPlacementRecommendations,
+)
 
 
 def _get_safe_to_enable_policies(
@@ -70,10 +76,16 @@ def _get_safe_to_enable_policies(
 
 def _build_scp_terraform_module(
     module_name: str,
+    *,
     target_id_reference: str,
     recommendations: List[SCPPlacementRecommendations],
     comment: str,
-    organization_hierarchy: OrganizationHierarchy
+    organization_hierarchy: OrganizationHierarchy,
+    target_id: str,
+    placed: Mapping[str, FrozenSet[str]],
+    coverage: Mapping[str, CheckCoverage],
+    flipped: Mapping[str, FrozenSet[str]],
+    flipped_comment: Mapping[str, str],
 ) -> str:
     """
     Build Terraform module call for SCP deployment.
@@ -90,6 +102,19 @@ def _build_scp_terraform_module(
         organization_hierarchy: Organization structure, forwarded to the
             shared renderer so an ARN allowlist can be rewritten to
             generated locals
+        target_id: The real organization root, OU, or account ID this
+            module targets - not `target_id_reference`, which is the HCL
+            local the rendered module attaches to
+        placed: Each check mapped to the target IDs carrying it and
+            rendering true there, for explaining a check this target does
+            not carry
+        coverage: Every registered check of this policy type, mapped to its coverage,
+            for explaining a check this target does not carry
+        flipped: Each check mapped to the target IDs carrying it and
+            rendering false there anyway, because the allowlist its
+            statement is scoped by came back empty (INV-06)
+        flipped_comment: Each check in `flipped`, mapped to the comment its
+            own registration gives for an empty allowlist
 
     Returns:
         Complete Terraform module block as a string
@@ -104,12 +129,22 @@ def _build_scp_terraform_module(
             than a fact about the covered accounts
     """
     allowlists = _get_safe_to_enable_policies(module_name, recommendations)
+    definitions = get_check_definitions("scps")
 
     parameters = render_check_parameters(
-        get_check_definitions("scps"),
-        allowlists,
-        module_name,
-        organization_hierarchy,
+        definitions,
+        allowlists=allowlists,
+        module_name=module_name,
+        organization_hierarchy=organization_hierarchy,
+        reasons=disabled_reasons(
+            target_id,
+            check_names=[definition.check_name for definition in definitions],
+            placed=placed,
+            coverage=coverage,
+            organization_hierarchy=organization_hierarchy,
+            flipped=flipped,
+            flipped_comment=flipped_comment,
+        ),
     )
 
     module = TerraformModule(
@@ -127,7 +162,11 @@ def _render_account_scp_terraform(
     account_id: str,
     account_recs: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
+    output_path: Path,
+    placed: Mapping[str, FrozenSet[str]],
+    coverage: Mapping[str, CheckCoverage],
+    flipped: Mapping[str, FrozenSet[str]],
+    flipped_comment: Mapping[str, str],
 ) -> tuple[Path, str]:
     """
     Render the Terraform file for one account's SCPs.
@@ -137,6 +176,13 @@ def _render_account_scp_terraform(
         account_recs: List of SCP recommendations for this account
         organization_hierarchy: Organization structure information
         output_path: Directory the file belongs in
+        placed: Each check mapped to the target IDs carrying it and
+            rendering true there
+        coverage: Every registered check of this policy type, mapped to its coverage
+        flipped: Each check mapped to the target IDs carrying it and
+            rendering false there anyway (INV-06)
+        flipped_comment: Each check in `flipped`, mapped to the comment its
+            own registration gives for an empty allowlist
 
     Returns:
         Tuple of (destination path, rendered content)
@@ -159,7 +205,12 @@ def _render_account_scp_terraform(
         target_id_reference=f"local.{account_id_local_name(account_name)}",
         recommendations=account_recs,
         comment=account_info.account_name,
-        organization_hierarchy=organization_hierarchy
+        organization_hierarchy=organization_hierarchy,
+        target_id=account_id,
+        placed=placed,
+        coverage=coverage,
+        flipped=flipped,
+        flipped_comment=flipped_comment,
     )
 
     return filepath, terraform_content
@@ -169,7 +220,11 @@ def _render_ou_scp_terraform(
     ou_id: str,
     ou_recs: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
+    output_path: Path,
+    placed: Mapping[str, FrozenSet[str]],
+    coverage: Mapping[str, CheckCoverage],
+    flipped: Mapping[str, FrozenSet[str]],
+    flipped_comment: Mapping[str, str],
 ) -> tuple[Path, str]:
     """
     Render the Terraform file for one OU's SCPs.
@@ -179,6 +234,13 @@ def _render_ou_scp_terraform(
         ou_recs: List of SCP recommendations for this OU
         organization_hierarchy: Organization structure information
         output_path: Directory the file belongs in
+        placed: Each check mapped to the target IDs carrying it and
+            rendering true there
+        coverage: Every registered check of this policy type, mapped to its coverage
+        flipped: Each check mapped to the target IDs carrying it and
+            rendering false there anyway (INV-06)
+        flipped_comment: Each check in `flipped`, mapped to the comment its
+            own registration gives for an empty allowlist
 
     Returns:
         Tuple of (destination path, rendered content)
@@ -206,7 +268,12 @@ def _render_ou_scp_terraform(
         target_id_reference=f"local.{ou_id_local_name(base_name)}",
         recommendations=ou_recs,
         comment=f"OU {path_label}",
-        organization_hierarchy=organization_hierarchy
+        organization_hierarchy=organization_hierarchy,
+        target_id=ou_id,
+        placed=placed,
+        coverage=coverage,
+        flipped=flipped,
+        flipped_comment=flipped_comment,
     )
 
     return filepath, terraform_content
@@ -215,7 +282,11 @@ def _render_ou_scp_terraform(
 def _render_root_scp_terraform(
     root_recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
+    output_path: Path,
+    placed: Mapping[str, FrozenSet[str]],
+    coverage: Mapping[str, CheckCoverage],
+    flipped: Mapping[str, FrozenSet[str]],
+    flipped_comment: Mapping[str, str],
 ) -> tuple[Path, str]:
     """
     Render the Terraform file for root-level SCPs.
@@ -224,6 +295,13 @@ def _render_root_scp_terraform(
         root_recommendations: List of SCP recommendations for the root level
         organization_hierarchy: Organization structure information
         output_path: Directory the file belongs in
+        placed: Each check mapped to the target IDs carrying it and
+            rendering true there
+        coverage: Every registered check of this policy type, mapped to its coverage
+        flipped: Each check mapped to the target IDs carrying it and
+            rendering false there anyway (INV-06)
+        flipped_comment: Each check in `flipped`, mapped to the comment its
+            own registration gives for an empty allowlist
 
     Returns:
         Tuple of (destination path, rendered content)
@@ -235,7 +313,12 @@ def _render_root_scp_terraform(
         target_id_reference="local.root_ou_id",
         recommendations=root_recommendations,
         comment="Organization Root",
-        organization_hierarchy=organization_hierarchy
+        organization_hierarchy=organization_hierarchy,
+        target_id=organization_hierarchy.root_id,
+        placed=placed,
+        coverage=coverage,
+        flipped=flipped,
+        flipped_comment=flipped_comment,
     )
 
     return filepath, terraform_content
@@ -244,7 +327,8 @@ def _render_root_scp_terraform(
 def render_scp_terraform(
     recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
-    output_path: Path
+    output_path: Path,
+    coverage: Mapping[str, CheckCoverage],
 ) -> RenderedTerraformFiles:
     """
     Render every SCP file this run's recommendations call for.
@@ -257,11 +341,18 @@ def render_scp_terraform(
         recommendations: List of SCP placement recommendations
         organization_hierarchy: Organization structure information
         output_path: Directory the files belong in
+        coverage: Every registered check of this policy type, mapped to its coverage,
+            for explaining a check any target renders false
 
     Returns:
         Rendered file contents, keyed by destination path. Nothing is
         written; the caller compiles these into the run's plan.
     """
+    placed, flipped = split_placements(
+        recommendations, lambda rec: rec.allowlist_values, organization_hierarchy
+    )
+    flipped_comment = empty_allowlist_comments(get_check_definitions("scps"))
+
     # Group recommendations by level and target
     account_recommendations: GroupedSCPRecommendations = defaultdict(list)
     ou_recommendations: GroupedSCPRecommendations = defaultdict(list)
@@ -284,19 +375,22 @@ def render_scp_terraform(
 
     for account_id, account_recs in account_recommendations.items():
         filepath, content = _render_account_scp_terraform(
-            account_id, account_recs, organization_hierarchy, output_path
+            account_id, account_recs, organization_hierarchy, output_path, placed, coverage,
+            flipped, flipped_comment,
         )
         claim_plan_path(plan, filepath, content, f"account {organization_hierarchy.accounts[account_id].account_name!r}")
 
     for ou_id, ou_recs in ou_recommendations.items():
         filepath, content = _render_ou_scp_terraform(
-            ou_id, ou_recs, organization_hierarchy, output_path
+            ou_id, ou_recs, organization_hierarchy, output_path, placed, coverage,
+            flipped, flipped_comment,
         )
         claim_plan_path(plan, filepath, content, f"OU {organization_hierarchy.organizational_units[ou_id].name!r}")
 
     if root_recommendations:
         filepath, content = _render_root_scp_terraform(
-            root_recommendations, organization_hierarchy, output_path
+            root_recommendations, organization_hierarchy, output_path, placed, coverage,
+            flipped, flipped_comment,
         )
         claim_plan_path(plan, filepath, content, "the organization root")
 

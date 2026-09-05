@@ -7,7 +7,7 @@ the filesystem. These tests pin that the rendering half touches nothing.
 
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Mapping
 
 import pytest
 
@@ -20,11 +20,13 @@ from headroom.terraform.models import RenderedTerraformFiles
 from headroom.terraform.plan import TerraformPlan, compile_terraform_plan, validate_plan
 from headroom.types import (
     AccountOrgPlacement,
+    CheckCoverage,
     OrganizationHierarchy,
     OrganizationalUnit,
     RCPPlacementRecommendations,
     SCPPlacementRecommendations,
 )
+from tests.coverage_maps import coverage_for
 
 
 def org_with_one_ou() -> OrganizationHierarchy:
@@ -81,7 +83,7 @@ def test_render_scp_terraform_does_not_create_its_output_directory(
 ) -> None:
     absent = tmp_path / "scps"
 
-    rendered = render_scp_terraform([scp_rec()], org_with_one_ou(), absent)
+    rendered = render_scp_terraform([scp_rec()], org_with_one_ou(), absent, coverage_for("scps"))
 
     assert not absent.exists()
     assert set(rendered) == {absent / "root_scps.tf"}
@@ -92,7 +94,7 @@ def test_render_rcp_terraform_does_not_create_its_output_directory(
 ) -> None:
     absent = tmp_path / "rcps"
 
-    rendered = render_rcp_terraform([rcp_rec()], org_with_one_ou(), absent)
+    rendered = render_rcp_terraform([rcp_rec()], org_with_one_ou(), absent, coverage_for("rcps"))
 
     assert not absent.exists()
     assert set(rendered) == {absent / "root_rcps.tf"}
@@ -123,7 +125,7 @@ def test_compile_covers_org_info_both_policy_files_the_link_and_both_dirs(
     tmp_path: Path
 ) -> None:
     plan = compile_terraform_plan(
-        config_for(tmp_path), org_with_one_ou(), [scp_rec()], [rcp_rec()]
+        config_for(tmp_path), org_with_one_ou(), [scp_rec()], [rcp_rec()], coverage_for("scps"), coverage_for("rcps")
     )
 
     scps = Path(os.path.abspath(tmp_path / "scps"))
@@ -142,11 +144,46 @@ def test_compile_covers_org_info_both_policy_files_the_link_and_both_dirs(
 
 def test_compile_writes_nothing(tmp_path: Path) -> None:
     compile_terraform_plan(
-        config_for(tmp_path), org_with_one_ou(), [scp_rec()], [rcp_rec()]
+        config_for(tmp_path), org_with_one_ou(), [scp_rec()], [rcp_rec()], coverage_for("scps"), coverage_for("rcps")
     )
 
     assert not (tmp_path / "scps").exists()
     assert not (tmp_path / "rcps").exists()
+
+
+def test_compile_carries_coverage_into_the_rendered_files(tmp_path: Path) -> None:
+    """
+    A reason is only as good as the coverage that reached the renderer.
+
+    Compilation is the one place both policy types' coverage meets the
+    hierarchy, so a map dropped here silently degrades every comment in the
+    run to the no-results shape.
+    """
+    plan = compile_terraform_plan(
+        config_for(tmp_path),
+        org_with_one_ou(),
+        [scp_rec()],
+        [rcp_rec()],
+        coverage_for(
+            "scps",
+            deny_ec2_public_ip=CheckCoverage(
+                analyzed_accounts=frozenset({"111111111111"}),
+                unsafe_accounts=frozenset({"111111111111"}),
+            ),
+        ),
+        coverage_for("rcps"),
+    )
+
+    rendered = plan.files[Path(os.path.abspath(tmp_path / "scps")) / "root_scps.tf"]
+
+    # Anchored to the boolean it explains, because the other registered
+    # checks carry empty coverage and legitimately show the no-results
+    # shape. Drop the map and this one check joins them, which is the
+    # regression the assertion exists to catch.
+    assert (
+        "  # Blocked by the only analyzed account (payments)\n"
+        "  deny_ec2_public_ip = false\n"
+    ) in rendered
 
 
 def test_two_spellings_of_one_directory_are_rejected_before_the_collision(
@@ -175,13 +212,16 @@ def test_two_spellings_of_one_directory_are_rejected_before_the_collision(
     )
 
     with pytest.raises(RuntimeError, match="same directory"):
-        compile_terraform_plan(config, org_with_one_ou(), [scp_rec()], [rcp_rec()])
+        compile_terraform_plan(
+            config, org_with_one_ou(), [scp_rec()], [rcp_rec()], coverage_for("scps"), coverage_for("rcps")
+        )
 
 
 def _scp_render_colliding_with_org_info(
     recommendations: List[SCPPlacementRecommendations],
     organization_hierarchy: OrganizationHierarchy,
     output_path: Path,
+    coverage: Mapping[str, CheckCoverage],
 ) -> RenderedTerraformFiles:
     """Stand-in for render_scp_terraform: claims grab_org_info.tf too."""
     return {output_path / "grab_org_info.tf": f"{GENERATED_MARKER}\n"}
@@ -207,7 +247,7 @@ def test_two_components_claiming_one_destination_are_rejected(
 
     with pytest.raises(RuntimeError, match="claim"):
         compile_terraform_plan(
-            config_for(tmp_path), org_with_one_ou(), [scp_rec()], [rcp_rec()]
+            config_for(tmp_path), org_with_one_ou(), [scp_rec()], [rcp_rec()], coverage_for("scps"), coverage_for("rcps")
         )
 
 

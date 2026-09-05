@@ -4,9 +4,10 @@ Terraform data models for structured representation.
 Separates Terraform structure from rendering logic for better testability.
 """
 
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, TypeAlias
+from typing import Dict, List, TypeAlias
 
 from ..constants import GENERATED_MARKER
 
@@ -131,6 +132,59 @@ class TerraformParameter:
         if isinstance(self.value, str):
             return f"  {self.key} = {self._literal(self.value)}"
         return f"  {self.key} = {self.value}"
+
+
+# Counts the comment text alone. TerraformComment.render prepends "  # ", so
+# a wrapped line occupies 76 columns in the rendered file.
+COMMENT_WIDTH = 72
+
+# `textwrap` breaks only on ASCII whitespace, so this is the one space it
+# will not break on. `unbreakable` puts it into a name and `wrap_comment`
+# takes it back out, so it never reaches a rendered file.
+UNBREAKABLE_SPACE = "\u00a0"
+
+
+def unbreakable(text: str) -> str:
+    """
+    Keep a name on one comment line, whatever it contains.
+
+    An account named `Prod US` landing on the width would otherwise render
+    as `Prod` on one line and `US` on the next, two strings neither of which
+    is an account. With its space made non-breaking the name travels through
+    `wrap_comment` as one word, and comes out with its space restored.
+
+    Args:
+        text: A name that must not be split
+
+    Returns:
+        The name with every space made non-breaking
+    """
+    return text.replace(" ", UNBREAKABLE_SPACE)
+
+
+def wrap_comment(text: str) -> List[str]:
+    """
+    Split comment text into lines that fit beside the code they explain.
+
+    A hyphen is not a break opportunity here, and neither is a space inside
+    a name `unbreakable` protected. Account and OU names are hyphenated
+    throughout and some carry spaces, and `security-tooling-` on one line
+    with `production)` on the next is two strings, neither of which is a
+    name a reader can grep the file for. A name longer than the width
+    overflows its line for the same reason: a corrupted identifier is worse
+    than a long comment.
+
+    Args:
+        text: The whole comment, on one line
+
+    Returns:
+        The lines, each within the comment width but for a single name that
+        exceeds it on its own, with every protected space an ordinary one
+    """
+    lines = textwrap.wrap(
+        text, width=COMMENT_WIDTH, break_long_words=False, break_on_hyphens=False
+    )
+    return [line.replace(UNBREAKABLE_SPACE, " ") for line in lines]
 
 
 @dataclass

@@ -87,6 +87,11 @@ classDiagram
     +bool blocks_rcp
   }
 
+  class CheckCoverage {
+    +FrozenSet~str~ analyzed_accounts
+    +FrozenSet~str~ unsafe_accounts
+  }
+
   class SCPPlacementRecommendations {
     +str check_name
     +str recommended_level
@@ -166,8 +171,8 @@ classDiagram
     +OrganizationHierarchy org
     +determine_placement() List~PlacementCandidate~
     -_group_results_by_ou_subtree() Dict
-    -_top_level_ou_ids() Set
-    -_ancestor_ou_ids() Set
+    -_top_level_ou_ids() List~str~
+    -_ancestor_ou_ids() List~str~
   }
 
   HeadroomConfig --> AccountTagLayout

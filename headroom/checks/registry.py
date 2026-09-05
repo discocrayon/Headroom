@@ -37,9 +37,13 @@ class Allowlist:
         empty_allowlist_comment: When set, an empty allowlist leaves the
             statement off and this comment renders above it, because the
             empty list would deny everything or be rejected as malformed
-            (INV-06). When None, the empty list renders as `[]` and the
-            module omits the clause. The empty string is neither and is
-            rejected at registration
+            (INV-06). It also renders in every module below that one, where
+            an empty union stays empty, so write a sentence that reads true
+            of any subset of the accounts it was written about and at a
+            target of any kind - "this module covers" is read afresh in each
+            file. When None, the empty list renders as `[]` and the module
+            omits the clause. An empty or whitespace-only string is neither
+            and is rejected at registration
     """
     summary_key: str
     terraform_variable: str
@@ -160,11 +164,14 @@ def _validate_registration(
         )
     # The renderer tests the comment for truth, so "" would render the empty
     # allowlist as [] while reading as though the author asked for the
-    # statement to be turned off with a reason.
-    if allowlist.empty_allowlist_comment == "":
+    # statement to be turned off with a reason. Whitespace is truthy, so it
+    # would turn the statement off and then wrap to zero comment lines - a
+    # bare false in the declaring module and in every module below it.
+    comment = allowlist.empty_allowlist_comment
+    if comment is not None and not comment.strip():
         raise ValueError(
-            f"Check {check_name!r} allowlist empty_allowlist_comment is empty; pass None "
-            f"to render an empty allowlist as [], or a comment saying why the statement stays off"
+            f"Check {check_name!r} allowlist empty_allowlist_comment is empty or only whitespace; "
+            f"pass None to render an empty allowlist as [], or a comment saying why the statement stays off"
         )
     variable = allowlist.terraform_variable
     if variable in claimed_by:

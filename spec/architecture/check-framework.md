@@ -33,13 +33,13 @@ and the `Allowlist` its statement is scoped by, if any — and stamps `CHECK_NAM
 and `CHECK_TYPE` onto the class. The check passes `CHECK_TYPE` to the result
 writer, which looks nothing up. It validates first: a
 duplicate name, a class already registered under another name, an unknown type,
-an RCP check with no allowlist, an empty allowlist key or variable, an
-empty-string `empty_allowlist_comment`, or a name or allowlist variable another
-definition already claims fails at import time and inserts nothing. So does a `CheckType`
-member passed as the type: it is a `str` and compares equal to its value, but it
-formats as `CheckType.SCPS`, and the result writer builds a check's directory by
-formatting the type, so the check would write under `results/CheckType.SCPS/`
-while the parser reads `results/scps/`.
+an RCP check with no allowlist, an empty allowlist key or variable, a blank
+`empty_allowlist_comment` (empty or only whitespace), or a name or allowlist
+variable another definition already claims fails at import time and inserts
+nothing. So does a `CheckType` member passed as the type: it is a `str` and
+compares equal to its value, but it formats as `CheckType.SCPS`, and the result
+writer builds a check's directory by formatting the type, so the check would
+write under `results/CheckType.SCPS/` while the parser reads `results/scps/`.
 
 `headroom/checks/__init__.py` imports every module under `scps/` and `rcps/` so
 each decorator runs. **This is the repository's one sanctioned dynamic import.**
@@ -145,7 +145,11 @@ itself requires only:
    key it writes and the module variable it fills. A check whose empty
    allowlist must leave the statement off states why as
    `empty_allowlist_comment` (INV-06); one whose values are ARNs sets
-   `restores_account_ids`.
+   `restores_account_ids`. That sentence is not module-local: it renders in
+   the module the placement names and in every module below it, over a
+   smaller account set and at a target of a different kind, so it must read
+   true of any subset of the accounts it was written about.
+   [`../contracts/terraform.md`](../contracts/terraform.md) owns why.
 3. The three abstract methods.
 4. A specification under [`../checks/`](../checks/index.md) — enforced by
    `tests/test_spec_corpus.py`.
