@@ -15,6 +15,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_s3.client import S3Client
 
+from ..enums import PolicyService
 from ..types import JsonDict
 from .helpers import memoize_per_session, paginate
 from .policy_documents import (
@@ -24,8 +25,8 @@ from .policy_documents import (
     has_actionable_service_principal_source,
     has_not_principal,
     normalize_statements,
-    read_principal,
     read_service_principal_sources,
+    read_statement_principals,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,10 @@ class S3BucketPolicyAnalysis:
             with the cross-service source guard on each. Read by the
             deny_service_confused_deputy check; contributes nothing to this
             analysis's own third-party accounts or wildcard flag.
+        confined_by: The condition keys, lower-cased, that each bounded a
+            statement on their own, unioned across this policy's statements.
+            Recorded whether or not the resource still blocks, and whether or
+            not the statement they bounded named a wildcard.
     """
     bucket_name: str
     bucket_arn: str
@@ -96,6 +101,7 @@ class S3BucketPolicyAnalysis:
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+    confined_by: Set[str] = field(default_factory=set)
 
 
 def _analyze_bucket_acl(s3_client: S3Client, bucket_name: str) -> AclGrantFindings:
@@ -223,14 +229,17 @@ def analyze_s3_bucket_policies(
        d. Extract AWS principals from statements
        e. Identify third-party accounts (not in org)
        f. Track which actions each third-party account can perform
-       g. Detect wildcard principals, and principals carrying no account ID
+       g. Detect wildcard principals, and principals carrying no account ID.
+          A wildcard whose Condition proves a bound is not counted as one:
+          it reads as the set that condition confines it to
     3. Return analysis results for buckets with a finding
 
     Args:
         session: boto3 Session for the target account
         org_account_ids: Set of all account IDs in the organization
         org_id: This organization's ID, deciding whether an
-            organization scope on a source guard names this organization
+            organization scope on a source guard or on a confining
+            principal key names this organization
 
     Returns:
         List of S3BucketPolicyAnalysis for buckets with third-party accounts or wildcards
@@ -261,6 +270,7 @@ def analyze_s3_bucket_policies(
         third_party_accounts: Set[str] = set()
         actions_by_account: Dict[str, Set[str]] = {}
         sources: List[ServicePrincipalSource] = []
+        confined_by: Set[str] = set()
 
         # The ACL is read before the policy because a bucket that shares only
         # by ACL carries no policy at all, and abandoning the bucket for want
@@ -284,12 +294,10 @@ def analyze_s3_bucket_policies(
                     has_wildcard = True
                     continue
 
-                principal = statement.get("Principal")
-                if not principal:
-                    continue
-
                 resource_description = f"Bucket '{bucket_name}'"
-                reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
+                reading = read_statement_principals(
+                    statement, RESOURCE_POLICY_PRINCIPAL_TYPES, PolicyService.S3, org_id, resource_description
+                )
                 sources.extend(
                     read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
                 )
@@ -298,6 +306,7 @@ def analyze_s3_bucket_policies(
                 has_non_account_principals = (
                     has_non_account_principals or reading.has_non_account_principals
                 )
+                confined_by.update(reading.confined_by)
 
                 account_ids = reading.account_ids
                 actions = normalize_actions(statement.get("Action", []))
@@ -319,6 +328,7 @@ def analyze_s3_bucket_policies(
                 has_non_account_principals=has_non_account_principals,
                 actions_by_account=actions_by_account,
                 service_principal_sources=sources,
+                confined_by=confined_by,
             ))
 
     return results

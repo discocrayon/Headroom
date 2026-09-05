@@ -118,6 +118,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             "has_wildcard_principal": result.has_wildcard_principal,
             "has_non_account_principals": result.has_non_account_principals,
             "actions_by_account": actions_by_account_serializable,
+            "confined_by": sorted(result.confined_by),
         }
 
         self.all_third_party_accounts.update(result.third_party_account_ids)

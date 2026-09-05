@@ -66,13 +66,13 @@ is a reconciled projection of the current run and holds nothing else.
 ## Non-goals
 
 Headroom deliberately does not do these things. Each is a design decision rather
-than a gap awaiting implementation, with the one exception marked below.
+than a gap awaiting implementation.
 
 | Non-goal | Why |
 |---|---|
 | Apply Terraform, or attach any policy | Headroom writes files. A human reviews and applies them. |
 | Remediate violations | It reports what a policy would break; fixing that is the workload owner's decision. |
-| Evaluate policy conditions during RCP analysis | The one row here that *is* a gap rather than a decision. A condition that narrows a grant is not read as narrowing it, which costs coverage and not safety. See [`contracts/policy-model.md`](contracts/policy-model.md) and [`../ROADMAP.md`](../ROADMAP.md). |
+| Evaluate a policy condition for anything but a bound on a wildcard principal | A `Condition` is read to decide whether a wildcard principal reaches a set an allowlist can carry, and for nothing else: a condition that narrows the *grant* rather than the principal set — `s3:prefix`, `aws:SourceVpce`, `kms:ViaService`, a date — leaves the account it names at full width. Reading a condition in order to un-block an account inverts the safety direction, so every shape the reader cannot prove stays a blocker. See [`contracts/policy-model.md`](contracts/policy-model.md) and [`../ROADMAP.md`](../ROADMAP.md). |
 | Analyze historical activity | Deployability is decided from current resource state, not from CloudTrail. Listed under [`../ROADMAP.md`](../ROADMAP.md). |
 | Analyze the management account | SCPs and RCPs do not restrict it. See [`architecture/aws-execution.md`](architecture/aws-execution.md). |
 | Guarantee an *undeployable* policy stays undeployable | A check reports the state it observed. New violations after a scan are the next run's problem. |

@@ -1132,3 +1132,40 @@ class TestScannedGrantResults:
             "iam_unique_id",
         ]
         assert results_data["summary"]["unique_third_party_accounts"] == [THIRD_PARTY]
+
+
+class TestConfinedKeyPolicies:
+    """
+    The key's entry names the condition keys that bounded its statements.
+
+    A KMS key policy is the one place two different keys can each bound a
+    statement on their own: `kms:CallerAccount` is the caller's account as
+    KMS itself reports it, and `aws:PrincipalAccount` is the same fact under
+    IAM's name.
+    """
+
+    def test_the_entry_names_every_key_that_confined_it_in_order(
+        self,
+        temp_results_dir: str,
+    ) -> None:
+        """
+        Both keys are recorded, sorted, so the entry reads the same every run.
+
+        The analysis carries a set, whose iteration order is a hash order
+        that varies between processes. A file whose field reorders between
+        runs is a diff on every re-scan.
+        """
+        key = KMSKeyPolicyAnalysis(
+            key_id="key-confined",
+            key_arn=f"arn:aws:kms:us-east-1:{ORG_ACCOUNT}:key/key-confined",
+            region="us-east-1",
+            third_party_account_ids={THIRD_PARTY},
+            actions_by_account={THIRD_PARTY: ["kms:Decrypt"]},
+            has_wildcard_principal=False,
+            confined_by={"kms:calleraccount", "aws:principalaccount"},
+        )
+
+        results_data = run_check([key], temp_results_dir)
+
+        entry = results_data["keys_third_parties_can_access"][0]
+        assert entry["confined_by"] == ["aws:principalaccount", "kms:calleraccount"]

@@ -11,13 +11,21 @@ from botocore.exceptions import ClientError
 
 from headroom.aws.ecr import (
     ECRPolicyAnalysis,
+    _analyze_policy_statements,
     analyze_ecr_policies,
 )
 from headroom.aws.policy_documents import (
     MalformedPolicyError,
     UnknownPrincipalTypeError,
 )
+from headroom.types import JsonDict
 from tests.constants import ORG_ID
+
+# What analyze_ecr_policies passes _analyze_policy_statements for the
+# repository these tests build. It reaches an error message and nothing else,
+# so it matters only that a test reading the policy directly names the same
+# repository the mocked adapter was given.
+REPOSITORY_CONTEXT = "Repository 'test-repo' in us-east-1"
 
 
 def _no_registry_policy(mock_ecr_client: MagicMock) -> None:
@@ -295,7 +303,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         mock_ecr_client.get_paginator.return_value = repository_paginator
 
-        policy = {
+        policy: JsonDict = {
             "Version": "2012-10-17",
             "Statement": [
                 {
@@ -315,8 +323,17 @@ class TestAnalyzeECRRepositoryPolicies:
         org_account_ids = {"111111111111", "222222222222"}
 
         results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
+        findings = _analyze_policy_statements(
+            policy, "Repository 'internal-repo' in us-east-1", org_account_ids, ORG_ID
+        )
 
+        # Reporting nothing is also what a policy nobody read looks like, so
+        # the fetch is asserted and the reading is taken directly: the
+        # account was read and then filtered as in-organization, not missed.
         assert len(results) == 0
+        mock_ecr_client.get_repository_policy.assert_called_once()
+        assert findings.third_party_account_ids == set()
+        assert findings.has_wildcard_principal is False
 
     def test_actions_deduplicated_per_account(self) -> None:
         """Ensure duplicate actions are not repeated for an account."""
@@ -526,7 +543,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         mock_ecr_client.get_paginator.return_value = repository_paginator
 
-        policy = {
+        policy: JsonDict = {
             "Version": "2012-10-17",
             "Statement": [
                 {
@@ -546,11 +563,27 @@ class TestAnalyzeECRRepositoryPolicies:
         org_account_ids = {"111111111111"}
 
         results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
+        findings = _analyze_policy_statements(
+            policy, REPOSITORY_CONTEXT, org_account_ids, ORG_ID
+        )
 
+        # Reporting nothing is also what a policy nobody read looks like, so
+        # the fetch is asserted and the reading is taken directly: the Deny
+        # was read and passed over, not skipped for want of a policy.
         assert len(results) == 0
+        mock_ecr_client.get_repository_policy.assert_called_once()
+        assert findings.third_party_account_ids == set()
+        assert findings.has_wildcard_principal is False
 
-    def test_policy_with_no_principal(self) -> None:
-        """Test that statements without principals are skipped."""
+    def test_a_statement_with_no_principal_aborts_the_run(self) -> None:
+        """
+        An Allow carrying neither Principal nor NotPrincipal is a document AWS never stored.
+
+        The analyzer once skipped it with a read of its own; the shared
+        statement reader raises instead. Both entry points are driven, so
+        the raise is shown to come from the statement walk rather than
+        from the fetch around it.
+        """
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
@@ -579,7 +612,7 @@ class TestAnalyzeECRRepositoryPolicies:
 
         mock_ecr_client.get_paginator.return_value = repository_paginator
 
-        policy = {
+        policy: JsonDict = {
             "Version": "2012-10-17",
             "Statement": [
                 {
@@ -595,9 +628,12 @@ class TestAnalyzeECRRepositoryPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
+        with pytest.raises(MalformedPolicyError, match="has an Allow statement carrying neither"):
+            analyze_ecr_policies(mock_session, org_account_ids, ORG_ID)
+        mock_ecr_client.get_repository_policy.assert_called_once()
 
-        assert len(results) == 0
+        with pytest.raises(MalformedPolicyError, match="has an Allow statement carrying neither"):
+            _analyze_policy_statements(policy, REPOSITORY_CONTEXT, org_account_ids, ORG_ID)
 
     def test_get_repository_policy_error(self) -> None:
         """Test that non-RepositoryPolicyNotFoundException errors are raised."""
@@ -900,7 +936,14 @@ class TestPolicyGrammar:
             "policyText": json.dumps(policy)
         }
 
-        return analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
+        results = analyze_ecr_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        # Every test in this class may assert that nothing was reported, and
+        # a policy nobody read reports nothing too. The fetch is asserted
+        # here so that no test in the class can pass without one.
+        mock_ecr_client.get_repository_policy.assert_called_once()
+
+        return results
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -949,17 +992,28 @@ class TestPolicyGrammar:
 
         It is the form AWS recommends, and a resource policy's Deny cannot
         hand access to anyone, so it must not block the RCP.
+
+        Dropping out is also what a policy nobody read looks like, so the
+        same document goes through _analyze_policy_statements directly,
+        ahead of the reporting gate, and the reading itself is asserted.
         """
-        results = self._analyze({
+        policy: JsonDict = {
             "Version": "2012-10-17",
             "Statement": {
                 "Effect": "Deny",
                 "NotPrincipal": {"AWS": "arn:aws:iam::999999999999:root"},
                 "Action": "ecr:BatchGetImage"
             }
-        })
+        }
+
+        results = self._analyze(policy)
+        findings = _analyze_policy_statements(
+            policy, REPOSITORY_CONTEXT, {"111111111111"}, ORG_ID
+        )
 
         assert results == []
+        assert findings.has_wildcard_principal is False
+        assert findings.third_party_account_ids == set()
 
     def test_guarded_service_principal_is_recorded(self) -> None:
         """
@@ -1003,6 +1057,97 @@ class TestPolicyGrammar:
         })
 
         assert results[0].service_principal_sources == []
+
+    def test_a_wildcard_confined_to_a_third_party_account_is_allowlisted(self) -> None:
+        """
+        The account the condition names reaches the allowlist, not the wildcard flag.
+
+        Dropping the wildcard without recording the account would generate
+        an RCP that denies the very access this statement grants.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "ecr:BatchGetImage",
+                "Condition": {
+                    "StringEquals": {"aws:PrincipalAccount": ["333333333333"]}
+                },
+            }],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is False
+        assert results[0].third_party_account_ids == {"333333333333"}
+        assert results[0].actions_by_account["333333333333"] == ["ecr:BatchGetImage"]
+        assert results[0].confined_by == {"aws:principalaccount"}
+
+    def test_a_wildcard_confined_to_this_organization_names_nobody(self) -> None:
+        """
+        aws:PrincipalOrgID admits only callers the RCP already spares.
+
+        The bound is real, so the wildcard falls, and every caller it admits
+        is inside the organization, so there is no account to allowlist. The
+        repository is left with nothing an RCP could break and drops out of
+        the results, where before it blocked the account's whole ECR RCP.
+
+        Dropping out is also what a policy nobody read looks like, so the
+        same document goes through _analyze_policy_statements directly, ahead
+        of the reporting gate, and the reading itself is asserted.
+        """
+        policy: JsonDict = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "ecr:BatchGetImage",
+                "Condition": {
+                    "StringEquals": {"aws:PrincipalOrgID": ORG_ID}
+                },
+            }],
+        }
+
+        results = self._analyze(policy)
+        findings = _analyze_policy_statements(
+            policy, REPOSITORY_CONTEXT, {"111111111111"}, ORG_ID
+        )
+
+        assert results == []
+        assert findings.has_wildcard_principal is False
+        assert findings.confined_by == {"aws:principalorgid"}
+
+    def test_a_wildcard_under_kms_caller_account_is_still_a_wildcard(self) -> None:
+        """
+        kms:CallerAccount bounds a KMS key policy and nothing else.
+
+        No Amazon ECR request carries the key, so the clause admits nobody
+        and the statement grants nobody anything. Reading it as a bound
+        would clear the repository and put an account no policy granted
+        into the allowlist, so this pins the PolicyService this analyzer
+        declares: passing PolicyService.KMS from here reads the clause as a
+        bound.
+
+        The value is a well-formed twelve-digit account ID on purpose: a
+        value the reader would reject anyway proves only that some rule
+        refused the shape, not that the service is what refused it.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": "ecr:GetDownloadUrlForLayer",
+                "Condition": {
+                    "StringEquals": {"kms:CallerAccount": "333333333333"}
+                },
+            }],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+        assert results[0].confined_by == set()
 
 
 class TestRegistryPolicy:

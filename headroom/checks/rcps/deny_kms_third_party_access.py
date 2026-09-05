@@ -168,6 +168,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
                 }
                 for grant in result.unresolved_grants
             ],
+            "confined_by": sorted(result.confined_by),
         }
 
         self.all_third_party_accounts.update(result.third_party_account_ids)

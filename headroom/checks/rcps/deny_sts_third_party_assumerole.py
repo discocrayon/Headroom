@@ -107,6 +107,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
             "role_arn": result.role_arn,
             "third_party_account_ids": sorted(list(result.third_party_account_ids)),
             "has_wildcard_principal": result.has_wildcard_principal,
+            "confined_by": sorted(result.confined_by),
         }
 
         self.all_third_party_accounts.update(result.third_party_account_ids)

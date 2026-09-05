@@ -13,7 +13,10 @@ This module contains check name constants used throughout the Headroom codebase.
 # principal can be an STS session ARN (arn:aws:sts::{account}:assumed-role/...)
 # as readily as an IAM one, and pinning the segment to `iam` drops the account.
 # The partition is matched the same way, so GovCloud and China ARNs resolve.
-AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws[a-z0-9-]*:[^:]+:[^:]*:(\d{12}):'
+# The account field is twelve ASCII digits, not Python's `\d`, which also
+# accepts the digits of every other script; a condition value is never
+# validated by AWS and reaches this pattern as written.
+AWS_ARN_ACCOUNT_ID_PATTERN = r'^arn:aws[a-z0-9-]*:[^:]+:[^:]*:([0-9]{12}):'
 
 # EC2 IMDSv2 Exemption Tag
 # The tag the deny_ec2_imds_v1 SCP exempts on, via

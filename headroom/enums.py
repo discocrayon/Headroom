@@ -14,6 +14,26 @@ class CheckType(str, Enum):
     RCPS = "rcps"
 
 
+class PolicyService(str, Enum):
+    """
+    The AWS service whose policy a reader is looking at.
+
+    Global condition keys are service-independent, but a service-scoped key
+    such as kms:CallerAccount is valid only on its own service: the same
+    clause in a bucket policy names a key no request carries, so that
+    statement grants nobody anything and reading it as a bound would put an
+    account in the allowlist no policy granted. This is the only place a
+    service dimension enters the policy grammar; it selects a row in
+    SERVICE_SCOPED_ACCOUNT_CONDITION_KEYS and nothing else branches on it.
+    """
+    ECR = "ecr"
+    KMS = "kms"
+    S3 = "s3"
+    SECRETS_MANAGER = "secretsmanager"
+    SQS = "sqs"
+    STS = "sts"
+
+
 class TerraformSection(Enum):
     """
     The section comment a check's module parameters render under.

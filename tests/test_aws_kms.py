@@ -12,6 +12,7 @@ from headroom.aws.kms import (
     KMSGrantFinding,
     UnknownGrantPrincipalError,
     UnresolvedKMSGrantFinding,
+    _analyze_key_in_region,
     analyze_kms_key_policies,
 )
 from headroom.aws.policy_documents import (
@@ -486,8 +487,13 @@ class TestAnalyzeKmsKeyPolicies:
         # Keys with only Deny statements don't have third-party access or wildcards, so no result
         assert len(results) == 0
 
-    def test_analyze_kms_policies_no_principal(self) -> None:
-        """Test analyze_kms_key_policies with statement missing Principal field."""
+    def test_a_statement_with_no_principal_aborts_the_run(self) -> None:
+        """
+        An Allow carrying neither Principal nor NotPrincipal is a document AWS never stored.
+
+        The analyzer once skipped it with a read of its own; the shared
+        statement reader raises instead.
+        """
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_kms_client = MagicMock()
@@ -526,10 +532,8 @@ class TestAnalyzeKmsKeyPolicies:
 
         org_account_ids = {"111111111111"}
 
-        results = analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
-
-        # Keys without Principal don't have third-party access or wildcards, so no result
-        assert len(results) == 0
+        with pytest.raises(MalformedPolicyError, match="has an Allow statement carrying neither"):
+            analyze_kms_key_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_analyze_kms_policies_client_error(self) -> None:
         """Test analyze_kms_key_policies with ClientError during analysis."""
@@ -639,7 +643,14 @@ class TestPolicyGrammar:
         mock_kms_client.get_paginator.return_value = keys_paginator
         mock_kms_client.get_key_policy.return_value = {"Policy": json.dumps(policy)}
 
-        return analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
+        results = analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        # Tests in this class assert that nothing was reported, and a policy
+        # nobody read reports nothing too. The fetch is asserted here so that
+        # no test in the class can pass without one.
+        mock_kms_client.get_key_policy.assert_called_once()
+
+        return results
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -846,11 +857,19 @@ class TestKeyGrants:
                 )
             }
 
-        return analyze_kms_key_policies(
+        results = analyze_kms_key_policies(
             mock_session,
             {TestKeyGrants.ORG_ACCOUNT} if org_account_ids is None else org_account_ids,
             ORG_ID,
         )
+
+        # Tests in this class assert that nothing was reported, and a key
+        # nobody read reports nothing too. Both surfaces are asserted read
+        # here so that no test in the class can pass without them.
+        mock_kms_client.get_key_policy.assert_called_once()
+        grants_paginator.paginate.assert_called_once()
+
+        return results
 
     def test_cross_account_grantee_reaches_the_allowlist(self) -> None:
         """
@@ -2097,9 +2116,11 @@ class TestAWSManagedKeys:
 
     RCPs do not apply to AWS-managed keys, so no statement this scan generates
     can reach one. Their default policy grants `Principal: {"AWS": "*"}` under
-    `kms:CallerAccount`, which `read_principal` reads as a wildcard, so before
-    the skip every account holding one was blocked for the KMS RCP by a
-    policy its operator cannot change.
+    `kms:CallerAccount`, and before the wildcard was read against that key
+    every account holding one was blocked for the KMS RCP by a policy its
+    operator cannot change. The skip stands on the key type alone, which is
+    the answer whatever the policy says, and saves GetKeyPolicy and
+    ListGrants on every such key.
     """
 
     KEY_ID = "11111111-1111-1111-1111-111111111111"
@@ -2187,9 +2208,9 @@ class TestAWSManagedKeys:
         """
         A key AWS manages is neither recorded nor read past DescribeKey.
 
-        Its policy would be read as a wildcard, and RCPs do not apply to the
-        key, so reading it could only produce a false blocker. Skipping
-        before GetKeyPolicy and ListGrants also saves those two calls.
+        RCPs do not apply to the key, so nothing its policy says can matter
+        to this scan. Skipping before GetKeyPolicy and ListGrants also saves
+        those two calls.
         """
         mock_session, mock_kms_client = self._one_key_client(
             {"KeyMetadata": {"KeyId": self.KEY_ID, "KeyManager": "AWS"}}
@@ -2205,13 +2226,15 @@ class TestAWSManagedKeys:
             for call in mock_kms_client.get_paginator.call_args_list
         )
 
-    def test_a_customer_managed_key_with_the_same_policy_is_a_violation(self) -> None:
+    def test_a_customer_managed_key_with_the_same_policy_is_confined_by_it(self) -> None:
         """
-        The skip reads the key type, not the policy's Condition block.
+        The idiom bounds a customer-managed key's wildcard the same way.
 
-        A customer-managed key written with the AWS-managed idiom is still
-        read as a wildcard: RCPs do apply to it, and `kms:CallerAccount` is
-        deliberately not evaluated.
+        `kms:CallerAccount` is the account of the caller, so in a KMS policy
+        it enumerates who the wildcard reaches. Here it names the key's own
+        account, which is in the organization, so the key grants nobody the
+        RCP would deny and blocks nothing. The key-type skip was the only
+        defense against this shape; now the Condition block is read.
         """
         mock_session, mock_kms_client = self._one_key_client(
             {"KeyMetadata": {"KeyId": self.KEY_ID, "KeyManager": "CUSTOMER"}}
@@ -2219,10 +2242,27 @@ class TestAWSManagedKeys:
 
         results = analyze_kms_key_policies(mock_session, {"111111111111"}, ORG_ID)
 
-        assert len(results) == 1
-        assert results[0].key_id == self.KEY_ID
-        assert results[0].has_wildcard_principal is True
-        assert results[0].third_party_account_ids == set()
+        # An empty result is also what a key nobody read produces, so the
+        # read is asserted too - the mirror of the assert_not_called above -
+        # and the reading itself is checked ahead of the reporting gate.
+        # _analyze_key_in_region drives its own client, so it gets a second
+        # one: driving the first again would make the assert_called_once
+        # below see two calls.
+        _, direct_client = self._one_key_client(
+            {"KeyMetadata": {"KeyId": self.KEY_ID, "KeyManager": "CUSTOMER"}}
+        )
+        analysis = _analyze_key_in_region(
+            direct_client,
+            {"KeyId": self.KEY_ID, "KeyArn": self.KEY_ARN},
+            "us-east-1",
+            {"111111111111"},
+            ORG_ID,
+        )
+
+        assert results == []
+        mock_kms_client.get_key_policy.assert_called_once()
+        assert analysis.has_wildcard_principal is False
+        assert analysis.confined_by == {"kms:calleraccount"}
 
     def test_a_describe_key_failure_aborts_the_run(self) -> None:
         """

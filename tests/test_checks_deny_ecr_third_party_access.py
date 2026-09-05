@@ -2,15 +2,19 @@
 Tests for headroom.checks.rcps.deny_ecr_third_party_access module.
 """
 
+import json
 import pytest
 import tempfile
 import shutil
 from unittest.mock import MagicMock, patch
-from typing import Generator, List
+from typing import Any, Dict, Generator, List
+
+from botocore.exceptions import ClientError
 
 from headroom.checks.rcps.deny_ecr_third_party_access import DenyECRThirdPartyAccessCheck
 from headroom.constants import DENY_ECR_THIRD_PARTY_ACCESS
 from headroom.aws.ecr import ECRPolicyAnalysis
+from headroom.types import JsonDict
 from tests.constants import ORG_ID
 
 
@@ -710,3 +714,210 @@ class TestRegistryScopedResults:
         assert summary["policies_with_wildcards"] == 1
         assert summary["violations"] == 1
         assert summary["unique_third_party_accounts"] == ["999999999999"]
+
+
+# One statement whose bare wildcard `aws:PrincipalAccount` bounds to a single
+# account outside the organization. Three tests below read the same statement,
+# because what varies between them is the rest of the policy around it.
+CONFINED_WILDCARD_STATEMENT: JsonDict = {
+    "Effect": "Allow",
+    "Principal": {"AWS": "*"},
+    "Action": "ecr:BatchGetImage",
+    "Condition": {"StringEquals": {"aws:PrincipalAccount": ["333333333333"]}},
+}
+
+
+class TestConfinedWildcards:
+    """
+    A wildcard the Condition block bounds travels the check as the accounts it admits.
+
+    The adapter stops calling such a statement a wildcard, so the check must
+    still carry the accounts it named into the allowlist. Clearing the
+    violation without carrying the accounts ships an RCP that denies exactly
+    the access the repository policy granted.
+
+    The other tests in this file hand the check a pre-built ECRPolicyAnalysis,
+    which cannot show whether the adapter read a wildcard as confined; these
+    mock the client so analyze_ecr_policies itself does the reading.
+    """
+
+    @pytest.fixture
+    def temp_results_dir(self) -> Generator[str, None, None]:
+        """Create a temporary directory for check results."""
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    @staticmethod
+    def _session_holding(policy: JsonDict) -> MagicMock:
+        """
+        Build a session whose one region holds one repository with this policy.
+
+        Args:
+            policy: Repository policy document, as the API returns it
+
+        Returns:
+            A session the real ECR analyzer can read
+        """
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+        mock_ecr_client = MagicMock()
+
+        # Without this, get_registry_policy() returns a Mock, which the
+        # analyzer would hand to json.loads().
+        error_response: Any = {"Error": {"Code": "RegistryPolicyNotFoundException"}}
+        mock_ecr_client.get_registry_policy.side_effect = ClientError(
+            error_response, "GetRegistryPolicy"
+        )
+
+        mock_session.client.side_effect = lambda service, **kwargs: {
+            "ec2": mock_ec2_client,
+            "ecr": mock_ecr_client,
+        }.get(service)
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [{"RegionName": "us-east-1"}]
+        }
+
+        repository_paginator = MagicMock()
+        repository_paginator.paginate.return_value = [
+            {"repositories": [{
+                "repositoryName": "vendor-repo",
+                "repositoryArn": (
+                    "arn:aws:ecr:us-east-1:111111111111:repository/vendor-repo"
+                ),
+            }]}
+        ]
+        mock_ecr_client.get_paginator.return_value = repository_paginator
+        mock_ecr_client.get_repository_policy.return_value = {
+            "policyText": json.dumps(policy)
+        }
+        return mock_session
+
+    @staticmethod
+    def _results_data(temp_results_dir: str, mock_session: MagicMock) -> Dict[str, Any]:
+        """
+        Run the check against a session and return the document it wrote.
+
+        Args:
+            temp_results_dir: Directory the check writes results to
+            mock_session: Session the analyzer reads
+
+        Returns:
+            The whole result document, summary and entries alike
+        """
+        check = DenyECRThirdPartyAccessCheck(
+            check_name=DENY_ECR_THIRD_PARTY_ACCESS,
+            account_name="test-account",
+            account_id="111111111111",
+            results_dir=temp_results_dir,
+            org_account_ids={"111111111111", "222222222222"},
+            org_id=ORG_ID,
+        )
+
+        with (
+            patch("headroom.checks.base.write_check_results") as mock_write,
+            patch("builtins.print"),
+        ):
+            check.execute(mock_session)
+
+        results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
+        return results_data
+
+    def test_a_wildcard_confined_to_out_of_org_accounts_reaches_the_allowlist(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        Clearing the violation without allowlisting the account is the outage.
+
+        The repository grants 333333333333 and nobody else, so the RCP may
+        ship - but only carrying that account. An RCP that shipped because
+        the wildcard was read as confined and then omitted the account it
+        was confined to would deny the one caller the policy admits.
+        """
+        mock_session = self._session_holding(
+            {"Version": "2012-10-17", "Statement": [CONFINED_WILDCARD_STATEMENT]}
+        )
+
+        summary = self._results_data(temp_results_dir, mock_session)["summary"]
+
+        assert summary["violations"] == 0
+        assert summary["unique_third_party_accounts"] == ["333333333333"]
+
+    def test_a_confined_entry_names_the_key_that_confined_it(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        The entry records why the repository stopped counting as a wildcard.
+
+        Without the key, a reader of the result file sees a repository with
+        `has_wildcard_principal: false` and no way to tell a policy that
+        never named a wildcard from one whose wildcard a condition bounded.
+        """
+        mock_session = self._session_holding(
+            {"Version": "2012-10-17", "Statement": [CONFINED_WILDCARD_STATEMENT]}
+        )
+
+        results_data = self._results_data(temp_results_dir, mock_session)
+
+        assert results_data["policies_with_wildcards"] == []
+        entry = results_data["policies_third_parties_can_access"][0]
+        assert entry["repository_name"] == "vendor-repo"
+        assert entry["confined_by"] == ["aws:principalaccount"]
+
+    def test_a_surviving_wildcard_does_not_erase_the_confined_statement(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        One unbounded statement blocks the repository; the bounded one is still recorded.
+
+        `confined_by` is a union across the policy's statements, not a verdict
+        on the policy, so the second statement's wildcard withholds the RCP
+        without hiding what the first statement proved.
+        """
+        mock_session = self._session_holding({
+            "Version": "2012-10-17",
+            "Statement": [
+                CONFINED_WILDCARD_STATEMENT,
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "ecr:DescribeImages",
+                },
+            ],
+        })
+
+        results_data = self._results_data(temp_results_dir, mock_session)
+
+        entry = results_data["policies_with_wildcards"][0]
+        assert entry["has_wildcard_principal"] is True
+        assert entry["confined_by"] == ["aws:principalaccount"]
+
+    def test_an_unconfined_repository_says_so_rather_than_omitting_the_field(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        A policy no condition bounded writes an empty list, not a missing key.
+
+        The repository is reported because it names an account outside the
+        organization, so the field is reached on a policy whose statements
+        carry no Condition at all. A reader that has to tell an absent field
+        from an empty one cannot distinguish this repository from one
+        written before the field existed.
+        """
+        mock_session = self._session_holding({
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "arn:aws:iam::333333333333:root"},
+                    "Action": "ecr:BatchGetImage",
+                }
+            ],
+        })
+
+        results_data = self._results_data(temp_results_dir, mock_session)
+
+        entry = results_data["policies_third_parties_can_access"][0]
+        assert entry["third_party_account_ids"] == ["333333333333"]
+        assert entry["confined_by"] == []

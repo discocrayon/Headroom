@@ -40,7 +40,11 @@ policy or grants are read; the Decision table owns why.
 ### Non-goals
 
 - Does not read a key policy stored under a name other than `default`.
-- Does not evaluate `Condition`, `Resource`/`NotResource`, or `NotAction`.
+- Evaluates `Condition` only for a bound on the statement's principals, under
+  the rule
+  [`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)
+  owns. A condition that narrows the grant rather than the principal set is
+  unread, and so are `Resource`/`NotResource` and `NotAction`.
 - Does not read an AWS-managed key at all, not even to confirm that its policy
   has the documented shape. RCPs do not apply to such a key, so nothing its
   policy says can change what this check's statement does.
@@ -66,10 +70,14 @@ Per enabled region: `kms:ListKeys` (paginated), then per key `kms:DescribeKey`,
 and for a customer-managed key `kms:GetKeyPolicy` with `PolicyName="default"`
 and `kms:ListGrants` (paginated).
 
-For each `Allow` statement: `NotPrincipal` presence, `Principal`, `Action`.
-The `Principal` element is read by `read_principal` against
-`RESOURCE_POLICY_PRINCIPAL_TYPES`
-([`../../contracts/policy-model.md`](../../contracts/policy-model.md)).
+For each `Allow` statement: `NotPrincipal` presence, `Principal`, `Condition`,
+`Action`. The statement is read by `read_statement_principals` against
+`RESOURCE_POLICY_PRINCIPAL_TYPES`, which reads the `Principal` element with
+`_read_principal` and, where that element is a wildcard, asks the `Condition`
+whether it bounds what the wildcard reaches
+([`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)).
+This is the one policy type where `kms:CallerAccount` can prove such a bound;
+that document owns why it is read here and nowhere else.
 
 For each grant: `GrantId`, `GranteeServicePrincipal`, `GranteePrincipal`,
 `Operations`, `Constraints` presence. `RetiringPrincipal`,
@@ -80,7 +88,8 @@ table owns why.
 
 | State | Condition | Category |
 |---|---|---|
-| Violation | A wildcard principal — literal `*`, or an `Allow` with `NotPrincipal` | `VIOLATION` |
+| Violation | An unconfined wildcard principal — a literal `*` whose statement carries no bound the reader can prove, or an `Allow` with `NotPrincipal`, which is never confined | `VIOLATION` |
+| Not recorded | A wildcard the statement's `Condition` bounds to principals an allowlist can carry, `kms:CallerAccount` included, under the rule [`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards) owns | Nothing is recorded for the wildcard itself. Each account the bound enumerates is read exactly as a named principal's account is, so an out-of-organization one makes the key `COMPLIANT` |
 | Compliant | Third-party account IDs only | `COMPLIANT` |
 | Exemption | — | Never produced |
 | Not recorded | Only in-organization principals or AWS services | Not in the output |
@@ -147,7 +156,7 @@ as a grant's `GranteePrincipal` it names the account the identifier encodes,
 and blocks the key's account only when the encoding cannot resolve it. The
 surfaces differ in recognition and not only in verdict: the grant surface
 matches the shape against `^AROA[A-Z2-7]{17}$` and its `AIDA` twin, while
-`read_principal` carries no unique ID pattern at all and reads a bare
+`_read_principal` carries no unique ID pattern at all and reads a bare
 identifier as nothing only because it is a non-ARN string naming no account —
 so a lowercase copy, a session suffix, and `AROA11111111111111111` are each
 nothing in a policy and each abort the run as a grantee. The two readings
@@ -226,16 +235,28 @@ and the
 [RCP documentation](https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_rcps.html#actions-not-restricted-by-rcps),
 so no statement this check gates can reach one; and such a key can be used only
 by principals in the account that holds it, so there is no third party to
-preserve either. Its default policy grants `Principal: {"AWS": "*"}` narrowed
-by `kms:CallerAccount` to the key's own account, the idiom AWS documents for
-"all identities in one account" because the `Principal` element has no syntax
-for it. `read_principal` reads that as a wildcard, so before the skip every
-account holding an AWS-managed key was blocked for this RCP by a policy its
-operator cannot change. The skip reads the key type, not the `Condition`
-block: `kms:CallerAccount` is not evaluated, and a customer-managed key written
-the same way is still a violation
+preserve either. Reading the policy could only reach a verdict on a key this
+RCP cannot govern, and skipping ahead of `GetKeyPolicy` and `ListGrants` saves
+those two calls per key.
+
+The skip rests on the key type and on nothing the document says, which is why
+it survives every change to how the document is read
 ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#what-is-deliberately-not-read)).
-`DescribeKey` is the identification AWS documents as definitive; the `aws/`
+It was once the only thing between one shape and a blocked account. The
+default policy of an AWS-managed key grants `Principal: {"AWS": "*"}` narrowed
+by `kms:CallerAccount` to the key's own account — the idiom AWS documents for
+"all identities in one account", because the `Principal` element has no syntax
+for it — and read for its `Principal` element alone that is a wildcard, so
+before the skip every account holding such a key was blocked for this RCP by a
+policy its operator cannot change. The skip is no longer what catches that
+shape on its own: `kms:CallerAccount` names the account of the calling
+principal, so in a KMS key policy it enumerates who the wildcard reaches, and a
+customer-managed key written the same way is bounded to the account the clause
+names rather than blocking on the wildcard
+([`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)).
+`kms:ViaService`, which sits beside it in that same default policy, is not a
+bound: it names the service a call came through and not the principal that made
+it. `DescribeKey` is the identification AWS documents as definitive; the `aws/`
 alias prefix is the informal one.
 
 ## Failure behavior
@@ -257,6 +278,7 @@ alias prefix is the informal one.
 | Unparseable policy JSON | Not caught; propagates and aborts |
 | `Statement` neither object nor list | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
+| An `Allow` carrying neither `Principal` nor `NotPrincipal` | `MalformedPolicyError` — AWS stores no such statement, so it is a document misread rather than a grant to nobody |
 | A `Federated` or `CanonicalUser` principal, or an ARN naming no account | Recorded as `has_non_account_principals`; the account is blocked |
 | A principal key outside the four documented types | `UnknownPrincipalTypeError`, aborting the run |
 | An `Action` that is neither a string nor a list | `TypeError`, aborting the run |
@@ -301,7 +323,20 @@ it, `violations: 1` sends the reader through every entry to learn which.
 
 Entry shape: `key_id`, `key_arn`, `region`, `third_party_account_ids`,
 `actions_by_account`, `has_wildcard_principal`, `has_non_account_principals`,
-`grants`, `unresolved_grants`.
+`grants`, `unresolved_grants`, `confined_by`.
+
+`confined_by` holds the condition keys, lower-cased, that each bounded one of
+the key policy's statements on their own, unioned across the policy. A key is
+recorded whether or not the KMS key still blocks — one bounded statement
+beside one unbounded one, or beside an unresolvable grant, reports both the
+condition key and the violation — but only for a statement whose `Principal` was a wildcard. The reader
+consults a `Condition` for nothing else, so a bound beside a `Principal`
+that already names its callers is neither read nor recorded.
+It reports the policy surface alone; a grant carries no `Condition`.
+[`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)
+owns which keys can appear and what each proves. The field is additive: a
+result file written before it existed lacks the key, and both readers read only
+`summary` (INV-14).
 
 `grants` holds one object per grant reaching outside the organization —
 `grant_id`, `grantee_account_id`, `grantee_principal`,
@@ -389,7 +424,10 @@ predicates.
 
 1. Only the `default` key policy is read, so access granted by a named
    non-default policy is invisible.
-2. `Condition`, `Resource`, and `NotAction` are not evaluated.
+2. `Resource` and `NotAction` are not evaluated, and neither is a `Condition`
+   that narrows the grant rather than the statement's principals — so a grant
+   confined by `kms:ViaService` still contributes its account at full width
+   ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#what-is-deliberately-not-read)).
 3. **A grant's `Constraints` are recorded as a boolean and not read.** A grant
    narrowed to one encryption context is reported exactly as an unrestricted
    grant to the same account, so the allowlist it feeds is wider than the access
@@ -468,7 +506,12 @@ predicates.
 8. An AWS-managed key, `KeyManager` = `AWS`, whose default policy grants
    `Principal: {"AWS": "*"}` under `kms:CallerAccount` → not recorded, and
    neither `GetKeyPolicy` nor `ListGrants` is called for it.
-9. A customer-managed key with that same policy → violation, as in scenario 3.
+9. A customer-managed key with that same policy → not recorded, and not a
+   violation. `kms:CallerAccount` names the key's own account, which is in the
+   organization, so the bound leaves nobody the RCP would deny; the
+   `kms:ViaService` clause beside it proves nothing and the account clause is
+   what bounds the statement. The key-type skip in scenario 8 was once the
+   only thing that kept this shape from blocking the account.
 10. `AccessDenied` from `DescribeKey` on one key → the run aborts.
 11. A grant to an in-organization service-linked role with
     `RetiringPrincipal: "AWS Internal"` → not recorded, and the run continues.
@@ -580,7 +623,8 @@ INV-01, INV-02, INV-04, INV-06, INV-13, INV-14, INV-16.
 - `headroom/checks/rcps/deny_kms_third_party_access.py`
 - `headroom/aws/kms.py` — `analyze_kms_key_policies`
 - `headroom/aws/iam_unique_ids.py` — `iam_unique_id_kind`, `decode_account_id`
-- `headroom/aws/policy_documents.py` — `read_principal`
+- `headroom/aws/policy_documents.py` — `read_statement_principals`,
+  `_read_principal`
 - `test_environment/modules/rcps/locals.tf`
 - Tests: `tests/test_checks_deny_kms_third_party_access.py`,
   `tests/test_aws_kms.py`, `tests/test_aws_iam_unique_ids.py`,

@@ -661,8 +661,13 @@ class TestAnalyzeSQSQueuePolicies:
         with pytest.raises(MalformedPolicyError, match="Statement of type str"):
             analyze_sqs_queue_policies(mock_session, {"111111111111"}, ORG_ID)
 
-    def test_missing_principal(self) -> None:
-        """Test that statements without Principal are skipped."""
+    def test_a_statement_with_no_principal_aborts_the_run(self) -> None:
+        """
+        An Allow carrying neither Principal nor NotPrincipal is a document AWS never stored.
+
+        The analyzer once skipped it with a read of its own; the shared
+        statement reader raises instead, naming the queue.
+        """
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_sqs_client = MagicMock()
@@ -701,13 +706,12 @@ class TestAnalyzeSQSQueuePolicies:
         }
 
         org_account_ids = {"111111111111"}
-        results = analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
-        # Should still return a result, but with no third-party accounts
-        assert len(results) == 1
-        assert len(results[0].third_party_account_ids) == 0
-        assert not results[0].has_wildcard_principal
-        assert not results[0].has_non_account_principals
+        with pytest.raises(
+            MalformedPolicyError,
+            match="Queue arn:aws:sqs:us-east-1:111111111111:test-queue in us-east-1 has an Allow statement carrying neither",
+        ):
+            analyze_sqs_queue_policies(mock_session, org_account_ids, ORG_ID)
 
     def _single_region_session(self) -> tuple[MagicMock, MagicMock]:
         """Build a session mock wired to one region and return (session, sqs_client)."""
@@ -1064,10 +1068,12 @@ class TestPolicyGrammar:
         """
         AWS's documented cross-account SNS subscription policy.
 
-        `Principal: "*"` narrowed by `aws:SourceArn` to the topic. This
-        check does not read Condition, so the queue is still a wildcard
-        violation here; the topic's account reaches the confused deputy
-        allowlist through the source, so that statement stays deployable.
+        `Principal: "*"` narrowed by `aws:SourceArn` to the topic.
+        `aws:SourceArn` names the resource that drove the call, not the
+        caller, so it bounds no principal set and the queue is still a
+        wildcard violation here; the topic's account reaches the confused
+        deputy allowlist through the source, so that statement stays
+        deployable.
         """
         results = self._analyze({
             "Version": "2012-10-17",
@@ -1089,6 +1095,127 @@ class TestPolicyGrammar:
         assert source.service_principal == "*"
         assert source.source_account_ids == ["999999999999"]
 
+    def test_a_wildcard_confined_to_a_third_party_account_is_allowlisted(self) -> None:
+        """
+        The account the condition names reaches the allowlist, not the wildcard flag.
+
+        One statement, so the verdict is that statement's and the bound is
+        read out of a queue policy rather than handed to the check on a
+        prebuilt analysis. Dropping the wildcard without recording the
+        account would generate an RCP that denies the very access this
+        statement grants.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "sqs:SendMessage",
+                "Resource": "arn:aws:sqs:us-east-1:111111111111:test-queue",
+                "Condition": {
+                    "StringEquals": {"aws:PrincipalAccount": "333333333333"}
+                },
+            }],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is False
+        assert results[0].third_party_account_ids == {"333333333333"}
+        assert results[0].actions_by_account["333333333333"] == {"sqs:SendMessage"}
+        assert results[0].confined_by == {"aws:principalaccount"}
+
+    def test_one_bounded_statement_does_not_clear_an_unbounded_one(self) -> None:
+        """
+        Bounds are per statement; the queue's verdict is the union.
+
+        The bounded statement contributes its account to the allowlist and
+        the unbounded one still reaches everyone, so the queue stays a
+        wildcard. Recording the bound as a property of the queue rather than
+        of the statement would clear it and deploy an RCP over the grant the
+        second statement makes.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-east-1:111111111111:test-queue",
+                    "Condition": {
+                        "StringEquals": {"aws:PrincipalAccount": "333333333333"}
+                    },
+                },
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "sqs:ReceiveMessage",
+                    "Resource": "arn:aws:sqs:us-east-1:111111111111:test-queue",
+                },
+            ],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == {"333333333333"}
+        assert results[0].actions_by_account["333333333333"] == {"sqs:SendMessage"}
+        assert results[0].confined_by == {"aws:principalaccount"}
+
+    def test_neither_source_arn_form_puts_its_account_in_the_allowlist(self) -> None:
+        """
+        A source ARN names the caller's trigger, never the caller.
+
+        Both documented forms sit in one policy: a named service guarded by
+        `aws:SourceArn`, and the wildcard form AWS documents for cross-account
+        SNS subscriptions. Each ARN carries a real twelve-digit account, so a
+        reader that mistook `aws:SourceArn` for a principal key would bound
+        the wildcard and allowlist an account no principal element names.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-east-1:111111111111:test-queue",
+                    "Condition": {
+                        "ArnEquals": {
+                            "aws:SourceArn": "arn:aws:sns:us-east-1:999999999999:a-topic"
+                        }
+                    },
+                },
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-east-1:111111111111:test-queue",
+                    "Condition": {
+                        "ArnLike": {
+                            "aws:SourceArn": "arn:aws:sns:us-east-1:222222222222:another-topic"
+                        }
+                    },
+                },
+            ],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+        assert results[0].actions_by_account == {}
+        assert results[0].confined_by == set()
+
+        # Neither account is lost, and the wildcard form's is the one that
+        # matters: deny_service_confused_deputy reads it from here, which is
+        # what keeps that statement deployable while this one is withheld.
+        assert [
+            (source.service_principal, source.source_account_ids)
+            for source in results[0].service_principal_sources
+        ] == [
+            ("sns.amazonaws.com", ["999999999999"]),
+            ("*", ["222222222222"]),
+        ]
+
     def test_a_policy_with_no_service_principal_records_nothing(self) -> None:
         """The field stays empty when no statement names a service."""
         results = self._analyze({
@@ -1102,3 +1229,35 @@ class TestPolicyGrammar:
         })
 
         assert results[0].service_principal_sources == []
+
+    def test_a_wildcard_under_kms_caller_account_is_still_a_wildcard(self) -> None:
+        """
+        kms:CallerAccount bounds a KMS key policy and nothing else.
+
+        No Amazon SQS request carries the key, so the clause admits nobody
+        and the statement grants nobody anything. Reading it as a bound
+        would clear the queue and put an account no policy granted into the
+        allowlist, so this pins the PolicyService this analyzer declares:
+        passing PolicyService.KMS from here reads the clause as a bound.
+
+        The value is a well-formed twelve-digit account ID on purpose: a
+        value the reader would reject anyway proves only that some rule
+        refused the shape, not that the service is what refused it.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": "sqs:SendMessage",
+                "Resource": "arn:aws:sqs:us-east-1:111111111111:test-queue",
+                "Condition": {
+                    "StringEquals": {"kms:CallerAccount": "333333333333"}
+                },
+            }],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+        assert results[0].confined_by == set()

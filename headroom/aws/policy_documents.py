@@ -7,11 +7,12 @@ rules live here once rather than in each of them.
 """
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Union
+from typing import Any, Dict, FrozenSet, List, NamedTuple, Optional, Set, Union
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
+from ..enums import PolicyService
 
 __all__ = [
     "MalformedPolicyError",
@@ -27,8 +28,8 @@ __all__ = [
     "has_not_principal",
     "normalize_actions",
     "normalize_statements",
-    "read_principal",
     "read_service_principal_sources",
+    "read_statement_principals",
     "unreadable_service_principal_source",
 ]
 
@@ -89,12 +90,103 @@ SOURCE_GUARD_SET_OPERATORS = frozenset({FOR_ANY_VALUE, FOR_ALL_VALUES})
 # is the clause AWS pairs with ForAllValues to forbid the empty case.
 NULL_OPERATOR = "Null"
 
-ACCOUNT_ID_PATTERN = re.compile(r"\d{12}")
+# The cross-service keys that enumerate who a principal may be, lower-cased.
+# IAM matches condition key names without regard to case, so a policy written
+# `aws:principalaccount` names the same key as one written
+# `aws:PrincipalAccount`.
+PRINCIPAL_ACCOUNT_CONDITION_KEY = "aws:principalaccount"
+
+# The key that names the callers themselves rather than their accounts. Its
+# values are read as principals, not as strings: a service-linked role's ARN
+# bounds the statement while naming no account to preserve, because RCPs do
+# not impact one.
+PRINCIPAL_ARN_CONDITION_KEY = "aws:principalarn"
+
+# The two keys that pin a principal to an organization rather than to an
+# account. Every caller they admit is already in the organization, so they
+# bound the statement without naming an account the allowlist has to carry.
+# An aws:PrincipalOrgPaths value carries the organization ID as its first
+# path element and an aws:PrincipalOrgID value is that element alone, so both
+# reduce to the same comparison against our own.
+PRINCIPAL_ORG_ID_CONDITION_KEY = "aws:principalorgid"
+PRINCIPAL_ORG_PATHS_CONDITION_KEY = "aws:principalorgpaths"
+
+PRINCIPAL_ORG_SCOPE_CONDITION_KEYS = frozenset({
+    PRINCIPAL_ORG_ID_CONDITION_KEY,
+    PRINCIPAL_ORG_PATHS_CONDITION_KEY,
+})
+
+# The account of the caller as KMS itself reports it, lower-cased like every
+# other key here because IAM matches condition key names without regard to
+# case. KMS names it rather than AWS, so it is only a key at all in a KMS
+# policy - which is what SERVICE_SCOPED_ACCOUNT_CONDITION_KEYS below decides.
+KMS_CALLER_ACCOUNT_CONDITION_KEY = "kms:calleraccount"
+
+# The service-scoped keys that name a calling principal's account, by the
+# service whose policies may carry them. kms:CallerAccount is the account of
+# the caller, which is what aws:PrincipalAccount is, so it bounds a wildcard
+# the same way - but only in a KMS policy. The same clause elsewhere names a
+# key no request carries, so that statement grants nobody anything and
+# reading it as a bound would put an account in an allowlist no policy
+# granted. A service with no row here recognizes no service-scoped key,
+# which is the answer for STS and not an omission.
+SERVICE_SCOPED_ACCOUNT_CONDITION_KEYS: Mapping[PolicyService, FrozenSet[str]] = {
+    PolicyService.KMS: frozenset({KMS_CALLER_ACCOUNT_CONDITION_KEY}),
+}
+
+# The base operators that pin a principal key to values this reader can
+# enumerate, split by what they compare. A string operator compares the
+# whole value; an ARN operator compares six colon-delimited components,
+# which only a key holding an ARN has. Only an operator on one of these
+# lists is read as a bound: a negated one excludes rather than permits, and
+# every operator absent from them leaves the wildcard standing, which
+# withholds the RCP from the account. The negations they deliberately omit
+# are ArnNotEquals, ArnNotLike, StringNotEquals and StringNotLike; leaving
+# them off is the whole rule.
+# Named on its own because the aws:PrincipalArn reader compares against it:
+# it is the one confining operator that expands no wildcard.
+STRING_EQUALS = "StringEquals"
+STRING_CONFINING_OPERATORS = frozenset({STRING_EQUALS, "StringLike"})
+ARN_CONFINING_OPERATORS = frozenset({"ArnEquals", "ArnLike"})
+CONFINING_OPERATORS = STRING_CONFINING_OPERATORS | ARN_CONFINING_OPERATORS
+
+# Which operators bound which key. The pairing is the unit, not the operator
+# alone: aws:PrincipalArn is the one key here whose values are ARNs, so it is
+# the one key an ARN operator can compare, and `ArnEquals aws:PrincipalAccount`
+# pairs a six-component comparison with a twelve-digit value that has one
+# component. What IAM makes of that pairing is not something this reader
+# guesses at - it confines nothing, which leaves the wildcard standing.
+# aws:PrincipalArn carries the string operators as well, because
+# `StringLike aws:PrincipalArn arn:aws:iam::111111111111:role/vendor-*` is
+# the ordinary way the key is written. A key absent from this table confines
+# nothing at all.
+CONFINING_OPERATORS_BY_KEY: Mapping[str, FrozenSet[str]] = {
+    PRINCIPAL_ACCOUNT_CONDITION_KEY: STRING_CONFINING_OPERATORS,
+    PRINCIPAL_ARN_CONDITION_KEY: CONFINING_OPERATORS,
+    PRINCIPAL_ORG_ID_CONDITION_KEY: STRING_CONFINING_OPERATORS,
+    PRINCIPAL_ORG_PATHS_CONDITION_KEY: STRING_CONFINING_OPERATORS,
+    KMS_CALLER_ACCOUNT_CONDITION_KEY: STRING_CONFINING_OPERATORS,
+}
+
+# Twelve ASCII digits, and not Python's `\d`, which also accepts the digits
+# of every other script. AWS validates no condition value, so a policy may
+# carry twelve fullwidth digits; read as an account they would reach the
+# generated allowlist and fail the module's own `^[0-9]{12}$` check, taking
+# the whole Terraform plan down rather than one account's RCP.
+ACCOUNT_ID_PATTERN = re.compile(r"[0-9]{12}")
 
 # The resource path IAM reserves to AWS services. A role under it is a
 # service-linked role, whatever partition or account the ARN names, and the
 # partition and account are matched by AWS_ARN_ACCOUNT_ID_PATTERN.
 AWS_SERVICE_LINKED_ROLE_PATH_PREFIX = "role/aws-service-role/"
+
+# The ARN of a role session, as STS issues it. It is a valid Principal, and
+# _read_principal reads it as one, but aws:PrincipalArn never holds it: for a
+# role session the key carries the role's own ARN, and AWS documents that
+# the session ARN must not be written as the key's value. A federated-user
+# session under the same service segment is different - the key does hold
+# that ARN - so only the assumed-role resource is matched.
+STS_ASSUMED_ROLE_SESSION_ARN_PATTERN = re.compile(r"^arn:aws[a-z0-9-]*:sts:[^:]*:[0-9]{12}:assumed-role/")
 
 # The keys AWS documents for the Principal element, split by the policy type
 # that accepts them. A canonical user ID is an Amazon S3 identifier and appears
@@ -159,10 +251,21 @@ class PrincipalReading:
             enumerate, which is `*` under `Principal` or under `AWS`
         has_non_account_principals: True if it names a principal type that
             carries no account ID, so no allowlist can preserve its access
+        confined_by: The condition keys, lower-cased, that each bounded the
+            statement on their own; frozen for an immutable default on this
+            frozen dataclass, unlike the mutable Set[str] the analysis
+            dataclasses that accumulate these across statements use
+        principal_types: The principal-type keys the element carries -
+            `AWS`, `Service`, `Federated`, `CanonicalUser` - and none for a
+            bare string. A fact about the element rather than a verdict on
+            it, kept so that the trust-policy analyzer's Federated check
+            asks the reading and never the element
     """
     account_ids: Set[str]
     has_wildcard: bool
     has_non_account_principals: bool
+    confined_by: FrozenSet[str] = frozenset()
+    principal_types: FrozenSet[str] = frozenset()
 
 
 def normalize_statements(policy: Mapping[str, Any], resource_description: str) -> List[Any]:
@@ -484,6 +587,74 @@ def _asserts_key_present(value: object) -> bool:
     return value is False or value == "false"
 
 
+class _ConditionClause(NamedTuple):
+    """
+    One clause of a Condition block, as every reader of the block sees it.
+
+    Attributes:
+        operator: The operator as the document spells it, kept for error
+            messages
+        set_operator: The `ForAnyValue` or `ForAllValues` prefix, or the
+            empty string when the operator carries none
+        base_operator: The operator with that prefix removed
+        key: The condition key as the document spells it, kept for error
+            messages
+        normalized_key: The key lower-cased, which is how IAM matches it
+        value: The clause's value as the document holds it
+    """
+
+    operator: str
+    set_operator: str
+    base_operator: str
+    key: str
+    normalized_key: str
+    value: object
+
+
+def _condition_clauses(condition: Mapping[str, Any]) -> Iterator[_ConditionClause]:
+    """
+    Yield each clause of a Condition block, parsed the one way IAM defines.
+
+    A block maps operators to mappings of keys to values. Three rules of
+    that grammar are stated here and nowhere else, so the readers of the
+    block cannot disagree on them: the operator is split at its last colon
+    into an optional set-operator prefix and a base operator; the key is
+    folded to lower case, because IAM matches condition keys without regard
+    to case; and a key carrying a non-ASCII character is dropped before its
+    case is touched. IAM has no such key, so one matches nobody, and the
+    fold is not safe on it: `lower()` maps the Kelvin sign U+212A to `k`,
+    which would read a key IAM never populates as kms:CallerAccount.
+
+    An operator whose entries are not a mapping yields nothing. Each reader
+    decides for itself what a clause proves; this decides only what a
+    clause is.
+
+    Args:
+        condition: The statement's Condition element
+
+    Yields:
+        The block's clauses, in document order
+    """
+    for operator, entries in condition.items():
+        if not isinstance(entries, dict):
+            continue
+
+        set_operator, _, base_operator = operator.rpartition(":")
+
+        for key, value in entries.items():
+            if not key.isascii():
+                continue
+
+            yield _ConditionClause(
+                operator=operator,
+                set_operator=set_operator,
+                base_operator=base_operator,
+                key=key,
+                normalized_key=key.lower(),
+                value=value,
+            )
+
+
 def _keys_asserted_present(
     condition: Mapping[str, Any],
     resource_description: str,
@@ -518,9 +689,9 @@ def _keys_asserted_present(
             "what the policy actually asserts."
         )
     return {
-        key.lower()
-        for key, value in entries.items()
-        if _asserts_key_present(value)
+        clause.normalized_key
+        for clause in _condition_clauses(condition)
+        if clause.operator == NULL_OPERATOR and _asserts_key_present(clause.value)
     }
 
 
@@ -562,53 +733,47 @@ def _read_source_guards(
 
     asserted_present = _keys_asserted_present(condition, resource_description)
 
-    for operator, entries in condition.items():
-        if not isinstance(entries, dict):
+    for clause in _condition_clauses(condition):
+        if clause.normalized_key == SOURCE_ACCOUNT_CONDITION_KEY:
+            target = accounts
+        elif clause.normalized_key == SOURCE_ARN_CONDITION_KEY:
+            target = arns
+        elif clause.normalized_key in ORG_SCOPE_CONDITION_KEYS:
+            target = org_scopes
+        else:
             continue
 
-        set_operator, _, base_operator = operator.rpartition(":")
+        # A Null clause pins no value, so it names no source to record.
+        # _keys_asserted_present has already read what it does assert.
+        if clause.base_operator == NULL_OPERATOR:
+            continue
 
-        for key, value in entries.items():
-            normalized = key.lower()
+        if clause.set_operator and clause.set_operator not in SOURCE_GUARD_SET_OPERATORS:
+            raise UnknownSourceConditionError(
+                f"{resource_description} has a source guard with "
+                f"'{clause.key}' under set operator '{clause.set_operator}', "
+                "which is neither ForAnyValue nor ForAllValues. Reading it as "
+                "a guard would put the wrong account in the allowlist."
+            )
 
-            if normalized == SOURCE_ACCOUNT_CONDITION_KEY:
-                target = accounts
-            elif normalized == SOURCE_ARN_CONDITION_KEY:
-                target = arns
-            elif normalized in ORG_SCOPE_CONDITION_KEYS:
-                target = org_scopes
-            else:
-                continue
+        if clause.base_operator not in SOURCE_GUARD_OPERATORS:
+            raise UnknownSourceConditionError(
+                f"{resource_description} has a source guard with "
+                f"'{clause.key}' under operator '{clause.operator}', which "
+                "does not pin the source to a value. Reading it as a guard "
+                "would put the wrong account in the allowlist."
+            )
 
-            # A Null clause pins no value, so it names no source to record.
-            # _keys_asserted_present has already read what it does assert.
-            if base_operator == NULL_OPERATOR:
-                continue
+        uses_an_if_exists_operator = clause.base_operator in SOURCE_GUARD_IF_EXISTS_OPERATORS
+        is_satisfied_by_an_absent_key = (
+            clause.set_operator == FOR_ALL_VALUES and clause.normalized_key not in asserted_present
+        )
+        permits_the_key_to_be_absent = uses_an_if_exists_operator or is_satisfied_by_an_absent_key
+        guards_a_key_other_than_source_account = clause.normalized_key != SOURCE_ACCOUNT_CONDITION_KEY
+        if permits_the_key_to_be_absent and guards_a_key_other_than_source_account:
+            permits_absent_source_key = True
 
-            if set_operator and set_operator not in SOURCE_GUARD_SET_OPERATORS:
-                raise UnknownSourceConditionError(
-                    f"{resource_description} has a source guard with "
-                    f"'{key}' under set operator '{set_operator}', which is "
-                    "neither ForAnyValue nor ForAllValues. Reading it as a "
-                    "guard would put the wrong account in the allowlist."
-                )
-
-            if base_operator not in SOURCE_GUARD_OPERATORS:
-                raise UnknownSourceConditionError(
-                    f"{resource_description} has a source guard with "
-                    f"'{key}' under operator '{operator}', which does not pin "
-                    "the source to a value. Reading it as a guard would put "
-                    "the wrong account in the allowlist."
-                )
-
-            uses_an_if_exists_operator = base_operator in SOURCE_GUARD_IF_EXISTS_OPERATORS
-            is_satisfied_by_an_absent_key = set_operator == FOR_ALL_VALUES and normalized not in asserted_present
-            permits_the_key_to_be_absent = uses_an_if_exists_operator or is_satisfied_by_an_absent_key
-            guards_a_key_other_than_source_account = normalized != SOURCE_ACCOUNT_CONDITION_KEY
-            if permits_the_key_to_be_absent and guards_a_key_other_than_source_account:
-                permits_absent_source_key = True
-
-            target.extend(_as_condition_values(value, key, resource_description))
+        target.extend(_as_condition_values(clause.value, clause.key, resource_description))
 
     return _SourceGuards(
         accounts=accounts,
@@ -632,6 +797,14 @@ def read_service_principal_sources(
 
     One Condition block guards every principal in its statement, so each
     service the statement names carries the same guard.
+
+    This reader never narrows a wildcard against a confining key such as
+    `aws:PrincipalAccount`; it always probes the raw, unbounded wildcard.
+    `read_statement_principals` is the reader that narrows on those keys.
+    Staying raw here is deliberate and permanent: a wildcard narrowed by a
+    source key is exactly the shape `deny_service_confused_deputy` records,
+    and making this probe condition-aware would silently change that
+    check's verdicts too.
 
     Callers must apply their own Effect gate first. A Deny statement's
     Service principal grants nothing.
@@ -707,9 +880,10 @@ def _read_service_principal_sources(
     Args:
         statement: One Allow statement from a resource policy or trust
             policy, carrying a Principal element the adapter has already
-            read with `read_principal` against its own type set; every
-            adapter skips a Deny and a statement without a Principal, and
-            reads the Principal it does have, before reaching here
+            read through `read_statement_principals` against its own
+            type set; every adapter applies its Effect gate and reads the
+            Principal through that reader, which raises on a statement
+            carrying none, before reaching here
         org_account_ids: Every account ID in the organization
         org_id: This organization's ID
         resource_description: The resource this policy belongs to, named in
@@ -731,7 +905,7 @@ def _read_service_principal_sources(
     # the resource-policy set is the wider of the two, so this read cannot
     # raise: a malformed or undocumented principal is reported by the
     # adapter, under its own description.
-    reads_wildcard = not services and read_principal(
+    reads_wildcard = not services and _read_principal(
         principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description
     ).has_wildcard
     if not services and not reads_wildcard:
@@ -840,7 +1014,7 @@ def is_service_linked_role_arn(principal: str) -> bool:
     path identifies the role in any partition and its name is not consulted.
     RCPs do not impact the permissions of any service-linked role, so no
     statement Headroom generates can deny one, and its account is never a
-    third party to preserve. Read by `read_principal` for a policy's
+    third party to preserve. Read by `_read_principal` for a policy's
     Principal element and by the KMS grant reader for a grantee, so the two
     surfaces agree on what a service-linked role is.
 
@@ -880,13 +1054,13 @@ def _account_ids_in_string(principal: str) -> Set[str]:
     return set()
 
 
-def read_principal(
+def _read_principal(
     principal: PrincipalElement,
     permitted_types: FrozenSet[str],
     resource_description: str,
 ) -> PrincipalReading:
     """
-    Read one Principal element into the three facts an RCP allowlist turns on.
+    Read one Principal element into the four facts the analyzers act on.
 
     An allowlist keyed on `aws:PrincipalAccount` can preserve exactly one kind
     of grant: one naming accounts. This reports which accounts a principal
@@ -901,6 +1075,12 @@ def read_principal(
     The two are one verdict, not two mechanisms: both mean the RCP would deny
     a grant that exists today, so both must block the account. Which of them
     it was is reported, not acted on differently.
+
+    The reading also carries the principal-type keys the element names -
+    `AWS`, `Service`, `Federated`, `CanonicalUser` - and none for a bare
+    string. That is a fact about the element rather than a verdict on it,
+    kept so that the trust-policy analyzer's Federated check asks the
+    reading and never the element.
 
     An undocumented principal key is the separate case, and raises. See
     `UnknownPrincipalTypeError`.
@@ -943,7 +1123,7 @@ def read_principal(
 
     if isinstance(principal, list):
         readings = [
-            read_principal(item, permitted_types, resource_description)
+            _read_principal(item, permitted_types, resource_description)
             for item in principal
         ]
         account_ids: Set[str] = set()
@@ -955,6 +1135,7 @@ def read_principal(
             has_non_account_principals=any(
                 reading.has_non_account_principals for reading in readings
             ),
+            principal_types=frozenset().union(*(reading.principal_types for reading in readings)),
         )
 
     if not isinstance(principal, dict):
@@ -977,11 +1158,341 @@ def read_principal(
             f"either way it cannot say whether the RCP is safe to attach here."
         )
 
-    named = read_principal(principal.get("AWS", []), permitted_types, resource_description)
+    named = _read_principal(principal.get("AWS", []), permitted_types, resource_description)
     names_non_account_type = bool(set(principal.keys()) & NON_ACCOUNT_PRINCIPAL_TYPES)
 
     return PrincipalReading(
         account_ids=named.account_ids,
         has_wildcard=named.has_wildcard,
         has_non_account_principals=named.has_non_account_principals or names_non_account_type,
+        principal_types=frozenset(principal.keys()),
+    )
+
+
+@dataclass(frozen=True)
+class _PrincipalConfinement:
+    """
+    What one Condition block proves about who a wildcard can reach.
+
+    Attributes:
+        confining_keys: The condition keys, lower-cased, that each bound the
+            statement on their own
+        account_ids: Every account those bounds enumerate, in-organization
+            ones included; the caller filters
+    """
+    confining_keys: FrozenSet[str]
+    account_ids: FrozenSet[str]
+
+
+def _confining_clause_values(value: Any) -> Optional[List[str]]:
+    """
+    Return one confining clause's value as a list of strings.
+
+    IAM accepts a lone string where a one-element list would do, so both
+    forms reach this reader. Every other shape is answered with None, the
+    empty list included: whatever an empty list asserts, it is not a list of
+    principals this reader can name, and a shape it cannot name does not
+    confine.
+
+    `_as_condition_values` answers the same question for a source guard by
+    raising, which is right there: a source value read as empty leaves its
+    account out of the allowlist. Here an unread value costs only coverage,
+    so this reader never raises. The two also part company over the empty
+    list, which the source reader records as the value set it is: a source
+    guard naming nothing still says the statement is guarded, while a
+    confining key naming nothing enumerates nobody and so proves no bound.
+
+    Args:
+        value: One condition entry's value
+
+    Returns:
+        The entry's values, or None if the entry is neither a string nor a
+        non-empty list of strings
+    """
+    if isinstance(value, str):
+        return [value]
+
+    if isinstance(value, list) and value and all(isinstance(entry, str) for entry in value):
+        return list(value)
+
+    return None
+
+
+def _accounts_bound_by_principal_arns(values: List[str], base_operator: str) -> Optional[Set[str]]:
+    """
+    Return the accounts a set of aws:PrincipalArn values enumerates.
+
+    A service-linked role bounds the statement without naming an account to
+    preserve, because RCPs do not impact one. Every other value has to carry
+    a twelve-digit account field; a wildcard after that field is harmless
+    under `StringLike`, `ArnEquals`, and `ArnLike`, since the account an
+    allowlist would hold is already pinned. Under `StringEquals` it is a
+    literal star that no ARN carries, so the value matches nobody and the
+    author meant `StringLike`; the clause proves no bound, which leaves the
+    wildcard standing until the policy is fixed. An assumed-role session ARN
+    matches nobody under any operator, because the key holds the role's ARN
+    and not the session's, and is read the same way.
+
+    Args:
+        values: Every aws:PrincipalArn value the Condition block gives
+        base_operator: The operator naming the key, with any set-operator
+            prefix removed
+
+    Returns:
+        The accounts the values name, or None if any of them names none
+    """
+    accounts: Set[str] = set()
+
+    for value in values:
+        if base_operator == STRING_EQUALS and any(character in value for character in "*?"):
+            return None
+
+        if STS_ASSUMED_ROLE_SESSION_ARN_PATTERN.match(value):
+            return None
+
+        if is_service_linked_role_arn(value):
+            continue
+
+        match = re.match(AWS_ARN_ACCOUNT_ID_PATTERN, value)
+        if not match:
+            return None
+
+        accounts.add(match.group(1))
+
+    return accounts
+
+
+def _accounts_bound_by_key(
+    key: str,
+    values: List[str],
+    base_operator: str,
+    policy_service: PolicyService,
+    org_id: str,
+) -> Optional[Set[str]]:
+    """
+    Return the accounts one condition key enumerates, or None if it bounds none.
+
+    Every value under the key has to be enumerable for the key to bound the
+    statement at all, because values under one key are ORed: one value this
+    reader cannot pin reaches principals the rest do not.
+
+    Args:
+        key: One condition key, lower-cased
+        values: Every value the Condition block gives that key
+        base_operator: The operator naming the key, with any set-operator
+            prefix removed; aws:PrincipalArn reads a wildcard differently
+            under `StringEquals`
+        policy_service: The service whose policy holds the statement, which
+            decides whether a service-scoped key names an account here
+        org_id: This organization's ID
+
+    Returns:
+        The accounts the key enumerates, empty when it bounds the statement
+        without naming one; None when it bounds nothing
+    """
+    # A service-scoped account key is read by exactly the rule
+    # aws:PrincipalAccount is read by, because it says the same thing about
+    # the caller. What differs is where it says it, and that is the lookup.
+    service_scoped_account_keys = SERVICE_SCOPED_ACCOUNT_CONDITION_KEYS.get(policy_service, frozenset())
+
+    if key == PRINCIPAL_ACCOUNT_CONDITION_KEY or key in service_scoped_account_keys:
+        if not all(ACCOUNT_ID_PATTERN.fullmatch(value) for value in values):
+            return None
+
+        return set(values)
+
+    if key in PRINCIPAL_ORG_SCOPE_CONDITION_KEYS:
+        if not all(_names_this_organization(value, org_id) for value in values):
+            return None
+
+        return set()
+
+    if key == PRINCIPAL_ARN_CONDITION_KEY:
+        return _accounts_bound_by_principal_arns(values, base_operator)
+
+    # The one key that reaches here without a branch above it:
+    # kms:CallerAccount in a policy for some other service, where it names
+    # a key no request carries. Every key this reader does not model at all
+    # - `s3:prefix` among them - was dropped by CONFINING_OPERATORS_BY_KEY
+    # before the call.
+    return None
+
+
+def _read_principal_confinement(
+    condition: Any,
+    policy_service: PolicyService,
+    org_id: str,
+) -> _PrincipalConfinement:
+    """
+    Return what a Condition block proves about who its statement reaches.
+
+    Every clause is judged on its own, and one that bounds the principals
+    bounds the whole statement: clauses AND together, so a companion clause
+    can only narrow what the first one admitted. Values within a clause are
+    ORed, so the clause bounds nothing unless every one of them is
+    enumerable.
+
+    A block, an operator, a value, or a key this reader does not fully
+    understand simply proves no bound, and so does a key it understands
+    only in another service's policies, or one paired with an operator that
+    does not compare its values. That is the reading of the document rather
+    than a swallowed failure: an unproven bound leaves the wildcard
+    standing, and a standing wildcard withholds the RCP from the account.
+
+    Args:
+        condition: The statement's Condition element
+        policy_service: The service whose policy holds the statement,
+            deciding which service-scoped condition keys can confine it
+        org_id: This organization's ID, deciding whether an organization
+            scope on a confining key names this organization
+
+    Returns:
+        The keys that bound the statement and the accounts they enumerate
+    """
+    if not isinstance(condition, dict):
+        return _PrincipalConfinement(confining_keys=frozenset(), account_ids=frozenset())
+
+    confining_keys: Set[str] = set()
+    account_ids: Set[str] = set()
+
+    for clause in _condition_clauses(condition):
+        # A multivalued condition key - which aws:PrincipalOrgPaths is - must
+        # carry a set operator, so AWS's own guard on it reaches this parser
+        # prefixed. ForAnyValue is satisfied by one matching value, which is
+        # the reading a bare operator gets; every other prefix, ForAllValues
+        # included, is left to bound nothing.
+        if clause.set_operator not in ("", FOR_ANY_VALUE):
+            continue
+
+        # The operator is judged against the key it names rather than
+        # on its own, so that an ARN comparison reaches only the key
+        # whose values are ARNs. A negated operator is dropped by the
+        # same lookup rather than allowed to unbind the key it names:
+        # `StringEquals aws:PrincipalAccount` beside `StringNotEquals`
+        # on the same account admits nobody, so recording the account
+        # is over-wide by one allowlist entry - and over-wide is the
+        # direction that breaks nothing.
+        if clause.base_operator not in CONFINING_OPERATORS_BY_KEY.get(clause.normalized_key, frozenset()):
+            continue
+
+        # A clause this reader cannot enumerate is dropped rather than
+        # taken as unbinding its key, because clauses AND together: a
+        # companion clause on the same key still admits nobody the
+        # dropped one would have excluded.
+        clause_values = _confining_clause_values(clause.value)
+        if clause_values is None:
+            continue
+
+        bounded = _accounts_bound_by_key(
+            clause.normalized_key, clause_values, clause.base_operator, policy_service, org_id
+        )
+        if bounded is None:
+            continue
+
+        confining_keys.add(clause.normalized_key)
+        account_ids.update(bounded)
+
+    return _PrincipalConfinement(
+        confining_keys=frozenset(confining_keys),
+        account_ids=frozenset(account_ids),
+    )
+
+
+def read_statement_principals(
+    statement: Mapping[str, Any],
+    permitted_types: FrozenSet[str],
+    policy_service: PolicyService,
+    org_id: str,
+    resource_description: str,
+) -> PrincipalReading:
+    """
+    Read one statement's Principal element, bounded by its Condition block.
+
+    `_read_principal` reads a Principal element and nothing else, so a
+    wildcard narrowed by a condition that enumerates its callers reads as a
+    wildcard. This reads the statement, so such a wildcard reads as the set
+    the condition bounds it to.
+
+    Four global keys can prove such a bound: `aws:PrincipalAccount`,
+    `aws:PrincipalArn`, `aws:PrincipalOrgID`, and `aws:PrincipalOrgPaths`.
+    A service-scoped key can prove one too, but only in the policies of its
+    own service: `kms:CallerAccount` is the account of the caller in a KMS
+    key policy and names a key no request carries anywhere else. Keys AND
+    together, so any one of them that enumerates the callers bounds the
+    whole statement, and each is read only under an operator that compares
+    its values - `CONFINING_OPERATORS_BY_KEY` is that pairing.
+
+    The Condition is read only for a statement whose Principal is a
+    wildcard, because narrowing one is the only thing a bound is read for.
+    Clauses AND with the Principal element, so a Condition cannot reach a
+    caller the Principal does not already name; joining an account it
+    enumerates to a Principal that names its callers outright would write
+    an allowlist entry exempting an account no grant reaches.
+
+    A bound is only ever recognized when it can be proven. Every operator,
+    key, and value this reader does not fully understand leaves the wildcard
+    standing, which withholds the RCP from the account - the outcome that
+    breaks nothing. Reading the Condition never raises: a condition it
+    cannot read costs coverage, unlike a source guard it cannot read, which
+    would put a wrong account in the allowlist. Reading the Principal element
+    still does, since `_read_principal` aborts on a malformed or undocumented
+    one - the abort belongs to the element and never to the condition.
+
+    Callers apply their own Effect gate and their own NotPrincipal gate
+    first. An `Allow` with `NotPrincipal` never reaches here and is never
+    confined. Nobody applies a missing-Principal skip: an Allow carrying
+    neither element is a document AWS could not have stored, and it aborts
+    here rather than being read as a grant to nobody.
+
+    `read_service_principal_sources` reads the same statement for its
+    Service principal's source guard, and deliberately never narrows on a
+    confining key: it must keep seeing the raw wildcard that
+    `deny_service_confused_deputy` records, so this is the one reader that
+    narrows and that one stays raw, permanently.
+
+    Args:
+        statement: One Allow statement from a resource policy or trust
+            policy, carrying a Principal element and, optionally, a
+            Condition element
+        permitted_types: The principal keys this policy type accepts, either
+            `RESOURCE_POLICY_PRINCIPAL_TYPES` or `TRUST_POLICY_PRINCIPAL_TYPES`
+        policy_service: The AWS service whose policy this statement belongs
+            to, deciding which service-scoped condition keys can confine it
+        org_id: This organization's ID, deciding whether an organization
+            scope on a confining key names this organization
+        resource_description: The resource this policy belongs to, named in
+            the error message
+
+    Returns:
+        What the statement's Principal names, narrowed by any bound its
+        Condition proves
+
+    Raises:
+        MalformedPolicyError: If the statement carries neither a Principal
+            nor a NotPrincipal element, which AWS stores in no resource
+            policy or trust policy, or a Principal of a shape that is not
+            one
+    """
+    if "Principal" not in statement:
+        raise MalformedPolicyError(
+            f"{resource_description} has an Allow statement carrying neither a "
+            "Principal nor a NotPrincipal element. AWS stores no such statement "
+            "in a resource policy or a trust policy, so this is a document "
+            "Headroom has misread, and reading it as granting nothing is not a "
+            "safe guess (INV-01)."
+        )
+
+    principal = statement["Principal"]
+    reading = _read_principal(principal, permitted_types, resource_description)
+    if not reading.has_wildcard:
+        return reading
+
+    confinement = _read_principal_confinement(statement.get("Condition"), policy_service, org_id)
+
+    return PrincipalReading(
+        account_ids=reading.account_ids | confinement.account_ids,
+        has_wildcard=not confinement.confining_keys,
+        has_non_account_principals=reading.has_non_account_principals,
+        confined_by=confinement.confining_keys,
+        principal_types=reading.principal_types,
     )

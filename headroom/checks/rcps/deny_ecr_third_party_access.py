@@ -125,6 +125,7 @@ class DenyECRThirdPartyAccessCheck(BaseCheck[ECRPolicyAnalysis]):
             },
             "has_wildcard_principal": result.has_wildcard_principal,
             "has_non_account_principals": result.has_non_account_principals,
+            "confined_by": sorted(result.confined_by),
         }
 
         self.all_third_party_accounts.update(result.third_party_account_ids)

@@ -373,9 +373,24 @@ its consequence for this document is that only the first kind reaches INV-02:
 
 | Kind | Example | Answer |
 |---|---|---|
-| A document AWS could not have stored | Unparseable JSON, a `Statement` that is neither object nor list, a principal key the policy type does not accept, an `Action` that is neither a string nor an array | **Aborts.** |
+| A document AWS could not have stored | Unparseable JSON, a `Statement` that is neither object nor list, an `Allow` carrying neither `Principal` nor `NotPrincipal`, a principal key the policy type does not accept, an `Action` that is neither a string nor an array | **Aborts.** |
 | A document AWS accepted that no allowlist can express | `Principal: "*"`, an `Allow` with `NotPrincipal`, and — in one of the five resource policies — a `Federated` or `CanonicalUser` principal | **Blocks the account** for that check. Recorded as a violation; the scan continues |
 | A document AWS accepted that the check deliberately does not act on | A `Federated` principal in a role trust policy, paired with any grant of `sts:AssumeRole` other than that literal string | **Neither.** No finding is recorded and the account stays eligible |
+
+A statement's `Condition` is the one element the first row does not reach. A
+`Condition` that is not a mapping is as malformed as a `Statement` that is
+neither object nor list, and `_read_principal_confinement` in
+`headroom/aws/policy_documents.py` returns an empty confinement rather than
+raising — as it does for a clause whose value is neither a string nor a
+non-empty list of strings, and for an operator, a key, or a pairing of the two
+nobody has modelled. No
+bound is already the blocker answer, so there is nothing to abort for.
+[`../contracts/policy-model.md`](../contracts/policy-model.md#condition-confined-wildcards)
+owns that argument and the contrast with `_read_source_guards`, which does
+raise on an operator it does not recognize because it is building an allowlist
+out of what it reads. The `Principal` element of the same statement still
+aborts by the first row: `read_statement_principals` reads it, through
+`_read_principal`, before it reads the condition at all.
 
 The second kind used to abort in four of the five resource-policy analyzers.
 [`../contracts/policy-model.md`](../contracts/policy-model.md#a-blocker-stops-the-account-a-document-headroom-cannot-read-stops-the-run)

@@ -142,6 +142,140 @@ class TestAnalyzeS3BucketPolicies:
         assert results[0].has_wildcard_principal is True
         assert results[0].bucket_name == "wildcard-bucket"
 
+    def test_wildcards_confined_to_organization_accounts_find_nothing(self) -> None:
+        """
+        Every statement's wildcard is enumerated, and every account is ours.
+
+        `aws:PrincipalAccount` names who each wildcard reaches, and both
+        accounts are in the organization, so the bucket grants nobody the
+        RCP would deny. Nothing is left for an RCP to break, so the bucket
+        is not reported at all; read as two bare wildcards it blocked the
+        account's whole S3 RCP.
+        """
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+
+        bucket_paginator = MagicMock()
+        bucket_paginator.paginate.return_value = [
+            {
+                "Buckets": [{"Name": "confined-bucket"}]
+            }
+        ]
+        mock_s3_client.get_paginator.return_value = bucket_paginator
+        mock_s3_client.get_bucket_acl.return_value = {
+            "Owner": {"ID": TestBucketAcl.OWNER_ID},
+            "Grants": [],
+        }
+
+        confinement = {
+            "StringEquals": {"aws:PrincipalAccount": ["111111111111", "222222222222"]}
+        }
+        mock_s3_client.get_bucket_policy.return_value = {
+            "Policy": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": "*",
+                        "Action": "s3:GetObject",
+                        "Resource": "arn:aws:s3:::confined-bucket/*",
+                        "Condition": confinement,
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"AWS": "*"},
+                        "Action": "s3:PutObject",
+                        "Resource": "arn:aws:s3:::confined-bucket/*",
+                        "Condition": confinement,
+                    },
+                ]
+            })
+        }
+
+        results = analyze_s3_bucket_policies(
+            mock_session, {"111111111111", "222222222222"}, ORG_ID
+        )
+
+        # Reporting nothing is also what a policy nobody read looks
+        # like, so the fetch is asserted: the document was read and
+        # found to hold nothing, not skipped.
+        mock_s3_client.get_bucket_policy.assert_called_once()
+
+        assert results == []
+        # An empty result is also what a bucket nobody read produces, so the
+        # read is asserted too: without this the test passes when the policy
+        # never reaches the analyzer at all. s3.py has no inner analyzer to
+        # call directly the way the ECR and KMS siblings do, so what the
+        # reading itself holds is asserted in
+        # TestBucketAcl.test_a_public_acl_survives_a_fully_confined_policy.
+        mock_s3_client.get_bucket_policy.assert_called_once_with(Bucket="confined-bucket")
+
+    def test_a_wildcard_confined_to_this_organization_finds_nothing(self) -> None:
+        """
+        `aws:PrincipalOrgID` naming this organization admits only our callers.
+
+        The bound is real, so the wildcard falls, and every caller it admits
+        the deployed statement already spares: there is no account to
+        allowlist and nothing left for an RCP to break, so the bucket is not
+        recorded at all. Read as a bare wildcard it blocked the account's
+        whole S3 RCP.
+
+        Dropping out is also what an unread bucket looks like, and s3.py has
+        no inner analyzer to call ahead of the reporting gate the way the ECR
+        sibling does. So a second bucket carries the same statement naming
+        another organization and must still be reported: the org ID inside
+        the Condition is the only thing that differs between the two.
+        """
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+
+        bucket_paginator = MagicMock()
+        bucket_paginator.paginate.return_value = [
+            {
+                "Buckets": [
+                    {"Name": "org-confined-bucket"},
+                    {"Name": "foreign-org-bucket"},
+                ]
+            }
+        ]
+        mock_s3_client.get_paginator.return_value = bucket_paginator
+        mock_s3_client.get_bucket_acl.return_value = {
+            "Owner": {"ID": TestBucketAcl.OWNER_ID},
+            "Grants": [],
+        }
+
+        scope_by_bucket = {
+            "org-confined-bucket": ORG_ID,
+            "foreign-org-bucket": "o-22222222222",
+        }
+        mock_s3_client.get_bucket_policy.side_effect = lambda Bucket: {
+            "Policy": json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": "*",
+                        "Action": "s3:GetObject",
+                        "Resource": f"arn:aws:s3:::{Bucket}/*",
+                        "Condition": {
+                            "StringEquals": {"aws:PrincipalOrgID": scope_by_bucket[Bucket]}
+                        },
+                    },
+                ]
+            })
+        }
+
+        results = analyze_s3_bucket_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        assert [result.bucket_name for result in results] == ["foreign-org-bucket"]
+        assert results[0].has_wildcard_principal is True
+        assert results[0].confined_by == set()
+        # The confined bucket's absence must come from the bound, not from a
+        # bucket the run never opened, so its policy read is asserted too.
+        mock_s3_client.get_bucket_policy.assert_any_call(Bucket="org-confined-bucket")
+
     def test_analyze_bucket_without_policy(self) -> None:
         """Test analyzing bucket without bucket policy."""
         mock_session = MagicMock()
@@ -194,6 +328,11 @@ class TestAnalyzeS3BucketPolicies:
 
         org_account_ids = {"333333333333"}
         results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
+
+        # Reporting nothing is also what a policy nobody read looks
+        # like, so the fetch is asserted: the document was read and
+        # found to hold nothing, not skipped.
+        mock_s3_client.get_bucket_policy.assert_called_once()
 
         assert len(results) == 0
 
@@ -318,10 +457,20 @@ class TestAnalyzeS3BucketPolicies:
 
         org_account_ids = {"999999999999"}
         results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
+
+        # Reporting nothing is also what a policy nobody read looks
+        # like, so the fetch is asserted: the document was read and
+        # found to hold nothing, not skipped.
+        mock_s3_client.get_bucket_policy.assert_called_once()
         assert len(results) == 0
 
-    def test_analyze_bucket_with_no_principal(self) -> None:
-        """Test bucket with statement that has no Principal field."""
+    def test_a_statement_with_no_principal_aborts_the_run(self) -> None:
+        """
+        An Allow carrying neither Principal nor NotPrincipal is a document AWS never stored.
+
+        The analyzer once skipped it with a read of its own; the shared
+        statement reader raises instead, naming the bucket.
+        """
         mock_session = MagicMock()
         mock_s3_client = MagicMock()
         mock_session.client.return_value = mock_s3_client
@@ -347,8 +496,9 @@ class TestAnalyzeS3BucketPolicies:
         }
 
         org_account_ids = {"999999999999"}
-        results = analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
-        assert len(results) == 0
+
+        with pytest.raises(MalformedPolicyError, match="Bucket 'no-principal-bucket' has an Allow statement carrying neither"):
+            analyze_s3_bucket_policies(mock_session, org_account_ids, ORG_ID)
 
     def test_analyze_bucket_with_federated_principal(self) -> None:
         """Test bucket with Federated principal is detected."""
@@ -400,7 +550,14 @@ class TestPolicyGrammar:
         mock_s3_client.get_paginator.return_value = bucket_paginator
         mock_s3_client.get_bucket_policy.return_value = {"Policy": json.dumps(policy)}
 
-        return analyze_s3_bucket_policies(mock_session, {"111111111111"}, ORG_ID)
+        results = analyze_s3_bucket_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        # Tests in this class assert that nothing was reported, and a policy
+        # nobody read reports nothing too. The fetch is asserted here so that
+        # no test in the class can pass without one.
+        mock_s3_client.get_bucket_policy.assert_called_once()
+
+        return results
 
     def test_lone_statement_object_is_analyzed(self) -> None:
         """The third party in a lone statement object is found, not missed."""
@@ -554,6 +711,38 @@ class TestPolicyGrammar:
                 }]
             })
 
+    def test_a_wildcard_under_kms_caller_account_is_still_a_wildcard(self) -> None:
+        """
+        kms:CallerAccount bounds a KMS key policy and nothing else.
+
+        No Amazon S3 request carries the key, so the clause admits nobody
+        and the statement grants nobody anything. Reading it as a bound
+        would clear the bucket and put an account no policy granted into the
+        allowlist, so this pins the PolicyService this analyzer declares:
+        passing PolicyService.KMS from here reads the clause as a bound.
+
+        The value is a well-formed twelve-digit account ID on purpose: a
+        value the reader would reject anyway proves only that some rule
+        refused the shape, not that the service is what refused it.
+        """
+        results = self._analyze({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "*"},
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::test-bucket/*",
+                "Condition": {
+                    "StringEquals": {"kms:CallerAccount": "333333333333"}
+                },
+            }],
+        })
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+        assert results[0].confined_by == set()
+
 
 class TestBucketAcl:
     """
@@ -600,7 +789,14 @@ class TestBucketAcl:
         else:
             mock_s3_client.get_bucket_policy.return_value = {"Policy": json.dumps(policy)}
 
-        return analyze_s3_bucket_policies(mock_session, {"111111111111"}, ORG_ID)
+        results = analyze_s3_bucket_policies(mock_session, {"111111111111"}, ORG_ID)
+
+        # Tests in this class assert that nothing was reported, and an ACL
+        # nobody read reports nothing too. The fetch is asserted here so that
+        # no test in the class can pass without one.
+        mock_s3_client.get_bucket_acl.assert_called_once()
+
+        return results
 
     def test_owner_only_acl_finds_nothing(self) -> None:
         """
@@ -657,6 +853,35 @@ class TestBucketAcl:
 
         assert len(results) == 1
         assert results[0].has_wildcard_principal is True
+
+    def test_a_public_acl_survives_a_fully_confined_policy(self) -> None:
+        """
+        Reading the policy's Condition block does not reach the ACL.
+
+        The ACL authorizes principals the policy never mentions, so a bucket
+        whose every statement is bounded to the organization is still public
+        when AllUsers holds a grant. The bound is recorded all the same.
+        """
+        results = self._analyze(
+            [self._grant({"Type": "Group", "URI": ALL_USERS_GROUP_URI})],
+            {
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "s3:GetObject",
+                    "Resource": "arn:aws:s3:::test-bucket/*",
+                    "Condition": {
+                        "StringEquals": {"aws:PrincipalAccount": "111111111111"}
+                    },
+                }],
+            },
+        )
+
+        assert len(results) == 1
+        assert results[0].has_wildcard_principal is True
+        assert results[0].third_party_account_ids == set()
+        assert results[0].confined_by == {"aws:principalaccount"}
 
     def test_authenticated_users_group_is_a_wildcard(self) -> None:
         """

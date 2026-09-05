@@ -33,7 +33,11 @@ Queue access policies, in every enabled region.
 ### Non-goals
 
 - Does not read the KMS key policy protecting an encrypted queue.
-- Does not evaluate `Condition`, `Resource`/`NotResource`, or `NotAction`.
+- Evaluates `Condition` only for a bound on the statement's principals, under
+  the rule
+  [`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)
+  owns. A condition that narrows the grant rather than the principal set is
+  unread, and so are `Resource`/`NotResource` and `NotAction`.
 - Does not distinguish a dead-letter queue from any other.
 
 ## Enforced statement
@@ -66,16 +70,19 @@ wildcard there would let the statement deploy where it should be withheld
 [`../../architecture/aws-execution.md`](../../architecture/aws-execution.md#reading-a-pages-collection-key)
 records why this listing alone needs it.
 
-For each `Allow` statement: `NotPrincipal` presence, `Principal`, `Action`.
-The `Principal` element is read by `read_principal` against
-`RESOURCE_POLICY_PRINCIPAL_TYPES`
-([`../../contracts/policy-model.md`](../../contracts/policy-model.md)).
+For each `Allow` statement: `NotPrincipal` presence, `Principal`, `Condition`,
+`Action`. The statement is read by `read_statement_principals` against
+`RESOURCE_POLICY_PRINCIPAL_TYPES`, which reads the `Principal` element with
+`_read_principal` and, where that element is a wildcard, asks the `Condition`
+whether it bounds what the wildcard reaches
+([`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)).
 
 ## Decision table
 
 | State | Condition | Category |
 |---|---|---|
-| Violation | A wildcard principal — literal `*`, or an `Allow` with `NotPrincipal` | `VIOLATION` |
+| Violation | An unconfined wildcard principal — a literal `*` whose statement carries no bound the reader can prove, or an `Allow` with `NotPrincipal`, which is never confined | `VIOLATION` |
+| Not recorded | A wildcard the statement's `Condition` bounds to principals an allowlist can carry, under the rule [`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards) owns | Nothing is recorded for the wildcard itself. Each account the bound enumerates is read exactly as a named principal's account is, so an out-of-organization one makes the queue `COMPLIANT` |
 | Compliant | Third-party account IDs only | `COMPLIANT` |
 | Exemption | — | Never produced |
 | Not recorded | The queue has no policy | Not in the output |
@@ -92,6 +99,7 @@ The `Principal` element is read by `read_principal` against
 | Any other `ClientError` in any region | Logged and re-raised, aborting the run |
 | `Statement` neither object nor list | `MalformedPolicyError`, aborting the run |
 | `Principal` neither string, list, nor object | `MalformedPolicyError`, aborting the run |
+| An `Allow` carrying neither `Principal` nor `NotPrincipal` | `MalformedPolicyError`, aborting the run — AWS stores no such statement, so it is a document misread rather than a grant to nobody |
 | Unparseable policy JSON | `json.JSONDecodeError`, aborting the run |
 | A principal key outside the four documented types | `UnknownPrincipalTypeError`, aborting the run |
 | An `Action` that is neither a string nor a list | `TypeError`, aborting the run |
@@ -128,7 +136,20 @@ queue with no policy, or one naming only in-organization principals, is never
 entered and is not counted; limitation 2 owns where the second is dropped.
 
 Entry shape: `queue_url`, `queue_arn`, `region`, `third_party_account_ids`,
-`has_wildcard_principal`, `has_non_account_principals`, `actions_by_account`.
+`has_wildcard_principal`, `has_non_account_principals`, `actions_by_account`,
+`confined_by`.
+
+`confined_by` holds the condition keys, lower-cased, that each bounded one of
+this policy's statements on their own, unioned across the policy. A key is
+recorded whether or not the queue still blocks — one bounded statement beside
+one unbounded one reports both the key and the violation — but only for a statement whose `Principal` was a wildcard. The reader
+consults a `Condition` for nothing else, so a bound beside a `Principal`
+that already names its callers is neither read nor recorded.
+[`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)
+owns which keys can appear and what each proves. The field is additive: a
+result file written before it existed lacks the key, and no reader requires
+anything outside `summary`
+([`../../contracts/results.md`](../../contracts/results.md#summary-keys-a-reader-requires)).
 
 `service_principal_sources` is **not** written. `analyze_sqs_queue_policies`
 carries it on the in-memory analysis only, and
@@ -163,7 +184,10 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
 
 ## Accepted limitations
 
-1. `Condition`, `Resource`, and `NotAction` are not evaluated.
+1. `Resource` and `NotAction` are not evaluated, and neither is a `Condition`
+   that narrows the grant rather than the statement's principals — so a grant
+   confined by `aws:SourceVpce` still contributes its account at full width
+   ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#what-is-deliberately-not-read)).
 2. The queue-level filter for third-party or wildcard findings lives in the
    check's `analyze`, not in the analyzer, which appends every queue that has a
    policy.
@@ -192,12 +216,38 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
     grounds.
 11. A region holding more queues than one `ListQueues` page → every page is
     read, because each request sets `MaxResults`.
-12. A queue policy with `Principal: "*"` narrowed by `aws:SourceArn` to an SNS
-    topic, AWS's documented cross-account subscription → still a violation
-    here, since `Condition` is not evaluated (limitation 1). The topic's
-    account reaches the allowlist of
-    [`deny_service_confused_deputy`](deny_service_confused_deputy.md) through
-    `service_principal_sources`, so that statement stays deployable.
+12. A queue policy with `Principal: "*"` narrowed by `ArnLike aws:SourceArn`
+    to an SNS topic, AWS's documented cross-account subscription → still a
+    violation here. `aws:SourceArn` is not a principal key: it names the
+    resource that originated a call rather than the caller that made it, so no
+    account of its ever reaches this allowlist and it bounds nothing this
+    reader can act on
+    ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#what-is-deliberately-not-read)
+    carries the argument, including the near-miss case for reading it as a
+    bound and where that case fails). The topic's account reaches the allowlist
+    of [`deny_service_confused_deputy`](deny_service_confused_deputy.md)
+    through `service_principal_sources`, so that statement stays deployable.
+13. That same policy grants `sqs:SendMessage` twice: once to
+    `Principal: {"Service": "sns.amazonaws.com"}` under `ArnEquals
+    aws:SourceArn`, and once to the wildcard of scenario 12 under `ArnLike`.
+    The two are separate documented shapes rather than one statement written
+    twice — the first names the service and the second does not, so only the
+    second is a wildcard for this check to block. Neither puts its topic's
+    account in this check's allowlist.
+14. A queue policy with `Principal: "*"` under `StringEquals
+    aws:PrincipalAccount` naming `333333333333`, outside the organization →
+    compliant rather than a violation; that account enters the allowlist with
+    the statement's actions.
+15. Two statements on one queue, one wildcard bounded by `StringEquals
+    aws:PrincipalAccount` and one bare → violation. Confinement is decided per
+    statement and the queue's verdict is the union, so the bounded statement's
+    account still enters `third_party_account_ids` and `confined_by` still
+    records `aws:principalaccount`, beside the wildcard the other statement
+    leaves standing.
+16. A `Principal: "*"` under `StringEquals kms:CallerAccount` naming
+    `333333333333` → still a violation. No Amazon SQS request carries that key,
+    so the clause admits nobody and the statement grants nobody anything; it is
+    a bound in a KMS key policy and nowhere else.
 
 ## Referenced invariants
 
@@ -207,7 +257,8 @@ INV-01 (see Failure behavior), INV-02, INV-04, INV-06, INV-13, INV-16.
 
 - `headroom/checks/rcps/deny_sqs_third_party_access.py`
 - `headroom/aws/sqs.py` — `analyze_sqs_queue_policies`
-- `headroom/aws/policy_documents.py` — `read_principal`
+- `headroom/aws/policy_documents.py` — `read_statement_principals`,
+  `_read_principal`
 - `test_environment/modules/rcps/locals.tf`
 - Tests: `tests/test_checks_deny_sqs_third_party_access.py`,
   `tests/test_aws_sqs.py`, `tests/test_aws_policy_documents.py`

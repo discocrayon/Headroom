@@ -47,9 +47,12 @@ than allowlisting `aws:PrincipalAccount`. What it generates is specified in
 | [`deny_sts_third_party_assumerole`](rcps/deny_sts_third_party_assumerole.md) | Global | `sts:AssumeRole` | **Not a finding** — its RCP denies `sts:AssumeRole` alone, which a federated identity cannot call. A `CanonicalUser`, and a `Federated` principal granted the literal `sts:AssumeRole`, abort the run instead: **no results at all**, not a verdict |
 | [`deny_service_confused_deputy`](rcps/deny_service_confused_deputy.md) | Both | All six of the above | **Not read** — it measures source guards, not principals |
 
-The five resource-policy analyzers read the `Principal` element through one
-function, `read_principal`, and reach one verdict from it. The sixth reads the
-same facts and acts on two of the three, for the reason its column gives.
+All six read the `Principal` element through one function, `_read_principal`,
+and read it against its statement's `Condition` through one other,
+`read_statement_principals`, which answers four facts about who the statement
+reaches. The five resource-policy analyzers reach one verdict from them; the
+sixth reads all four and acts on every one but the third, for the reason its
+column gives.
 [`../contracts/policy-model.md`](../contracts/policy-model.md) owns the rule.
 
 The seventh re-runs all six analyzers rather than reading what they recorded, so

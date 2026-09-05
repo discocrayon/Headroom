@@ -14,6 +14,7 @@ from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_sqs.client import SQSClient
 
+from ..enums import PolicyService
 from .helpers import get_all_regions, memoize_per_session, paginate
 from .policy_documents import (
     normalize_actions,
@@ -21,8 +22,8 @@ from .policy_documents import (
     ServicePrincipalSource,
     has_not_principal,
     normalize_statements,
-    read_principal,
     read_service_principal_sources,
+    read_statement_principals,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,10 @@ class SQSQueuePolicyAnalysis:
             analysis's own third-party accounts or wildcard flag, so a queue
             kept only for one of these entries stays invisible to the
             deny_sqs_third_party_access check.
+        confined_by: The condition keys, lower-cased, that each bounded a
+            statement on their own, unioned across this policy's statements.
+            Recorded whether or not the resource still blocks, and whether or
+            not the statement they bounded named a wildcard.
     """
     queue_url: str
     queue_arn: str
@@ -82,6 +87,7 @@ class SQSQueuePolicyAnalysis:
     has_non_account_principals: bool
     actions_by_account: Dict[str, Set[str]]
     service_principal_sources: List[ServicePrincipalSource] = field(default_factory=list)
+    confined_by: Set[str] = field(default_factory=set)
 
 
 def _analyze_queue_policy(
@@ -102,7 +108,8 @@ def _analyze_queue_policy(
         policy_json: Policy JSON string
         org_account_ids: Set of organization account IDs to exclude
         org_id: This organization's ID, deciding whether an
-            organization scope on a source guard names this organization
+            organization scope on a source guard or on a confining
+            principal key names this organization
 
     Returns:
         SQSQueuePolicyAnalysis result
@@ -120,6 +127,7 @@ def _analyze_queue_policy(
     has_wildcard_principal = False
     has_non_account_principals = False
     sources: List[ServicePrincipalSource] = []
+    confined_by: Set[str] = set()
 
     statements = normalize_statements(policy, f"Queue {queue_arn} in {region}")
 
@@ -133,12 +141,10 @@ def _analyze_queue_policy(
             has_wildcard_principal = True
             continue
 
-        principal = statement.get("Principal")
-        if not principal:
-            continue
-
         resource_description = f"Queue {queue_arn} in {region}"
-        reading = read_principal(principal, RESOURCE_POLICY_PRINCIPAL_TYPES, resource_description)
+        reading = read_statement_principals(
+            statement, RESOURCE_POLICY_PRINCIPAL_TYPES, PolicyService.SQS, org_id, resource_description
+        )
         sources.extend(
             read_service_principal_sources(statement, org_account_ids, org_id, resource_description)
         )
@@ -147,6 +153,7 @@ def _analyze_queue_policy(
             has_non_account_principals = True
 
         has_wildcard_principal = has_wildcard_principal or reading.has_wildcard
+        confined_by.update(reading.confined_by)
 
         actions = normalize_actions(statement.get("Action", []))
 
@@ -167,6 +174,7 @@ def _analyze_queue_policy(
         has_non_account_principals=has_non_account_principals,
         actions_by_account=actions_by_account,
         service_principal_sources=sources,
+        confined_by=confined_by,
     )
 
 
