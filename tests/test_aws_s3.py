@@ -752,7 +752,6 @@ class TestBucketAcl:
     Reading only the policy reported such a bucket clean, so the account kept
     its RCP and the ACL's grantees lost access the moment it applied.
     """
-
     # Canonical user IDs are 64 hex characters. These are placeholders.
     OWNER_ID = "a" * 64
     EXTERNAL_ID = "b" * 64

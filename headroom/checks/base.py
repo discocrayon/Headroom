@@ -47,7 +47,6 @@ class BaseCheck(ABC, Generic[T]):
     - categorize_result(): Categorize a single result
     - build_summary_fields(): Build check-specific summary fields
     """
-
     # These are set by the @register_check decorator
     CHECK_NAME: str
     CHECK_TYPE: str

@@ -2122,7 +2122,6 @@ class TestAWSManagedKeys:
     the answer whatever the policy says, and saves GetKeyPolicy and
     ListGrants on every such key.
     """
-
     KEY_ID = "11111111-1111-1111-1111-111111111111"
     KEY_ARN = f"arn:aws:kms:us-east-1:111111111111:key/{KEY_ID}"
 

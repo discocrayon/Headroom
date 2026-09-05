@@ -602,7 +602,6 @@ class _ConditionClause(NamedTuple):
         normalized_key: The key lower-cased, which is how IAM matches it
         value: The clause's value as the document holds it
     """
-
     operator: str
     set_operator: str
     base_operator: str

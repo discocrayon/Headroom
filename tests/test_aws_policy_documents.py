@@ -2771,7 +2771,6 @@ class TestWholeDocumentPrincipalReadings:
     because shape is what the reader branches on; the service is consulted
     only for which service-scoped condition keys exist at all.
     """
-
     RESOURCE_DESCRIPTION = "Resource 'example'"
 
     def _read_every_statement(
@@ -2993,7 +2992,6 @@ class TestPrincipalArnCoverage:
     a role trust policy is one - and every non-commercial partition produced
     no account ID at all.
     """
-
     PARTNER = "999999999999"
 
     @pytest.mark.parametrize("principal", [
@@ -3034,7 +3032,6 @@ class TestSourceGuardOperatorSemantics:
     the deployed RCP denies, and the statement must be withheld from that
     account instead.
     """
-
     ORG_ID = "o-11111111111"
     ORG_ACCOUNT_IDS = frozenset({"222222222222"})
 

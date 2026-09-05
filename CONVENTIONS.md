@@ -24,6 +24,7 @@ this file, so these rules are loaded on every change.
 - You must not set a default value for something that is set via CLI except in `config.py`.
 - Never rename imported things with "as" ever
 - Do not add stray blank lines randomly
+- Do not put a blank line between a class docstring and the class's first attribute: the closing `"""` and the attribute, or the comment above it, are adjacent lines. Only a first method gets PEP 257's blank line after the docstring.
 - Never do an import inside of a function
 - Do not overengineer, for example, making new types with one attribute, or a new class with one function
 - Do not use the type of Any, if you change the existing code to Any, you are making it worse.
