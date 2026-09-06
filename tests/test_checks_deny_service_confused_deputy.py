@@ -354,6 +354,69 @@ class TestServiceConfusedDeputyCheck:
         assert violation["read_failure"] == "aws:SourceAccount under StringNotEquals does not pin the source"
         assert violation["service_principal"] is None
 
+    def test_a_wildcard_source_is_counted_as_one(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        The wildcard cause is counted apart from the violation total.
+
+        `sources_with_wildcard_source` isolates the guards an allowlist can
+        never express, so a rollout can tell this cause apart from a failed
+        read without re-deriving it from the violation list. The zero on
+        the failed-read count here pins that the two causes are not
+        conflated.
+        """
+        data = _run(temp_results_dir, [_source(wildcard=True)])
+
+        assert data["summary"]["sources_with_wildcard_source"] == 1
+        assert data["summary"]["sources_with_failed_read"] == 0
+
+    def test_a_failed_read_is_counted_as_one(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        The failed-read cause is counted apart from the wildcard cause.
+
+        `sources_with_failed_read` isolates guards the parser could not
+        read at all, which is a different reason to withhold the statement
+        than a guard the parser read but could not express as an
+        allowlist. The zero on the wildcard count here pins that the two
+        causes are not conflated.
+        """
+        data = _run(temp_results_dir, [
+            unreadable_service_principal_source(
+                "aws:SourceAccount under StringNotEquals does not pin the source"
+            )
+        ])
+
+        assert data["summary"]["sources_with_failed_read"] == 1
+        assert data["summary"]["sources_with_wildcard_source"] == 0
+
+    def test_the_two_causes_partition_the_violations(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        The two per-cause counts add up to the violation total, with no overlap.
+
+        `unreadable_service_principal_source` is the real constructor for a
+        failed read, and it hardcodes `has_wildcard_source=False`, so a
+        failed read never also carries a wildcard. That is what lets the
+        two counts partition the violations rather than merely bound them.
+        """
+        data = _run(temp_results_dir, [
+            _source(wildcard=True),
+            unreadable_service_principal_source(
+                "aws:SourceAccount under StringNotEquals does not pin the source"
+            ),
+            _source(accounts=[THIRD_PARTY]),
+        ])
+
+        summary = data["summary"]
+        assert summary["violations"] == 2
+        assert summary["sources_with_wildcard_source"] == 1
+        assert summary["sources_with_failed_read"] == 1
+        assert summary["sources_with_wildcard_source"] + summary["sources_with_failed_read"] == summary["violations"]
+
     def test_a_readable_finding_records_no_read_failure(
         self, temp_results_dir: str
     ) -> None:

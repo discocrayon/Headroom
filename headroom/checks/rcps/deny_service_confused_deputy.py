@@ -291,6 +291,8 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
 
         self.all_third_party_accounts.update(result.source_account_ids)
 
+        # build_summary_fields counts violations by these two causes and the
+        # counts sum to len(violations) only while these are the only two.
         if result.has_wildcard_source or result.read_failure is not None:
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
@@ -306,6 +308,10 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         does for the other six checks - and a resource whose source read
         failed is one of them, so the statement is never deployed against an
         allowlist that could not be computed.
+        `sources_with_wildcard_source` and `sources_with_failed_read` split
+        that count by cause and sum to it: the first counts guards the
+        estate wrote that no allowlist can express, the second guards this
+        parser could not read.
         `unique_third_party_accounts` becomes the statement's
         aws:SourceAccount allowlist and `third_party_account_count` its
         length.
@@ -316,8 +322,17 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         Returns:
             Dictionary with check-specific summary fields
         """
+        sources_with_wildcard_source = sum(
+            1 for violation in check_result.violations if violation["has_wildcard_source"]
+        )
+        sources_with_failed_read = sum(
+            1 for violation in check_result.violations if violation["read_failure"] is not None
+        )
+
         return {
             "violations": len(check_result.violations),
+            "sources_with_wildcard_source": sources_with_wildcard_source,
+            "sources_with_failed_read": sources_with_failed_read,
             "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
             "third_party_account_count": len(self.all_third_party_accounts),
         }

@@ -179,8 +179,20 @@ Summary fields beyond the common three:
 | Key | Meaning |
 |---|---|
 | `violations` | Count. **This is the field placement reads.** |
+| `sources_with_wildcard_source` | Violations whose guard names sources no allowlist can enumerate |
+| `sources_with_failed_read` | Violations whose source guard could not be read |
 | `unique_third_party_accounts` | The statement's `aws:SourceAccount` allowlist |
 | `third_party_account_count` | Its length |
+
+`sources_with_wildcard_source` and `sources_with_failed_read` sum to
+`violations`. `unreadable_service_principal_source` in
+`headroom/aws/policy_documents.py` is the one constructor of a failed read, and
+it never sets `has_wildcard_source`, so no entry is counted by both. Together
+they are the summary-level signal for which cause a violation came from;
+without them, `violations: 1` sends the reader through every entry to learn
+which. This is the shape
+[`deny_kms_third_party_access`](deny_kms_third_party_access.md) gives
+`keys_with_unresolved_grants`.
 
 ## Placement and generated policy
 
@@ -284,11 +296,12 @@ that procedure.
 4. A guard naming `aws:SourceOrgID` for a different organization → the source is
    out of organization and is recorded.
 5. A statement whose source guard cannot be read → violation with `read_failure`
-   set, and the other six checks still complete.
+   set and counted in `summary.sources_with_failed_read`, and the other six
+   checks still complete.
 6. A queue trusting `sns.amazonaws.com` with no source guard → not recorded
    (limitation 1).
-7. An account matching scenario 3 → `summary.violations` is 1 and placement does
-   not clear it.
+7. An account matching scenario 3 → `summary.violations` is 1,
+   `summary.sources_with_wildcard_source` is 1, and placement does not clear it.
 8. A guard on `aws:SourceArn` written with `ArnEqualsIfExists` → violation, and
    the account is not cleared, even though the guard names an account.
 9. A queue policy with `Principal: "*"` narrowed by `ArnEquals aws:SourceArn`

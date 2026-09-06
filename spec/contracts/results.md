@@ -139,9 +139,8 @@ key, in any of the six, is a wire-format migration (INV-14).
 
 A reader that expects a `*_third_parties_can_access` pair in every RCP file gets
 the seventh wrong; one that switches on `summary.check` does not. Beyond the
-common keys below, its `summary` adds `unique_third_party_accounts` and
-`third_party_account_count`, and the entry shape inside its three lists is
-specified in
+common keys below, its extra `summary` keys and the entry shape inside its
+three lists are specified in
 [`../checks/rcps/deny_service_confused_deputy.md`](../checks/rcps/deny_service_confused_deputy.md).
 
 ### Summary keys every check writes
