@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" role="img" aria-labelledby="hierarchy-title">
+  <title id="hierarchy-title">Headroom attaches deny_ec2_ami_owner at the organization root and deny_ec2_imds_v1 at the two OUs with no violating account</title>
+  <defs>
+    <marker id="contains-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L8 4L0 8z" fill="#6e7781"/></marker>
+    <marker id="attached-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L8 4L0 8z" fill="#2f6fd0"/></marker>
+  </defs>
+  <g class="edges">
+    <line class="contains" data-from="root" data-to="ss" x1="440" y1="68" x2="100" y2="160" stroke="#6e7781" stroke-width="1.5" marker-end="url(#contains-arrow)"/>
+    <line class="contains" data-from="root" data-to="hva" x1="440" y1="68" x2="352" y2="160" stroke="#6e7781" stroke-width="1.5" marker-end="url(#contains-arrow)"/>
+    <line class="contains" data-from="root" data-to="acq" x1="440" y1="68" x2="779" y2="160" stroke="#6e7781" stroke-width="1.5" marker-end="url(#contains-arrow)"/>
+    <line class="contains" data-from="hva" data-to="fk" x1="352" y1="200" x2="266" y2="292" stroke="#6e7781" stroke-width="1.5" marker-end="url(#contains-arrow)"/>
+    <line class="contains" data-from="hva" data-to="st" x1="352" y1="200" x2="413" y2="292" stroke="#6e7781" stroke-width="1.5" marker-end="url(#contains-arrow)"/>
+    <line class="contains" data-from="ss" data-to="sfb" x1="100" y1="200" x2="100" y2="284" stroke="#6e7781" stroke-width="1.5" marker-end="url(#contains-arrow)"/>
+    <line class="contains" data-from="acq" data-to="ac" x1="779" y1="200" x2="779" y2="292" stroke="#6e7781" stroke-width="1.5" marker-end="url(#contains-arrow)"/>
+    <line class="attached" data-from="ami" data-to="root" x1="245" y1="48" x2="345" y2="48" stroke="#2f6fd0" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#attached-arrow)"/>
+    <text x="295" y="41" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#2f6fd0">attached</text>
+    <line class="attached" data-from="imds" data-to="hva" x1="487" y1="180" x2="434" y2="180" stroke="#2f6fd0" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#attached-arrow)"/>
+    <text x="460" y="173" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#2f6fd0">attached</text>
+    <line class="attached" data-from="imds" data-to="acq" x1="647" y1="180" x2="699" y2="180" stroke="#2f6fd0" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#attached-arrow)"/>
+    <text x="673" y="173" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#2f6fd0">attached</text>
+  </g>
+  <g id="ami" class="node policy">
+    <polygon points="67,28 233,28 245,48 233,68 67,68 55,48" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text class="name" x="150" y="53" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#111111">deny_ec2_ami_owner</text>
+  </g>
+  <g id="root" class="node container">
+    <rect x="345" y="28" width="190" height="40" rx="6" fill="#e8edf3" stroke="#57606a" stroke-width="1.5"/>
+    <text class="name" x="440" text-anchor="middle" y="53" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" fill="#111111">Organization root</text>
+  </g>
+  <g id="ss" class="node container">
+    <rect x="20" y="160" width="160" height="40" rx="6" fill="#e8edf3" stroke="#57606a" stroke-width="1.5"/>
+    <text class="name" x="100" text-anchor="middle" y="185" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" fill="#111111">OU shared_services</text>
+  </g>
+  <g id="hva" class="node container">
+    <rect x="270" y="160" width="165" height="40" rx="6" fill="#e8edf3" stroke="#57606a" stroke-width="1.5"/>
+    <text class="name" x="352" text-anchor="middle" y="185" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" fill="#111111">OU high_value_assets</text>
+  </g>
+  <g id="imds" class="node policy">
+    <polygon points="499,160 635,160 647,180 635,200 499,200 487,180" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+    <text class="name" x="567" y="185" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#111111">deny_ec2_imds_v1</text>
+  </g>
+  <g id="acq" class="node container">
+    <rect x="699" y="160" width="160" height="40" rx="6" fill="#e8edf3" stroke="#57606a" stroke-width="1.5"/>
+    <text class="name" x="779" text-anchor="middle" y="185" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" fill="#111111">OU acme_acquisition</text>
+  </g>
+  <g id="sfb" class="node violating">
+    <rect x="20" y="284" width="160" height="56" rx="6" fill="#fde2e2" stroke="#c0392b" stroke-width="1.5"/>
+    <text class="name" x="30" y="309" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#111111">shared-foo-bar</text>
+    <text class="mark" x="170" y="309" text-anchor="end" font-size="13">❌</text>
+    <text class="detail" x="30" y="326" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#c0392b">one IMDSv1 instance</text>
+  </g>
+  <g id="fk" class="node account">
+    <rect x="211" y="292" width="110" height="40" rx="6" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+    <text class="name" x="221" y="317" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#111111">fort-knox</text>
+    <text class="mark" x="311" y="317" text-anchor="end" font-size="13">✅</text>
+  </g>
+  <g id="st" class="node account">
+    <rect x="333" y="292" width="160" height="40" rx="6" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+    <text class="name" x="343" y="317" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#111111">security-tooling</text>
+    <text class="mark" x="483" y="317" text-anchor="end" font-size="13">✅</text>
+  </g>
+  <g id="ac" class="node account">
+    <rect x="719" y="292" width="120" height="40" rx="6" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+    <text class="name" x="729" y="317" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#111111">acme-co</text>
+    <text class="mark" x="829" y="317" text-anchor="end" font-size="13">✅</text>
+  </g>
+</svg>
