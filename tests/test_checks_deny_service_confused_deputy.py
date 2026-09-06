@@ -579,13 +579,14 @@ class TestEveryAnalyzerFeedsTheCheck:
         assert finding["resource_identifier"] == "a-bucket"
         assert finding["region"] is None
 
-    def test_secretsmanager_finding_names_its_secret_with_no_region(
+    def test_secretsmanager_finding_names_its_secret_with_its_region(
         self, temp_results_dir: str
     ) -> None:
-        """A secret policy's finding names that secret; Secrets Manager is global."""
+        """A secret policy's finding names that secret and its region; Secrets Manager is regional."""
         analysis = _analysis(
             service_principal_sources=[_source(accounts=[THIRD_PARTY])],
             secret_name="a-secret",
+            region="us-east-1",
         )
         data = _run_single_analyzer(
             temp_results_dir, "analyze_secrets_manager_policies", analysis
@@ -594,7 +595,7 @@ class TestEveryAnalyzerFeedsTheCheck:
         finding = data["compliant_instances"][0]
         assert finding["resource_type"] == "secretsmanager"
         assert finding["resource_identifier"] == "a-secret"
-        assert finding["region"] is None
+        assert finding["region"] == "us-east-1"
 
     def test_iam_finding_names_its_role_with_no_region(
         self, temp_results_dir: str

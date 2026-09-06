@@ -39,6 +39,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "test-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:test-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID
@@ -66,6 +67,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "public-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:public-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID
@@ -97,6 +99,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "confined-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:confined-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             {"111111111111"},
             ORG_ID
@@ -136,6 +139,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "if-exists-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:if-exists-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             {"111111111111"},
             ORG_ID
@@ -167,6 +171,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "shared-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             {"111111111111"},
             ORG_ID
@@ -196,6 +201,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "shared-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:shared-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             {"111111111111"},
             ORG_ID
@@ -225,6 +231,7 @@ class TestAnalyzeSecretPolicy:
         analysis = _analyze_secret_policy(
             "federated-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:federated-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID,
@@ -254,6 +261,7 @@ class TestAnalyzeSecretPolicy:
         analysis = _analyze_secret_policy(
             "canonical-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:canonical-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID,
@@ -287,6 +295,7 @@ class TestAnalyzeSecretPolicy:
             _analyze_secret_policy(
                 "odd-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:odd-secret",
+                "us-east-1",
                 policy,  # type: ignore[arg-type]
                 {"111111111111"},
                 ORG_ID,
@@ -308,6 +317,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "org-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:org-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID
@@ -331,6 +341,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "deny-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:deny-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID
@@ -354,6 +365,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "multi-action-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:multi-action-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID
@@ -388,6 +400,7 @@ class TestAnalyzeSecretPolicy:
             _analyze_secret_policy(
                 "no-principal-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:no-principal-secret",
+                "us-east-1",
                 policy,  # type: ignore[arg-type]
                 org_account_ids,
                 ORG_ID
@@ -410,6 +423,7 @@ class TestAnalyzeSecretPolicy:
             _analyze_secret_policy(
                 "dict-action-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:dict-action-secret",
+                "us-east-1",
                 policy,  # type: ignore[arg-type]
                 org_account_ids,
                 ORG_ID,
@@ -439,6 +453,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "vendor-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:vendor-secret",
+            "us-east-1",
             policy,
             org_account_ids,
             ORG_ID
@@ -466,6 +481,7 @@ class TestAnalyzeSecretPolicy:
             _analyze_secret_policy(
                 "invalid-statement-secret",
                 "arn:aws:secretsmanager:us-east-1:111111111111:secret:invalid-statement-secret",
+                "us-east-1",
                 policy,  # type: ignore[arg-type]
                 org_account_ids,
                 ORG_ID,
@@ -495,6 +511,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "guarded-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:guarded-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID
@@ -538,6 +555,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "wildcard-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:wildcard-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID
@@ -565,6 +583,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "unguarded-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:unguarded-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             org_account_ids,
             ORG_ID
@@ -604,6 +623,7 @@ class TestAnalyzeSecretPolicy:
         result = _analyze_secret_policy(
             "test-secret",
             "arn:aws:secretsmanager:us-east-1:111111111111:secret:test-secret",
+            "us-east-1",
             policy,  # type: ignore[arg-type]
             {"111111111111"},
             ORG_ID,
@@ -698,7 +718,66 @@ class TestAnalyzeSecretsManagerPolicies:
 
         assert len(results) == 1
         assert results[0].secret_name == "test-secret"
+        assert results[0].region == "us-east-1"
         assert results[0].third_party_account_ids == {"999999999999"}
+
+    def test_multi_region_secrets(self) -> None:
+        """Test analyzing secrets across multiple regions."""
+        mock_session = MagicMock()
+        mock_ec2_client = MagicMock()
+
+        mock_sm_clients = {}
+        for region in ["us-east-1", "us-west-2"]:
+            mock_sm_clients[region] = MagicMock()
+
+        mock_session.client.side_effect = lambda service, **kwargs: (
+            mock_ec2_client if service == "ec2" else mock_sm_clients[kwargs["region_name"]]
+        )
+
+        mock_ec2_client.describe_regions.return_value = {
+            "Regions": [
+                {"RegionName": "us-east-1"},
+                {"RegionName": "us-west-2"}
+            ]
+        }
+
+        secret_arn_east = "arn:aws:secretsmanager:us-east-1:111111111111:secret:east-secret"
+        secret_arn_west = "arn:aws:secretsmanager:us-west-2:111111111111:secret:west-secret"
+
+        paginator_east = MagicMock()
+        paginator_east.paginate.return_value = [
+            {"SecretList": [{"Name": "east-secret", "ARN": secret_arn_east}]}
+        ]
+        mock_sm_clients["us-east-1"].get_paginator.return_value = paginator_east
+
+        paginator_west = MagicMock()
+        paginator_west.paginate.return_value = [
+            {"SecretList": [{"Name": "west-secret", "ARN": secret_arn_west}]}
+        ]
+        mock_sm_clients["us-west-2"].get_paginator.return_value = paginator_west
+
+        policy = {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::999999999999:root"},
+                "Action": "secretsmanager:GetSecretValue"
+            }]
+        }
+
+        mock_sm_clients["us-east-1"].get_resource_policy.return_value = {
+            "ResourcePolicy": json.dumps(policy)
+        }
+
+        mock_sm_clients["us-west-2"].get_resource_policy.return_value = {
+            "ResourcePolicy": json.dumps(policy)
+        }
+
+        org_account_ids = {"111111111111"}
+        results = analyze_secrets_manager_policies(mock_session, org_account_ids, ORG_ID)
+
+        assert len(results) == 2
+        assert results[0].region == "us-east-1"
+        assert results[1].region == "us-west-2"
 
     def test_secret_without_policy(self) -> None:
         """Test secret without resource policy is skipped."""

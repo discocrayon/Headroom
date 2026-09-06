@@ -39,6 +39,7 @@ class SecretsPolicyAnalysis:
     Attributes:
         secret_name: Name of the secret
         secret_arn: ARN of the secret
+        region: The region the secret lives in
         third_party_account_ids: Set of account IDs not in the organization
         has_wildcard_principal: True if the policy grants to principals the
             analyzer cannot enumerate - `Principal: "*"`, or an Allow with
@@ -56,6 +57,7 @@ class SecretsPolicyAnalysis:
     """
     secret_name: str
     secret_arn: str
+    region: str
     third_party_account_ids: Set[str]
     has_wildcard_principal: bool
     has_non_account_principals: bool
@@ -170,6 +172,7 @@ def _analyze_secrets_in_region(
                 analysis_result = _analyze_secret_policy(
                     secret_name,
                     secret_arn,
+                    region,
                     policy,
                     org_account_ids,
                     org_id
@@ -188,6 +191,7 @@ def _analyze_secrets_in_region(
 def _analyze_secret_policy(
     secret_name: str,
     secret_arn: str,
+    region: str,
     policy: JsonDict,
     org_account_ids: Set[str],
     org_id: str
@@ -198,6 +202,7 @@ def _analyze_secret_policy(
     Args:
         secret_name: Name of the secret
         secret_arn: ARN of the secret
+        region: The region the secret lives in
         policy: Parsed policy JSON
         org_account_ids: Set of all account IDs in the organization
         org_id: This organization's ID, deciding whether an
@@ -261,6 +266,7 @@ def _analyze_secret_policy(
         return SecretsPolicyAnalysis(
             secret_name=secret_name,
             secret_arn=secret_arn,
+            region=region,
             third_party_account_ids=third_party_accounts,
             has_wildcard_principal=has_wildcard,
             has_non_account_principals=has_non_account_principals,

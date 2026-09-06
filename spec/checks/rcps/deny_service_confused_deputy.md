@@ -103,7 +103,7 @@ and owns the accounting.
 | `analyze_ecr_policies` | Repository name, or `"registry"` for a registry policy | Yes |
 | `analyze_kms_key_policies` | Key ID | Yes |
 | `analyze_s3_bucket_policies` | Bucket name | No — global |
-| `analyze_secrets_manager_policies` | Secret name | No |
+| `analyze_secrets_manager_policies` | Secret name | Yes |
 | `analyze_sqs_queue_policies` | Queue ARN | Yes |
 | `analyze_iam_roles_trust_policies` | Role name | No — global |
 
@@ -169,6 +169,10 @@ global resource), `service_principal` (`*` for a wildcard principal narrowed
 by a source key; null when the read failed before any principal resolved),
 `source_account_ids`, `has_source_condition`,
 `has_wildcard_source`, `read_failure`.
+
+For a Secrets Manager finding, `region` is what separates the replicas of one
+secret, which share a name: `resource_identifier` is the secret name, so two
+replicas differ in no other identity field.
 
 Summary fields beyond the common three:
 

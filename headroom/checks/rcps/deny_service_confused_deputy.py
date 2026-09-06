@@ -237,7 +237,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
                 secret_result.service_principal_sources,
                 "secretsmanager",
                 secret_result.secret_name,
-                None,
+                secret_result.region,
             ))
 
         for sqs_result in analyze_sqs_queue_policies(session, self.org_account_ids, self.org_id):
