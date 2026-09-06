@@ -54,6 +54,15 @@ other statements cover.
   bound — and that document owns the argument.
 - Does not report a service principal trusted with no source guard at all. See
   limitation 1, which is this check's principal deployment risk.
+- Does not count the resources or sources the six analyzers read. Five of the
+  six drop a resource that produced nothing reportable before returning, and
+  SQS keeps every queue that carries a policy, so a tally taken in this check
+  would be exhaustive for queues and incidental for the other five, seeing
+  only the unguarded sources that sit on a resource kept for another reason.
+  A plausible-looking wrong number is worse than no number, so this check
+  writes no count of what was read. `resources_with_actionable_source` counts
+  the resources that reached it; the Result contract states what that
+  population is and why it is complete.
 
 ## Enforced statement
 
@@ -100,7 +109,7 @@ and owns the accounting.
 
 | Analyzer | Resource identifier | Region |
 |---|---|---|
-| `analyze_ecr_policies` | Repository name, or `"registry"` for a registry policy | Yes |
+| `analyze_ecr_policies` | Repository name, or `"registry"` for a registry policy. A repository named `registry` shares that identifier, and the two count as one resource | Yes |
 | `analyze_kms_key_policies` | Key ID | Yes |
 | `analyze_s3_bucket_policies` | Bucket name | No — global |
 | `analyze_secrets_manager_policies` | Secret name | Yes |
@@ -178,6 +187,7 @@ Summary fields beyond the common three:
 
 | Key | Meaning |
 |---|---|
+| `resources_with_actionable_source` | Distinct resources, keyed by `resource_type`, `resource_identifier`, and `region`, that produced at least one entry. Not the resources the analyzers read |
 | `violations` | Count. **This is the field placement reads.** |
 | `sources_with_wildcard_source` | Violations whose guard names sources no allowlist can enumerate |
 | `sources_with_failed_read` | Violations whose source guard could not be read |
@@ -193,6 +203,29 @@ without them, `violations: 1` sends the reader through every entry to learn
 which. This is the shape
 [`deny_kms_third_party_access`](deny_kms_third_party_access.md) gives
 `keys_with_unresolved_grants`.
+
+A source is actionable when this check keeps it: it names out-of-organization
+source accounts, names a source no allowlist can enumerate, or could not be
+read. `resources_with_actionable_source` is complete over that population,
+which is the sources the six analyzers produce: a statement an analyzer's own
+gate rejects, an `Effect: Deny`, a role trust granting no `sts:AssumeRole`, or
+a key policy statement granting only `kms:RetireGrant`, never becomes a
+source. Every analyzer retains a resource carrying an actionable source, five
+by naming `has_actionable_service_principal_source` in their retention test
+and SQS by retaining every queue that carries a policy, and this check keeps
+exactly the sources that predicate accepts. So every resource carrying one
+reaches the check, and the distinct count over its entries is the whole
+actionable population. A resource whose sources are all unguarded is neither
+entered nor counted, and an AWS-managed KMS key is skipped before analysis
+([`deny_kms_third_party_access`](deny_kms_third_party_access.md#result-contract)).
+
+The six third-party-access checks each write a `total_*_analyzed` that counts
+what produced an entry, not everything it read, and this field counts by the
+same rule. It is not named as a total because this check scans six resource
+types and has nothing single to name a key for
+([`../../contracts/results.md`](../../contracts/results.md#the-two-list-shape)),
+and because one total spanning all six would nonetheless read as the count of
+what was scanned, which is the tally the Non-goals decline to write.
 
 ## Placement and generated policy
 
@@ -328,6 +361,10 @@ that procedure.
     aws:SourceAccount` naming an out-of-organization account → not recorded;
     the account does not reach `unique_third_party_accounts`, and on deploy the
     statement denies the driver the policy named (limitation 1).
+12. A secret replicated to two regions, each replica's policy trusting a
+    service under a guard naming an out-of-organization account → two
+    compliant entries sharing `resource_identifier` and separated by
+    `region`, and `summary.resources_with_actionable_source` is 2.
 
 ## Referenced invariants
 

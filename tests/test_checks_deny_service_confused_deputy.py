@@ -472,16 +472,54 @@ class TestServiceConfusedDeputyCheck:
         assert finding["service_principal"] == "sns.amazonaws.com"
         assert finding["source_account_ids"] == [THIRD_PARTY]
 
+    def test_two_sources_on_one_resource_count_one_resource(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        Two sources trusted by one queue produce two findings, one resource.
+
+        `resources_with_actionable_source` counts the queue once, not the
+        two sources on it. The two-entry `compliant_instances` asserted
+        alongside is what shows that difference.
+        """
+        data = _run(temp_results_dir, [
+            _source(accounts=[THIRD_PARTY]),
+            _source(service="events.amazonaws.com", accounts=["888888888888"]),
+        ])
+
+        assert len(data["compliant_instances"]) == 2
+        assert data["summary"]["resources_with_actionable_source"] == 1
+
+    def test_a_resource_with_only_violations_is_counted(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        A resource whose only finding is a violation still arrived.
+
+        `resources_with_actionable_source` sums across
+        `check_result.violations` as well as `exemptions` and `compliant`.
+        This fixture's one finding is a wildcard source, which is a
+        violation and leaves `compliant_instances` empty, so there is no
+        compliant entry left to mask a sum taken over the wrong bucket.
+        """
+        data = _run(temp_results_dir, [_source(wildcard=True)])
+
+        assert len(data["violations"]) == 1
+        assert len(data["compliant_instances"]) == 0
+        assert data["summary"]["resources_with_actionable_source"] == 1
+
 
 class TestTheAllowlistAccumulatesAcrossTheEstate:
     """
-    `unique_third_party_accounts` is the union over every resource found.
+    `unique_third_party_accounts` is the union over every resource found,
+    and `resources_with_actionable_source` is the distinct count of them.
 
-    It becomes the deployed statement's `aws:SourceAccount` allowlist, so an
-    account dropped here is a working integration the RCP denies on apply.
-    Every other test in this file feeds a single analyzer a single resource;
-    these pin the accumulation across the six loops in `analyze()` and across
-    resources within one loop.
+    The union becomes the deployed statement's `aws:SourceAccount` allowlist,
+    so an account dropped here is a working integration the RCP denies on
+    apply. Every other test in this file feeds a single analyzer a single
+    resource; these pin the accumulation across the six loops in `analyze()`
+    and across resources within one loop, and the three components of the
+    resource key, each by a pair of resources that differ in that one alone.
     """
 
     def test_every_analyzer_contributes_to_one_allowlist(
@@ -517,6 +555,7 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
         ]
         assert data["summary"]["third_party_account_count"] == 6
         assert len(data["compliant_instances"]) == 6
+        assert data["summary"]["resources_with_actionable_source"] == 6
 
     def test_two_resources_from_one_analyzer_both_contribute(
         self, temp_results_dir: str
@@ -554,6 +593,88 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             "arn:aws:sqs:us-west-2:111111111111:first-queue",
             "arn:aws:sqs:us-west-2:111111111111:second-queue",
         ]
+
+    def test_replica_secrets_in_two_regions_count_two_resources(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        Two replicas sharing a secret name are two resources, not one.
+
+        Limitation 3 of
+        spec/checks/rcps/deny_secrets_manager_third_party_access.md: a
+        replica secret is enumerated once per region it replicates to, so
+        one logical secret produces several findings that share a name.
+        Keying on region as well as identifier is what keeps them apart.
+        """
+        data = _run_many(temp_results_dir, {
+            "analyze_secrets_manager_policies": [
+                _analysis(
+                    service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                    secret_name="a-secret",
+                    region="us-east-1",
+                ),
+                _analysis(
+                    service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                    secret_name="a-secret",
+                    region="us-west-2",
+                ),
+            ],
+        })
+
+        assert data["summary"]["resources_with_actionable_source"] == 2
+
+    def test_a_bucket_and_a_role_sharing_a_name_count_two_resources(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        A bucket and a role sharing a name are two resources, not one.
+
+        S3 and IAM are both global, so each finding carries `region`
+        None, and the two stand-ins here also share the identifier
+        "shared-name". `resource_type` is the only field left to tell
+        them apart, which is what this pins.
+        """
+        data = _run_many(temp_results_dir, {
+            "analyze_s3_bucket_policies": [_analysis(
+                service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                bucket_name="shared-name",
+            )],
+            "analyze_iam_roles_trust_policies": [_analysis(
+                service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                role_name="shared-name",
+            )],
+        })
+
+        assert len(data["compliant_instances"]) == 2
+        assert data["summary"]["resources_with_actionable_source"] == 2
+
+    def test_two_queues_in_one_region_count_two_resources(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        Two queues in one region are two resources, not one.
+
+        They share `resource_type` and `region`; `resource_identifier` is
+        the one component of the resource key left to tell them apart,
+        which is what this pins.
+        """
+        data = _run_many(temp_results_dir, {
+            "analyze_sqs_queue_policies": [
+                _analysis(
+                    service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                    queue_arn="arn:aws:sqs:us-west-2:111111111111:first-queue",
+                    region="us-west-2",
+                ),
+                _analysis(
+                    service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                    queue_arn="arn:aws:sqs:us-west-2:111111111111:second-queue",
+                    region="us-west-2",
+                ),
+            ],
+        })
+
+        assert len(data["compliant_instances"]) == 2
+        assert data["summary"]["resources_with_actionable_source"] == 2
 
     def test_the_same_account_from_two_analyzers_appears_once(
         self, temp_results_dir: str

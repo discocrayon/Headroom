@@ -191,7 +191,10 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         exhaustive for queues and incidental for the other five, seeing
         only the unguarded sources that happen to sit on a resource kept
         for some other reason. A plausible-looking wrong number is worse
-        than no number. See the spec's Non-goals.
+        than no number. `resources_with_actionable_source` in the summary
+        counts the resources that did arrive, which is complete: every
+        analyzer retains a resource whose sources include an actionable
+        one. See the spec's Non-goals.
 
         A source the shared parser could not read arrives as a finding
         carrying `read_failure` rather than as a raise. Raising inside the
@@ -304,6 +307,8 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         """
         Build service confused deputy check-specific summary fields.
 
+        `resources_with_actionable_source` counts the distinct resources
+        the entries name, keyed by type, identifier, and region.
         `violations` withholds the statement from the account, exactly as it
         does for the other six checks - and a resource whose source read
         failed is one of them, so the statement is never deployed against an
@@ -322,6 +327,12 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         Returns:
             Dictionary with check-specific summary fields
         """
+        all_entries = check_result.violations + check_result.exemptions + check_result.compliant
+        resources_with_actionable_source = len({
+            (entry["resource_type"], entry["resource_identifier"], entry["region"])
+            for entry in all_entries
+        })
+
         sources_with_wildcard_source = sum(
             1 for violation in check_result.violations if violation["has_wildcard_source"]
         )
@@ -330,6 +341,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         )
 
         return {
+            "resources_with_actionable_source": resources_with_actionable_source,
             "violations": len(check_result.violations),
             "sources_with_wildcard_source": sources_with_wildcard_source,
             "sources_with_failed_read": sources_with_failed_read,
