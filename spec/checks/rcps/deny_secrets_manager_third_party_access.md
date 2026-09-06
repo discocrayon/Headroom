@@ -188,9 +188,10 @@ RCP placement: blocked at `violations > 0`; the allowlist is the union of
    confined by `aws:SourceVpce` still contributes its account at full width
    ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#what-is-deliberately-not-read)).
 3. A replica secret is enumerated separately in each region it replicates to, so
-   one logical secret can produce several findings. Each carries the `region`
-   it was read in and its own `secret_arn`, so the findings stay distinguishable
-   even though they share a name.
+   one logical secret can produce several findings. Each carries its own
+   `secret_arn`, and the `region` it was read in, which is what separates them
+   in [`deny_service_confused_deputy`](deny_service_confused_deputy.md), where
+   the identifier is the secret name.
 4. This check's class is the only RCP check whose `__init__` does not accept
    `**kwargs`, so it is coupled to the exact keyword set `run_checks_for_type`
    passes. Adding a construction argument breaks this check first.

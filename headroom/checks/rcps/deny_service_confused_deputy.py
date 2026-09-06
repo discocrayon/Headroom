@@ -14,14 +14,17 @@ the statement can be withheld from the accounts holding them.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set, cast
 
 from boto3.session import Session
 
 from ...aws.ecr import analyze_ecr_policies
 from ...aws.iam.roles import analyze_iam_roles_trust_policies
 from ...aws.kms import analyze_kms_key_policies
-from ...aws.policy_documents import ServicePrincipalSource
+from ...aws.policy_documents import (
+    ServicePrincipalSource,
+    is_actionable_service_principal_source,
+)
 from ...aws.s3 import analyze_s3_bucket_policies
 from ...aws.secretsmanager import analyze_secrets_manager_policies
 from ...aws.sqs import analyze_sqs_queue_policies
@@ -44,7 +47,7 @@ class ServicePrincipalSourceFinding:
         region: The region the resource lives in, None for global resources
         service_principal: The service the policy trusts, `*` for a
             wildcard principal narrowed by a source key, None when the
-            source read failed before any principal was resolved
+            source read failed, whatever principals the statement named
         source_account_ids: Out-of-organization accounts the guard permits
         has_source_condition: True if any source key guards the statement
         has_wildcard_source: True if the guard names sources no allowlist
@@ -60,6 +63,40 @@ class ServicePrincipalSourceFinding:
     has_source_condition: bool
     has_wildcard_source: bool
     read_failure: Optional[str] = None
+
+
+ViolationCause = Literal["failed_read", "wildcard_source"]
+_FAILED_READ: ViolationCause = "failed_read"
+_WILDCARD_SOURCE: ViolationCause = "wildcard_source"
+
+
+def _violation_cause(
+    has_wildcard_source: bool, *, read_failure: Optional[str]
+) -> Optional[ViolationCause]:
+    """
+    Report why an entry is a violation, or None if it is not one.
+
+    This is the one rule for that. `categorize_result` reads it to decide
+    the category and `build_summary_fields` to count by cause, so the two
+    per-cause counts partition `violations` by construction. A failed read
+    is named first because the guard is unknown, so nothing a wildcard flag
+    says can add to it; no constructor sets both, so the order never
+    decides in practice.
+
+    Args:
+        has_wildcard_source: True if the guard names sources no allowlist
+            can enumerate
+        read_failure: Why the source read could not be completed, None when
+            it was read in full
+
+    Returns:
+        `_FAILED_READ`, `_WILDCARD_SOURCE`, or None
+    """
+    if read_failure is not None:
+        return _FAILED_READ
+    if has_wildcard_source:
+        return _WILDCARD_SOURCE
+    return None
 
 
 def _findings_for_resource(
@@ -78,7 +115,7 @@ def _findings_for_resource(
         region: The region the resource lives in, None if global
 
     Returns:
-        One finding per source
+        One finding per actionable source
     """
     return [
         ServicePrincipalSourceFinding(
@@ -92,6 +129,7 @@ def _findings_for_resource(
             read_failure=source.read_failure,
         )
         for source in sources
+        if is_actionable_service_principal_source(source)
     ]
 
 
@@ -215,7 +253,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
             findings.extend(_findings_for_resource(
                 ecr_result.service_principal_sources,
                 "ecr",
-                ecr_result.repository_name or "registry",
+                ecr_result.repository_arn or "registry",
                 ecr_result.region,
             ))
 
@@ -259,10 +297,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
                 None,
             ))
 
-        return [
-            finding for finding in findings
-            if finding.source_account_ids or finding.has_wildcard_source or finding.read_failure
-        ]
+        return findings
 
     def categorize_result(
         self,
@@ -271,9 +306,10 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         """
         Categorize a single service principal source finding.
 
-        A failed read is a violation for the same reason a wildcard source
-        is: the account's allowlist cannot be computed, so the statement
-        must be withheld rather than deployed against a guess.
+        `_violation_cause` decides. A failed read is a violation for the
+        same reason a wildcard source is: the account's allowlist cannot be
+        computed, so the statement must be withheld rather than deployed
+        against a guess.
 
         Args:
             result: One finding
@@ -294,9 +330,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
 
         self.all_third_party_accounts.update(result.source_account_ids)
 
-        # build_summary_fields counts violations by these two causes and the
-        # counts sum to len(violations) only while these are the only two.
-        if result.has_wildcard_source or result.read_failure is not None:
+        if _violation_cause(result.has_wildcard_source, read_failure=result.read_failure) is not None:
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 
@@ -314,9 +348,13 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         failed is one of them, so the statement is never deployed against an
         allowlist that could not be computed.
         `sources_with_wildcard_source` and `sources_with_failed_read` split
-        that count by cause and sum to it: the first counts guards the
-        estate wrote that no allowlist can express, the second guards this
-        parser could not read.
+        that count by `_violation_cause`, which names one cause per entry,
+        so the two sum to `violations` by construction. The first counts
+        service principals under a guard no allowlist can express, one
+        entry per principal a statement names; the second counts statements
+        whose guard could not be read, one entry per statement, because the
+        reader catches the error at statement scope and discards the
+        principals it had already resolved.
         `unique_third_party_accounts` becomes the statement's
         aws:SourceAccount allowlist and `third_party_account_count` its
         length.
@@ -333,12 +371,15 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
             for entry in all_entries
         })
 
-        sources_with_wildcard_source = sum(
-            1 for violation in check_result.violations if violation["has_wildcard_source"]
-        )
-        sources_with_failed_read = sum(
-            1 for violation in check_result.violations if violation["read_failure"] is not None
-        )
+        causes = [
+            _violation_cause(
+                cast(bool, entry["has_wildcard_source"]),
+                read_failure=cast(Optional[str], entry["read_failure"]),
+            )
+            for entry in check_result.violations
+        ]
+        sources_with_wildcard_source = causes.count(_WILDCARD_SOURCE)
+        sources_with_failed_read = causes.count(_FAILED_READ)
 
         return {
             "resources_with_actionable_source": resources_with_actionable_source,

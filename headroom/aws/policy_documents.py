@@ -26,6 +26,7 @@ __all__ = [
     "UnknownSourceConditionError",
     "has_actionable_service_principal_source",
     "has_not_principal",
+    "is_actionable_service_principal_source",
     "normalize_actions",
     "normalize_statements",
     "read_service_principal_sources",
@@ -960,11 +961,9 @@ def _read_service_principal_sources(
     ]
 
 
-def has_actionable_service_principal_source(
-    sources: List[ServicePrincipalSource]
-) -> bool:
+def is_actionable_service_principal_source(source: ServicePrincipalSource) -> bool:
     """
-    Report whether any service principal source is worth keeping.
+    Report whether one service principal source is worth keeping.
 
     A source is actionable when it names an out-of-organization account the
     allowlist must carry, when its guard names sources no allowlist can
@@ -992,17 +991,31 @@ def has_actionable_service_principal_source(
     CloudTrail. That is the check's principal deployment risk.
 
     Args:
+        source: One service principal source a resource's statements
+            recorded
+
+    Returns:
+        True if it names an out-of-organization account, a guard no
+        allowlist can express, or a failed read
+    """
+    return bool(source.source_account_ids) or source.has_wildcard_source or source.read_failure is not None
+
+
+def has_actionable_service_principal_source(
+    sources: List[ServicePrincipalSource]
+) -> bool:
+    """
+    Report whether any service principal source is worth keeping.
+
+    Args:
         sources: The service principal sources one resource's statements
             recorded
 
     Returns:
-        True if a source names an out-of-organization account, a guard no
-        allowlist can express, or a failed read
+        True if `is_actionable_service_principal_source` is true of any of
+        them
     """
-    return any(
-        source.source_account_ids or source.has_wildcard_source or source.read_failure
-        for source in sources
-    )
+    return any(is_actionable_service_principal_source(source) for source in sources)
 
 
 def is_service_linked_role_arn(principal: str) -> bool:

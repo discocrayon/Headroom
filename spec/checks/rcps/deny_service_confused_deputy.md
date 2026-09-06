@@ -109,7 +109,7 @@ and owns the accounting.
 
 | Analyzer | Resource identifier | Region |
 |---|---|---|
-| `analyze_ecr_policies` | Repository name, or `"registry"` for a registry policy. A repository named `registry` shares that identifier, and the two count as one resource | Yes |
+| `analyze_ecr_policies` | Repository ARN, or `"registry"` for a registry policy, which no ARN can equal | Yes |
 | `analyze_kms_key_policies` | Key ID | Yes |
 | `analyze_s3_bucket_policies` | Bucket name | No — global |
 | `analyze_secrets_manager_policies` | Secret name | Yes |
@@ -164,7 +164,7 @@ own `Null` clause makes an `...IfExists` guard on that one key safe — see
 | Any other abort one of the six analyzers raises — `MalformedPolicyError`, `UnknownPrincipalTypeError`, `UnknownGranteeTypeError`, `UnknownGrantPrincipalError`, `InvalidFederatedPrincipalError`, a `TypeError` on an `Action`, or a `KeyError` on a KMS grant missing its ID or its grantee | Propagates, aborting the run. This check re-runs the analyzers, so it inherits every abort they have; each analyzer's own specification owns when it raises |
 | A source key under an operator that does not pin it, an `aws:SourceAccount` value that is neither an account ID nor a wildcard, or an unreadable organization scope | Recorded as `read_failure` on the finding, which makes it a violation |
 
-The second row is deliberate and is the one place this check does not abort. The
+The third row is deliberate and is the one place this check does not abort. The
 reader sits inside all six analyzers, and six pre-existing checks share them
 without ever reading a source guard, so raising would take
 `deny_s3_third_party_access` and its five siblings down with it. Recording the
@@ -174,14 +174,24 @@ failure withholds this statement from the account without disturbing theirs.
 
 Base document shape. Entry fields: `resource_type` (`ecr`, `kms`, `s3`,
 `secretsmanager`, `sqs`, or `iam`), `resource_identifier`, `region` (null for a
-global resource), `service_principal` (`*` for a wildcard principal narrowed
-by a source key; null when the read failed before any principal resolved),
-`source_account_ids`, `has_source_condition`,
-`has_wildcard_source`, `read_failure`.
+global resource), `service_principal` (`*` for a wildcard principal narrowed by
+a source key; null when the read failed, whatever principals the statement
+named), `source_account_ids`, `has_source_condition`, `has_wildcard_source`,
+`read_failure`.
 
 For a Secrets Manager finding, `region` is what separates the replicas of one
 secret, which share a name: `resource_identifier` is the secret name, so two
 replicas differ in no other identity field.
+
+Two entry fields changed after the check first shipped, and both are additive: a
+Secrets Manager entry written before the analysis recorded its region carries
+`region: null` though the secret is regional, and an ECR entry written before
+the identifier became the repository ARN carries the repository name. No reader
+requires anything outside `summary`
+([`../../contracts/results.md`](../../contracts/results.md#summary-keys-a-reader-requires)).
+
+A multi-Region KMS key is the same shape as a replicated secret: its replicas
+share one `mrk-` key ID and differ only in `region`, so they are two resources.
 
 Summary fields beyond the common three:
 
@@ -189,43 +199,60 @@ Summary fields beyond the common three:
 |---|---|
 | `resources_with_actionable_source` | Distinct resources, keyed by `resource_type`, `resource_identifier`, and `region`, that produced at least one entry. Not the resources the analyzers read |
 | `violations` | Count. **This is the field placement reads.** |
-| `sources_with_wildcard_source` | Violations whose guard names sources no allowlist can enumerate |
+| `sources_with_wildcard_source` | Violations with `has_wildcard_source`: the guard names sources no allowlist can enumerate — a wildcard account, an accountless ARN, or another organization — or an `...IfExists` operator on a key other than `aws:SourceAccount` lets a request omit the key. Both `has_wildcard_source` rows of the Decision table |
 | `sources_with_failed_read` | Violations whose source guard could not be read |
 | `unique_third_party_accounts` | The statement's `aws:SourceAccount` allowlist |
 | `third_party_account_count` | Its length |
 
 `sources_with_wildcard_source` and `sources_with_failed_read` sum to
-`violations`. `unreadable_service_principal_source` in
-`headroom/aws/policy_documents.py` is the one constructor of a failed read, and
-it never sets `has_wildcard_source`, so no entry is counted by both. Together
-they are the summary-level signal for which cause a violation came from;
-without them, `violations: 1` sends the reader through every entry to learn
-which. This is the shape
+`violations`. `_violation_cause` in the check module is the one rule for why an
+entry is a violation: it names a failed read first, because the guard is unknown
+and nothing a wildcard flag says can add to that, and a wildcard source
+otherwise. `categorize_result` reads it to decide the category and
+`build_summary_fields` to count by cause, so the two counts partition
+`violations` by construction rather than by the convention that
+`unreadable_service_principal_source`, the one constructor of a failed read,
+never sets `has_wildcard_source`. The two do not count the same unit. A readable
+statement yields one entry per service principal it names; an unreadable one
+yields one entry for the statement, because `read_service_principal_sources`
+catches the error at statement scope and returns a single entry, discarding
+whatever principals it had already resolved. A statement trusting three
+services counts three under a guard no allowlist can express and one when its
+guard cannot be read. Together they are the summary-level signal for which
+cause a violation came from; without them, `violations: 1` sends the reader
+through every entry to learn which. This is the shape
 [`deny_kms_third_party_access`](deny_kms_third_party_access.md) gives
 `keys_with_unresolved_grants`.
 
+`resources_with_actionable_source`, `sources_with_wildcard_source`, and
+`sources_with_failed_read` are additive in the same way: a result file written
+before they existed lacks the keys, and no reader requires anything outside
+`summary`.
+
 A source is actionable when this check keeps it: it names out-of-organization
 source accounts, names a source no allowlist can enumerate, or could not be
-read. `resources_with_actionable_source` is complete over that population,
-which is the sources the six analyzers produce: a statement an analyzer's own
-gate rejects, an `Effect: Deny`, a role trust granting no `sts:AssumeRole`, or
-a key policy statement granting only `kms:RetireGrant`, never becomes a
-source. Every analyzer retains a resource carrying an actionable source, five
-by naming `has_actionable_service_principal_source` in their retention test
-and SQS by retaining every queue that carries a policy, and this check keeps
-exactly the sources that predicate accepts. So every resource carrying one
-reaches the check, and the distinct count over its entries is the whole
-actionable population. A resource whose sources are all unguarded is neither
-entered nor counted, and an AWS-managed KMS key is skipped before analysis
+read. `resources_with_actionable_source` is complete over that population, which
+is the sources the six analyzers produce: a statement an analyzer's own gate
+rejects, an `Effect: Deny`, a role trust granting no `sts:AssumeRole`, or a key
+policy statement granting only `kms:RetireGrant`, never becomes a source. Every
+analyzer retains a resource carrying an actionable source, five by naming
+`has_actionable_service_principal_source` in their retention test and SQS by
+retaining every queue that carries a policy, and this check filters each source
+through `is_actionable_service_principal_source`, the per-source rule
+`has_actionable_service_principal_source` applies with `any`. So every resource
+carrying one reaches the check, and the distinct count over its entries is the
+whole actionable population. A resource whose sources are all unguarded is
+neither entered nor counted, and an AWS-managed KMS key is skipped
+before analysis
 ([`deny_kms_third_party_access`](deny_kms_third_party_access.md#result-contract)).
 
-The six third-party-access checks each write a `total_*_analyzed` that counts
-what produced an entry, not everything it read, and this field counts by the
-same rule. It is not named as a total because this check scans six resource
-types and has nothing single to name a key for
-([`../../contracts/results.md`](../../contracts/results.md#the-two-list-shape)),
-and because one total spanning all six would nonetheless read as the count of
-what was scanned, which is the tally the Non-goals decline to write.
+The six third-party-access checks each write a `total_*_analyzed` by the rule
+[`../../contracts/results.md`](../../contracts/results.md#the-two-list-shape)
+states, and this field counts by the same rule. It is not named as a total
+because, as that section says, this check scans six resource types and has
+nothing single to name a key for, and because one total spanning all six would
+nonetheless read as the count of what was scanned, which is the tally the
+Non-goals decline to write.
 
 ## Placement and generated policy
 
@@ -326,8 +353,9 @@ that procedure.
 2. The same guard naming only organization accounts → not recorded at all.
 3. A guard whose `aws:SourceAccount` is a wildcard → violation, and the account
    is not cleared.
-4. A guard naming `aws:SourceOrgID` for a different organization → the source is
-   out of organization and is recorded.
+4. A guard naming `aws:SourceOrgID` for a different organization → violation:
+   that organization's accounts are not enumerable, so the guard is a wildcard
+   source and `summary.sources_with_wildcard_source` counts it.
 5. A statement whose source guard cannot be read → violation with `read_failure`
    set and counted in `summary.sources_with_failed_read`, and the other six
    checks still complete.
@@ -336,7 +364,8 @@ that procedure.
 7. An account matching scenario 3 → `summary.violations` is 1,
    `summary.sources_with_wildcard_source` is 1, and placement does not clear it.
 8. A guard on `aws:SourceArn` written with `ArnEqualsIfExists` → violation, and
-   the account is not cleared, even though the guard names an account.
+   the account is not cleared, even though the guard names an account, and
+   `summary.sources_with_wildcard_source` counts it.
 9. A queue policy with `Principal: "*"` narrowed by `ArnEquals aws:SourceArn`
    to a topic in an out-of-organization account, AWS's documented cross-account
    SNS subscription → compliant, with `service_principal` `*`, and the topic's
@@ -373,9 +402,12 @@ INV-01, INV-02, INV-06, INV-10, INV-13.
 ## Implementation
 
 - `headroom/checks/rcps/deny_service_confused_deputy.py` — class
-  `DenyServiceConfusedDeputyCheck`, dataclass `ServicePrincipalSourceFinding`
+  `DenyServiceConfusedDeputyCheck`, dataclass `ServicePrincipalSourceFinding`,
+  `_violation_cause`
 - `headroom/aws/policy_documents.py` — `read_service_principal_sources`,
-  `has_actionable_service_principal_source`, `unreadable_service_principal_source`
+  `has_actionable_service_principal_source`,
+  `is_actionable_service_principal_source`,
+  `unreadable_service_principal_source`
 - `headroom/terraform/parameters.py` — `render_check_parameters`
 - `test_environment/modules/rcps/locals.tf` — the rendered statement
 - Tests: `tests/test_checks_deny_service_confused_deputy.py`,

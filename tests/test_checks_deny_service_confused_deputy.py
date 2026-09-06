@@ -115,11 +115,14 @@ def _run(temp_results_dir: str, sqs_sources: List[ServicePrincipalSource]) -> Di
 
 
 def _analysis(**fields: Any) -> MagicMock:
-    """Build a stand-in analysis carrying the given attributes."""
-    analysis = MagicMock()
-    for name, value in fields.items():
-        setattr(analysis, name, value)
-    return analysis
+    """
+    Build a stand-in analysis carrying exactly the given attributes.
+
+    A read of any attribute the caller did not name raises, so a stand-in
+    cannot pass a test by handing the check a `MagicMock` where the check
+    reads a real field.
+    """
+    return MagicMock(spec_set=list(fields), **fields)
 
 
 def _run_many(
@@ -288,6 +291,35 @@ class TestServiceConfusedDeputyCheck:
         assert data["summary"]["unique_third_party_accounts"] == []
         assert data["compliant_instances"] == []
 
+    def test_analyze_keeps_exactly_what_the_shared_predicate_accepts(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        The check does not restate the retention rule; it delegates.
+
+        `is_actionable_service_principal_source` is the per-source predicate
+        the five filtering adapters apply with `any`, and this check filters
+        every source through that same predicate. Forcing the predicate both
+        ways is what shows the check keeps no second copy of the rule: a
+        source the real predicate accepts is dropped when the predicate says
+        no, and one the real predicate drops is kept when it says yes.
+        """
+        predicate = (
+            "headroom.checks.rcps.deny_service_confused_deputy"
+            ".is_actionable_service_principal_source"
+        )
+
+        with patch(predicate, return_value=False):
+            rejected = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
+
+        assert rejected["violations"] == []
+        assert rejected["compliant_instances"] == []
+
+        with patch(predicate, return_value=True):
+            accepted = _run(temp_results_dir, [_source(accounts=[], has_condition=False)])
+
+        assert len(accepted["compliant_instances"]) == 1
+
     def test_two_findings_union_their_accounts(
         self, temp_results_dir: str
     ) -> None:
@@ -417,6 +449,166 @@ class TestServiceConfusedDeputyCheck:
         assert summary["sources_with_failed_read"] == 1
         assert summary["sources_with_wildcard_source"] + summary["sources_with_failed_read"] == summary["violations"]
 
+    def test_a_source_with_both_causes_is_counted_once(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        A source carrying both causes is counted under exactly one of them.
+
+        No constructor builds a source with both flags, so this fixture is
+        the case the partition must survive by construction rather than by
+        convention. A failed read names the cause, because the guard is
+        unknown, which subsumes what a wildcard would say.
+        """
+        data = _run(temp_results_dir, [
+            ServicePrincipalSource(
+                service_principal=None,
+                source_account_ids=[],
+                has_source_condition=False,
+                has_wildcard_source=True,
+                read_failure="could not be read",
+            ),
+        ])
+
+        summary = data["summary"]
+        assert summary["violations"] == 1
+        assert summary["sources_with_failed_read"] == 1
+        assert summary["sources_with_wildcard_source"] == 0
+
+    def test_an_if_exists_guard_on_a_source_arn_is_counted_as_a_wildcard(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        An `...IfExists` guard on `aws:SourceArn` is a wildcard source.
+
+        The guard names its source precisely, yet `ArnEqualsIfExists` is
+        also satisfied by a request carrying no `aws:SourceArn` at all, and
+        the deployed statement's `Null` clause spares that case only for
+        `aws:SourceAccount`. That is the second `has_wildcard_source` row
+        of the Decision table, and `sources_with_wildcard_source` counts it
+        alongside the first.
+        """
+        data = _run_sqs_policy(temp_results_dir, {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-west-2:111111111111:a-queue",
+                    "Condition": {"ArnEqualsIfExists": {
+                        "aws:SourceArn": "arn:aws:sns:us-west-2:999999999999:a-topic"
+                    }},
+                },
+            ],
+        })
+
+        assert data["summary"]["violations"] == 1
+        assert data["summary"]["sources_with_wildcard_source"] == 1
+
+    def test_a_foreign_organization_scope_is_counted_as_a_wildcard(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        An organization scope naming another organization is a wildcard source.
+
+        The allowlist holds account IDs, and another organization's accounts
+        are not knowable from here, so the guard names a source set no
+        allowlist can enumerate. That is the first `has_wildcard_source` row
+        of the Decision table, which `sources_with_wildcard_source` counts.
+        """
+        data = _run_sqs_policy(temp_results_dir, {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "sns.amazonaws.com"},
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-west-2:111111111111:a-queue",
+                    "Condition": {"StringEquals": {
+                        "aws:SourceOrgID": "o-22222222222"
+                    }},
+                },
+            ],
+        })
+
+        assert data["summary"]["violations"] == 1
+        assert data["summary"]["sources_with_wildcard_source"] == 1
+
+    def test_a_wildcard_guard_counts_one_entry_per_service_principal(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        A readable statement counts one entry per service principal it names.
+
+        One Condition block guards every principal in its statement, so a
+        statement trusting three services under one guard no allowlist can
+        express is three entries: `sources_with_wildcard_source` counts
+        service principals, not statements. The single queue carrying them
+        is still one resource.
+        """
+        data = _run_sqs_policy(temp_results_dir, {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": [
+                        "sns.amazonaws.com",
+                        "events.amazonaws.com",
+                        "s3.amazonaws.com",
+                    ]},
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-west-2:111111111111:a-queue",
+                    "Condition": {"ArnEqualsIfExists": {
+                        "aws:SourceArn": "arn:aws:sns:us-west-2:999999999999:a-topic"
+                    }},
+                },
+            ],
+        })
+
+        summary = data["summary"]
+        assert summary["violations"] == 3
+        assert summary["sources_with_wildcard_source"] == 3
+        assert summary["sources_with_failed_read"] == 0
+        assert summary["resources_with_actionable_source"] == 1
+
+    def test_a_failed_read_counts_one_entry_per_statement(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        An unreadable statement counts one entry, whatever it trusts.
+
+        The reader resolves all three service principals first, then reads
+        the guard, which raises; the error is caught at statement scope, so
+        the resolved principals are discarded and one entry stands for the
+        whole statement. That is why the same three-service statement
+        yields one entry rather than three: `sources_with_failed_read`
+        counts statements, not the service principals they name.
+        """
+        data = _run_sqs_policy(temp_results_dir, {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": [
+                        "sns.amazonaws.com",
+                        "events.amazonaws.com",
+                        "s3.amazonaws.com",
+                    ]},
+                    "Action": "sqs:SendMessage",
+                    "Resource": "arn:aws:sqs:us-west-2:111111111111:a-queue",
+                    "Condition": {"StringNotEquals": {
+                        "aws:SourceAccount": THIRD_PARTY
+                    }},
+                },
+            ],
+        })
+
+        summary = data["summary"]
+        assert summary["violations"] == 1
+        assert summary["sources_with_failed_read"] == 1
+        assert summary["sources_with_wildcard_source"] == 0
+
     def test_a_readable_finding_records_no_read_failure(
         self, temp_results_dir: str
     ) -> None:
@@ -496,11 +688,11 @@ class TestServiceConfusedDeputyCheck:
         """
         A resource whose only finding is a violation still arrived.
 
-        `resources_with_actionable_source` sums across
-        `check_result.violations` as well as `exemptions` and `compliant`.
-        This fixture's one finding is a wildcard source, which is a
-        violation and leaves `compliant_instances` empty, so there is no
-        compliant entry left to mask a sum taken over the wrong bucket.
+        `resources_with_actionable_source` counts distinct resources over
+        the violation entries as well as the compliant ones. This fixture's
+        one finding is a wildcard source, which is a violation and leaves
+        `compliant_instances` empty, so no compliant entry is left to mask
+        a count taken over the wrong list.
         """
         data = _run(temp_results_dir, [_source(wildcard=True)])
 
@@ -534,7 +726,7 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
         data = _run_many(temp_results_dir, {
             name: [_analysis(
                 service_principal_sources=[_source(accounts=[account])],
-                repository_name="a-repo",
+                repository_arn="arn:aws:ecr:us-east-1:111111111111:repository/a-repo",
                 key_id="a-key",
                 bucket_name="a-bucket",
                 secret_name="a-secret",
@@ -622,6 +814,13 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
         })
 
         assert data["summary"]["resources_with_actionable_source"] == 2
+        assert len(data["compliant_instances"]) == 2
+        assert sorted(
+            entry["region"] for entry in data["compliant_instances"]
+        ) == ["us-east-1", "us-west-2"]
+        assert {
+            entry["resource_identifier"] for entry in data["compliant_instances"]
+        } == {"a-secret"}
 
     def test_a_bucket_and_a_role_sharing_a_name_count_two_resources(
         self, temp_results_dir: str
@@ -676,6 +875,41 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
         assert len(data["compliant_instances"]) == 2
         assert data["summary"]["resources_with_actionable_source"] == 2
 
+    def test_a_repository_named_registry_is_not_the_registry(
+        self, temp_results_dir: str
+    ) -> None:
+        """
+        A repository may be named `registry`, and it is not the registry.
+
+        Keying an ECR finding on the repository ARN keeps such a repository
+        apart from the region's registry policy, which has no ARN and falls
+        back to the literal `registry`. No ARN can equal that string, so the
+        two are two resources however the repository is named.
+        """
+        data = _run_many(temp_results_dir, {
+            "analyze_ecr_policies": [
+                _analysis(
+                    service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                    repository_arn="arn:aws:ecr:us-east-1:111111111111:repository/registry",
+                    region="us-east-1",
+                ),
+                _analysis(
+                    service_principal_sources=[_source(accounts=[THIRD_PARTY])],
+                    repository_arn=None,
+                    region="us-east-1",
+                ),
+            ],
+        })
+
+        assert data["summary"]["resources_with_actionable_source"] == 2
+        assert {
+            entry["resource_identifier"]
+            for entry in data["compliant_instances"]
+        } == {
+            "registry",
+            "arn:aws:ecr:us-east-1:111111111111:repository/registry",
+        }
+
     def test_the_same_account_from_two_analyzers_appears_once(
         self, temp_results_dir: str
     ) -> None:
@@ -689,7 +923,7 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
         data = _run_many(temp_results_dir, {
             "analyze_ecr_policies": [_analysis(
                 service_principal_sources=[_source(accounts=[THIRD_PARTY])],
-                repository_name="a-repo",
+                repository_arn="arn:aws:ecr:us-east-1:111111111111:repository/a-repo",
                 region="us-east-1",
             )],
             "analyze_iam_roles_trust_policies": [_analysis(
@@ -707,17 +941,20 @@ class TestEveryAnalyzerFeedsTheCheck:
     """Each of the six analyzers must reach analyze()'s findings list."""
 
     def test_ecr_finding_names_its_repository(self, temp_results_dir: str) -> None:
-        """A repository policy's finding names that repository."""
+        """
+        A repository policy's finding names that repository by ARN, which no
+        registry policy can share.
+        """
         analysis = _analysis(
             service_principal_sources=[_source(accounts=[THIRD_PARTY])],
-            repository_name="a-repo",
+            repository_arn="arn:aws:ecr:us-east-1:111111111111:repository/a-repo",
             region="us-east-1",
         )
         data = _run_single_analyzer(temp_results_dir, "analyze_ecr_policies", analysis)
 
         finding = data["compliant_instances"][0]
         assert finding["resource_type"] == "ecr"
-        assert finding["resource_identifier"] == "a-repo"
+        assert finding["resource_identifier"] == "arn:aws:ecr:us-east-1:111111111111:repository/a-repo"
         assert finding["region"] == "us-east-1"
 
     def test_ecr_registry_policy_falls_back_to_registry(
@@ -726,7 +963,7 @@ class TestEveryAnalyzerFeedsTheCheck:
         """A registry policy names no repository, so the finding says so."""
         analysis = _analysis(
             service_principal_sources=[_source(accounts=[THIRD_PARTY])],
-            repository_name=None,
+            repository_arn=None,
             region="us-east-1",
         )
         data = _run_single_analyzer(temp_results_dir, "analyze_ecr_policies", analysis)

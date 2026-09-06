@@ -143,6 +143,10 @@ common keys below, its extra `summary` keys and the entry shape inside its
 three lists are specified in
 [`../checks/rcps/deny_service_confused_deputy.md`](../checks/rcps/deny_service_confused_deputy.md).
 
+A `total_*_analyzed` key, which the six write, counts what produced an entry —
+violations, exemptions, and compliant together — not everything the check read.
+Each of the six documents states it for its own resource.
+
 ### Summary keys every check writes
 
 | Key | Type | Notes |
