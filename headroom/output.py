@@ -7,7 +7,9 @@ ensuring consistent formatting and making it easy to modify output behavior.
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
+
+from .types import JsonDict
 
 logger = logging.getLogger(__name__)
 
@@ -44,23 +46,19 @@ class OutputHandler:
         print(f"\n🚨 {title}:\n{error}\n")
 
     @staticmethod
-    def success(title: str, data: Optional[Any] = None) -> None:
+    def success(title: str, data: Optional[JsonDict] = None) -> None:
         """
         Print formatted success message.
 
         Args:
             title: Success message title
-            data: Optional data to display (dict will be JSON formatted)
+            data: Optional dictionary to display, JSON formatted
         """
         print(f"\n✅ {title}")
         if not data:
             return
 
-        if isinstance(data, dict):
-            print(json.dumps(data, indent=2, default=str))
-            return
-
-        print(data)
+        print(json.dumps(data, indent=2, default=str))
 
     @staticmethod
     def section_header(title: str) -> None:

@@ -23,7 +23,9 @@ writing `False` over a YAML `true`.
 
 The merged mapping is validated by the `HeadroomConfig` pydantic model. A
 missing required field or a wrong type is a configuration error: the process
-reports it and exits non-zero rather than proceeding on defaults.
+reports it and exits non-zero rather than proceeding on defaults. So is a YAML
+file whose root is not a mapping: a root written as a list of `[key, value]`
+pairs is refused, not assembled into one and validated field by field.
 
 **A key Headroom does not recognize is an error**, on both models. pydantic's
 default is to drop an unknown key silently, which is the wrong failure here: a

@@ -5,7 +5,7 @@ import inspect
 import json
 import tempfile
 import textwrap
-from typing import Any, Dict, Iterator, List
+from typing import Dict, Iterator, List, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +17,7 @@ from headroom.aws.policy_documents import (
 from headroom.checks.rcps.deny_service_confused_deputy import (
     DenyServiceConfusedDeputyCheck,
 )
+from headroom.types import JsonDict
 from tests.constants import ORG_ID
 from tests.test_aws_helpers import analyzers_producing_service_principal_sources
 
@@ -75,7 +76,17 @@ def _sqs_analysis(sources: List[ServicePrincipalSource]) -> MagicMock:
     return analysis
 
 
-def _run(temp_results_dir: str, sqs_sources: List[ServicePrincipalSource]) -> Dict[str, Any]:
+def _summary(data: JsonDict) -> JsonDict:
+    """The summary block of a result document the check wrote."""
+    return cast(JsonDict, data["summary"])
+
+
+def _entries(data: JsonDict, key: str) -> List[JsonDict]:
+    """One of the entry lists of a result document the check wrote."""
+    return cast(List[JsonDict], data[key])
+
+
+def _run(temp_results_dir: str, sqs_sources: List[ServicePrincipalSource]) -> JsonDict:
     """
     Execute the check with only SQS returning findings.
 
@@ -110,11 +121,11 @@ def _run(temp_results_dir: str, sqs_sources: List[ServicePrincipalSource]) -> Di
             for entered in patches:
                 entered.stop()
 
-    results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
+    results_data: JsonDict = mock_write.call_args[1]["results_data"]
     return results_data
 
 
-def _analysis(**fields: Any) -> MagicMock:
+def _analysis(**fields: object) -> MagicMock:
     """
     Build a stand-in analysis carrying exactly the given attributes.
 
@@ -128,7 +139,7 @@ def _analysis(**fields: Any) -> MagicMock:
 def _run_many(
     temp_results_dir: str,
     analyses_by_analyzer: Dict[str, List[MagicMock]],
-) -> Dict[str, Any]:
+) -> JsonDict:
     """
     Execute the check with several analyzers each returning findings.
 
@@ -159,11 +170,11 @@ def _run_many(
         for entered in patches:
             entered.stop()
 
-    results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
+    results_data: JsonDict = mock_write.call_args[1]["results_data"]
     return results_data
 
 
-def _sqs_session(policy: Dict[str, Any]) -> MagicMock:
+def _sqs_session(policy: JsonDict) -> MagicMock:
     """
     Build a boto3 session stand-in serving one queue carrying the policy.
 
@@ -195,7 +206,7 @@ def _sqs_session(policy: Dict[str, Any]) -> MagicMock:
     return session
 
 
-def _run_sqs_policy(temp_results_dir: str, policy: Dict[str, Any]) -> Dict[str, Any]:
+def _run_sqs_policy(temp_results_dir: str, policy: JsonDict) -> JsonDict:
     """
     Execute the check with the real SQS analyzer reading one queue policy.
 
@@ -227,13 +238,13 @@ def _run_sqs_policy(temp_results_dir: str, policy: Dict[str, Any]) -> Dict[str, 
         for entered in patches:
             entered.stop()
 
-    results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
+    results_data: JsonDict = mock_write.call_args[1]["results_data"]
     return results_data
 
 
 def _run_single_analyzer(
     temp_results_dir: str, analyzer_name: str, analysis: MagicMock
-) -> Dict[str, Any]:
+) -> JsonDict:
     """
     Execute the check with only the named analyzer returning a finding.
 
@@ -254,8 +265,8 @@ class TestServiceConfusedDeputyCheck:
         """A guarded out-of-org source is what the allowlist carries."""
         data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
 
-        assert data["summary"]["unique_third_party_accounts"] == [THIRD_PARTY]
-        assert data["summary"]["third_party_account_count"] == 1
+        assert _summary(data)["unique_third_party_accounts"] == [THIRD_PARTY]
+        assert _summary(data)["third_party_account_count"] == 1
 
     def test_a_guarded_source_is_not_a_violation(
         self, temp_results_dir: str
@@ -263,7 +274,7 @@ class TestServiceConfusedDeputyCheck:
         """An expressible source costs the account no RCP coverage."""
         data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
 
-        assert data["summary"]["violations"] == 0
+        assert _summary(data)["violations"] == 0
 
     def test_a_wildcard_source_is_a_violation(
         self, temp_results_dir: str
@@ -271,7 +282,7 @@ class TestServiceConfusedDeputyCheck:
         """No allowlist can express an unbounded source set."""
         data = _run(temp_results_dir, [_source(wildcard=True)])
 
-        assert data["summary"]["violations"] == 1
+        assert _summary(data)["violations"] == 1
 
     def test_unguarded_sources_reach_nothing(
         self, temp_results_dir: str
@@ -287,9 +298,9 @@ class TestServiceConfusedDeputyCheck:
         """
         data = _run(temp_results_dir, [_source(has_condition=False)])
 
-        assert data["summary"]["violations"] == 0
-        assert data["summary"]["unique_third_party_accounts"] == []
-        assert data["compliant_instances"] == []
+        assert _summary(data)["violations"] == 0
+        assert _summary(data)["unique_third_party_accounts"] == []
+        assert _entries(data, "compliant_instances") == []
 
     def test_analyze_keeps_exactly_what_the_shared_predicate_accepts(
         self, temp_results_dir: str
@@ -318,7 +329,7 @@ class TestServiceConfusedDeputyCheck:
         with patch(predicate, return_value=True):
             accepted = _run(temp_results_dir, [_source(accounts=[], has_condition=False)])
 
-        assert len(accepted["compliant_instances"]) == 1
+        assert len(_entries(accepted, "compliant_instances")) == 1
 
     def test_two_findings_union_their_accounts(
         self, temp_results_dir: str
@@ -335,12 +346,12 @@ class TestServiceConfusedDeputyCheck:
             _source(service="events.amazonaws.com", accounts=["999999999999", "777777777777"]),
         ])
 
-        assert data["summary"]["unique_third_party_accounts"] == [
+        assert _summary(data)["unique_third_party_accounts"] == [
             "777777777777",
             "888888888888",
             "999999999999",
         ]
-        assert data["summary"]["third_party_account_count"] == 3
+        assert _summary(data)["third_party_account_count"] == 3
 
     def test_a_mixed_guard_both_allowlists_and_violates(
         self, temp_results_dir: str
@@ -359,10 +370,10 @@ class TestServiceConfusedDeputyCheck:
             _source(accounts=[THIRD_PARTY], wildcard=True)
         ])
 
-        assert data["summary"]["unique_third_party_accounts"] == [THIRD_PARTY]
-        assert data["summary"]["violations"] == 1
-        assert data["violations"][0]["source_account_ids"] == [THIRD_PARTY]
-        assert data["violations"][0]["has_wildcard_source"] is True
+        assert _summary(data)["unique_third_party_accounts"] == [THIRD_PARTY]
+        assert _summary(data)["violations"] == 1
+        assert _entries(data, "violations")[0]["source_account_ids"] == [THIRD_PARTY]
+        assert _entries(data, "violations")[0]["has_wildcard_source"] is True
 
     def test_a_read_failure_is_a_violation(
         self, temp_results_dir: str
@@ -379,10 +390,10 @@ class TestServiceConfusedDeputyCheck:
             unreadable_service_principal_source("aws:SourceAccount under StringNotEquals does not pin the source")
         ])
 
-        assert data["summary"]["violations"] == 1
-        assert data["summary"]["unique_third_party_accounts"] == []
+        assert _summary(data)["violations"] == 1
+        assert _summary(data)["unique_third_party_accounts"] == []
 
-        violation = data["violations"][0]
+        violation = _entries(data, "violations")[0]
         assert violation["read_failure"] == "aws:SourceAccount under StringNotEquals does not pin the source"
         assert violation["service_principal"] is None
 
@@ -400,8 +411,8 @@ class TestServiceConfusedDeputyCheck:
         """
         data = _run(temp_results_dir, [_source(wildcard=True)])
 
-        assert data["summary"]["sources_with_wildcard_source"] == 1
-        assert data["summary"]["sources_with_failed_read"] == 0
+        assert _summary(data)["sources_with_wildcard_source"] == 1
+        assert _summary(data)["sources_with_failed_read"] == 0
 
     def test_a_failed_read_is_counted_as_one(
         self, temp_results_dir: str
@@ -421,8 +432,8 @@ class TestServiceConfusedDeputyCheck:
             )
         ])
 
-        assert data["summary"]["sources_with_failed_read"] == 1
-        assert data["summary"]["sources_with_wildcard_source"] == 0
+        assert _summary(data)["sources_with_failed_read"] == 1
+        assert _summary(data)["sources_with_wildcard_source"] == 0
 
     def test_the_two_causes_partition_the_violations(
         self, temp_results_dir: str
@@ -443,7 +454,7 @@ class TestServiceConfusedDeputyCheck:
             _source(accounts=[THIRD_PARTY]),
         ])
 
-        summary = data["summary"]
+        summary = _summary(data)
         assert summary["violations"] == 2
         assert summary["sources_with_wildcard_source"] == 1
         assert summary["sources_with_failed_read"] == 1
@@ -470,7 +481,7 @@ class TestServiceConfusedDeputyCheck:
             ),
         ])
 
-        summary = data["summary"]
+        summary = _summary(data)
         assert summary["violations"] == 1
         assert summary["sources_with_failed_read"] == 1
         assert summary["sources_with_wildcard_source"] == 0
@@ -503,8 +514,8 @@ class TestServiceConfusedDeputyCheck:
             ],
         })
 
-        assert data["summary"]["violations"] == 1
-        assert data["summary"]["sources_with_wildcard_source"] == 1
+        assert _summary(data)["violations"] == 1
+        assert _summary(data)["sources_with_wildcard_source"] == 1
 
     def test_a_foreign_organization_scope_is_counted_as_a_wildcard(
         self, temp_results_dir: str
@@ -532,8 +543,8 @@ class TestServiceConfusedDeputyCheck:
             ],
         })
 
-        assert data["summary"]["violations"] == 1
-        assert data["summary"]["sources_with_wildcard_source"] == 1
+        assert _summary(data)["violations"] == 1
+        assert _summary(data)["sources_with_wildcard_source"] == 1
 
     def test_a_wildcard_guard_counts_one_entry_per_service_principal(
         self, temp_results_dir: str
@@ -566,7 +577,7 @@ class TestServiceConfusedDeputyCheck:
             ],
         })
 
-        summary = data["summary"]
+        summary = _summary(data)
         assert summary["violations"] == 3
         assert summary["sources_with_wildcard_source"] == 3
         assert summary["sources_with_failed_read"] == 0
@@ -604,7 +615,7 @@ class TestServiceConfusedDeputyCheck:
             ],
         })
 
-        summary = data["summary"]
+        summary = _summary(data)
         assert summary["violations"] == 1
         assert summary["sources_with_failed_read"] == 1
         assert summary["sources_with_wildcard_source"] == 0
@@ -615,7 +626,7 @@ class TestServiceConfusedDeputyCheck:
         """The failure field is null on every finding the parser could read."""
         data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
 
-        assert data["compliant_instances"][0]["read_failure"] is None
+        assert _entries(data, "compliant_instances")[0]["read_failure"] is None
 
     def test_a_source_pinned_only_on_a_deny_statement_is_not_recorded(
         self, temp_results_dir: str
@@ -647,8 +658,8 @@ class TestServiceConfusedDeputyCheck:
             ],
         })
 
-        assert data["summary"]["unique_third_party_accounts"] == []
-        assert data["summary"]["violations"] == 0
+        assert _summary(data)["unique_third_party_accounts"] == []
+        assert _summary(data)["violations"] == 0
 
     def test_the_finding_names_its_resource(
         self, temp_results_dir: str
@@ -657,9 +668,9 @@ class TestServiceConfusedDeputyCheck:
         data = _run(temp_results_dir, [_source(accounts=[THIRD_PARTY])])
 
         # The base _build_results_data names this key compliant_instances
-        finding = data["compliant_instances"][0]
+        finding = _entries(data, "compliant_instances")[0]
         assert finding["resource_type"] == "sqs"
-        assert finding["resource_identifier"].endswith("a-queue")
+        assert finding["resource_identifier"] == "arn:aws:sqs:us-west-2:111111111111:a-queue"
         assert finding["region"] == "us-west-2"
         assert finding["service_principal"] == "sns.amazonaws.com"
         assert finding["source_account_ids"] == [THIRD_PARTY]
@@ -679,8 +690,8 @@ class TestServiceConfusedDeputyCheck:
             _source(service="events.amazonaws.com", accounts=["888888888888"]),
         ])
 
-        assert len(data["compliant_instances"]) == 2
-        assert data["summary"]["resources_with_actionable_source"] == 1
+        assert len(_entries(data, "compliant_instances")) == 2
+        assert _summary(data)["resources_with_actionable_source"] == 1
 
     def test_a_resource_with_only_violations_is_counted(
         self, temp_results_dir: str
@@ -696,9 +707,9 @@ class TestServiceConfusedDeputyCheck:
         """
         data = _run(temp_results_dir, [_source(wildcard=True)])
 
-        assert len(data["violations"]) == 1
-        assert len(data["compliant_instances"]) == 0
-        assert data["summary"]["resources_with_actionable_source"] == 1
+        assert len(_entries(data, "violations")) == 1
+        assert len(_entries(data, "compliant_instances")) == 0
+        assert _summary(data)["resources_with_actionable_source"] == 1
 
 
 class TestTheAllowlistAccumulatesAcrossTheEstate:
@@ -737,7 +748,7 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             for name, account in ACCOUNT_BY_ANALYZER.items()
         })
 
-        assert data["summary"]["unique_third_party_accounts"] == [
+        assert _summary(data)["unique_third_party_accounts"] == [
             "222222222222",
             "333333333333",
             "444444444444",
@@ -745,9 +756,9 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             "666666666666",
             "777777777777",
         ]
-        assert data["summary"]["third_party_account_count"] == 6
-        assert len(data["compliant_instances"]) == 6
-        assert data["summary"]["resources_with_actionable_source"] == 6
+        assert _summary(data)["third_party_account_count"] == 6
+        assert len(_entries(data, "compliant_instances")) == 6
+        assert _summary(data)["resources_with_actionable_source"] == 6
 
     def test_two_resources_from_one_analyzer_both_contribute(
         self, temp_results_dir: str
@@ -774,13 +785,13 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             ],
         })
 
-        assert data["summary"]["unique_third_party_accounts"] == [
+        assert _summary(data)["unique_third_party_accounts"] == [
             "222222222222",
             "888888888888",
         ]
         assert [
             finding["resource_identifier"]
-            for finding in data["compliant_instances"]
+            for finding in _entries(data, "compliant_instances")
         ] == [
             "arn:aws:sqs:us-west-2:111111111111:first-queue",
             "arn:aws:sqs:us-west-2:111111111111:second-queue",
@@ -813,13 +824,13 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             ],
         })
 
-        assert data["summary"]["resources_with_actionable_source"] == 2
-        assert len(data["compliant_instances"]) == 2
-        assert sorted(
-            entry["region"] for entry in data["compliant_instances"]
-        ) == ["us-east-1", "us-west-2"]
+        assert _summary(data)["resources_with_actionable_source"] == 2
+        assert len(_entries(data, "compliant_instances")) == 2
         assert {
-            entry["resource_identifier"] for entry in data["compliant_instances"]
+            entry["region"] for entry in _entries(data, "compliant_instances")
+        } == {"us-east-1", "us-west-2"}
+        assert {
+            entry["resource_identifier"] for entry in _entries(data, "compliant_instances")
         } == {"a-secret"}
 
     def test_a_bucket_and_a_role_sharing_a_name_count_two_resources(
@@ -844,8 +855,8 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             )],
         })
 
-        assert len(data["compliant_instances"]) == 2
-        assert data["summary"]["resources_with_actionable_source"] == 2
+        assert len(_entries(data, "compliant_instances")) == 2
+        assert _summary(data)["resources_with_actionable_source"] == 2
 
     def test_two_queues_in_one_region_count_two_resources(
         self, temp_results_dir: str
@@ -872,8 +883,8 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             ],
         })
 
-        assert len(data["compliant_instances"]) == 2
-        assert data["summary"]["resources_with_actionable_source"] == 2
+        assert len(_entries(data, "compliant_instances")) == 2
+        assert _summary(data)["resources_with_actionable_source"] == 2
 
     def test_a_repository_named_registry_is_not_the_registry(
         self, temp_results_dir: str
@@ -901,10 +912,10 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             ],
         })
 
-        assert data["summary"]["resources_with_actionable_source"] == 2
+        assert _summary(data)["resources_with_actionable_source"] == 2
         assert {
             entry["resource_identifier"]
-            for entry in data["compliant_instances"]
+            for entry in _entries(data, "compliant_instances")
         } == {
             "registry",
             "arn:aws:ecr:us-east-1:111111111111:repository/registry",
@@ -932,9 +943,9 @@ class TestTheAllowlistAccumulatesAcrossTheEstate:
             )],
         })
 
-        assert data["summary"]["unique_third_party_accounts"] == [THIRD_PARTY]
-        assert data["summary"]["third_party_account_count"] == 1
-        assert len(data["compliant_instances"]) == 2
+        assert _summary(data)["unique_third_party_accounts"] == [THIRD_PARTY]
+        assert _summary(data)["third_party_account_count"] == 1
+        assert len(_entries(data, "compliant_instances")) == 2
 
 
 class TestEveryAnalyzerFeedsTheCheck:
@@ -952,7 +963,7 @@ class TestEveryAnalyzerFeedsTheCheck:
         )
         data = _run_single_analyzer(temp_results_dir, "analyze_ecr_policies", analysis)
 
-        finding = data["compliant_instances"][0]
+        finding = _entries(data, "compliant_instances")[0]
         assert finding["resource_type"] == "ecr"
         assert finding["resource_identifier"] == "arn:aws:ecr:us-east-1:111111111111:repository/a-repo"
         assert finding["region"] == "us-east-1"
@@ -968,7 +979,7 @@ class TestEveryAnalyzerFeedsTheCheck:
         )
         data = _run_single_analyzer(temp_results_dir, "analyze_ecr_policies", analysis)
 
-        finding = data["compliant_instances"][0]
+        finding = _entries(data, "compliant_instances")[0]
         assert finding["resource_identifier"] == "registry"
 
     def test_kms_finding_names_its_key(self, temp_results_dir: str) -> None:
@@ -980,7 +991,7 @@ class TestEveryAnalyzerFeedsTheCheck:
         )
         data = _run_single_analyzer(temp_results_dir, "analyze_kms_key_policies", analysis)
 
-        finding = data["compliant_instances"][0]
+        finding = _entries(data, "compliant_instances")[0]
         assert finding["resource_type"] == "kms"
         assert finding["resource_identifier"] == "a-key"
         assert finding["region"] == "us-east-1"
@@ -995,7 +1006,7 @@ class TestEveryAnalyzerFeedsTheCheck:
         )
         data = _run_single_analyzer(temp_results_dir, "analyze_s3_bucket_policies", analysis)
 
-        finding = data["compliant_instances"][0]
+        finding = _entries(data, "compliant_instances")[0]
         assert finding["resource_type"] == "s3"
         assert finding["resource_identifier"] == "a-bucket"
         assert finding["region"] is None
@@ -1013,7 +1024,7 @@ class TestEveryAnalyzerFeedsTheCheck:
             temp_results_dir, "analyze_secrets_manager_policies", analysis
         )
 
-        finding = data["compliant_instances"][0]
+        finding = _entries(data, "compliant_instances")[0]
         assert finding["resource_type"] == "secretsmanager"
         assert finding["resource_identifier"] == "a-secret"
         assert finding["region"] == "us-east-1"
@@ -1030,7 +1041,7 @@ class TestEveryAnalyzerFeedsTheCheck:
             temp_results_dir, "analyze_iam_roles_trust_policies", analysis
         )
 
-        finding = data["compliant_instances"][0]
+        finding = _entries(data, "compliant_instances")[0]
         assert finding["resource_type"] == "iam"
         assert finding["resource_identifier"] == "a-role"
         assert finding["region"] is None

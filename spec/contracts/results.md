@@ -192,7 +192,7 @@ missing key and a legitimately empty value mean opposite things (INV-01).
 | Key | Required by | Missing means |
 |---|---|---|
 | `check` | RCP parsing | The file cannot be confirmed to belong to its directory |
-| `violations` | SCP and RCP parsing | Whether the account is safe is unknown, and defaulting answers it in the safest direction. `results_exist` skips an account whose result file already exists, so re-running without deleting the file repeats the same failure; both readers' errors name the file and prescribe exactly that. `ResultFilePathResolver.exists()` accepts either filename format, so the remedy also names the directory holding the other form — deleting only the file the reader tripped on leaves the skip in place when both are present |
+| `violations` | SCP and RCP parsing | Whether the account is safe is unknown, and defaulting answers it in the safest direction. `results_exist` skips an account whose result file already exists, so re-running without deleting the file repeats the same failure; both readers' errors name the file and prescribe exactly that. `ResultFilePathResolver.exists()` accepts either filename format, so the remedy also names the directory holding the other form — deleting only the file the reader tripped on leaves the skip in place when both are present. The check the remedy names is the directory's, since `results_exist` looks in the directory named for the check being run: a misfiled SCP result is attributed to its `summary.check`, but the skip it holds is the directory's |
 | `unique_third_party_accounts` | RCP parsing, as the `summary_key` every RCP definition declares | The allowlist would render empty, which denies every third party (INV-06) |
 | The `summary_key` an SCP check's `Allowlist` declares — `unique_ami_owners` for `deny_ec2_ami_owner`, `users` for `deny_iam_user_creation` | SCP parsing | Indistinguishable from an account that observed nothing, which would leave the policy off rather than flag a stale result |
 
@@ -200,6 +200,11 @@ A key that is present but holds anything other than a list aborts the same way,
 naming the file and the key: `null` is neither an observation nor an absent key,
 and carrying it forward crashed on the account-ID restore or was dropped by the
 placement union as though the check declared no allowlist.
+
+A `summary` that is present but is not an object aborts the same way, naming the
+file and the type it found: every check writes the block as an object, so as it
+stands the file is not one Headroom wrote. A file with no `summary` at all reads
+as an empty one and fails on the first key it lacks, which is the account.
 
 RCP parsing additionally rejects a file whose `summary.check` disagrees with the
 directory it was found in: a result filed under the wrong check would be
@@ -220,10 +225,15 @@ results directory is not.
 
 SCP parsing defaulted `violations` to zero until
 `deny_iam_saml_provider_not_aws_sso` shipped without the key and had every
-account it rejected cleared for a root-level deny. The remaining SCP summary
-fields — `exemptions`, `compliant`, `compliance_percentage`, `total_instances` —
-are still defaulted, deliberately: no placement decision reads them, so a missing
-one costs accuracy in a report rather than safety in a policy.
+account it rejected cleared for a root-level deny. RCP parsing required the key
+but compared the count without reading its type, so a negative count read as
+safe to deploy to and a boolean as blocking. Both readers now take the count
+from `_read_violations_count` in `headroom/parse_results.py`, one rule for both.
+The remaining SCP summary fields — `exemptions`, `compliant`,
+`compliance_percentage`, `total_instances` — are still defaulted, deliberately,
+and a present one is carried as written with no type check: no placement
+decision reads them, so a missing or malformed one costs accuracy in a report
+rather than safety in a policy.
 
 ## Redaction
 
@@ -266,6 +276,12 @@ Readers take account identity from the file, never from the filename:
    an error, not an account.
 2. Otherwise resolve `summary.account_name` against the organization hierarchy.
 3. A file with neither is an error.
+
+Both fields are read as strings. A file carrying either as any other type is an
+error naming the file and both values, before resolution begins: Headroom writes
+both as strings, or leaves `account_id` out under `exclude_account_ids`, so an
+integer ID is corruption rather than an account that left the organization, and
+a list name is corruption rather than a name to look up.
 
 Either way the account a file resolves to is in the hierarchy. An account that
 left the organization after its scan leaves its file behind, and the ID is

@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import pytest
 from pathlib import Path
-from typing import Any, Dict, List, Set, Generator
+from typing import Dict, List, Set, Generator
 from headroom.constants import (
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
@@ -45,6 +45,7 @@ from headroom.checks.scps.deny_ec2_public_ip import DenyEc2PublicIpCheck
 from headroom.enums import TerraformSection
 from headroom.placement.hierarchy import PlacementCandidate
 from headroom.types import (
+    JsonDict,
     AccountThirdPartyMap,
     CheckCoverage,
     OrganizationHierarchy,
@@ -695,6 +696,38 @@ class TestParseRcpResultFiles:
         ):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
+    @pytest.mark.parametrize("violations", [-1, "1", 1.0, True], ids=["negative", "string", "float", "bool"])
+    def test_parse_rejects_a_count_that_is_not_a_non_negative_integer(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy,
+        violations: object,
+    ) -> None:
+        """
+        The RCP reader reads the count the way the SCP reader does.
+
+        `blocks_rcp` is `violations > 0`, so a negative count read an account
+        as safe to deploy to, a boolean as blocking, and a string aborted with
+        a TypeError naming no file. Headroom wrote the file, so anything but
+        a non-negative integer is corruption, with the absent key's remedy.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "check": DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    "unique_third_party_accounts": [],
+                    "violations": violations,
+                }
+            }, f)
+
+        with pytest.raises(RuntimeError, match="non-negative integer") as exc_info:
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        assert repr(violations) in str(exc_info.value)
+
     def test_parse_aborts_when_violations_field_is_absent(
         self,
         temp_results_dir: str,
@@ -840,7 +873,7 @@ class TestParseRcpResultFiles:
         """
         seed_all_rcp_check_dirs(temp_results_dir)
         check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
-        summary: Dict[str, Any] = {
+        summary: JsonDict = {
             "account_id": "111111111111",
             "unique_third_party_accounts": [],
             "violations": 0,
@@ -898,7 +931,7 @@ class TestParseRcpResultFiles:
         check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
 
         for absent_key in ("check", "violations", "unique_third_party_accounts"):
-            summary: Dict[str, Any] = {
+            summary: JsonDict = {
                 "check": DENY_S3_THIRD_PARTY_ACCESS,
                 "account_id": "111111111111",
                 "account_name": "test-account",

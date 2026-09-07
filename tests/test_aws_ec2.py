@@ -10,7 +10,7 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 from unittest.mock import MagicMock
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from botocore.exceptions import ClientError
 from headroom.aws.ec2 import (
@@ -26,6 +26,7 @@ from headroom.aws.ec2 import (
     get_ec2_public_ip_analysis,
     get_instances,
 )
+from headroom.types import JsonDict
 
 
 class TestDenyEc2ImdsV1:
@@ -1764,7 +1765,7 @@ class TestGetInstances:
     """Test the shared per-region instance collector."""
 
     @staticmethod
-    def _session(pages: List[Dict[str, Any]]) -> MagicMock:
+    def _session(pages: List[JsonDict]) -> MagicMock:
         """Build a mock session whose regional EC2 client serves `pages`."""
         mock_regional_ec2 = MagicMock()
         mock_paginator = MagicMock()
@@ -2132,7 +2133,7 @@ class TestImdsV1EndpointIsNotAnExcuse:
     and setting it changes no behaviour, because nothing is listening.
     """
 
-    def _one_instance(self, metadata_options: Dict[str, Any]) -> DenyEc2ImdsV1:
+    def _one_instance(self, metadata_options: JsonDict) -> DenyEc2ImdsV1:
         """Run the collector over a single instance with these options."""
         session = MagicMock()
 

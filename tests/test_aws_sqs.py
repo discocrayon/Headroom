@@ -3,13 +3,14 @@ Tests for headroom.aws.sqs module.
 """
 
 import json
-from typing import Any
+from typing import Sequence
 
 import pytest
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
 from headroom.aws.sqs import (
+    SQSQueuePolicyAnalysis,
     analyze_sqs_queue_policies,
 )
 from headroom.aws.policy_documents import (
@@ -958,7 +959,7 @@ class TestPolicyGrammar:
     """Policy elements the queue analyzer must read the way IAM does."""
 
     @staticmethod
-    def _analyze(policy: Any) -> Any:
+    def _analyze(policy: object) -> Sequence[SQSQueuePolicyAnalysis]:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_sqs_client = MagicMock()

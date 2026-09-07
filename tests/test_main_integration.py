@@ -9,7 +9,7 @@ import json
 import os
 import pytest
 from unittest.mock import MagicMock, patch
-from typing import Dict, Any, Generator
+from typing import Dict, Generator
 from headroom.main import main
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE, GENERATED_MARKER
 from headroom.types import (
     AccountOrgPlacement,
     CheckCoverage,
+    JsonDict,
     RCPCheckParseResult,
     RCPPlacementRecommendations,
     OrganizationHierarchy,
@@ -63,7 +64,7 @@ class TestMainIntegration:
         return args
 
     @pytest.fixture
-    def valid_yaml_config(self) -> Dict[str, Any]:
+    def valid_yaml_config(self) -> JsonDict:
         """Create a valid YAML configuration for testing."""
         return {
             "use_account_name_from_tags": False,
@@ -75,7 +76,7 @@ class TestMainIntegration:
         }
 
     @pytest.fixture
-    def complex_yaml_config(self) -> Dict[str, Any]:
+    def complex_yaml_config(self) -> JsonDict:
         """Create a complex YAML configuration for testing edge cases."""
         return {
             "use_account_name_from_tags": True,
@@ -130,7 +131,7 @@ class TestMainIntegration:
     def test_main_success_with_valid_config(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
@@ -174,7 +175,7 @@ class TestMainIntegration:
     def test_main_success_with_complex_config(
         self,
         mock_cli_args: MagicMock,
-        complex_yaml_config: Dict[str, Any],
+        complex_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
@@ -586,7 +587,7 @@ class TestMainIntegration:
     def test_main_integration_flow_verification(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
@@ -645,7 +646,7 @@ class TestMainIntegration:
     def test_main_early_return_when_no_recommendations(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
@@ -695,7 +696,7 @@ class TestMainIntegration:
     def test_main_early_return_when_no_management_account_id(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """Covers early return path when management_account_id is missing."""
@@ -725,7 +726,7 @@ class TestMainIntegration:
     def test_main_client_error_during_discovery_is_handled(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
@@ -772,7 +773,7 @@ class TestMainIntegration:
     def test_main_discovery_failure_names_the_discovery_phase(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
@@ -817,7 +818,7 @@ class TestMainIntegration:
     def test_main_runtime_error_in_generation_is_handled(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """Covers the RuntimeError exception handler branch."""
@@ -849,7 +850,7 @@ class TestMainIntegration:
     def test_main_reports_a_filesystem_failure_instead_of_a_raw_traceback(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
@@ -893,7 +894,7 @@ class TestMainIntegration:
     def test_main_reports_a_scan_failure_instead_of_a_raw_traceback(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """
@@ -936,7 +937,7 @@ class TestMainIntegration:
     def test_main_with_rcp_recommendations_display(
         self,
         mock_cli_args: MagicMock,
-        valid_yaml_config: Dict[str, Any],
+        valid_yaml_config: JsonDict,
         mock_dependencies: Dict[str, MagicMock]
     ) -> None:
         """Test that RCP recommendations are displayed when present."""

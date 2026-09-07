@@ -1,6 +1,6 @@
 import argparse
 import yaml
-from typing import Any, Dict
+from typing import Mapping
 from .config import (
     DEFAULT_ACCOUNT_WORKERS,
     DEFAULT_RCPS_DIR,
@@ -9,9 +9,10 @@ from .config import (
     MAX_ACCOUNT_WORKERS,
     HeadroomConfig,
 )
+from .types import JsonDict
 
 
-def load_yaml_config(path: str) -> Dict[str, Any]:
+def load_yaml_config(path: str) -> JsonDict:
     """
     Load configuration from a YAML file.
 
@@ -104,7 +105,7 @@ def parse_cli_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def merge_configs(yaml_config: Dict[str, Any], cli_args: argparse.Namespace) -> HeadroomConfig:
+def merge_configs(yaml_config: Mapping[str, object], cli_args: argparse.Namespace) -> HeadroomConfig:
     """
     Merge YAML configuration with CLI arguments and validate the result.
 
@@ -117,17 +118,17 @@ def merge_configs(yaml_config: Dict[str, Any], cli_args: argparse.Namespace) -> 
 
     Raises:
         ValueError: If configuration validation fails
-        TypeError: If configuration has type errors
+        TypeError: If the YAML root is not a mapping
     """
-    # Start with YAML
-    merged = yaml_config.copy()
-
-    # Apply CLI overrides (only if CLI provided them)
+    # CLI overrides apply only where the CLI provided a value
     cli_dict = {
         k: v for k, v in vars(cli_args).items()
         if k in HeadroomConfig.model_fields and v is not None
     }
-    merged.update(cli_dict)
+
+    # Unpacking refuses a YAML root that is not a mapping. dict() would have
+    # coerced a root written as a list of pairs into one and validated it.
+    merged: JsonDict = {**yaml_config, **cli_dict}
 
     # Validate and return final config (will raise if required fields missing or wrong types)
-    return HeadroomConfig(**merged)
+    return HeadroomConfig.model_validate(merged)

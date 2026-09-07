@@ -14,13 +14,27 @@ step must pass:
 | `pytest tests/` | Every test passes |
 | Coverage of `headroom/` | **100%**. `.coveragerc` omits `*/__main__.py` and `.tox/*`, which are not source |
 | Coverage of `tests/` | **100%** — the test suite must exercise its own helpers |
-| `mypy headroom/ tests/` | Clean, under a strict configuration |
+| `mypy headroom/ tests/` | Clean. `mypy.ini` turns on every check `--strict` does except `disallow_any_generics`, and `disallow_any_explicit` besides |
 | `pre-commit run --all-files` | End-of-file, trailing whitespace, autoflake, flake8, autopep8 |
 
 `.coveragerc` also excludes any line marked `pragma: no cover`. **No line in
 `headroom/` or `tests/` carries one today**, so the 100% figure currently means
 every statement. It is an escape hatch, not a budget: a new one needs a reason
 in review, because that figure is only worth what the exclusions leave in.
+
+`mypy.ini` names each flag `--strict` enables rather than setting `strict`, so
+a mypy release cannot widen or narrow the gate without an edit to the file. It
+departs from `--strict` twice. `disallow_any_explicit` is on, which `--strict`
+does not include: `HOW_TO_ADD_A_CHECK.md` had forbidden `Any` in favour of
+`JsonDict` and nothing enforced it, so 54 sites in `headroom/` and 114 in
+`tests/` carried one. `disallow_any_generics` is off, because `BaseCheck` is
+generic in a type it uses in both parameter and return position, so the
+registry's bare `Type[BaseCheck]` can be written neither as
+`Type[BaseCheck[object]]`, which rejects every registered check, nor as
+`Type[BaseCheck[Any]]`, which the first flag forbids. The two pydantic models in
+`headroom/config.py` carry the only `type: ignore[explicit-any]`: mypy
+synthesizes `__dataclass_fields__: dict[str, Any]` on a `dataclass_transform`
+class and reports it at the class line as though the file wrote it.
 
 Nothing runs those five steps for you. The repository has no `.github/`
 directory and no workflow, and whether `pre-commit`'s git hook is installed is a

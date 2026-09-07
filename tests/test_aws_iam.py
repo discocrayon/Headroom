@@ -6,7 +6,7 @@ Tests cover IAM role trust policy analysis and SAML provider enumeration helpers
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, Sequence, Set
+from typing import Sequence, Set
 from unittest.mock import MagicMock
 from urllib.parse import quote
 
@@ -824,7 +824,7 @@ class TestTrustPolicyActionMatching:
     PARTNER = "999999999999"
     ORG = {"111111111111"}
 
-    def third_parties(self, statement: Dict[str, Any]) -> Set[str]:
+    def third_parties(self, statement: JsonDict) -> Set[str]:
         """Run the analyzer over one trust policy statement."""
         mock_session = MagicMock()
         mock_iam_client = MagicMock()
@@ -846,9 +846,9 @@ class TestTrustPolicyActionMatching:
             found.update(result.third_party_account_ids)
         return found
 
-    def allow(self, **fields: Any) -> Dict[str, Any]:
+    def allow(self, **fields: object) -> JsonDict:
         """Build an Allow statement naming the partner account."""
-        statement: Dict[str, Any] = {
+        statement: JsonDict = {
             "Effect": "Allow",
             "Principal": {"AWS": f"arn:aws:iam::{self.PARTNER}:root"},
         }
@@ -916,7 +916,7 @@ class TestTrustPolicyActionMatching:
 
     def test_deny_statement_is_ignored_before_action_is_read(self) -> None:
         """Effect is checked first, so a Deny is never classified."""
-        statement = {
+        statement: JsonDict = {
             "Effect": "Deny",
             "Principal": {"AWS": f"arn:aws:iam::{self.PARTNER}:root"},
         }
@@ -929,7 +929,7 @@ class TestTrustPolicyActionMatching:
         Under exact matching this statement was skipped, so its unknown
         principal type went unreported.
         """
-        statement = {
+        statement: JsonDict = {
             "Effect": "Allow",
             "Action": "sts:*",
             "Principal": {"NotARealPrincipalType": "whatever"},
@@ -1161,7 +1161,7 @@ class TestTrustPolicyGrammar:
         the surviving listing is what proves the Condition dropped the
         first role.
         """
-        assume_role: Dict[str, Any] = {
+        assume_role: JsonDict = {
             "Effect": "Allow",
             "Principal": {"AWS": "*"},
             "Action": "sts:AssumeRole",

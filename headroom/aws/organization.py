@@ -7,7 +7,7 @@ using the AWS Organizations API.
 
 import logging
 from collections import deque
-from typing import Deque, Dict, List, Optional, Sequence, Set, Tuple, cast
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 from boto3.session import Session
 from botocore.exceptions import BotoCoreError, ClientError
@@ -16,7 +16,6 @@ from mypy_boto3_organizations.type_defs import AccountTypeDef, OrganizationalUni
 
 from ..types import OrganizationHierarchy, OrganizationalUnit, AccountOrgPlacement
 from ..utils import make_safe_variable_name
-from .helpers import paginate
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -71,16 +70,9 @@ def _list_child_ous(
     child_ous: List[OrganizationalUnitTypeDef] = []
 
     try:
-        pages = paginate(
-            org_client, "list_organizational_units_for_parent", ParentId=parent_id
-        )
+        pages = org_client.get_paginator("list_organizational_units_for_parent").paginate(ParentId=parent_id)
         for page in pages:
-            child_ous.extend(
-                cast(
-                    Sequence[OrganizationalUnitTypeDef],
-                    page.get("OrganizationalUnits", []),
-                )
-            )
+            child_ous.extend(page.get("OrganizationalUnits", []))
     except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to list the OUs under {parent_id}: {e}")
 
@@ -116,8 +108,8 @@ def _list_child_accounts(
     child_accounts: List[AccountTypeDef] = []
 
     try:
-        for page in paginate(org_client, "list_accounts_for_parent", ParentId=parent_id):
-            child_accounts.extend(cast(Sequence[AccountTypeDef], page["Accounts"]))
+        for page in org_client.get_paginator("list_accounts_for_parent").paginate(ParentId=parent_id):
+            child_accounts.extend(page["Accounts"])
     except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to list the accounts under {parent_id}: {e}")
 
@@ -274,8 +266,8 @@ def find_organization_root(org_client: OrganizationsClient) -> str:
     roots: List[RootTypeDef] = []
 
     try:
-        for page in paginate(org_client, "list_roots"):
-            roots.extend(cast(Sequence[RootTypeDef], page.get("Roots", [])))
+        for page in org_client.get_paginator("list_roots").paginate():
+            roots.extend(page.get("Roots", []))
     except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to get organization root: {e}")
 
@@ -323,8 +315,8 @@ def list_organization_accounts(
     accounts: List[AccountTypeDef] = []
 
     try:
-        for page in paginate(org_client, "list_accounts"):
-            accounts.extend(cast(Sequence[AccountTypeDef], page["Accounts"]))
+        for page in org_client.get_paginator("list_accounts").paginate():
+            accounts.extend(page["Accounts"])
     except (ClientError, BotoCoreError) as e:
         raise RuntimeError(f"Failed to list the organization's accounts: {e}")
 

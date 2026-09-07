@@ -7,7 +7,7 @@ prefix). The eventual SCP will deny iam:CreateSAMLProvider unconditionally once 
 accounts meet this constraint.
 """
 
-from typing import Any, List
+from typing import List
 
 import boto3
 
@@ -48,7 +48,7 @@ class DenySamlProviderNotAwsSsoCheck(BaseCheck[SamlProviderAnalysis]):
         account_id: str,
         results_dir: str,
         exclude_account_ids: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         """Initialize state used during categorization."""
         super().__init__(

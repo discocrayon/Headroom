@@ -14,7 +14,7 @@ from mypy_boto3_ec2.type_defs import ImageTypeDef, InstanceTypeDef
 
 from ..constants import IMDS_EXEMPTION_TAG_KEY, IMDS_EXEMPTION_TAG_VALUE
 from ..enums import AmiOwnerUnknownReason
-from .helpers import find_tag_value_as_iam_matches, get_all_regions, paginate
+from .helpers import find_tag_value_as_iam_matches, get_all_regions
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ def _describe_instances(session: Session, region: str) -> List[Ec2Instance]:
     instances = []
 
     try:
-        for page in paginate(regional_ec2, 'describe_instances'):
+        for page in regional_ec2.get_paginator('describe_instances').paginate():
             for reservation in page['Reservations']:
                 owner_id = reservation.get('OwnerId')
                 if not owner_id:

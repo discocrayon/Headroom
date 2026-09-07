@@ -10,7 +10,7 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import AbstractSet, Any, Dict, Generic, List, Mapping, TypeVar, Union
+from typing import AbstractSet, Dict, Generic, List, Mapping, TypeVar, Union
 
 from boto3.session import Session
 
@@ -121,7 +121,7 @@ class BaseCheck(ABC, Generic[T]):
         account_id: str,
         results_dir: str,
         exclude_account_ids: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         """
         Initialize the check.

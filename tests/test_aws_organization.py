@@ -1,6 +1,6 @@
 """Tests for headroom/aws/organization.py."""
 
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 from unittest.mock import Mock
 
 import pytest
@@ -14,6 +14,7 @@ from headroom.aws.organization import (
     lookup_account_id_by_name,
 )
 from headroom.types import (
+    JsonDict,
     AccountOrgPlacement,
     OrganizationHierarchy,
 )
@@ -272,7 +273,7 @@ class TestBuildOrganizationHierarchy:
             operations.append(operation_name)
             paginator = Mock()
 
-            def pages(**kwargs: str) -> Iterator[Dict[str, Any]]:
+            def pages(**kwargs: str) -> Iterator[JsonDict]:
                 yield {
                     "OrganizationalUnits": [
                         {"Id": "ou-1111-11111111", "Name": "Production"}
@@ -325,11 +326,11 @@ class TestBuildOrganizationHierarchy:
         def get_paginator(operation_name: str) -> Mock:
             paginator = Mock()
 
-            def paginate_op(**kwargs: str) -> Iterable[Dict[str, Any]]:
+            def paginate_op(**kwargs: str) -> Iterable[JsonDict]:
                 if operation_name == "list_organizational_units_for_parent":
                     return [{"OrganizationalUnits": []}]
 
-                def pages() -> Iterator[Dict[str, Any]]:
+                def pages() -> Iterator[JsonDict]:
                     yield {
                         "Accounts": [
                             {"Id": "111111111111", "Name": "payments"}
@@ -583,7 +584,7 @@ class TestFindOrganizationRoot:
         paginator = Mock()
         error: object = {"Error": {"Code": "AccessDenied"}}
 
-        def pages() -> Iterator[Dict[str, Any]]:
+        def pages() -> Iterator[JsonDict]:
             yield {"Roots": [{"Id": "r-1111"}]}
             raise ClientError(error, "ListRoots")  # type: ignore[arg-type]
 

@@ -1,12 +1,13 @@
 """Check for EC2 instances using AMIs from untrusted owners."""
 
-from typing import Any, Dict, List, Set
+from typing import Dict, List, Set
 
 from boto3.session import Session
 
 from ...aws.ec2 import DenyEc2AmiOwner, get_ec2_ami_owner_analysis
 from ...constants import DENY_EC2_AMI_OWNER
 from ...enums import CheckCategory, TerraformSection
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import Allowlist, register_check
 
@@ -57,7 +58,7 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
     def categorize_result(
         self,
         result: DenyEc2AmiOwner
-    ) -> tuple[CheckCategory, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single EC2 AMI owner result.
 
@@ -67,7 +68,7 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
         Returns:
             Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
-        result_dict = {
+        result_dict: JsonDict = {
             "instance_id": result.instance_id,
             "region": result.region,
             "ami_id": result.ami_id,
@@ -85,7 +86,7 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
     def build_summary_fields(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build EC2 AMI owner check-specific summary fields.
 

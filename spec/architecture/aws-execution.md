@@ -446,7 +446,9 @@ no JSON form — a `set`, a `datetime` — raises `TypeError` from
 `write_check_results` when it sits in `summary`, since neither passes a
 `default` to the encoder
 ([`../contracts/results.md`](../contracts/results.md#ordering-and-stability)
-owns why), and a KMS grant
+owns why), `write_check_results` raises `KeyError` when `exclude_account_ids`
+is set and the document carries no `summary` to drop `account_id` from — every
+check's `_build_results_data` writes one — and a KMS grant
 carrying no `GrantId`, or neither `GranteeServicePrincipal` nor
 `GranteePrincipal` while carrying any operation other than `RetireGrant`
 alone, raises `KeyError`. A grant carrying only `RetireGrant` is skipped
@@ -466,10 +468,10 @@ unique ID in the documented shape: a value the two patterns match is attributed
 or recorded rather than raised on, whether or not an account comes out of it.
 Both are for reasons
 [`../checks/rcps/deny_kms_third_party_access.md`](../checks/rcps/deny_kms_third_party_access.md)
-owns. Each bare `TypeError` names only the value's Python type, and the
-`KeyError` only the absent field. None of the nine lets the run finish and
+owns. Each bare `TypeError` names only the value's Python type, and each
+`KeyError` only the absent field. None of the ten lets the run finish and
 report the account clean, which is the property that matters. The encoder's
-`TypeError` is also the one of the nine that a partial file could have
+`TypeError` is also the one of the ten that a partial file could have
 survived: the writer serializes before it opens the file, so the abort leaves
 no result behind for a later run's `results_exist` to take as finished.
 

@@ -3,7 +3,7 @@ import logging
 import pytest
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch, mock_open
-from typing import Any, Callable, Dict, List
+from typing import List
 from headroom.usage import load_yaml_config, parse_cli_args, merge_configs
 from headroom.main import (
     main,
@@ -16,6 +16,7 @@ from headroom.constants import DENY_STS_THIRD_PARTY_ASSUMEROLE
 from headroom.checks.registry import get_check_names
 from headroom.types import (
     CheckCoverage,
+    JsonDict,
     OrganizationHierarchy,
     OrganizationSnapshot,
     RCPCheckParseResult,
@@ -26,8 +27,14 @@ from pydantic import ValidationError
 
 def _record(
     seen: List[object], returns: object = None
-) -> Callable[..., object]:
-    """Record the hierarchy a generator was handed, and return `returns`."""
+) -> object:
+    """
+    Record the hierarchy a generator was handed, and return `returns`.
+
+    Typed as object: the recorder takes whatever the patched function takes,
+    which Callable[...] can only spell with an Any, and a side_effect asks
+    nothing more of it.
+    """
     def recorder(*args: object) -> object:
         seen.extend(arg for arg in args if isinstance(arg, OrganizationHierarchy))
         return returns
@@ -48,7 +55,11 @@ class TestLoadYamlConfig:
         with patch('builtins.open', mock_open(read_data=yaml_content)):
             result = load_yaml_config("test.yaml")
             assert result["use_account_name_from_tags"] is True
-            assert result["account_tag_layout"]["environment"] == "Environment"
+            assert result["account_tag_layout"] == {
+                "environment": "Environment",
+                "name": "Name",
+                "owner": "Owner",
+            }
 
     def test_load_yaml_config_file_not_found(self) -> None:
         """Test handling of missing YAML file."""
@@ -90,11 +101,13 @@ class TestLoadYamlConfig:
         with patch('builtins.open', mock_open(read_data=yaml_content)):
             result = load_yaml_config("complex.yaml")
             assert result["use_account_name_from_tags"] is False
-            assert result["account_tag_layout"]["environment"] == "Production"
-            assert result["account_tag_layout"]["name"] == "AccountName"
-            assert result["account_tag_layout"]["owner"] == "TeamA"
+            assert result["account_tag_layout"] == {
+                "environment": "Production",
+                "name": "AccountName",
+                "owner": "TeamA",
+            }
             assert result["extra_field"] == "should_be_ignored"
-            assert result["nested"]["structure"]["with"] == "values"
+            assert result["nested"] == {"structure": {"with": "values"}}
 
 
 class TestParseCliArgs:
@@ -216,12 +229,32 @@ class TestMergeConfigs:
 
     def test_merge_configs_empty_yaml(self) -> None:
         """Test merging with empty YAML config."""
-        yaml_config: Dict[str, Any] = {}
+        yaml_config: JsonDict = {}
 
         cli_args = MagicMock()
         cli_args.config = "test.yaml"
 
         with pytest.raises(ValidationError):
+            merge_configs(yaml_config, cli_args)
+
+    def test_merge_configs_rejects_a_list_root(self) -> None:
+        """
+        A YAML file whose root is a list of pairs is not a configuration.
+
+        dict() coerces [[key, value], ...] into a mapping, so a file written
+        as a list would have been validated field by field and the scan run
+        on it. The merge refuses any root that is not a mapping.
+        """
+        yaml_content = """
+        - [use_account_name_from_tags, false]
+        """
+        with patch('builtins.open', mock_open(read_data=yaml_content)):
+            yaml_config = load_yaml_config("list.yaml")
+
+        cli_args = MagicMock()
+        cli_args.config = "list.yaml"
+
+        with pytest.raises(TypeError):
             merge_configs(yaml_config, cli_args)
 
     def test_merge_configs_missing_required_fields(self) -> None:
@@ -298,7 +331,7 @@ class TestMergeConfigs:
         adding a default would silently make the CLI override the YAML on
         every run, and no test would have noticed.
         """
-        yaml_config: Dict[str, Any] = {
+        yaml_config: JsonDict = {
             "use_account_name_from_tags": False,
             "account_tag_layout": {
                 "environment": "Environment",
@@ -348,7 +381,7 @@ class TestMergeConfigs:
 
     def test_merge_configs_deep_copy(self) -> None:
         """Test that merge_configs doesn't modify the original YAML config."""
-        yaml_config: Dict[str, Any] = {
+        yaml_config: JsonDict = {
             "use_account_name_from_tags": False,
             "account_tag_layout": {
                 "environment": "Environment",
@@ -393,7 +426,7 @@ class TestSetupConfiguration:
 
     def test_setup_configuration_value_error(self) -> None:
         """Test configuration setup with ValidationError (ValueError)."""
-        yaml_config: Dict[str, Any] = {}
+        yaml_config: JsonDict = {}
         cli_args = MagicMock()
         cli_args.config = "test.yaml"
 

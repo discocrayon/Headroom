@@ -2,14 +2,14 @@
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, cast
+from typing import List, Optional
 
 from boto3.session import Session
 from botocore.exceptions import ClientError
 from mypy_boto3_lambda.client import LambdaClient
-from mypy_boto3_lambda.type_defs import FunctionConfigurationTypeDef, FunctionUrlConfigTypeDef
+from mypy_boto3_lambda.type_defs import FunctionConfigurationTypeDef
 
-from .helpers import get_all_regions, paginate
+from .helpers import get_all_regions
 
 
 logger = logging.getLogger(__name__)
@@ -107,8 +107,8 @@ def _analyze_lambda_in_region(
     lambda_client: LambdaClient = session.client("lambda", region_name=region)
     results = []
 
-    for function_page in paginate(lambda_client, "list_functions"):
-        functions = cast(Sequence[FunctionConfigurationTypeDef], function_page.get("Functions", []))
+    for function_page in lambda_client.get_paginator("list_functions").paginate():
+        functions = function_page.get("Functions", [])
         for function in functions:
             result = _analyze_lambda_function(lambda_client, function, region)
             results.append(result)
@@ -150,12 +150,8 @@ def _analyze_lambda_function(
     try:
         url_configs = [
             config
-            for page in paginate(
-                lambda_client, "list_function_url_configs", FunctionName=function_name
-            )
-            for config in cast(
-                Sequence[FunctionUrlConfigTypeDef], page.get("FunctionUrlConfigs", [])
-            )
+            for page in lambda_client.get_paginator("list_function_url_configs").paginate(FunctionName=function_name)
+            for config in page.get("FunctionUrlConfigs", [])
         ]
 
         if url_configs:

@@ -178,7 +178,7 @@ Nothing fails today, because nothing reads either key. There is one reader of an
 RCP result file, `parse_rcp_result_files` in
 `headroom/terraform/generate_rcps.py`, which loads each file and reads its
 allowlist through the helpers `headroom/parse_results.py` shares with SCP
-parsing (`_load_result_file_json`, `_extract_account_id_from_result`,
+parsing (`_load_result_summary`, `_read_result_account`, `_read_violations_count`,
 `_read_declared_allowlist`). That reader takes five summary keys and nothing
 outside `summary`: `account_id`, `account_name`, `check`, `violations`, and
 `unique_third_party_accounts`. A missing `account_id` falls back to

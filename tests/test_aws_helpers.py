@@ -6,7 +6,7 @@ import gc
 import inspect
 from dataclasses import fields, is_dataclass
 from types import FunctionType, ModuleType
-from typing import Any, Dict, Iterator, List, Set, get_args, get_origin, get_type_hints
+from typing import Callable, List, Sequence, Set, Tuple, get_args, get_origin, get_type_hints
 from unittest.mock import MagicMock
 
 from boto3.session import Session
@@ -19,7 +19,6 @@ from headroom.aws.helpers import (
     find_tag_value_as_iam_matches,
     get_all_regions,
     memoize_per_session,
-    paginate,
 )
 from headroom.aws.iam import roles
 
@@ -230,28 +229,29 @@ class TestMemoizePerSession:
     """
 
     @staticmethod
-    def _counting_analyzer() -> Any:
-        """Build a memoized analyzer that records the calls that reach it."""
-        calls: List[Any] = []
+    def _counting_analyzer() -> Tuple[
+        Callable[[Session, Set[str], str], Sequence[str]], List[Tuple[Set[str], str]]
+    ]:
+        """Build a memoized analyzer and the list of calls that reach its body."""
+        calls: List[Tuple[Set[str], str]] = []
 
         @memoize_per_session
         def analyzer(session: Session, org_account_ids: Set[str], org_id: str) -> List[str]:
             calls.append((org_account_ids, org_id))
             return [f"result-{len(calls)}"]
 
-        setattr(analyzer, "calls", calls)
-        return analyzer
+        return analyzer, calls
 
     def test_the_analyzer_body_runs_once_per_session(self) -> None:
         """The second caller is served from the memo, not from AWS."""
-        analyzer = self._counting_analyzer()
+        analyzer, calls = self._counting_analyzer()
         session = MagicMock()
 
         first = analyzer(session, {"111111111111"}, "o-11111111111")
         second = analyzer(session, {"111111111111"}, "o-11111111111")
 
         assert first == second == ["result-1"]
-        assert len(analyzer.calls) == 1
+        assert len(calls) == 1
 
     def test_each_session_runs_the_analyzer_again(self) -> None:
         """
@@ -275,7 +275,7 @@ class TestMemoizePerSession:
         results cannot tell a session-keyed memo from one keyed on any value
         that merely differs between two mocks.
         """
-        analyzer = self._counting_analyzer()
+        analyzer, _ = self._counting_analyzer()
         session_a, session_b = MagicMock(), MagicMock()
         session_a.region_name = session_b.region_name = "us-east-1"
 
@@ -283,8 +283,8 @@ class TestMemoizePerSession:
         assert analyzer(session_b, {"111111111111"}, "o-11111111111") == ["result-2"]
         assert analyzer(session_a, {"111111111111"}, "o-11111111111") == ["result-1"]
 
-        assert session_a in analyzer.session_memo
-        assert session_b in analyzer.session_memo
+        assert session_a in getattr(analyzer, "session_memo")
+        assert session_b in getattr(analyzer, "session_memo")
 
     def test_differing_organization_arguments_are_rejected(self) -> None:
         """
@@ -295,7 +295,7 @@ class TestMemoizePerSession:
         second call that asked a different question would be silent and
         plausible; refusing is neither.
         """
-        analyzer = self._counting_analyzer()
+        analyzer, _ = self._counting_analyzer()
         session = MagicMock()
 
         analyzer(session, {"111111111111"}, "o-11111111111")
@@ -316,17 +316,17 @@ class TestMemoizePerSession:
         them past the worker would put the pool's memory ceiling somewhere
         other than where `config.MAX_ACCOUNT_WORKERS` says it is.
         """
-        analyzer = self._counting_analyzer()
+        analyzer, _ = self._counting_analyzer()
         gc.collect()
 
         session = MagicMock()
         analyzer(session, {"111111111111"}, "o-11111111111")
-        assert len(analyzer.session_memo) == 1
+        assert len(getattr(analyzer, "session_memo")) == 1
 
         del session
         gc.collect()
 
-        assert len(analyzer.session_memo) == 0
+        assert len(getattr(analyzer, "session_memo")) == 0
 
     def test_every_doubly_called_analyzer_is_memoized(self) -> None:
         """
@@ -365,37 +365,6 @@ class TestMemoizePerSession:
             "analyze_secrets_manager_policies",
             "analyze_sqs_queue_policies",
         ]
-
-
-class TestPaginate:
-    """Test the pagination wrapper."""
-
-    def test_yields_every_page(self) -> None:
-        """Each page from the paginator is yielded in order."""
-        mock_client = MagicMock()
-        paginator = MagicMock()
-        pages: List[Dict[str, Any]] = [{"Items": [1]}, {"Items": [2]}]
-        paginator.paginate.return_value = pages
-        mock_client.get_paginator.return_value = paginator
-
-        result = list(paginate(mock_client, "list_things"))
-
-        mock_client.get_paginator.assert_called_once_with("list_things")
-        assert result == pages
-
-    def test_passes_operation_kwargs_through(self) -> None:
-        """Operation keyword arguments reach the paginator unchanged."""
-        mock_client = MagicMock()
-        paginator = MagicMock()
-        paginator.paginate.return_value = []
-        mock_client.get_paginator.return_value = paginator
-
-        pages: Iterator[Dict[str, Any]] = paginate(
-            mock_client, "list_things", MaxResults=50, Prefix="a"
-        )
-        assert list(pages) == []
-
-        paginator.paginate.assert_called_once_with(MaxResults=50, Prefix="a")
 
 
 class TestFindTagValueAsIamMatches:

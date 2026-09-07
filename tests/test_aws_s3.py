@@ -3,7 +3,7 @@ Tests for headroom.aws.s3 module.
 """
 
 import json
-from typing import Any
+from typing import List, Sequence
 
 import pytest
 from unittest.mock import MagicMock
@@ -13,6 +13,7 @@ from headroom.aws.s3 import (
     ALL_USERS_GROUP_URI,
     AUTHENTICATED_USERS_GROUP_URI,
     LOG_DELIVERY_GROUP_URI,
+    S3BucketPolicyAnalysis,
     analyze_s3_bucket_policies,
     UnknownGranteeTypeError,
 )
@@ -20,6 +21,7 @@ from headroom.aws.policy_documents import (
     MalformedPolicyError,
     UnknownPrincipalTypeError,
 )
+from headroom.types import JsonDict
 from tests.constants import ORG_ID
 
 
@@ -540,7 +542,7 @@ class TestPolicyGrammar:
     """Policy elements the bucket analyzer must read the way IAM does."""
 
     @staticmethod
-    def _analyze(policy: Any) -> Any:
+    def _analyze(policy: object) -> Sequence[S3BucketPolicyAnalysis]:
         mock_session = MagicMock()
         mock_s3_client = MagicMock()
         mock_session.client.return_value = mock_s3_client
@@ -757,12 +759,12 @@ class TestBucketAcl:
     EXTERNAL_ID = "b" * 64
 
     @staticmethod
-    def _grant(grantee: Any, permission: str = "READ") -> Any:
+    def _grant(grantee: object, permission: str = "READ") -> JsonDict:
         """Build one ACL grant entry."""
         return {"Grantee": grantee, "Permission": permission}
 
     @staticmethod
-    def _analyze(grants: Any, policy: Any = None) -> Any:
+    def _analyze(grants: List[JsonDict], policy: object = None) -> Sequence[S3BucketPolicyAnalysis]:
         """
         Run the analyzer over one bucket carrying the given ACL grants.
 

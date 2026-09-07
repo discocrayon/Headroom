@@ -5,7 +5,7 @@ Tests for headroom.aws.ecr module.
 import json
 
 import pytest
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 
@@ -36,9 +36,8 @@ def _no_registry_policy(mock_ecr_client: MagicMock) -> None:
     MagicMock returns a Mock from get_registry_policy(), which the analyzer
     would hand to json.loads().
     """
-    error_response: Any = {"Error": {"Code": "RegistryPolicyNotFoundException"}}
     mock_ecr_client.get_registry_policy.side_effect = ClientError(
-        error_response, "GetRegistryPolicy"
+        {"Error": {"Code": "RegistryPolicyNotFoundException"}}, "GetRegistryPolicy"
     )
 
 
@@ -209,10 +208,8 @@ class TestAnalyzeECRRepositoryPolicies:
 
         mock_ecr_client.get_paginator.return_value = repository_paginator
 
-        from botocore.exceptions import ClientError
-        error_response: Any = {"Error": {"Code": "RepositoryPolicyNotFoundException"}}
         mock_ecr_client.get_repository_policy.side_effect = ClientError(
-            error_response, "GetRepositoryPolicy"
+            {"Error": {"Code": "RepositoryPolicyNotFoundException"}}, "GetRepositoryPolicy"
         )
 
         org_account_ids = {"111111111111"}
@@ -440,7 +437,7 @@ class TestAnalyzeECRRepositoryPolicies:
             }
             ecr_clients[region] = mock_ecr_client
 
-        def client_side_effect(service: str, **kwargs: Any) -> object:
+        def client_side_effect(service: str, **kwargs: str) -> object:
             if service == "ec2":
                 return mock_ec2_client
             region = kwargs.get("region_name", "us-east-1")
@@ -665,9 +662,8 @@ class TestAnalyzeECRRepositoryPolicies:
 
         mock_ecr_client.get_paginator.return_value = repository_paginator
 
-        error_response: Any = {"Error": {"Code": "AccessDeniedException"}}
         mock_ecr_client.get_repository_policy.side_effect = ClientError(
-            error_response, "GetRepositoryPolicy"
+            {"Error": {"Code": "AccessDeniedException"}}, "GetRepositoryPolicy"
         )
 
         org_account_ids = {"111111111111"}
@@ -691,10 +687,9 @@ class TestAnalyzeECRRepositoryPolicies:
             "Regions": [{"RegionName": "us-east-1"}]
         }
 
-        error_response: Any = {"Error": {"Code": "AccessDeniedException"}}
         repository_paginator = MagicMock()
         repository_paginator.paginate.side_effect = ClientError(
-            error_response, "DescribeRepositories"
+            {"Error": {"Code": "AccessDeniedException"}}, "DescribeRepositories"
         )
 
         mock_ecr_client.get_paginator.return_value = repository_paginator
@@ -905,7 +900,7 @@ class TestPolicyGrammar:
     """Policy elements the repository analyzer must read the way IAM does."""
 
     @staticmethod
-    def _analyze(policy: Any) -> Any:
+    def _analyze(policy: object) -> Sequence[ECRPolicyAnalysis]:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_ecr_client = MagicMock()
@@ -1162,7 +1157,7 @@ class TestRegistryPolicy:
     THIRD_PARTY = "999999999999"
 
     @staticmethod
-    def _policy(principal: Any, action: Any = "ecr:BatchGetImage") -> Any:
+    def _policy(principal: object, action: object = "ecr:BatchGetImage") -> JsonDict:
         """
         Build a one-statement Allow policy.
 
@@ -1182,9 +1177,9 @@ class TestRegistryPolicy:
 
     @staticmethod
     def _analyze(
-        registry_policy: Any = None,
-        repositories: Optional[List[Any]] = None,
-        repository_policy: Any = None,
+        registry_policy: object = None,
+        repositories: Optional[List[JsonDict]] = None,
+        repository_policy: object = None,
         registry_error: Optional[str] = None,
         registry_response: Optional[Dict[str, str]] = None,
     ) -> Sequence[ECRPolicyAnalysis]:
@@ -1227,11 +1222,9 @@ class TestRegistryPolicy:
         mock_ecr_client.get_paginator.return_value = paginator
 
         if repository_policy is None:
-            missing_repository_policy: Any = {
-                "Error": {"Code": "RepositoryPolicyNotFoundException"}
-            }
             mock_ecr_client.get_repository_policy.side_effect = ClientError(
-                missing_repository_policy, "GetRepositoryPolicy"
+                {"Error": {"Code": "RepositoryPolicyNotFoundException"}},
+                "GetRepositoryPolicy",
             )
         else:
             mock_ecr_client.get_repository_policy.return_value = {
@@ -1241,9 +1234,8 @@ class TestRegistryPolicy:
         if registry_response is not None:
             mock_ecr_client.get_registry_policy.return_value = registry_response
         elif registry_error is not None:
-            failure: Any = {"Error": {"Code": registry_error}}
             mock_ecr_client.get_registry_policy.side_effect = ClientError(
-                failure, "GetRegistryPolicy"
+                {"Error": {"Code": registry_error}}, "GetRegistryPolicy"
             )
         elif registry_policy is None:
             _no_registry_policy(mock_ecr_client)

@@ -5,7 +5,7 @@ This check identifies IAM roles with trust policies that allow principals
 from accounts outside the organization to assume them.
 """
 
-from typing import Any, List, Set
+from typing import List, Set
 
 from boto3.session import Session
 
@@ -45,7 +45,7 @@ class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):
         org_account_ids: Set[str],
         org_id: str,
         exclude_account_ids: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         """
         Initialize the STS third-party AssumeRole check.

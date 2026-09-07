@@ -5,13 +5,14 @@ This check identifies S3 buckets with resource policies that allow principals
 from accounts outside the organization to access them.
 """
 
-from typing import Any, Dict, List, Set
+from typing import Dict, List, Set
 
 from boto3.session import Session
 
 from ...aws.s3 import S3BucketPolicyAnalysis, analyze_s3_bucket_policies
 from ...constants import DENY_S3_THIRD_PARTY_ACCESS
 from ...enums import CheckCategory, TerraformSection
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult, sorted_values_by_account
 from ..registry import Allowlist, register_check
 
@@ -46,7 +47,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         org_account_ids: Set[str],
         org_id: str,
         exclude_account_ids: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         """
         Initialize the S3 third-party access check.
@@ -96,7 +97,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             if result.has_wildcard_principal or result.has_non_account_principals or result.third_party_account_ids
         ]
 
-    def categorize_result(self, result: S3BucketPolicyAnalysis) -> tuple[CheckCategory, Dict[str, Any]]:
+    def categorize_result(self, result: S3BucketPolicyAnalysis) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single bucket policy analysis result.
 
@@ -108,7 +109,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         """
         actions_by_account_serializable = sorted_values_by_account(result.actions_by_account)
 
-        result_dict = {
+        result_dict: JsonDict = {
             "bucket_name": result.bucket_name,
             "bucket_arn": result.bucket_arn,
             "third_party_account_ids": sorted(list(result.third_party_account_ids)),
@@ -133,7 +134,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             return (CheckCategory.VIOLATION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 
-    def build_summary_fields(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build S3 third-party access check-specific summary fields.
 
@@ -166,7 +167,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             "buckets_by_third_party_account": buckets_by_account_serializable,
         }
 
-    def _build_results_data(self, check_result: CategorizedCheckResult) -> Dict[str, Any]:
+    def _build_results_data(self, check_result: CategorizedCheckResult) -> JsonDict:
         """
         Build results data in the format expected by this check.
 
