@@ -339,7 +339,7 @@ Two deliberate exceptions, both narrow:
 | Tolerated | Why |
 |---|---|
 | Any `ClientError` fetching an account's tags, in `_fetch_account_tags` in `headroom/aws/organization_snapshot.py` | Labels, not evidence. [`../contracts/configuration.md`](../contracts/configuration.md#tag-fallbacks) owns the fallbacks the account takes instead, the argument for tolerating the failure, and the record that the catch is wider than intended |
-| Per-region and per-resource errors inside a check | Specified per check, and each such case is reported in that check's result rather than silently dropped. The last exception was [`deny_sqs_third_party_access`](../checks/rcps/deny_sqs_third_party_access.md), which dropped a queue naming an unrecognized principal key, then recorded it with nothing that check reads; it now aborts on that queue like the other five analyzers |
+| Per-region and per-resource errors inside a check | Specified per check, and each such case is reported in that check's result rather than silently dropped. The one standing case is [`deny_service_confused_deputy`](../checks/rcps/deny_service_confused_deputy.md#failure-behavior), which records a source guard it cannot read as the finding's `read_failure`; the finding is a violation, so the statement is withheld from that account rather than deployed against a guess. The last case retired was [`deny_sqs_third_party_access`](../checks/rcps/deny_sqs_third_party_access.md), which dropped a queue naming an unrecognized principal key, then recorded it with nothing that check reads; it now aborts on that queue like the other five analyzers |
 
 ### What an aborted run tells the operator
 
@@ -388,8 +388,11 @@ bound is already the blocker answer, so there is nothing to abort for.
 [`../contracts/policy-model.md`](../contracts/policy-model.md#condition-confined-wildcards)
 owns that argument and the contrast with `_read_source_guards`, which does
 raise on an operator it does not recognize because it is building an allowlist
-out of what it reads. The `Principal` element of the same statement still
-aborts by the first row: `read_statement_principals` reads it, through
+out of what it reads. That raise stops one frame up, where
+`read_service_principal_sources` catches it at statement scope and records it as
+the finding's `read_failure`, the standing case of the second tolerated
+exception above. The `Principal` element of the same statement still aborts by
+the first row: `read_statement_principals` reads it, through
 `_read_principal`, before it reads the condition at all.
 
 The second kind used to abort in four of the five resource-policy analyzers.
