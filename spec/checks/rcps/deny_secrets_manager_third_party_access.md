@@ -97,7 +97,7 @@ whether it bounds what the wildcard reaches
 | Any other `ClientError` on one secret | Logged and re-raised, aborting the run |
 | `ClientError` listing secrets in any region | Logged and re-raised, aborting the run |
 | Unparseable policy JSON | Not caught; propagates and aborts |
-| `Statement` neither object nor list | `MalformedPolicyError` |
+| `Statement` neither object nor list, or a list holding anything but objects | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
 | An `Allow` carrying neither `Principal` nor `NotPrincipal` | `MalformedPolicyError` — AWS stores no such statement, so it is a document misread rather than a grant to nobody |
 | A `Federated` or `CanonicalUser` principal, or an ARN naming no account | Recorded as `has_non_account_principals`; the account is blocked |

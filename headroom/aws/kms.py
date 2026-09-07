@@ -545,7 +545,8 @@ def _analyze_key_in_region(
             cannot classify, an IAM unique ID excepted, which is read or
             recorded instead
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     key_id = key["KeyId"]
     key_arn = key["KeyArn"]

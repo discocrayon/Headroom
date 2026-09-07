@@ -119,7 +119,8 @@ def _analyze_queue_policy(
         UnknownPrincipalTypeError: If a statement names a principal key AWS
             does not document
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     policy = json.loads(policy_json)
     third_party_account_ids: Set[str] = set()
@@ -223,7 +224,8 @@ def _analyze_queues_in_region(
         UnknownPrincipalTypeError: If a statement names a principal key AWS
             does not document
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     sqs_client: SQSClient = session.client("sqs", region_name=region)
     results: List[SQSQueuePolicyAnalysis] = []
@@ -312,7 +314,8 @@ def analyze_sqs_queue_policies(
         UnknownPrincipalTypeError: If a statement names a principal key AWS
             does not document
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     all_results: List[SQSQueuePolicyAnalysis] = []
     regions = get_all_regions(session)

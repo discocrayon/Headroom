@@ -43,13 +43,22 @@ def _load_result_summary(result_file: Path) -> JsonDict:
         The file's summary block
 
     Raises:
-        RuntimeError: If JSON parsing fails, or the summary is not an object
+        RuntimeError: If JSON parsing fails, or the document or its summary
+            is not an object
     """
     try:
         with open(result_file, 'r') as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"{result_file} holds a {type(data).__name__} at its root, expected "
+            f"an object. Every result file is an object holding summary, so as "
+            f"it stands the file is not one Headroom wrote. "
+            f"{delete_and_rerun_remedy(result_file)}"
+        )
 
     summary = data.get("summary", {})
     if not isinstance(summary, dict):
@@ -112,8 +121,8 @@ def _read_result_account(
             f"{result_file} carries account_id {account_id!r} and account_name "
             f"{account_name!r} in its summary, and one of them is not a string. "
             f"Headroom writes both as strings, or leaves account_id out when "
-            f"exclude_account_ids is set, so the file is corrupt. Delete the "
-            f"file and re-run the check."
+            f"exclude_account_ids is set, so the file is corrupt. "
+            f"{delete_and_rerun_remedy(result_file)}"
         )
 
     if account_id and account_id in organization_hierarchy.accounts:
@@ -364,12 +373,6 @@ def _parse_single_scp_result_file(
     """
     summary = _load_result_summary(result_file)
 
-    account = _read_result_account(
-        summary,
-        organization_hierarchy,
-        result_file
-    )
-
     resolved_check_name = summary.get("check", check_name)
     # Resolved before any key is required of the file: a stale directory is
     # stale throughout, and the registry's own error names neither the file
@@ -386,6 +389,12 @@ def _parse_single_scp_result_file(
             f"register a check under that name."
         )
     definition = get_check_definition(resolved_check_name)
+
+    account = _read_result_account(
+        summary,
+        organization_hierarchy,
+        result_file
+    )
 
     violations = _read_violations_count(summary, result_file)
 

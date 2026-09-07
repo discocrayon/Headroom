@@ -69,12 +69,6 @@ def _parse_single_rcp_result_file(
     """
     summary = _load_result_summary(result_file)
 
-    account = _read_result_account(
-        summary,
-        organization_hierarchy,
-        result_file
-    )
-
     if "check" not in summary:
         raise RuntimeError(
             f"Result file {result_file} names no check in its summary, so it "
@@ -89,6 +83,12 @@ def _parse_single_rcp_result_file(
             f"does not match its directory '{check_name}'. A result filed under "
             "the wrong check would be attributed to the wrong policy."
         )
+
+    account = _read_result_account(
+        summary,
+        organization_hierarchy,
+        result_file
+    )
 
     violations = _read_violations_count(summary, result_file)
 

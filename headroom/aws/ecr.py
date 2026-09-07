@@ -140,7 +140,8 @@ def _analyze_policy_statements(
 
     Raises:
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     third_party_accounts: Set[str] = set()
     actions_by_account: defaultdict[str, Set[str]] = defaultdict(set)
@@ -222,7 +223,8 @@ def _analyze_repository_in_region(
 
     Raises:
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
         KeyError: If a 200 response carries no `policyText`. Indexed rather
             than defaulted: a repository with no policy is answered with
             `RepositoryPolicyNotFoundException`, never a 200 without the
@@ -314,7 +316,8 @@ def _analyze_registry_policy(
     Raises:
         ClientError: If the call fails for any reason other than a missing policy
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
         KeyError: If a 200 response carries no `policyText`. Indexed rather
             than defaulted: a registry with no policy is answered with
             `RegistryPolicyNotFoundException`, never a 200 without the

@@ -201,14 +201,21 @@ naming the file and the key: `null` is neither an observation nor an absent key,
 and carrying it forward crashed on the account-ID restore or was dropped by the
 placement union as though the check declared no allowlist.
 
+A file whose root is not an object — a list, a string, a number, `null` — aborts
+the same way, naming the file and the type it found, before `summary` is looked
+for: every result file is an object holding `summary`. Reading `summary` out of
+anything else raised an `AttributeError` that named neither the file nor what
+was wrong, and that `main` catches nowhere.
+
 A `summary` that is present but is not an object aborts the same way, naming the
 file and the type it found: every check writes the block as an object, so as it
 stands the file is not one Headroom wrote. A file with no `summary` at all reads
-as an empty one and fails on the first key it lacks, which is the account.
+as an empty one and fails on the first key it lacks.
 
 RCP parsing additionally rejects a file whose `summary.check` disagrees with the
 directory it was found in: a result filed under the wrong check would be
-attributed to the wrong policy.
+attributed to the wrong policy. It does so before it reads the account, so a
+misfiled file is refused as misfiled whatever else it lacks.
 
 Both readers reject a check the registry does not hold, and resolve the name
 before requiring any key of the file: a stale directory is stale throughout, and
@@ -281,7 +288,9 @@ Both fields are read as strings. A file carrying either as any other type is an
 error naming the file and both values, before resolution begins: Headroom writes
 both as strings, or leaves `account_id` out under `exclude_account_ids`, so an
 integer ID is corruption rather than an account that left the organization, and
-a list name is corruption rather than a name to look up.
+a list name is corruption rather than a name to look up. The error prescribes
+the same delete-and-re-run remedy an absent key gets, since the skip holds
+either way.
 
 Either way the account a file resolves to is in the hierarchy. An account that
 left the organization after its scan leaves its file behind, and the ID is

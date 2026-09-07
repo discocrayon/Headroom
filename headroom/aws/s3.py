@@ -246,7 +246,8 @@ def analyze_s3_bucket_policies(
 
     Raises:
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
         UnknownGranteeTypeError: If an ACL grantee's type or group is unrecognized
         UnknownPrincipalTypeError: If a bucket policy names a principal key
             AWS does not document

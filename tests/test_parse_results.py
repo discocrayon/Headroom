@@ -417,6 +417,48 @@ class TestResultFileParsing:
             ):
                 parse_scp_result_files(temp_dir, make_test_org_hierarchy())
 
+    def test_parse_scp_result_files_rejects_a_summary_naming_no_account(self) -> None:
+        """
+        A summary with neither account field cannot be attributed to an account.
+
+        The RCP reader used to reach this error for a file with no summary at
+        all; it now refuses that file for naming no check, so a registered
+        check's file that names no account is read here.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            with open(check_dir / "test-account.json", "w") as f:
+                json.dump({"summary": {"check": "deny_ec2_imds_v1", "violations": 0}}, f)
+
+            with pytest.raises(
+                RuntimeError,
+                match=r"test-account\.json missing both account_id and account_name in summary",
+            ):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+    @pytest.mark.parametrize("document", [None, [], "summary"], ids=["null", "list", "string"])
+    def test_parse_scp_result_files_rejects_a_document_that_is_not_an_object(self, document: object) -> None:
+        """
+        A file whose root is not an object is refused by name, not by traceback.
+
+        Every result file is an object holding summary, so a list, a string,
+        or null at the root is a file Headroom did not write as it stands.
+        Looking summary up in it raised an AttributeError that named neither
+        the file nor what was wrong, and that no handler in main labels.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            with open(check_dir / "test-account.json", "w") as f:
+                json.dump(document, f)
+
+            with pytest.raises(
+                RuntimeError,
+                match=r"test-account\.json holds a (NoneType|list|str) at its root, expected an object",
+            ):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
     @pytest.mark.parametrize("summary", [
         {"account_id": 111111111111, "account_name": "test-account"},
         {"account_name": ["test-account"]},
@@ -440,7 +482,9 @@ class TestResultFileParsing:
             with pytest.raises(RuntimeError, match=r"test-account\.json carries .* is not a string") as exc_info:
                 parse_scp_result_files(temp_dir, make_test_org_hierarchy())
 
-        assert "111111111111" in str(exc_info.value) or "['test-account']" in str(exc_info.value)
+        message = str(exc_info.value)
+        assert "111111111111" in message or "['test-account']" in message
+        assert "skips any account whose result file already exists" in message
 
     def test_parse_scp_result_files_restores_redacted_account_ids(self) -> None:
         """Test un-redaction of IAM user ARNs in deny_iam_user_creation results."""
@@ -2305,6 +2349,20 @@ class TestAllowlistValuesFollowTheRegistry:
                 "account_id": "111111111111",
                 "check": "deny_old_check",
             })
+
+    def test_an_unregistered_check_is_rejected_before_its_account_is_read(self) -> None:
+        """
+        The account is a key of the file too, and the name comes before it.
+
+        A stale directory's files predate the code that says which account
+        fields they carry, so a file in one that names no account got the
+        missing-account error and a re-run of a check that no longer exists.
+        """
+        with pytest.raises(
+            RuntimeError,
+            match="test-account_111111111111.json names check 'deny_old_check', which is not a registered SCP check",
+        ):
+            self.parse_one_summary("deny_old_check", {"check": "deny_old_check"})
 
     def test_a_check_name_that_is_not_a_string_is_an_unregistered_check(self) -> None:
         """

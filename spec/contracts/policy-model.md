@@ -170,7 +170,9 @@ both, so both reach the analyzers and both are read as a list.
 
 Anything else — a string, a number, `null` — raises `MalformedPolicyError`.
 Reading it as no statements would report the resource as granting nothing, which
-is not a safe guess (INV-01).
+is not a safe guess (INV-01). A list holding anything but objects raises it too:
+skipping the element would report the resource as granting less than it does,
+and checking it here means no adapter reads a statement that is not an object.
 
 ### Principals
 

@@ -276,7 +276,7 @@ alias prefix is the informal one.
 | A grant carrying neither `GranteeServicePrincipal` nor `GranteePrincipal`, with any operation other than `RetireGrant` alone, or with no `Operations` | `KeyError`, aborting the run. Every grant is listed with one of the two, so a grant with neither is a response Headroom has misread, and dropping it would read a missing grantee as no grantee (INV-01). A `RetireGrant`-only grant is skipped before either field is read, so it cannot raise this |
 | `ClientError` in any region | Logged and re-raised, aborting the run |
 | Unparseable policy JSON | Not caught; propagates and aborts |
-| `Statement` neither object nor list | `MalformedPolicyError` |
+| `Statement` neither object nor list, or a list holding anything but objects | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
 | An `Allow` carrying neither `Principal` nor `NotPrincipal` | `MalformedPolicyError` — AWS stores no such statement, so it is a document misread rather than a grant to nobody |
 | A `Federated` or `CanonicalUser` principal, or an ARN naming no account | Recorded as `has_non_account_principals`; the account is blocked |

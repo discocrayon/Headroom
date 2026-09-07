@@ -316,8 +316,9 @@ class TestParseRcpResultFiles:
         with open(result_file, 'w') as f:
             json.dump(result_data, f)
 
-        # Should raise exception when account_name and account_id are both missing
-        with pytest.raises(RuntimeError, match="missing both account_id and account_name"):
+        # A file with no summary reads as an empty one, and the first key the
+        # RCP reader requires of it is the check name
+        with pytest.raises(RuntimeError, match=r"bad\.json names no check in its summary"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
     def test_parse_separates_blocked_accounts(
@@ -858,6 +859,30 @@ class TestParseRcpResultFiles:
             }, f)
 
         with pytest.raises(RuntimeError, match="test-account.json.*names no check"):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+    def test_a_mismatched_check_name_is_rejected_before_the_account_is_read(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A misfiled file is refused as misfiled, whatever else it lacks.
+
+        The name is resolved before any key is required of the file, so a
+        file in another check's directory that also names no account gets
+        the mismatch error, not the missing-account one, which would send
+        the operator to regenerate a file that is in the wrong place.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({"summary": {"check": DENY_S3_THIRD_PARTY_ACCESS}}, f)
+
+        with pytest.raises(
+            RuntimeError,
+            match=f"test-account.json reports check '{DENY_S3_THIRD_PARTY_ACCESS}', which does not match its directory",
+        ):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
     def test_absent_and_mismatched_check_names_report_differently(

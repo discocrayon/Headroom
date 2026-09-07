@@ -142,7 +142,7 @@ bucket granting only an OAI was never recorded and its account cleared.
 | Any other `ClientError` on one bucket, `AccessDenied` included | Logged and re-raised, aborting the run |
 | An ACL grant whose grantee type is neither `CanonicalUser` nor `Group`, or whose group URI is none of `AllUsers`, `AuthenticatedUsers`, and `LogDelivery` | `UnknownGranteeTypeError`, aborting the run |
 | Unparseable policy JSON | Not caught; propagates and aborts |
-| `Statement` neither object nor list | `MalformedPolicyError` |
+| `Statement` neither object nor list, or a list holding anything but objects | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
 | An `Allow` carrying neither `Principal` nor `NotPrincipal` | `MalformedPolicyError` — AWS stores no such statement, so it is a document misread rather than a grant to nobody |
 | A principal key outside the four documented types | `UnknownPrincipalTypeError`, aborting the run |

@@ -283,7 +283,8 @@ def normalize_statements(policy: Mapping[str, object], resource_description: str
         The document's statements, always as a list
 
     Raises:
-        MalformedPolicyError: If Statement is neither an object nor a list
+        MalformedPolicyError: If Statement is neither an object nor a list,
+            or the list holds anything but objects
     """
     statements = policy.get("Statement", [])
 
@@ -296,6 +297,16 @@ def normalize_statements(policy: Mapping[str, object], resource_description: str
             f"{type(statements).__name__}, expected an object or a list. "
             "Reading it as no statements would report the policy as granting "
             "nothing, which is not a safe guess."
+        )
+
+    for statement in statements:
+        if isinstance(statement, dict):
+            continue
+        raise MalformedPolicyError(
+            f"{resource_description} has a Statement element of type "
+            f"{type(statement).__name__}, expected an object. Skipping it "
+            "would report the policy as granting less than it does, which is "
+            "not a safe guess."
         )
 
     return statements

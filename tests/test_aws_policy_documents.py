@@ -82,6 +82,24 @@ class TestNormalizeStatements:
         with pytest.raises(MalformedPolicyError, match="Statement of type NoneType"):
             normalize_statements(policy, "Key 'example-key' in us-east-1")
 
+    def test_a_statement_list_holding_a_non_object_raises(self) -> None:
+        """
+        A list element that is not an object is malformed too.
+
+        Only the container was checked, so a string in the list passed here
+        and failed at the first `statement.get` with an AttributeError that
+        named no resource. Skipping the element instead would report the
+        policy as granting less than it does.
+        """
+        policy: JsonDict = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow"}, "Allow"]}
+
+        with pytest.raises(MalformedPolicyError) as exc_info:
+            normalize_statements(policy, "Bucket 'example'")
+
+        message = str(exc_info.value)
+        assert "Bucket 'example'" in message
+        assert "Statement element of type str" in message
+
 
 class TestNormalizeActions:
     def test_an_action_that_is_neither_string_nor_list_raises(self) -> None:
