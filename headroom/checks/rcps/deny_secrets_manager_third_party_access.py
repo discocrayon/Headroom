@@ -118,6 +118,7 @@ class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):
         result_dict = {
             "secret_name": result.secret_name,
             "secret_arn": result.secret_arn,
+            "region": result.region,
             "third_party_account_ids": sorted(list(result.third_party_account_ids)),
             "has_wildcard_principal": result.has_wildcard_principal,
             "has_non_account_principals": result.has_non_account_principals,

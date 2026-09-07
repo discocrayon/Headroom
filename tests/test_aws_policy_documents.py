@@ -24,6 +24,7 @@ from headroom.aws.policy_documents import (
     UnknownPrincipalTypeError,
     has_actionable_service_principal_source,
     has_not_principal,
+    is_actionable_service_principal_source,
     normalize_actions,
     normalize_statements,
     _read_principal,
@@ -965,60 +966,115 @@ class TestServicePrincipalSources:
         assert sources[0].read_failure is not None
 
 
-class TestHasActionableServicePrincipalSource:
-    """Test has_actionable_service_principal_source against every disposition."""
+def _service_principal_source(
+    source_account_ids: List[str], *, has_wildcard_source: bool
+) -> ServicePrincipalSource:
+    """
+    Build one guarded service principal source.
 
-    @staticmethod
-    def _source(
-        source_account_ids: List[str], has_wildcard_source: bool
-    ) -> ServicePrincipalSource:
-        """Build one service principal source with the fields under test."""
-        return ServicePrincipalSource(
-            service_principal="sns.amazonaws.com",
-            source_account_ids=source_account_ids,
-            has_source_condition=True,
-            has_wildcard_source=has_wildcard_source,
-        )
+    `source_account_ids` and `has_wildcard_source` are the parameters;
+    `service_principal` and `has_source_condition` are held constant, and
+    `read_failure` stays absent because a failed read is built by
+    `unreadable_service_principal_source` instead.
+    """
+    return ServicePrincipalSource(
+        service_principal="sns.amazonaws.com",
+        source_account_ids=source_account_ids,
+        has_source_condition=True,
+        has_wildcard_source=has_wildcard_source,
+    )
+
+
+class TestIsActionableServicePrincipalSource:
+    """Test is_actionable_service_principal_source against every disposition."""
 
     def test_a_failed_read_is_actionable(self) -> None:
         """
-        A resource whose guard could not be read must reach the check.
+        A guard that could not be read must reach the check.
 
         Dropping it would leave the confused deputy statement to deploy
         against an allowlist nobody could compute.
         """
-        sources = [unreadable_service_principal_source("could not be read")]
+        source = unreadable_service_principal_source("could not be read")
 
-        assert has_actionable_service_principal_source(sources) is True
+        assert is_actionable_service_principal_source(source) is True
 
     def test_an_unguarded_source_is_not_actionable(self) -> None:
         """An unguarded trust would bury the sources that matter."""
+        source = ServicePrincipalSource(
+            service_principal="sns.amazonaws.com",
+            source_account_ids=[],
+            has_source_condition=False,
+            has_wildcard_source=False,
+        )
+
+        assert is_actionable_service_principal_source(source) is False
+
+    def test_an_out_of_org_account_id_is_actionable(self) -> None:
+        """A source naming an out-of-organization account is worth keeping."""
+        source = _service_principal_source(["999999999999"], has_wildcard_source=False)
+
+        assert is_actionable_service_principal_source(source) is True
+
+    def test_a_wildcard_guard_is_actionable(self) -> None:
+        """A guard no allowlist can express is worth keeping, even unresolved."""
+        source = _service_principal_source([], has_wildcard_source=True)
+
+        assert is_actionable_service_principal_source(source) is True
+
+    def test_a_failed_read_with_no_message_is_actionable(self) -> None:
+        """
+        A failed read is actionable for being a failure, not for its message.
+
+        `read_failure` is tested against None rather than for truthiness, so
+        an empty message still withholds the statement (INV-01). No raise
+        site produces one today; this pins the contract, not a repro.
+        """
+        source = ServicePrincipalSource(
+            service_principal=None,
+            source_account_ids=[],
+            has_source_condition=False,
+            has_wildcard_source=False,
+            read_failure="",
+        )
+
+        assert is_actionable_service_principal_source(source) is True
+
+
+class TestHasActionableServicePrincipalSource:
+    """
+    Test the `any` has_actionable_service_principal_source is.
+
+    Which single sources are actionable is
+    `TestIsActionableServicePrincipalSource`'s subject, and this class pins
+    only what the `any` adds: an empty list, and a list whose actionable
+    source is not the first one.
+    """
+
+    def test_no_sources_is_not_actionable(self) -> None:
+        """A statement naming no service principal has nothing worth keeping."""
+        assert has_actionable_service_principal_source([]) is False
+
+    def test_one_actionable_source_among_unguarded_ones_is_enough(self) -> None:
+        """
+        A resource is kept for an actionable source found anywhere in its list.
+
+        Every log bucket and service role carries unguarded sources, so the
+        one source that names an out-of-organization account is rarely the
+        first the reader returns. Stopping at the first source would drop
+        that account from the allowlist and deny a working integration.
+        """
         sources = [
             ServicePrincipalSource(
                 service_principal="sns.amazonaws.com",
                 source_account_ids=[],
                 has_source_condition=False,
                 has_wildcard_source=False,
-            )
+            ),
+            _service_principal_source(["999999999999"], has_wildcard_source=False),
         ]
 
-        assert has_actionable_service_principal_source(sources) is False
-
-    def test_an_out_of_org_account_id_is_actionable(self) -> None:
-        """A source naming an out-of-organization account is worth keeping."""
-        sources = [self._source(["999999999999"], False)]
-
         assert has_actionable_service_principal_source(sources) is True
-
-    def test_a_wildcard_guard_is_actionable(self) -> None:
-        """A guard no allowlist can express is worth keeping, even unresolved."""
-        sources = [self._source([], True)]
-
-        assert has_actionable_service_principal_source(sources) is True
-
-    def test_no_sources_is_not_actionable(self) -> None:
-        """A statement naming no service principal has nothing worth keeping."""
-        assert has_actionable_service_principal_source([]) is False
 
 
 class TestReadPrincipal:

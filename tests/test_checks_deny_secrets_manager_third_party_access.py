@@ -39,6 +39,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="vendor-secret",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:vendor-secret",
+                region="us-east-1",
                 third_party_account_ids={"999999999999"},
                 has_wildcard_principal=False,
                 has_non_account_principals=False,
@@ -48,7 +49,8 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             ),
             SecretsPolicyAnalysis(
                 secret_name="public-secret",
-                secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:public-secret",
+                secret_arn="arn:aws:secretsmanager:us-west-2:111111111111:secret:public-secret",
+                region="us-west-2",
                 third_party_account_ids=set(),
                 has_wildcard_principal=True,
                 has_non_account_principals=False,
@@ -100,6 +102,40 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             assert "999999999999" in summary["actions_by_third_party_account"]
             assert "secretsmanager:GetSecretValue" in summary["actions_by_third_party_account"]["999999999999"]
 
+    def test_an_entry_names_its_region(
+        self,
+        sample_secrets_mixed: List[SecretsPolicyAnalysis],
+        temp_results_dir: str,
+        org_account_ids: Set[str],
+    ) -> None:
+        """Each entry names the region the secret lives in."""
+        mock_session = MagicMock()
+
+        with (
+            patch("headroom.checks.rcps.deny_secrets_manager_third_party_access.analyze_secrets_manager_policies") as mock_analysis,
+            patch("headroom.checks.base.write_check_results") as mock_write,
+            patch("builtins.print")
+        ):
+            mock_analysis.return_value = sample_secrets_mixed
+
+            check = DenySecretsManagerThirdPartyAccessCheck(
+                check_name=DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
+                account_name="test-account",
+                account_id="111111111111",
+                results_dir=temp_results_dir,
+                org_account_ids=org_account_ids,
+                org_id=ORG_ID,
+            )
+            check.execute(mock_session)
+
+            results_data = mock_write.call_args[1]["results_data"]
+
+            region_by_secret_name = {
+                entry["secret_name"]: entry["region"]
+                for entry in results_data["secrets_third_parties_can_access"]
+            }
+            assert region_by_secret_name == {"public-secret": "us-west-2", "vendor-secret": "us-east-1"}
+
     def test_check_all_compliant(
         self,
         temp_results_dir: str,
@@ -112,6 +148,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="vendor-secret",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:vendor-secret",
+                region="us-east-1",
                 third_party_account_ids={"999999999999"},
                 has_wildcard_principal=False,
                 has_non_account_principals=False,
@@ -157,6 +194,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="wildcard-secret",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:wildcard-secret",
+                region="us-east-1",
                 third_party_account_ids=set(),
                 has_wildcard_principal=True,
                 has_non_account_principals=False,
@@ -238,6 +276,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
         result = SecretsPolicyAnalysis(
             secret_name="wildcard-secret",
             secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:wildcard-secret",
+            region="us-east-1",
             third_party_account_ids=set(),
             has_wildcard_principal=True,
             has_non_account_principals=False,
@@ -267,6 +306,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
         result = SecretsPolicyAnalysis(
             secret_name="vendor-secret",
             secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:vendor-secret",
+            region="us-east-1",
             third_party_account_ids={"999999999999"},
             has_wildcard_principal=False,
             has_non_account_principals=False,
@@ -293,6 +333,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="secret-1",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:secret-1",
+                region="us-east-1",
                 third_party_account_ids={"999999999999"},
                 has_wildcard_principal=False,
                 has_non_account_principals=False,
@@ -303,6 +344,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="secret-2",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:secret-2",
+                region="us-east-1",
                 third_party_account_ids={"999999999999"},
                 has_wildcard_principal=False,
                 has_non_account_principals=False,
@@ -348,6 +390,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="secret-1",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:secret-1",
+                region="us-east-1",
                 third_party_account_ids={"999999999999"},
                 has_wildcard_principal=False,
                 has_non_account_principals=False,
@@ -358,6 +401,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="secret-2",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:secret-2",
+                region="us-east-1",
                 third_party_account_ids={"999999999999"},
                 has_wildcard_principal=False,
                 has_non_account_principals=False,
@@ -416,6 +460,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
         result = SecretsPolicyAnalysis(
             secret_name="confined-secret",
             secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:confined-secret",
+            region="us-east-1",
             third_party_account_ids={"333333333333"},
             has_wildcard_principal=False,
             has_non_account_principals=False,
@@ -445,6 +490,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="alpha-secret",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:alpha-secret",
+                region="us-east-1",
                 third_party_account_ids={"555555555555", "333333333333"},
                 has_wildcard_principal=False,
                 has_non_account_principals=False,
@@ -456,6 +502,7 @@ class TestDenySecretsManagerThirdPartyAccessCheck:
             SecretsPolicyAnalysis(
                 secret_name="beta-secret",
                 secret_arn="arn:aws:secretsmanager:us-east-1:111111111111:secret:beta-secret",
+                region="us-east-1",
                 third_party_account_ids={"444444444444"},
                 has_wildcard_principal=False,
                 has_non_account_principals=False,
