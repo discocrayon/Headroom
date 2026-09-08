@@ -13,31 +13,7 @@ already satisfies, attached at the highest level of the org where that is true.
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Code Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen.svg)](tests/)
 
-```mermaid
-graph TD
-  root["Organization root"]
-  hva["OU high_value_assets"]
-  ss["OU shared_services"]
-  acq["OU acme_acquisition"]
-  fk["fort-knox ✅"]
-  st["security-tooling ✅"]
-  sfb["shared-foo-bar ❌ one IMDSv1 instance"]
-  ac["acme-co ✅"]
-  root --> hva
-  root --> ss
-  root --> acq
-  hva --> fk
-  hva --> st
-  ss --> sfb
-  acq --> ac
-  ami{{"deny_ec2_ami_owner"}} -. attached .-> root
-  imds{{"deny_ec2_imds_v1"}} -. attached .-> hva
-  imds -. attached .-> acq
-  classDef violating fill:#fde2e2,stroke:#c0392b,color:#111
-  classDef policy fill:#e3f2fd,stroke:#1565c0,color:#111
-  class sfb violating
-  class ami,imds policy
-```
+[![Organization tree with deny_ec2_ami_owner attached at the root and deny_ec2_imds_v1 attached at the two OUs whose accounts are clean, while the OU holding the one account with an IMDSv1 instance gets nothing](documentation/images/hierarchy.svg)](spec/product.md#the-safety-promise)
 
 *One violating account blocks a policy from root. Headroom attaches it to every
 OU that is clean instead, and to nothing that is not.*
