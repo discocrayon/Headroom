@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import pytest
 from pathlib import Path
-from typing import Any, Dict, List, Set, Generator
+from typing import Dict, List, Set, Generator
 from headroom.constants import (
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
@@ -45,6 +45,7 @@ from headroom.checks.scps.deny_ec2_public_ip import DenyEc2PublicIpCheck
 from headroom.enums import TerraformSection
 from headroom.placement.hierarchy import PlacementCandidate
 from headroom.types import (
+    JsonDict,
     AccountThirdPartyMap,
     CheckCoverage,
     OrganizationHierarchy,
@@ -315,8 +316,9 @@ class TestParseRcpResultFiles:
         with open(result_file, 'w') as f:
             json.dump(result_data, f)
 
-        # Should raise exception when account_name and account_id are both missing
-        with pytest.raises(RuntimeError, match="missing both account_id and account_name"):
+        # A file with no summary reads as an empty one, and the first key the
+        # RCP reader requires of it is the check name
+        with pytest.raises(RuntimeError, match=r"bad\.json names no check in its summary"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
     def test_parse_separates_blocked_accounts(
@@ -695,6 +697,38 @@ class TestParseRcpResultFiles:
         ):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
+    @pytest.mark.parametrize("violations", [-1, "1", 1.0, True], ids=["negative", "string", "float", "bool"])
+    def test_parse_rejects_a_count_that_is_not_a_non_negative_integer(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy,
+        violations: object,
+    ) -> None:
+        """
+        The RCP reader reads the count the way the SCP reader does.
+
+        `blocks_rcp` is `violations > 0`, so a negative count read an account
+        as safe to deploy to, a boolean as blocking, and a string aborted with
+        a TypeError naming no file. Headroom wrote the file, so anything but
+        a non-negative integer is corruption, with the absent key's remedy.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "check": DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                    "unique_third_party_accounts": [],
+                    "violations": violations,
+                }
+            }, f)
+
+        with pytest.raises(RuntimeError, match="non-negative integer") as exc_info:
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        assert repr(violations) in str(exc_info.value)
+
     def test_parse_aborts_when_violations_field_is_absent(
         self,
         temp_results_dir: str,
@@ -827,6 +861,30 @@ class TestParseRcpResultFiles:
         with pytest.raises(RuntimeError, match="test-account.json.*names no check"):
             parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
+    def test_a_mismatched_check_name_is_rejected_before_the_account_is_read(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A misfiled file is refused as misfiled, whatever else it lacks.
+
+        The name is resolved before any key is required of the file, so a
+        file in another check's directory that also names no account gets
+        the mismatch error, not the missing-account one, which would send
+        the operator to regenerate a file that is in the wrong place.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({"summary": {"check": DENY_S3_THIRD_PARTY_ACCESS}}, f)
+
+        with pytest.raises(
+            RuntimeError,
+            match=f"test-account.json reports check '{DENY_S3_THIRD_PARTY_ACCESS}', which does not match its directory",
+        ):
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
     def test_absent_and_mismatched_check_names_report_differently(
         self,
         temp_results_dir: str,
@@ -840,7 +898,7 @@ class TestParseRcpResultFiles:
         """
         seed_all_rcp_check_dirs(temp_results_dir)
         check_dir = Path(temp_results_dir) / "rcps" / DENY_STS_THIRD_PARTY_ASSUMEROLE
-        summary: Dict[str, Any] = {
+        summary: JsonDict = {
             "account_id": "111111111111",
             "unique_third_party_accounts": [],
             "violations": 0,
@@ -898,7 +956,7 @@ class TestParseRcpResultFiles:
         check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
 
         for absent_key in ("check", "violations", "unique_third_party_accounts"):
-            summary: Dict[str, Any] = {
+            summary: JsonDict = {
                 "check": DENY_S3_THIRD_PARTY_ACCESS,
                 "account_id": "111111111111",
                 "account_name": "test-account",

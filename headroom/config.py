@@ -21,7 +21,10 @@ DEFAULT_ACCOUNT_WORKERS = 16
 MAX_ACCOUNT_WORKERS = 32
 
 
-class AccountTagLayout(BaseModel):
+# mypy synthesizes `__dataclass_fields__: dict[str, Any]` on every pydantic
+# model, because BaseModel's metaclass is a dataclass_transform, and reports
+# that Any at the class line as though this file wrote it. Nothing here does.
+class AccountTagLayout(BaseModel):  # type: ignore[explicit-any]
     # These are the only tags Headroom reads. A fourth key here is an intent
     # it cannot honour, so it aborts rather than dropping it silently.
     model_config = ConfigDict(extra="forbid")
@@ -31,7 +34,8 @@ class AccountTagLayout(BaseModel):
     owner: str
 
 
-class HeadroomConfig(BaseModel):
+# The same synthesized `__dataclass_fields__` as AccountTagLayout above.
+class HeadroomConfig(BaseModel):  # type: ignore[explicit-any]
     # An unknown key aborts rather than being ignored. pydantic's default is
     # to drop it, which turned a misspelled `max_account_workers` into a
     # silent fall back to the default -- the run still works, just not the

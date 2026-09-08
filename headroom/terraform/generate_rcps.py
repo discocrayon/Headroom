@@ -7,7 +7,7 @@ Generates Terraform files for RCP deployment based on third-party account analys
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Mapping, Set
+from typing import Dict, FrozenSet, List, Mapping, Set
 
 from .disabled_reasons import disabled_reasons, split_placements
 from .models import RenderedTerraformFiles, TerraformModule
@@ -32,9 +32,10 @@ from ..types import (
 )
 from ..write_results import get_results_dir
 from ..parse_results import (
-    _extract_account_id_from_result,
-    _load_result_file_json,
+    _load_result_summary,
     _read_declared_allowlist,
+    _read_result_account,
+    _read_violations_count,
     verify_one_result_file_per_account,
 )
 from ..placement import HierarchyPlacementAnalyzer
@@ -62,23 +63,17 @@ def _parse_single_rcp_result_file(
 
     Raises:
         RuntimeError: If the file is unparseable, names no check, names a
-            different check than its directory, or omits the violations
-            count or the third-party account list
+            different check than its directory, omits the violations count
+            or the third-party account list, or carries a count that is not
+            a non-negative integer
     """
-    data = _load_result_file_json(result_file)
-    summary = data.get("summary", {})
-
-    account_id = _extract_account_id_from_result(
-        summary,
-        organization_hierarchy,
-        result_file
-    )
+    summary = _load_result_summary(result_file)
 
     if "check" not in summary:
         raise RuntimeError(
             f"Result file {result_file} names no check in its summary, so it "
             "cannot be confirmed to belong to the directory it was found in. "
-            f"{delete_and_rerun_remedy(result_file, check_name)}"
+            f"{delete_and_rerun_remedy(result_file)}"
         )
 
     reported_check = summary["check"]
@@ -89,34 +84,35 @@ def _parse_single_rcp_result_file(
             "the wrong check would be attributed to the wrong policy."
         )
 
-    if "violations" not in summary:
-        raise RuntimeError(
-            f"Result file {result_file} has no 'violations' count in its summary, "
-            "so whether this account can take the RCP cannot be determined. "
-            f"{delete_and_rerun_remedy(result_file, check_name)}"
-        )
+    account = _read_result_account(
+        summary,
+        organization_hierarchy,
+        result_file
+    )
+
+    violations = _read_violations_count(summary, result_file)
 
     third_party_account_ids = _read_declared_allowlist(
         summary,
         check_name,
         get_allowlist(check_name),
-        account_id,
+        account.account_id,
         result_file
     )
 
-    blocks_rcp = summary["violations"] > 0
+    blocks_rcp = violations > 0
 
     if blocks_rcp:
-        account_name = summary.get("account_name", account_id)
         logger.info(
-            f"Account {account_name} ({account_id}) has {summary['violations']} "
-            f"resource(s) whose principals no allowlist can express - cannot "
-            f"deploy the {check_name} RCP"
+            f"Account {account.account_name or account.account_id} "
+            f"({account.account_id}) has {violations} resource(s) whose "
+            f"principals no allowlist can express - cannot deploy the "
+            f"{check_name} RCP"
         )
 
     return RCPCheckResult(
-        account_id=account_id,
-        account_name=summary.get("account_name", ""),
+        account_id=account.account_id,
+        account_name=account.account_name,
         check_name=check_name,
         third_party_account_ids=third_party_account_ids,
         blocks_rcp=blocks_rcp,
@@ -397,24 +393,6 @@ def _create_account_level_rcp_recommendations(
     return recommendations
 
 
-def _prepare_account_data_for_placement(
-    account_third_party_map: AccountThirdPartyMap
-) -> List[Dict[str, Any]]:
-    """
-    Convert account third-party map to list format for placement analysis.
-
-    Args:
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
-
-    Returns:
-        List of dictionaries with account_id and third_party_accounts
-    """
-    return [
-        {"account_id": acc_id, "third_party_accounts": third_parties}
-        for acc_id, third_parties in account_third_party_map.items()
-    ]
-
-
 def _is_safe_for_root_rcp(
     accounts_with_blockers: Set[str]
 ) -> bool:
@@ -443,7 +421,7 @@ def _is_safe_for_ou_rcp(
 
 def _process_rcp_placement_candidates(
     check_name: str,
-    candidates: List[Any],
+    candidates: List[PlacementCandidate],
     account_third_party_map: AccountThirdPartyMap,
     organization_hierarchy: OrganizationHierarchy
 ) -> List[RCPPlacementRecommendations]:
@@ -507,16 +485,19 @@ def _determine_check_rcp_placement(
         )
         return []
 
-    analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
-    account_data = _prepare_account_data_for_placement(parsed.account_third_party_map)
+    # The traversal reads nothing of an account but its ID: both safety
+    # predicates answer from `accounts_with_blockers`, and the third parties
+    # are read from the map again when each recommendation is built.
+    analyzer: HierarchyPlacementAnalyzer[str] = HierarchyPlacementAnalyzer(organization_hierarchy)
+    account_ids = list(parsed.account_third_party_map)
 
     candidates = analyzer.determine_placement(
-        check_results=account_data,
+        check_results=account_ids,
         is_safe_for_root=lambda results: _is_safe_for_root_rcp(parsed.accounts_with_blockers),
         is_safe_for_ou=lambda ou_id, results: _is_safe_for_ou_rcp(
             ou_id, organization_hierarchy, parsed.accounts_with_blockers
         ),
-        get_account_id=lambda r: r["account_id"]
+        get_account_id=lambda account_id: account_id
     )
 
     return _process_rcp_placement_candidates(

@@ -8,9 +8,15 @@ from headroom.utils import delete_and_rerun_remedy
 
 
 def test_delete_and_rerun_remedy_names_the_file_and_the_check() -> None:
+    """
+    The check is the directory's, because that is where `results_exist` looks.
+
+    A file's own `summary.check` can name another check when the file is
+    misfiled, and re-running that check would never read this directory.
+    """
     result_file = Path("/results/rcps/deny_s3_third_party_access/test-account.json")
 
-    message = delete_and_rerun_remedy(result_file, "deny_s3_third_party_access")
+    message = delete_and_rerun_remedy(result_file)
 
     assert message == (
         "Delete /results/rcps/deny_s3_third_party_access/test-account.json and "
@@ -33,7 +39,7 @@ def test_delete_and_rerun_remedy_points_at_the_other_filename_format() -> None:
     """
     result_file = Path("/results/scps/deny_iam_user_creation/prod_111111111111.json")
 
-    message = delete_and_rerun_remedy(result_file, "deny_iam_user_creation")
+    message = delete_and_rerun_remedy(result_file)
 
     assert "/results/scps/deny_iam_user_creation" in message
     assert "both filename formats" in message

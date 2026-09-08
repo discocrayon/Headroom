@@ -34,7 +34,7 @@ instead of reusing what discovery captured.
 """
 
 from collections import Counter, defaultdict
-from typing import Any, Callable, DefaultDict, Dict, List, Sequence, Set, Tuple
+from typing import Callable, DefaultDict, Dict, List, Sequence, Set, Tuple
 from unittest.mock import MagicMock, Mock, patch
 
 from botocore.exceptions import ClientError
@@ -57,7 +57,7 @@ from headroom.checks.registry import get_all_check_classes
 from headroom.config import AccountTagLayout, HeadroomConfig
 from headroom.main import main
 from headroom.terraform.generate_org_info import render_terraform_org_info
-from headroom.types import OrganizationHierarchy, OrganizationSnapshot
+from headroom.types import JsonDict, OrganizationHierarchy, OrganizationSnapshot
 
 ORG_ACCOUNT_IDS = {"111111111111"}
 ORG_ID = "o-11111111111"
@@ -68,7 +68,7 @@ Operation = Tuple[str, str, str]
 
 # The analyzers `deny_service_confused_deputy` shares with a third-party-access
 # check, each therefore invoked twice per account.
-SHARED_ANALYZERS: List[Callable[[MagicMock, Set[str], str], Sequence[Any]]] = [
+SHARED_ANALYZERS: List[Callable[[MagicMock, Set[str], str], Sequence[object]]] = [
     analyze_ecr_policies,
     analyze_iam_roles_trust_policies,
     analyze_kms_key_policies,
@@ -80,7 +80,7 @@ SHARED_ANALYZERS: List[Callable[[MagicMock, Set[str], str], Sequence[Any]]] = [
 REGIONS = ["us-east-1", "eu-west-1", "ap-southeast-2"]
 
 
-def _session(pages: List[Dict[str, Any]]) -> MagicMock:
+def _session(pages: List[JsonDict]) -> MagicMock:
     """Build a mock session serving `pages` from every region."""
     client = MagicMock()
     client.describe_regions.return_value = {
@@ -90,9 +90,8 @@ def _session(pages: List[Dict[str, Any]]) -> MagicMock:
     client.list_queues.return_value = {}
     # An unconfigured MagicMock hands get_registry_policy's return value to
     # json.loads(); ECR reports "no registry policy" as this error instead.
-    registry_error: Any = {"Error": {"Code": "RegistryPolicyNotFoundException"}}
     client.get_registry_policy.side_effect = ClientError(
-        registry_error, "GetRegistryPolicy"
+        {"Error": {"Code": "RegistryPolicyNotFoundException"}}, "GetRegistryPolicy"
     )
     paginator = MagicMock()
     paginator.paginate.return_value = pages
@@ -219,26 +218,33 @@ class _RecordingClient:
         paginator.paginate.return_value = [_empty_response()]
         return paginator
 
-    def describe_regions(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def describe_regions(self, *args: object, **kwargs: object) -> JsonDict:
         """Report the three regions every sweep below walks."""
         self._log("describe_regions")
         return {"Regions": [{"RegionName": region} for region in REGIONS]}
 
-    def get_registry_policy(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def get_registry_policy(self, *args: object, **kwargs: object) -> JsonDict:
         """Report no registry policy the way ECR reports it: as an error."""
         self._log("get_registry_policy")
-        registry_error: Any = {"Error": {"Code": "RegistryPolicyNotFoundException"}}
-        raise ClientError(registry_error, "GetRegistryPolicy")
+        raise ClientError(
+            {"Error": {"Code": "RegistryPolicyNotFoundException"}}, "GetRegistryPolicy"
+        )
 
-    def __getattr__(self, operation_name: str) -> Callable[..., Any]:
-        """Log any other operation and return an empty response."""
-        def call(*args: Any, **kwargs: Any) -> DefaultDict[str, Any]:
+    def __getattr__(self, operation_name: str) -> object:
+        """
+        Log any other operation and return an empty response.
+
+        Typed as object: the callable takes whatever the operation takes,
+        which Callable[...] can only spell with an Any, and nothing in this
+        file calls one on a client it knows to be this class.
+        """
+        def call(*args: object, **kwargs: object) -> DefaultDict[str, object]:
             self._log(operation_name)
             return _empty_response()
         return call
 
 
-def _empty_response() -> DefaultDict[str, Any]:
+def _empty_response() -> DefaultDict[str, object]:
     """An empty response every key of which reads as an empty list."""
     return defaultdict(list)
 
@@ -330,7 +336,7 @@ class _RecordingOrganizationsClient(Mock):
         self.operations.append(operation_name)
         paginator = Mock()
 
-        def paginate_op(**kwargs: str) -> List[Dict[str, Any]]:
+        def paginate_op(**kwargs: str) -> List[JsonDict]:
             if operation_name == "list_accounts":
                 return [{"Accounts": self.ACCOUNTS}]
             if operation_name == "list_roots":
@@ -344,7 +350,7 @@ class _RecordingOrganizationsClient(Mock):
         paginator.paginate.side_effect = paginate_op
         return paginator
 
-    def describe_organization(self) -> Dict[str, Any]:
+    def describe_organization(self) -> JsonDict:
         """Log the call and report the one organization this fixture has."""
         self.operations.append("describe_organization")
         return {"Organization": {"Id": ORG_ID}}

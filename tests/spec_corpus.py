@@ -3,9 +3,11 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, cast
 
 import yaml
+
+from headroom.types import JsonDict
 
 # Frontmatter fields every per-check specification must carry.
 REQUIRED_FIELDS = ("id", "kind", "status", "applies_to", "depends_on", "verification")
@@ -68,11 +70,11 @@ class CheckSpecification:
         kind_directory: The checks/ subdirectory the document was found in
     """
     path: Path
-    frontmatter: Dict[str, Any]
+    frontmatter: JsonDict
     kind_directory: str
 
 
-def parse_frontmatter(text: str) -> Optional[Dict[str, Any]]:
+def parse_frontmatter(text: str) -> Optional[JsonDict]:
     """
     Return a document's YAML frontmatter mapping.
 
@@ -236,13 +238,13 @@ def _document_problems(
     if check_types.get(specification.path.stem) != KIND_TO_CHECK_TYPE[specification.kind_directory]:
         problems.append(f"{name} names no registered {specification.kind_directory} check")
 
-    for invariant in frontmatter["depends_on"]:
+    for invariant in cast(List[str], frontmatter["depends_on"]):
         if invariant not in defined_invariants:
             problems.append(f"{name} cites {invariant}, which invariants.md does not define")
 
     repository_root = spec_root.parent
     for field in PATH_LIST_FIELDS:
-        for relative_path in frontmatter[field]:
+        for relative_path in cast(List[str], frontmatter[field]):
             if not (repository_root / relative_path).exists():
                 problems.append(f"{name} {field} names a missing path: {relative_path}")
 

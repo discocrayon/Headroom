@@ -45,7 +45,7 @@ def make_safe_variable_name(name: str) -> str:
     return safe_name
 
 
-def delete_and_rerun_remedy(result_file: Path, check_name: str) -> str:
+def delete_and_rerun_remedy(result_file: Path) -> str:
     """
     Name the one action that makes a stale result file regenerate.
 
@@ -54,9 +54,16 @@ def delete_and_rerun_remedy(result_file: Path, check_name: str) -> str:
     repeats the same failure. Both result readers prescribe this remedy, so
     both build the sentence here rather than wording it twice.
 
+    The check named is the directory's. `results_exist` looks in the
+    directory named for the check being run, so the skip a file holds
+    belongs to the directory it sits in, whatever its own `summary.check`
+    says. The SCP reader attributes a misfiled file to the summary's check,
+    and a remedy that named that check sent the operator to re-run a check
+    that never reads the directory.
+
     Args:
-        result_file: The result file the caller could not use
-        check_name: Check whose skip must be cleared
+        result_file: The result file the caller could not use, under the
+            directory named for the check whose skip must be cleared
 
     ResultFilePathResolver.exists() accepts either filename format, so
     naming only the file the reader tripped on can send an operator round the
@@ -65,6 +72,7 @@ def delete_and_rerun_remedy(result_file: Path, check_name: str) -> str:
     Returns:
         The remedy sentence, for appending to a reader's error
     """
+    check_name = result_file.parent.name
     return (
         f"Delete {result_file} and re-run: the {check_name} check skips any "
         f"account whose result file already exists, so re-running without "

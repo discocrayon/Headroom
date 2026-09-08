@@ -5,7 +5,7 @@ Tests for headroom.aws.policy_documents module.
 import ast
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, cast
+from typing import Callable, Dict, List
 
 import pytest
 
@@ -14,7 +14,6 @@ import headroom
 from headroom.aws.policy_documents import (
     CONFINING_OPERATORS,
     MalformedPolicyError,
-    PrincipalElement,
     PrincipalReading,
     RESOURCE_POLICY_PRINCIPAL_TYPES,
     ServicePrincipalSource,
@@ -83,6 +82,24 @@ class TestNormalizeStatements:
         with pytest.raises(MalformedPolicyError, match="Statement of type NoneType"):
             normalize_statements(policy, "Key 'example-key' in us-east-1")
 
+    def test_a_statement_list_holding_a_non_object_raises(self) -> None:
+        """
+        A list element that is not an object is malformed too.
+
+        Only the container was checked, so a string in the list passed here
+        and failed at the first `statement.get` with an AttributeError that
+        named no resource. Skipping the element instead would report the
+        policy as granting less than it does.
+        """
+        policy: JsonDict = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow"}, "Allow"]}
+
+        with pytest.raises(MalformedPolicyError) as exc_info:
+            normalize_statements(policy, "Bucket 'example'")
+
+        message = str(exc_info.value)
+        assert "Bucket 'example'" in message
+        assert "Statement element of type str" in message
+
 
 class TestNormalizeActions:
     def test_an_action_that_is_neither_string_nor_list_raises(self) -> None:
@@ -96,7 +113,7 @@ class TestNormalizeActions:
         verdict nobody measured.
         """
         with pytest.raises(TypeError) as exc_info:
-            normalize_actions(None)  # type: ignore[arg-type]
+            normalize_actions(None)
 
         assert "NoneType" in str(exc_info.value)
 
@@ -128,7 +145,7 @@ class TestNormalizeActions:
         used to record a key name as though it were an IAM action.
         """
         with pytest.raises(TypeError, match="Expected str or list"):
-            normalize_actions({"unexpected": "shape"})  # type: ignore[arg-type]
+            normalize_actions({"unexpected": "shape"})
 
 
 class TestHasNotPrincipal:
@@ -198,9 +215,9 @@ class TestServicePrincipalSources:
     WHERE = "Bucket 'a-bucket'"
 
     @staticmethod
-    def _statement(principal: Any, condition: Any = None) -> Dict[str, Any]:
+    def _statement(principal: object, condition: object = None) -> JsonDict:
         """Build one Allow statement, optionally with a Condition block."""
-        statement: Dict[str, Any] = {
+        statement: JsonDict = {
             "Effect": "Allow",
             "Principal": principal,
             "Action": "s3:PutObject",
@@ -859,7 +876,7 @@ class TestServicePrincipalSources:
         ids=["json-bool", "one-element-list-of-string", "one-element-list-of-bool"],
     )
     def test_every_spelling_iam_stores_closes_the_empty_case(
-        self, asserted: Any
+        self, asserted: object
     ) -> None:
         """
         The Null companion is not always spelled with the string "false".
@@ -894,7 +911,7 @@ class TestServicePrincipalSources:
         ids=["true-string", "true-bool", "capitalised", "two-entries", "empty-list"],
     )
     def test_anything_else_leaves_the_empty_case_open(
-        self, not_asserted: Any
+        self, not_asserted: object
     ) -> None:
         """
         Only the two sanctioned spellings assert the key is present.
@@ -1374,7 +1391,7 @@ class TestReadPrincipal:
         """
         with pytest.raises(MalformedPolicyError) as exc_info:
             _read_principal(
-                cast(PrincipalElement, principal),
+                principal,
                 RESOURCE_POLICY_PRINCIPAL_TYPES,
                 "Queue 'orders'",
             )
@@ -1836,7 +1853,7 @@ class TestReadStatementPrincipals:
         ["111111111111", 111111111111],
     ])
     def test_statement_principals_with_an_unreadable_clause_value_is_a_wildcard(
-        self, value: Any
+        self, value: object
     ) -> None:
         """
         A clause value that is not an enumeration of strings pins nobody.
@@ -2662,7 +2679,7 @@ class TestReadStatementPrincipals:
             )
 
     @pytest.mark.parametrize("empty_principal", [{}, [], ""])
-    def test_an_empty_principal_names_nobody(self, empty_principal: PrincipalElement) -> None:
+    def test_an_empty_principal_names_nobody(self, empty_principal: object) -> None:
         """
         A present but empty Principal reads as naming nobody, not as absent.
 

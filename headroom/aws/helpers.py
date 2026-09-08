@@ -2,21 +2,19 @@
 Shared AWS helper utilities for region discovery, pagination, and tag matching.
 """
 
-from collections.abc import Iterator
 from functools import wraps
 from threading import Lock
-from typing import Any, Callable, List, Mapping, Optional, Sequence, Set, Tuple, TypeVar
+from typing import Callable, List, Mapping, Optional, Sequence, Set, Tuple, TypeVar
 from weakref import WeakKeyDictionary
 
 from boto3.session import Session
-from botocore.client import BaseClient
 from mypy_boto3_ec2.client import EC2Client
+
 
 __all__ = [
     "find_tag_value_as_iam_matches",
     "get_all_regions",
     "memoize_per_session",
-    "paginate",
 ]
 
 _REGION_MEMO: WeakKeyDictionary[Session, list[str]] = WeakKeyDictionary()
@@ -195,19 +193,6 @@ def memoize_per_session(
     setattr(memoized, "session_memo", memo)
 
     return memoized
-
-
-def paginate(
-    client: BaseClient,
-    operation_name: str,
-    **operation_kwargs: Any
-) -> Iterator[dict[str, Any]]:
-    """
-    Yield pages for a paginated AWS API operation.
-    """
-    paginator = client.get_paginator(operation_name)
-    for page in paginator.paginate(**operation_kwargs):
-        yield page
 
 
 def find_tag_value_as_iam_matches(

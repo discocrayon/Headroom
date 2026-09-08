@@ -8,7 +8,7 @@ import pytest
 import tempfile
 import shutil
 from unittest.mock import MagicMock, patch
-from typing import List, Generator
+from typing import Dict, Generator, List, cast
 from headroom.checks.base import CategorizedCheckResult
 from headroom.checks.scps.deny_ec2_ami_owner import DenyEc2AmiOwnerCheck
 from headroom.constants import DENY_EC2_AMI_OWNER
@@ -433,8 +433,9 @@ class TestCheckDenyEc2AmiOwner:
 
         summary = check.build_summary_fields(check_result)
 
-        assert list(summary["unknown_ami_owners"]) == ["deregistered", "not_visible"]
-        assert summary["unknown_ami_owners"] == {"deregistered": 1, "not_visible": 2}
+        unknown_ami_owners = cast(Dict[str, int], summary["unknown_ami_owners"])
+        assert list(unknown_ami_owners) == ["deregistered", "not_visible"]
+        assert unknown_ami_owners == {"deregistered": 1, "not_visible": 2}
 
     def test_build_summary_fields(self, temp_results_dir: str) -> None:
         """Test summary fields calculation."""
@@ -486,7 +487,7 @@ class TestCheckDenyEc2AmiOwner:
         assert summary["violations"] == 0
         assert summary["compliant"] == 3
         assert summary["compliance_percentage"] == 100.0
-        assert set(summary["unique_ami_owners"]) == {"amazon", "aws-marketplace"}
+        assert summary["unique_ami_owners"] == ["amazon", "aws-marketplace"]
 
     def test_analyze_method_calls_analysis_function(self) -> None:
         """Test that analyze method properly calls the analysis function."""

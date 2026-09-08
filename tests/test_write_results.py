@@ -5,12 +5,13 @@ Tests the result writing functionality, ensuring proper file creation,
 directory structure, and JSON formatting.
 """
 
+import copy
 import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import List, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -136,7 +137,7 @@ class TestWriteCheckResults:
             check_name = "deny_ec2_imds_v1"
             account_name = "test-account"
             account_id = "111111111111"
-            results_data: Dict[str, Any] = {
+            results_data: JsonDict = {
                 "summary": {
                     "account_name": account_name,
                     "account_id": account_id,
@@ -174,7 +175,7 @@ class TestWriteCheckResults:
             check_name = "deny_ec2_imds_v1"
             account_name = "test-account"
             account_id = "111111111111"
-            results_data: Dict[str, Any] = {"summary": {}}
+            results_data: JsonDict = {"summary": {}}
 
             # Ensure check directory doesn't exist yet
             check_dir = Path(temp_dir) / "scps" / check_name
@@ -198,7 +199,7 @@ class TestWriteCheckResults:
             check_name = "deny_ec2_imds_v1"
             account_name = "test-account"
             account_id = "111111111111"
-            results_data: Dict[str, Any] = {
+            results_data: JsonDict = {
                 "summary": {"key": "value"},
                 "violations": []
             }
@@ -227,7 +228,7 @@ class TestWriteCheckResults:
             account_id = "111111111111"
 
             # Write first version
-            results_data_v1: Dict[str, Any] = {"summary": {"version": 1}}
+            results_data_v1: JsonDict = {"summary": {"version": 1}}
             write_check_results(
                 check_name=check_name,
                 check_type="scps",
@@ -238,7 +239,7 @@ class TestWriteCheckResults:
             )
 
             # Write second version
-            results_data_v2: Dict[str, Any] = {"summary": {"version": 2}}
+            results_data_v2: JsonDict = {"summary": {"version": 2}}
             write_check_results(
                 check_name=check_name,
                 check_type="scps",
@@ -259,7 +260,7 @@ class TestWriteCheckResults:
             check_name = "deny_ec2_imds_v1"
             account_name = "test-account-with-dashes"
             account_id = "111111111111"
-            results_data: Dict[str, Any] = {"summary": {}}
+            results_data: JsonDict = {"summary": {}}
 
             write_check_results(
                 check_name=check_name,
@@ -309,7 +310,7 @@ class TestWriteCheckResults:
         check_name = "deny_ec2_imds_v1"
         account_name = "test-account"
         account_id = "111111111111"
-        results_data: Dict[str, Any] = {"summary": {}}
+        results_data: JsonDict = {"summary": {}}
 
         # Create a mock that raises IOError when write is called
         mock_file_handle = MagicMock()
@@ -338,7 +339,7 @@ class TestWriteCheckResults:
             check_name = "deny_ec2_imds_v1"
             account_name = "test-account"
             account_id = "111111111111"
-            results_data: Dict[str, Any] = {
+            results_data: JsonDict = {
                 "summary": {
                     "account_name": account_name,
                     "account_id": account_id,
@@ -371,7 +372,7 @@ class TestWriteCheckResults:
             check_name = "deny_ec2_imds_v1"
             account_name = "test-account"
             account_id = "111111111111"
-            results_data: Dict[str, Any] = {"summary": {}}
+            results_data: JsonDict = {"summary": {}}
 
             write_check_results(
                 check_name=check_name,
@@ -463,7 +464,7 @@ class TestResultsExist:
             account_id = "111111111111"
 
             # Create the file
-            results_data: Dict[str, Any] = {"summary": {}}
+            results_data: JsonDict = {"summary": {}}
             write_check_results(
                 check_name=check_name,
                 check_type="scps",
@@ -502,7 +503,7 @@ class TestResultsExist:
             account_id = "111111111111"
 
             # Create file without account_id in filename
-            results_data: Dict[str, Any] = {"summary": {}}
+            results_data: JsonDict = {"summary": {}}
             write_check_results(
                 check_name=check_name,
                 check_type="scps",
@@ -531,7 +532,7 @@ class TestResultsExist:
             account_id = "111111111111"
 
             # Create file with old format (account_id in filename)
-            results_data: Dict[str, Any] = {"summary": {}}
+            results_data: JsonDict = {"summary": {}}
             write_check_results(
                 check_name=check_name,
                 check_type="scps",
@@ -575,7 +576,7 @@ class TestRedactAccountIdsFromArns:
             "role_arn": "arn:aws:iam::111111111111:role/MyRole",
             "other_field": "no arn here"
         }
-        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        result = cast(JsonDict, _redact_account_ids_from_arns(data))
         assert result["role_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
         assert result["role_name"] == "MyRole"
         assert result["other_field"] == "no arn here"
@@ -587,7 +588,7 @@ class TestRedactAccountIdsFromArns:
             "arn:aws:iam::222222222222:role/Role2",
             "plain text"
         ]
-        result = cast(List[Any], _redact_account_ids_from_arns(data))
+        result = cast(List[object], _redact_account_ids_from_arns(data))
         assert result[0] == "arn:aws:iam::REDACTED:role/Role1"
         assert result[1] == "arn:aws:iam::REDACTED:role/Role2"
         assert result[2] == "plain text"
@@ -610,10 +611,12 @@ class TestRedactAccountIdsFromArns:
                 }
             ]
         }
-        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
-        assert result["summary"]["account_id"] == "111111111111"
-        assert result["roles"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/Role1"
-        assert result["roles"][1]["role_arn"] == "arn:aws:iam::REDACTED:role/Role2"
+        result = cast(JsonDict, _redact_account_ids_from_arns(data))
+        summary = cast(JsonDict, result["summary"])
+        roles = cast(List[JsonDict], result["roles"])
+        assert summary["account_id"] == "111111111111"
+        assert roles[0]["role_arn"] == "arn:aws:iam::REDACTED:role/Role1"
+        assert roles[1]["role_arn"] == "arn:aws:iam::REDACTED:role/Role2"
 
     def test_redact_preserves_non_string_types(self) -> None:
         """Test that non-string types are preserved unchanged."""
@@ -639,7 +642,7 @@ class TestRedactAccountIdsFromArns:
             "s3_arn": "arn:aws:s3::111111111111:bucket/MyBucket",
             "ec2_arn": "arn:aws:ec2::111111111111:instance/i-11111111111111111"
         }
-        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        result = cast(JsonDict, _redact_account_ids_from_arns(data))
         assert result["iam_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
         assert result["s3_arn"] == "arn:aws:s3::REDACTED:bucket/MyBucket"
         assert result["ec2_arn"] == "arn:aws:ec2::REDACTED:instance/i-11111111111111111"
@@ -659,7 +662,7 @@ class TestRedactAccountIdsFromArns:
             "china": "arn:aws-cn:iam::333333333333:role/MyRole",
             "isolated": "arn:aws-iso-b:iam::444444444444:role/MyRole",
         }
-        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        result = cast(JsonDict, _redact_account_ids_from_arns(data))
         assert result["commercial"] == "arn:aws:iam::REDACTED:role/MyRole"
         assert result["govcloud"] == "arn:aws-us-gov:iam::REDACTED:role/MyRole"
         assert result["china"] == "arn:aws-cn:iam::REDACTED:role/MyRole"
@@ -671,7 +674,7 @@ class TestRedactAccountIdsFromArns:
             "not_an_arn": "the account is 111111111111 today",
             "wrong_scheme": "urn:aws:iam::111111111111:role/MyRole",
         }
-        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        result = cast(JsonDict, _redact_account_ids_from_arns(data))
         assert result == data
 
     def test_redact_arns_with_region(self) -> None:
@@ -681,7 +684,7 @@ class TestRedactAccountIdsFromArns:
             "rds_cluster": "arn:aws:rds:us-west-2:222222222222:cluster:my-cluster",
             "ec2_instance": "arn:aws:ec2:eu-west-1:333333333333:instance/i-11111111111111111"
         }
-        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        result = cast(JsonDict, _redact_account_ids_from_arns(data))
         assert result["rds_instance"] == "arn:aws:rds:us-east-1:REDACTED:db:my-database"
         assert result["rds_cluster"] == "arn:aws:rds:us-west-2:REDACTED:cluster:my-cluster"
         assert result["ec2_instance"] == "arn:aws:ec2:eu-west-1:REDACTED:instance/i-11111111111111111"
@@ -699,7 +702,7 @@ class TestRedactAccountIdsFromArns:
             "some_number": "111111111111",
             "role_arn": "arn:aws:iam::111111111111:role/MyRole"
         }
-        result = cast(Dict[str, Any], _redact_account_ids_from_arns(data))
+        result = cast(JsonDict, _redact_account_ids_from_arns(data))
         assert result["instance_id"] == "i-11111111111111111"
         assert result["some_number"] == "111111111111"
         assert result["role_arn"] == "arn:aws:iam::REDACTED:role/MyRole"
@@ -710,7 +713,7 @@ class TestRedactAccountIdsFromArns:
             check_name = "deny_sts_third_party_assumerole"
             account_name = "test-account"
             account_id = "111111111111"
-            results_data: Dict[str, Any] = {
+            results_data: JsonDict = {
                 "summary": {
                     "account_name": account_name,
                     "account_id": account_id,
@@ -743,13 +746,46 @@ class TestRedactAccountIdsFromArns:
                 assert "account_id" not in loaded_data["summary"]
                 assert loaded_data["roles_third_parties_can_access"][0]["role_arn"] == "arn:aws:iam::REDACTED:role/ThirdPartyRole"
 
+    def test_write_check_results_leaves_the_callers_document_unredacted(self) -> None:
+        """
+        A redacted write does not reach back into the check's own document.
+
+        The writer once copied the summary before popping account_id; it now
+        relies on redaction rebuilding every dict it walks. The check still
+        holds its account_id and its ARNs when the write returns.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results_data: JsonDict = {
+                "summary": {
+                    "account_name": "test-account",
+                    "account_id": "111111111111",
+                    "check": "deny_sts_third_party_assumerole",
+                },
+                "roles_third_parties_can_access": [
+                    {"role_arn": "arn:aws:iam::111111111111:role/ThirdPartyRole"}
+                ],
+            }
+            before = copy.deepcopy(results_data)
+
+            write_check_results(
+                check_name="deny_sts_third_party_assumerole",
+                check_type="rcps",
+                account_name="test-account",
+                account_id="111111111111",
+                results_data=results_data,
+                results_base_dir=temp_dir,
+                exclude_account_ids=True,
+            )
+
+            assert results_data == before
+
     def test_write_check_results_preserves_arns_when_exclude_account_ids_false(self) -> None:
         """Test that ARNs are NOT redacted when exclude_account_ids=False."""
         with tempfile.TemporaryDirectory() as temp_dir:
             check_name = "deny_sts_third_party_assumerole"
             account_name = "test-account"
             account_id = "111111111111"
-            results_data: Dict[str, Any] = {
+            results_data: JsonDict = {
                 "summary": {
                     "account_name": account_name,
                     "account_id": account_id,

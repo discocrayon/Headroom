@@ -117,7 +117,7 @@ principal is not a third party.
 |---|---|
 | `ClientError` from `ListRoles` | Logged and re-raised, aborting the run |
 | Unparseable trust policy JSON | Logged and re-raised, aborting the run |
-| `Statement` neither object nor list | `MalformedPolicyError` |
+| `Statement` neither object nor list, or a list holding anything but objects | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
 | An `Allow` granting `sts:AssumeRole` and carrying neither `Principal` nor `NotPrincipal` | `MalformedPolicyError` — AWS stores no such statement, so it is a document misread rather than a grant to nobody |
 | Both or neither of `Action`/`NotAction` on an `Allow` | `MalformedStatementError` |

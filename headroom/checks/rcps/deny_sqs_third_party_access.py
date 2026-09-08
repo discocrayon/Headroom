@@ -5,7 +5,7 @@ This check identifies SQS queues with resource policies that allow principals
 from accounts outside the organization to access them.
 """
 
-from typing import Any, Dict, List, Set
+from typing import Dict, List, Set
 
 from boto3.session import Session
 
@@ -47,7 +47,7 @@ class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
         org_account_ids: Set[str],
         org_id: str,
         exclude_account_ids: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         """
         Initialize the SQS third-party access check.

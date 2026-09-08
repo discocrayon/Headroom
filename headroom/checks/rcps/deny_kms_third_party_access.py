@@ -6,13 +6,14 @@ outside the organization, through either of the two surfaces that
 authorize access to a key - its resource policy and its grants.
 """
 
-from typing import Any, Dict, List, Set
+from typing import Dict, List, Set
 
 from boto3.session import Session
 
 from ...aws.kms import KMSKeyPolicyAnalysis, analyze_kms_key_policies
 from ...constants import DENY_KMS_THIRD_PARTY_ACCESS
 from ...enums import CheckCategory, TerraformSection
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult, entry_sort_key, sorted_values_by_account
 from ..registry import Allowlist, register_check
 
@@ -59,7 +60,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
         org_account_ids: Set[str],
         org_id: str,
         exclude_account_ids: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         """
         Initialize the KMS third-party access check.
@@ -112,7 +113,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
     def categorize_result(
         self,
         result: KMSKeyPolicyAnalysis
-    ) -> tuple[CheckCategory, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single key policy analysis result.
 
@@ -133,7 +134,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
         Returns:
             Tuple of (category, result_dict) where category is a CheckCategory enum value
         """
-        result_dict = {
+        result_dict: JsonDict = {
             "key_id": result.key_id,
             "key_arn": result.key_arn,
             "region": result.region,
@@ -188,7 +189,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
     def build_summary_fields(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build KMS third-party access check-specific summary fields.
 
@@ -243,7 +244,7 @@ class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):
     def _build_results_data(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build results data in the format expected by this check.
 

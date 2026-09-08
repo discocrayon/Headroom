@@ -7,7 +7,7 @@ import pytest
 import tempfile
 import shutil
 from unittest.mock import MagicMock, patch
-from typing import Any, Dict, Generator, List
+from typing import Generator, List, cast
 
 from botocore.exceptions import ClientError
 
@@ -284,7 +284,7 @@ class TestCheckDenyECRThirdPartyAccess:
 
         assert category == "compliant"
         assert result_dict["has_wildcard_principal"] is False
-        assert "999999999999" in result_dict["third_party_account_ids"]
+        assert result_dict["third_party_account_ids"] == ["999999999999"]
 
     def test_categorize_result_non_account_principal_is_a_violation(
         self,
@@ -831,9 +831,8 @@ class TestConfinedWildcards:
 
         # Without this, get_registry_policy() returns a Mock, which the
         # analyzer would hand to json.loads().
-        error_response: Any = {"Error": {"Code": "RegistryPolicyNotFoundException"}}
         mock_ecr_client.get_registry_policy.side_effect = ClientError(
-            error_response, "GetRegistryPolicy"
+            {"Error": {"Code": "RegistryPolicyNotFoundException"}}, "GetRegistryPolicy"
         )
 
         mock_session.client.side_effect = lambda service, **kwargs: {
@@ -861,7 +860,7 @@ class TestConfinedWildcards:
         return mock_session
 
     @staticmethod
-    def _results_data(temp_results_dir: str, mock_session: MagicMock) -> Dict[str, Any]:
+    def _results_data(temp_results_dir: str, mock_session: MagicMock) -> JsonDict:
         """
         Run the check against a session and return the document it wrote.
 
@@ -887,7 +886,7 @@ class TestConfinedWildcards:
         ):
             check.execute(mock_session)
 
-        results_data: Dict[str, Any] = mock_write.call_args[1]["results_data"]
+        results_data: JsonDict = mock_write.call_args[1]["results_data"]
         return results_data
 
     def test_a_wildcard_confined_to_out_of_org_accounts_reaches_the_allowlist(
@@ -905,7 +904,7 @@ class TestConfinedWildcards:
             {"Version": "2012-10-17", "Statement": [CONFINED_WILDCARD_STATEMENT]}
         )
 
-        summary = self._results_data(temp_results_dir, mock_session)["summary"]
+        summary = cast(JsonDict, self._results_data(temp_results_dir, mock_session)["summary"])
 
         assert summary["violations"] == 0
         assert summary["unique_third_party_accounts"] == ["333333333333"]
@@ -927,7 +926,7 @@ class TestConfinedWildcards:
         results_data = self._results_data(temp_results_dir, mock_session)
 
         assert results_data["policies_with_wildcards"] == []
-        entry = results_data["policies_third_parties_can_access"][0]
+        entry = cast(List[JsonDict], results_data["policies_third_parties_can_access"])[0]
         assert entry["repository_name"] == "vendor-repo"
         assert entry["confined_by"] == ["aws:principalaccount"]
 
@@ -955,7 +954,7 @@ class TestConfinedWildcards:
 
         results_data = self._results_data(temp_results_dir, mock_session)
 
-        entry = results_data["policies_with_wildcards"][0]
+        entry = cast(List[JsonDict], results_data["policies_with_wildcards"])[0]
         assert entry["has_wildcard_principal"] is True
         assert entry["confined_by"] == ["aws:principalaccount"]
 
@@ -984,6 +983,6 @@ class TestConfinedWildcards:
 
         results_data = self._results_data(temp_results_dir, mock_session)
 
-        entry = results_data["policies_third_parties_can_access"][0]
+        entry = cast(List[JsonDict], results_data["policies_third_parties_can_access"])[0]
         assert entry["third_party_account_ids"] == ["333333333333"]
         assert entry["confined_by"] == []

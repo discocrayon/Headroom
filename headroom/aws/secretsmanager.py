@@ -216,7 +216,8 @@ def _analyze_secret_policy(
         UnknownPrincipalTypeError: If a statement names a principal key AWS
             does not document
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     third_party_accounts: Set[str] = set()
     has_wildcard = False

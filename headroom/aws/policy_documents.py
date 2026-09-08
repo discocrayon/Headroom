@@ -9,7 +9,7 @@ rules live here once rather than in each of them.
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, List, NamedTuple, Optional, Set, Union
+from typing import FrozenSet, List, NamedTuple, Optional, Set
 
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..enums import PolicyService
@@ -17,7 +17,6 @@ from ..enums import PolicyService
 __all__ = [
     "MalformedPolicyError",
     "NON_ACCOUNT_PRINCIPAL_TYPES",
-    "PrincipalElement",
     "PrincipalReading",
     "RESOURCE_POLICY_PRINCIPAL_TYPES",
     "ServicePrincipalSource",
@@ -209,11 +208,6 @@ NON_ACCOUNT_PRINCIPAL_TYPES = frozenset({"CanonicalUser", "Federated"})
 WILDCARD_SERVICE_PRINCIPAL = "*"
 
 
-# A Principal element is a string, an array of them, or an object keyed by
-# principal type whose values are again strings or arrays.
-PrincipalElement = Union[str, List["PrincipalElement"], Dict[str, "PrincipalElement"]]
-
-
 class MalformedPolicyError(Exception):
     """
     Raised when part of a policy document is not shaped like a policy.
@@ -269,7 +263,7 @@ class PrincipalReading:
     principal_types: FrozenSet[str] = frozenset()
 
 
-def normalize_statements(policy: Mapping[str, Any], resource_description: str) -> List[Any]:
+def normalize_statements(policy: Mapping[str, object], resource_description: str) -> List[Mapping[str, object]]:
     """
     Return a policy document's statements as a list.
 
@@ -289,7 +283,8 @@ def normalize_statements(policy: Mapping[str, Any], resource_description: str) -
         The document's statements, always as a list
 
     Raises:
-        MalformedPolicyError: If Statement is neither an object nor a list
+        MalformedPolicyError: If Statement is neither an object nor a list,
+            or the list holds anything but objects
     """
     statements = policy.get("Statement", [])
 
@@ -304,10 +299,20 @@ def normalize_statements(policy: Mapping[str, Any], resource_description: str) -
             "nothing, which is not a safe guess."
         )
 
+    for statement in statements:
+        if isinstance(statement, dict):
+            continue
+        raise MalformedPolicyError(
+            f"{resource_description} has a Statement element of type "
+            f"{type(statement).__name__}, expected an object. Skipping it "
+            "would report the policy as granting less than it does, which is "
+            "not a safe guess."
+        )
+
     return statements
 
 
-def normalize_actions(action: Union[str, List[str]]) -> Set[str]:
+def normalize_actions(action: object) -> Set[str]:
     """
     Return a statement's Action element as a set of action strings.
 
@@ -337,7 +342,7 @@ def normalize_actions(action: Union[str, List[str]]) -> Set[str]:
     )
 
 
-def has_not_principal(statement: Mapping[str, Any]) -> bool:
+def has_not_principal(statement: Mapping[str, object]) -> bool:
     """
     Report whether a statement names NotPrincipal in place of Principal.
 
@@ -452,7 +457,7 @@ def unreadable_service_principal_source(reason: str) -> ServicePrincipalSource:
     )
 
 
-def _as_condition_values(value: Any, key: str, resource_description: str) -> List[str]:
+def _as_condition_values(value: object, key: str, resource_description: str) -> List[str]:
     """
     Return a condition entry's value as a list of strings.
 
@@ -484,7 +489,7 @@ def _as_condition_values(value: Any, key: str, resource_description: str) -> Lis
     )
 
 
-def _service_principals(principal: Any, resource_description: str) -> List[str]:
+def _service_principals(principal: object, resource_description: str) -> List[str]:
     """
     Return the services a statement's Principal element names.
 
@@ -611,7 +616,7 @@ class _ConditionClause(NamedTuple):
     value: object
 
 
-def _condition_clauses(condition: Mapping[str, Any]) -> Iterator[_ConditionClause]:
+def _condition_clauses(condition: Mapping[str, object]) -> Iterator[_ConditionClause]:
     """
     Yield each clause of a Condition block, parsed the one way IAM defines.
 
@@ -656,7 +661,7 @@ def _condition_clauses(condition: Mapping[str, Any]) -> Iterator[_ConditionClaus
 
 
 def _keys_asserted_present(
-    condition: Mapping[str, Any],
+    condition: Mapping[str, object],
     resource_description: str,
 ) -> Set[str]:
     """
@@ -696,7 +701,7 @@ def _keys_asserted_present(
 
 
 def _read_source_guards(
-    condition: Any,
+    condition: object,
     org_id: str,
     resource_description: str,
 ) -> _SourceGuards:
@@ -787,7 +792,7 @@ def _read_source_guards(
 
 
 def read_service_principal_sources(
-    statement: Mapping[str, Any],
+    statement: Mapping[str, object],
     org_account_ids: Set[str],
     org_id: str,
     resource_description: str,
@@ -838,7 +843,7 @@ def read_service_principal_sources(
 
 
 def _read_service_principal_sources(
-    statement: Mapping[str, Any],
+    statement: Mapping[str, object],
     org_account_ids: Set[str],
     org_id: str,
     resource_description: str,
@@ -1067,7 +1072,7 @@ def _account_ids_in_string(principal: str) -> Set[str]:
 
 
 def _read_principal(
-    principal: PrincipalElement,
+    principal: object,
     permitted_types: FrozenSet[str],
     resource_description: str,
 ) -> PrincipalReading:
@@ -1098,8 +1103,8 @@ def _read_principal(
     `UnknownPrincipalTypeError`.
 
     Args:
-        principal: The Principal element's value, as a string, a list, or an
-            object keyed by principal type
+        principal: The Principal element's value: a string, a list, or an
+            object keyed by principal type. Anything else raises
         permitted_types: The principal keys this policy type accepts, either
             `RESOURCE_POLICY_PRINCIPAL_TYPES` or `TRUST_POLICY_PRINCIPAL_TYPES`
         resource_description: The resource this policy belongs to, named in
@@ -1109,6 +1114,8 @@ def _read_principal(
         What the element names
 
     Raises:
+        MalformedPolicyError: If it is neither a string, a list, nor an
+            object
         UnknownPrincipalTypeError: If it names a key AWS does not document,
             or one this policy type does not accept
     """
@@ -1196,7 +1203,7 @@ class _PrincipalConfinement:
     account_ids: FrozenSet[str]
 
 
-def _confining_clause_values(value: Any) -> Optional[List[str]]:
+def _confining_clause_values(value: object) -> Optional[List[str]]:
     """
     Return one confining clause's value as a list of strings.
 
@@ -1331,7 +1338,7 @@ def _accounts_bound_by_key(
 
 
 def _read_principal_confinement(
-    condition: Any,
+    condition: object,
     policy_service: PolicyService,
     org_id: str,
 ) -> _PrincipalConfinement:
@@ -1411,7 +1418,7 @@ def _read_principal_confinement(
 
 
 def read_statement_principals(
-    statement: Mapping[str, Any],
+    statement: Mapping[str, object],
     permitted_types: FrozenSet[str],
     policy_service: PolicyService,
     org_id: str,

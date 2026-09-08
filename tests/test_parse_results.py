@@ -7,7 +7,7 @@ Tests SCP/RCP compliance results analysis and placement recommendations.
 import json
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from unittest.mock import Mock, patch
 
 import pytest
@@ -25,6 +25,7 @@ from headroom.checks.registry import get_check_names
 from headroom.terraform.generate_scps import render_scp_terraform
 from headroom.types import (
     CheckCoverage,
+    JsonDict,
     OrganizationHierarchy,
     OrganizationalUnit,
     AccountOrgPlacement,
@@ -394,6 +395,96 @@ class TestResultFileParsing:
                 match=r"departed-account_333333333333\.json names account 333333333333, which is not in the organization hierarchy.*Delete the file",
             ):
                 parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+    @pytest.mark.parametrize("summary", [None, []], ids=["null", "list"])
+    def test_parse_scp_result_files_rejects_a_summary_that_is_not_an_object(self, summary: object) -> None:
+        """
+        A summary that is not an object is refused by name, not by traceback.
+
+        Every check writes summary as an object, so anything else is a file
+        Headroom did not write as it stands. Reading a key from it raised an
+        AttributeError that named neither the file nor what was wrong.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            with open(check_dir / "test-account.json", "w") as f:
+                json.dump({"summary": summary}, f)
+
+            with pytest.raises(
+                RuntimeError,
+                match=r"test-account\.json has a summary of type (NoneType|list), expected an object",
+            ):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+    def test_parse_scp_result_files_rejects_a_summary_naming_no_account(self) -> None:
+        """
+        A summary with neither account field cannot be attributed to an account.
+
+        The RCP reader used to reach this error for a file with no summary at
+        all; it now refuses that file for naming no check, so a registered
+        check's file that names no account is read here.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            with open(check_dir / "test-account.json", "w") as f:
+                json.dump({"summary": {"check": "deny_ec2_imds_v1", "violations": 0}}, f)
+
+            with pytest.raises(
+                RuntimeError,
+                match=r"test-account\.json missing both account_id and account_name in summary",
+            ):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+    @pytest.mark.parametrize("document", [None, [], "summary"], ids=["null", "list", "string"])
+    def test_parse_scp_result_files_rejects_a_document_that_is_not_an_object(self, document: object) -> None:
+        """
+        A file whose root is not an object is refused by name, not by traceback.
+
+        Every result file is an object holding summary, so a list, a string,
+        or null at the root is a file Headroom did not write as it stands.
+        Looking summary up in it raised an AttributeError that named neither
+        the file nor what was wrong, and that no handler in main labels.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            with open(check_dir / "test-account.json", "w") as f:
+                json.dump(document, f)
+
+            with pytest.raises(
+                RuntimeError,
+                match=r"test-account\.json holds a (NoneType|list|str) at its root, expected an object",
+            ):
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+    @pytest.mark.parametrize("summary", [
+        {"account_id": 111111111111, "account_name": "test-account"},
+        {"account_name": ["test-account"]},
+    ], ids=["account_id", "account_name"])
+    def test_parse_scp_result_files_rejects_an_account_field_that_is_not_a_string(self, summary: JsonDict) -> None:
+        """
+        An account_id or account_name of any type but string is corruption.
+
+        Headroom writes both as strings, or leaves account_id out under
+        exclude_account_ids. An integer ID was looked up as a hierarchy key it
+        can never equal and reported as an account that had left the
+        organization; a list name reached the name lookup and failed inside
+        it. Neither said what was wrong with the file.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            check_dir = Path(temp_dir) / "scps" / "deny_ec2_imds_v1"
+            check_dir.mkdir(parents=True)
+            with open(check_dir / "test-account.json", "w") as f:
+                json.dump({"summary": {**summary, "check": "deny_ec2_imds_v1", "violations": 0}}, f)
+
+            with pytest.raises(RuntimeError, match=r"test-account\.json carries .* is not a string") as exc_info:
+                parse_scp_result_files(temp_dir, make_test_org_hierarchy())
+
+        message = str(exc_info.value)
+        assert "111111111111" in message or "['test-account']" in message
+        assert "skips any account whose result file already exists" in message
 
     def test_parse_scp_result_files_restores_redacted_account_ids(self) -> None:
         """Test un-redaction of IAM user ARNs in deny_iam_user_creation results."""
@@ -1935,7 +2026,7 @@ class TestAMissingViolationCountIsRejected:
     run again, which the error says.
     """
 
-    def write_summary(self, directory: Path, summary: Dict[str, Any]) -> str:
+    def write_summary(self, directory: Path, summary: JsonDict) -> str:
         check_dir = directory / "scps" / "deny_ec2_imds_v1"
         check_dir.mkdir(parents=True)
         result_file = check_dir / "test-account_111111111111.json"
@@ -2051,7 +2142,7 @@ class TestAllowlistValuesFollowTheRegistry:
     def parse_one_summary(
         self,
         check_name: str,
-        summary: Dict[str, Any]
+        summary: JsonDict
     ) -> List[SCPCheckResult]:
         """
         Write one account's result file for a check and parse the directory.
@@ -2258,6 +2349,60 @@ class TestAllowlistValuesFollowTheRegistry:
                 "account_id": "111111111111",
                 "check": "deny_old_check",
             })
+
+    def test_an_unregistered_check_is_rejected_before_its_account_is_read(self) -> None:
+        """
+        The account is a key of the file too, and the name comes before it.
+
+        A stale directory's files predate the code that says which account
+        fields they carry, so a file in one that names no account got the
+        missing-account error and a re-run of a check that no longer exists.
+        """
+        with pytest.raises(
+            RuntimeError,
+            match="test-account_111111111111.json names check 'deny_old_check', which is not a registered SCP check",
+        ):
+            self.parse_one_summary("deny_old_check", {"check": "deny_old_check"})
+
+    def test_a_check_name_that_is_not_a_string_is_an_unregistered_check(self) -> None:
+        """
+        The registry holds names, so a check of any other type is not in it.
+
+        The file gets the stale-directory error, which shows the value it
+        carried, rather than a lookup failure inside the registry.
+        """
+        with pytest.raises(
+            RuntimeError,
+            match="test-account_111111111111.json names check 5, which is not a registered SCP check",
+        ):
+            self.parse_one_summary("deny_ec2_imds_v1", {
+                "account_name": "test-account",
+                "account_id": "111111111111",
+                "check": 5,
+                "violations": 0,
+            })
+
+    def test_remedies_for_a_misfiled_result_name_the_directory_check(self) -> None:
+        """
+        The skip an operator must clear belongs to the directory, not the file.
+
+        `results_exist` looks in the directory named for the check being run,
+        so a file under deny_ec2_imds_v1 makes deny_ec2_imds_v1 skip whatever
+        check its own summary names. The reader attributes a misfiled file to
+        the summary's check, and its remedies named that check too, which
+        sent the operator to re-run a check that never reads that directory.
+        """
+        misfiled: JsonDict = {
+            "account_name": "test-account",
+            "account_id": "111111111111",
+            "check": "deny_ec2_ami_owner",
+        }
+
+        with pytest.raises(RuntimeError, match=r"has no violations count.*the deny_ec2_imds_v1 check skips"):
+            self.parse_one_summary("deny_ec2_imds_v1", misfiled)
+
+        with pytest.raises(RuntimeError, match=r"has no unique_ami_owners.*the deny_ec2_imds_v1 check skips"):
+            self.parse_one_summary("deny_ec2_imds_v1", {**misfiled, "violations": 0})
 
     def test_parse_rejects_a_result_directory_for_an_unregistered_check(self) -> None:
         """
@@ -2630,7 +2775,7 @@ class TestTheSCPReaderRequiresOneFilePerAccount:
         self,
         check_dir: Path,
         file_name: str,
-        summary: Dict[str, Any]
+        summary: JsonDict
     ) -> Path:
         """
         Write one account's result file into a check directory.

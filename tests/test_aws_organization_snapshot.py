@@ -1,7 +1,7 @@
 """Tests for headroom/aws/organization_snapshot.py."""
 
 import re
-from typing import Any, Callable, Dict, Iterator, List, Optional, cast, get_args
+from typing import Callable, Dict, Iterator, List, Optional, cast, get_args
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -19,6 +19,7 @@ from headroom.aws.organization_snapshot import (
     discover_organization,
 )
 from headroom.config import AccountTagLayout, HeadroomConfig
+from headroom.types import JsonDict
 from tests.constants import ORG_ID
 # `_account_infos` stays in tests/test_analysis.py, next to the
 # `MAX_GENERATED_ACCOUNTS` bound it enforces and the test that validates the
@@ -34,16 +35,16 @@ RETIRED = "444444444444"
 SKIPPED = "555555555555"
 
 
-def _config(**overrides: Any) -> HeadroomConfig:
+def _config(**overrides: object) -> HeadroomConfig:
     """A configuration whose management account is MANAGEMENT."""
-    values: Dict[str, Any] = {
+    values: JsonDict = {
         "management_account_id": MANAGEMENT,
         "security_analysis_account_id": PAYMENTS,
         "use_account_name_from_tags": False,
         "account_tag_layout": AccountTagLayout(environment="Env", name="Name", owner="Owner"),
     }
     values.update(overrides)
-    return HeadroomConfig(**values)
+    return HeadroomConfig.model_validate(values)
 
 
 # Note: `tests/test_aws_organization.py` has a similarly-named helper whose
@@ -543,7 +544,7 @@ class TestFetchAccountTagsPagination:
         silently renames an account, so a page-two failure must not leave
         page one's Owner tag in the result.
         """
-        def _pages() -> Iterator[Dict[str, Any]]:
+        def _pages() -> Iterator[Dict[str, object]]:
             yield {"Tags": [{"Key": "Owner", "Value": "payments-team"}]}
             raise ClientError(
                 {"Error": {"Code": "AccessDenied", "Message": "Denied"}},

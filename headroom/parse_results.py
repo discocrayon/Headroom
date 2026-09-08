@@ -9,11 +9,11 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
 
 from .config import HeadroomConfig
 from .types import (
-    CheckCoverage, OrganizationalUnit, OrganizationHierarchy, PolicyRecommendation,
+    CheckCoverage, JsonDict, OrganizationalUnit, OrganizationHierarchy, PolicyRecommendation,
     SCPCheckResult, SCPPlacementRecommendations, RCPPlacementRecommendations
 )
 from .aws.organization import lookup_account_id_by_name
@@ -28,34 +28,68 @@ from .write_results import restore_account_id_in_arns
 logger = logging.getLogger(__name__)
 
 
-def _load_result_file_json(result_file: Path) -> Dict[str, Any]:
+def _load_result_summary(result_file: Path) -> JsonDict:
     """
-    Load and parse a result JSON file.
+    Load a result JSON file and return its summary block.
+
+    Both readers take everything they need from `summary`, so nothing else
+    in the document is returned. A file without one reads as an empty
+    summary and fails on the first key it lacks.
 
     Args:
         result_file: Path to the JSON result file
 
     Returns:
-        Parsed JSON data as dictionary
+        The file's summary block
 
     Raises:
-        RuntimeError: If JSON parsing fails
+        RuntimeError: If JSON parsing fails, or the document or its summary
+            is not an object
     """
     try:
         with open(result_file, 'r') as f:
-            data: Dict[str, Any] = json.load(f)
-            return data
+            data = json.load(f)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Failed to parse result file {result_file}: {e}")
 
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"{result_file} holds a {type(data).__name__} at its root, expected "
+            f"an object. Every result file is an object holding summary, so as "
+            f"it stands the file is not one Headroom wrote. "
+            f"{delete_and_rerun_remedy(result_file)}"
+        )
 
-def _extract_account_id_from_result(
-    summary: Dict[str, Any],
+    summary = data.get("summary", {})
+    if not isinstance(summary, dict):
+        raise RuntimeError(
+            f"{result_file} has a summary of type {type(summary).__name__}, "
+            f"expected an object. Every check writes one, so as it stands the "
+            f"file is not one Headroom wrote. "
+            f"{delete_and_rerun_remedy(result_file)}"
+        )
+    return summary
+
+
+class ResultAccount(NamedTuple):
+    """
+    The account a result file describes, as the file names it.
+
+    `account_name` is the name the file was written under, which
+    `use_account_name_from_tags` may have taken from a tag rather than from
+    Organizations. It is empty when the file carries none.
+    """
+    account_id: str
+    account_name: str
+
+
+def _read_result_account(
+    summary: JsonDict,
     organization_hierarchy: OrganizationHierarchy,
     result_file: Path
-) -> str:
+) -> ResultAccount:
     """
-    Extract account ID from result summary or organization hierarchy.
+    Resolve the account a result file describes from its summary.
 
     Universal strategy for both SCP and RCP results:
     1. Try to get account_id directly from summary
@@ -73,15 +107,26 @@ def _extract_account_id_from_result(
         result_file: Path to result file (for error messages)
 
     Returns:
-        Account ID string
+        The account's ID and the name the file carries
 
     Raises:
-        RuntimeError: If account ID cannot be determined, or names an account
-            the hierarchy does not hold
+        RuntimeError: If either field is present but not a string, the
+            account cannot be determined, or it names an account the
+            hierarchy does not hold
     """
-    account_id: str = summary.get("account_id", "")
+    account_id = summary.get("account_id", "")
+    account_name = summary.get("account_name", "")
+    if not isinstance(account_id, str) or not isinstance(account_name, str):
+        raise RuntimeError(
+            f"{result_file} carries account_id {account_id!r} and account_name "
+            f"{account_name!r} in its summary, and one of them is not a string. "
+            f"Headroom writes both as strings, or leaves account_id out when "
+            f"exclude_account_ids is set, so the file is corrupt. "
+            f"{delete_and_rerun_remedy(result_file)}"
+        )
+
     if account_id and account_id in organization_hierarchy.accounts:
-        return account_id
+        return ResultAccount(account_id, account_name)
 
     if account_id:
         raise RuntimeError(
@@ -94,16 +139,18 @@ def _extract_account_id_from_result(
         )
 
     # Fallback: look up by account name
-    account_name = summary.get("account_name", "")
     if not account_name:
         raise RuntimeError(
             f"Result file {result_file} missing both account_id and account_name in summary"
         )
 
-    return lookup_account_id_by_name(
+    return ResultAccount(
+        lookup_account_id_by_name(
+            account_name,
+            organization_hierarchy,
+            str(result_file)
+        ),
         account_name,
-        organization_hierarchy,
-        str(result_file)
     )
 
 
@@ -162,7 +209,7 @@ def verify_one_result_file_per_account(
 
 
 def _read_declared_allowlist(
-    summary: Dict[str, Any],
+    summary: JsonDict,
     check_name: str,
     allowlist: Allowlist,
     account_id: str,
@@ -206,7 +253,7 @@ def _read_declared_allowlist(
             f"from that key, and an absent key cannot be told apart "
             f"from an account that observed nothing: one is a stale result to "
             f"re-run, the other is an observation the allowlist must carry. "
-            f"{delete_and_rerun_remedy(result_file, check_name)}"
+            f"{delete_and_rerun_remedy(result_file)}"
         )
 
     values = summary[allowlist.summary_key]
@@ -216,7 +263,7 @@ def _read_declared_allowlist(
             f"which is not a list. {check_name} populates {allowlist.terraform_variable} "
             f"from that key, and a value that is not a list is neither an observation "
             f"nor an absent key: an account that observed nothing writes []. "
-            f"{delete_and_rerun_remedy(result_file, check_name)}"
+            f"{delete_and_rerun_remedy(result_file)}"
         )
     if not allowlist.restores_account_ids:
         return values
@@ -225,7 +272,7 @@ def _read_declared_allowlist(
 
 
 def _read_allowlist_values(
-    summary: Dict[str, Any],
+    summary: JsonDict,
     definition: CheckDefinition,
     account_id: str,
     result_file: Path
@@ -258,6 +305,50 @@ def _read_allowlist_values(
     )
 
 
+def _read_violations_count(summary: JsonDict, result_file: Path) -> int:
+    """
+    Read the violations count both readers decide placement by.
+
+    Placement clears an account when this count is zero, so defaulting it
+    would answer an unanswerable question in the safest possible direction
+    (INV-01).
+
+    The count is the one field placement reads, so it has to be the one kind
+    of value placement can read. A negative count is unsafe to SCP placement
+    (not zero), safe to coverage (not above zero), and safe to RCP placement
+    (not above zero); a string count raises a TypeError the run does not
+    catch. Headroom wrote the file, so anything but a non-negative integer is
+    corruption, and it gets the absent key's remedy.
+
+    Args:
+        summary: The result file's summary block
+        result_file: Path to the file, used in the error
+
+    Returns:
+        The count
+
+    Raises:
+        RuntimeError: If the summary has no violations key, or holds anything
+            but a non-negative integer under it
+    """
+    if "violations" not in summary:
+        raise RuntimeError(
+            f"{result_file} has no violations count in its summary. Placement "
+            f"reads that count and nothing else to decide whether an account is "
+            f"safe, so an absent key would clear the account rather than stop "
+            f"the run. {delete_and_rerun_remedy(result_file)}"
+        )
+
+    violations = summary["violations"]
+    if isinstance(violations, bool) or not isinstance(violations, int) or violations < 0:
+        raise RuntimeError(
+            f"{result_file} carries a violations count of {violations!r}. Placement "
+            f"reads that count as a non-negative integer and nothing else. "
+            f"{delete_and_rerun_remedy(result_file)}"
+        )
+    return violations
+
+
 def _parse_single_scp_result_file(
     result_file: Path,
     check_name: str,
@@ -278,21 +369,14 @@ def _parse_single_scp_result_file(
         RuntimeError: If JSON parsing fails, the file names a check that is
             not a registered SCP check, or required fields are missing
     """
-    data = _load_result_file_json(result_file)
-    summary = data.get("summary", {})
-
-    account_id = _extract_account_id_from_result(
-        summary,
-        organization_hierarchy,
-        result_file
-    )
+    summary = _load_result_summary(result_file)
 
     resolved_check_name = summary.get("check", check_name)
     # Resolved before any key is required of the file: a stale directory is
     # stale throughout, and the registry's own error names neither the file
     # nor a remedy. Deleting the directory would also be the wrong remedy for
     # a file misfiled under a live check's directory, so the file comes first.
-    if resolved_check_name not in get_check_names("scps"):
+    if not isinstance(resolved_check_name, str) or resolved_check_name not in get_check_names("scps"):
         raise RuntimeError(
             f"{result_file} names check {resolved_check_name!r}, which is not a "
             f"registered SCP check. The results directory outlives the code that "
@@ -304,50 +388,33 @@ def _parse_single_scp_result_file(
         )
     definition = get_check_definition(resolved_check_name)
 
-    # Placement clears an account when this count is zero, so defaulting it
-    # would answer an unanswerable question in the safest possible direction
-    # (INV-01). deny_iam_saml_provider_not_aws_sso shipped without the key and
-    # had every account it rejected cleared for a root-level deny. The
-    # remaining fields below are reporting only and no placement decision reads
-    # them, so a missing one costs accuracy rather than safety.
-    if "violations" not in summary:
-        raise RuntimeError(
-            f"{result_file} has no violations count in its summary. Placement "
-            f"reads that count and nothing else to decide whether an account is "
-            f"safe, so an absent key would clear the account rather than stop "
-            f"the run. {delete_and_rerun_remedy(result_file, resolved_check_name)}"
-        )
+    account = _read_result_account(
+        summary,
+        organization_hierarchy,
+        result_file
+    )
 
-    violations = summary["violations"]
-    # The count is the one field placement reads, so it has to be the one
-    # kind of value placement can read. A negative count is unsafe to
-    # placement (not zero) and safe to coverage (not above zero), so the run
-    # would abort blaming the coverage map; a string count raises a TypeError
-    # the run does not catch. Headroom wrote the file, so anything but a
-    # non-negative integer is corruption, and it gets the absent key's remedy.
-    if isinstance(violations, bool) or not isinstance(violations, int) or violations < 0:
-        raise RuntimeError(
-            f"{result_file} carries a violations count of {violations!r}. Placement "
-            f"reads that count as a non-negative integer and nothing else. "
-            f"{delete_and_rerun_remedy(result_file, resolved_check_name)}"
-        )
+    violations = _read_violations_count(summary, result_file)
 
     allowlist_values = _read_allowlist_values(
         summary,
         definition,
-        account_id,
+        account.account_id,
         result_file
     )
 
+    # The four counts below are reporting only: no placement decision reads
+    # them, so a missing one is defaulted and a present one is carried as
+    # written, costing accuracy in a report rather than safety in a policy.
     return SCPCheckResult(
-        account_id=account_id,
-        account_name=summary.get("account_name", ""),
+        account_id=account.account_id,
+        account_name=account.account_name,
         check_name=resolved_check_name,
         violations=violations,
-        exemptions=summary.get("exemptions", 0),
-        compliant=summary.get("compliant", 0),
-        total_instances=summary.get("total_instances"),
-        compliance_percentage=summary.get("compliance_percentage", 0.0),
+        exemptions=cast(int, summary.get("exemptions", 0)),
+        compliant=cast(int, summary.get("compliant", 0)),
+        total_instances=cast(Optional[int], summary.get("total_instances")),
+        compliance_percentage=cast(float, summary.get("compliance_percentage", 0.0)),
         allowlist_values=allowlist_values
     )
 
@@ -670,7 +737,7 @@ def _build_account_recommendation(
 def _determine_check_placement(
     check_name: str,
     check_results: List[SCPCheckResult],
-    analyzer: HierarchyPlacementAnalyzer,
+    analyzer: HierarchyPlacementAnalyzer[SCPCheckResult],
     organization_hierarchy: OrganizationHierarchy,
     management_account_id: str
 ) -> List[SCPPlacementRecommendations]:
@@ -754,7 +821,7 @@ def determine_scp_placement(
         List of placement recommendations for each check
     """
     recommendations: List[SCPPlacementRecommendations] = []
-    analyzer: HierarchyPlacementAnalyzer = HierarchyPlacementAnalyzer(organization_hierarchy)
+    analyzer: HierarchyPlacementAnalyzer[SCPCheckResult] = HierarchyPlacementAnalyzer(organization_hierarchy)
 
     check_groups = _group_results_by_check_name(results_data)
 

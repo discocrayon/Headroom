@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Optional, Set
+from typing import List, Mapping, Optional, Sequence, Set, Union
 
 import pytest
 from unittest.mock import MagicMock
@@ -10,6 +10,7 @@ from botocore.exceptions import ClientError
 
 from headroom.aws.kms import (
     KMSGrantFinding,
+    KMSKeyPolicyAnalysis,
     UnknownGrantPrincipalError,
     UnresolvedKMSGrantFinding,
     _analyze_key_in_region,
@@ -19,6 +20,7 @@ from headroom.aws.policy_documents import (
     MalformedPolicyError,
     UnknownPrincipalTypeError,
 )
+from headroom.types import JsonDict
 from tests.constants import ORG_ID
 
 
@@ -615,7 +617,7 @@ class TestPolicyGrammar:
     """Policy elements the key analyzer must read the way IAM does."""
 
     @staticmethod
-    def _analyze(policy: Any) -> Any:
+    def _analyze(policy: object) -> Sequence[KMSKeyPolicyAnalysis]:
         mock_session = MagicMock()
         mock_ec2_client = MagicMock()
         mock_kms_client = MagicMock()
@@ -796,12 +798,12 @@ class TestKeyGrants:
 
     @staticmethod
     def _analyze(
-        grants: Any,
-        policy: Any = None,
-        policy_error: Any = None,
-        grants_error: Any = None,
+        grants: List[JsonDict],
+        policy: object = None,
+        policy_error: Optional[ClientError] = None,
+        grants_error: Optional[ClientError] = None,
         org_account_ids: Optional[Set[str]] = None,
-    ) -> Any:
+    ) -> Sequence[KMSKeyPolicyAnalysis]:
         """
         Run the analyzer over one key with the given grants and policy.
 
@@ -1128,7 +1130,6 @@ class TestKeyGrants:
         Returning early on a missing policy would skip the grant read on
         exactly the keys whose access lives entirely in grants.
         """
-        error_response: Any = {"Error": {"Code": "NotFoundException"}}
         results = self._analyze(
             [
                 {
@@ -1139,7 +1140,7 @@ class TestKeyGrants:
                     "Operations": ["Decrypt"],
                 }
             ],
-            policy_error=ClientError(error_response, "GetKeyPolicy"),
+            policy_error=ClientError({"Error": {"Code": "NotFoundException"}}, "GetKeyPolicy"),
         )
 
         assert len(results) == 1
@@ -1431,10 +1432,9 @@ class TestKeyGrants:
 
     def test_list_grants_error_propagates(self) -> None:
         """An unreadable grant list must not be reported as no grants."""
-        error_response: Any = {"Error": {"Code": "AccessDeniedException"}}
         with pytest.raises(ClientError):
             self._analyze([], grants_error=ClientError(
-                error_response, "ListGrants"
+                {"Error": {"Code": "AccessDeniedException"}}, "ListGrants"
             ))
 
     def test_policy_and_grant_third_parties_merge(self) -> None:
@@ -2161,7 +2161,7 @@ class TestAWSManagedKeys:
     }
 
     @staticmethod
-    def _one_key_client(describe_key_response: Any) -> tuple[MagicMock, MagicMock]:
+    def _one_key_client(describe_key_response: Union[Mapping[str, object], ClientError]) -> tuple[MagicMock, MagicMock]:
         """
         Build a session wired to one region holding one key.
 

@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, List, Set
+from typing import List, Mapping, Set
 from urllib.parse import unquote
 
 from boto3.session import Session
@@ -93,7 +93,7 @@ def _action_pattern_matches(pattern: str, action: str) -> bool:
     return re.fullmatch(expression, action.lower()) is not None
 
 
-def _grants_assume_role(statement: Any, role_name: str) -> bool:
+def _grants_assume_role(statement: Mapping[str, object], role_name: str) -> bool:
     """
     Report whether an Allow statement grants sts:AssumeRole.
 
@@ -156,7 +156,8 @@ def analyze_iam_roles_trust_policies(
 
     Raises:
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
         KeyError: If a page carries no `Roles` key. Indexed rather than
             defaulted: botocore marks `Roles` required on the response, so a
             page without it is a shape the service model forbids, and reading

@@ -1,12 +1,13 @@
 """Check for EC2 instances that violate the deny_ec2_public_ip SCP."""
 
-from typing import Any, Dict, List
+from typing import List
 
 import boto3
 
 from ...aws.ec2 import DenyEc2PublicIp, get_ec2_public_ip_analysis
 from ...constants import DENY_EC2_PUBLIC_IP
 from ...enums import CheckCategory, TerraformSection
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -37,7 +38,7 @@ class DenyEc2PublicIpCheck(BaseCheck[DenyEc2PublicIp]):
     def categorize_result(
         self,
         result: DenyEc2PublicIp
-    ) -> tuple[CheckCategory, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single EC2 public IP analysis result.
 
@@ -49,7 +50,7 @@ class DenyEc2PublicIpCheck(BaseCheck[DenyEc2PublicIp]):
             - CheckCategory.VIOLATION: Instance has public IP address
             - CheckCategory.COMPLIANT: Instance does not have public IP address
         """
-        result_dict = {
+        result_dict: JsonDict = {
             "instance_id": result.instance_id,
             "region": result.region,
             "public_ip_address": result.public_ip_address,
@@ -65,7 +66,7 @@ class DenyEc2PublicIpCheck(BaseCheck[DenyEc2PublicIp]):
     def build_summary_fields(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build EC2 public IP check-specific summary fields.
 

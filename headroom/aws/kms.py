@@ -21,7 +21,7 @@ from mypy_boto3_kms.type_defs import KeyListEntryTypeDef
 from ..constants import AWS_ARN_ACCOUNT_ID_PATTERN
 from ..enums import PolicyService
 from ..types import JsonDict
-from .helpers import get_all_regions, memoize_per_session, paginate
+from .helpers import get_all_regions, memoize_per_session
 from .iam_unique_ids import IAMUniqueIDKind, decode_account_id, iam_unique_id_kind
 from .policy_documents import (
     normalize_actions,
@@ -345,7 +345,7 @@ def _analyze_key_grants(
     unresolved: List[UnresolvedKMSGrantFinding] = []
 
     logger.debug(f"Listing grants for key {key_arn}")
-    for page in paginate(kms_client, "list_grants", KeyId=key_id):
+    for page in kms_client.get_paginator("list_grants").paginate(KeyId=key_id):
         for grant in page.get("Grants", []):
             # ListGrants always returns the ID RetireGrant takes, and the
             # description below is worth nothing without it.
@@ -545,7 +545,8 @@ def _analyze_key_in_region(
             cannot classify, an IAM unique ID excepted, which is read or
             recorded instead
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     key_id = key["KeyId"]
     key_arn = key["KeyArn"]
@@ -695,7 +696,7 @@ def analyze_kms_key_policies(
         kms_client: KMSClient = session.client("kms", region_name=region)
 
         try:
-            for page in paginate(kms_client, "list_keys"):
+            for page in kms_client.get_paginator("list_keys").paginate():
                 for key in page.get("Keys", []):
                     if _is_aws_managed_key(kms_client, key["KeyId"]):
                         logger.debug(

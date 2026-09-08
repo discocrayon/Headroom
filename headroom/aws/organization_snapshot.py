@@ -12,15 +12,14 @@ which accounts a run may write result files for.
 import logging
 import unicodedata
 from pathlib import Path
-from typing import AbstractSet, Dict, List, Optional, Sequence, cast
+from typing import AbstractSet, Dict, List, Optional, Sequence
 
 from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_organizations.client import OrganizationsClient
-from mypy_boto3_organizations.type_defs import AccountTypeDef, TagTypeDef
+from mypy_boto3_organizations.type_defs import AccountTypeDef
 
 from ..config import HeadroomConfig
 from ..types import AccountInfo, OrganizationHierarchy, OrganizationSnapshot
-from .helpers import paginate
 from .organization import (
     build_organization_hierarchy,
     find_organization_root,
@@ -45,9 +44,9 @@ def _fetch_account_tags(org_client: OrganizationsClient, account_id: str, accoun
     tags: Dict[str, str] = {}
 
     try:
-        pages = paginate(org_client, "list_tags_for_resource", ResourceId=account_id)
+        pages = org_client.get_paginator("list_tags_for_resource").paginate(ResourceId=account_id)
         for page in pages:
-            for tag in cast(Sequence[TagTypeDef], page.get("Tags", [])):
+            for tag in page.get("Tags", []):
                 tags[tag["Key"]] = tag["Value"]
     except ClientError as e:
         error_code = e.response.get('Error', {}).get('Code', 'Unknown')

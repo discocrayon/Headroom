@@ -14,7 +14,7 @@ the statement can be withheld from the accounts holding them.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Set, cast
+from typing import List, Literal, Optional, Set, cast
 
 from boto3.session import Session
 
@@ -30,6 +30,7 @@ from ...aws.secretsmanager import analyze_secrets_manager_policies
 from ...aws.sqs import analyze_sqs_queue_policies
 from ...constants import DENY_SERVICE_CONFUSED_DEPUTY
 from ...enums import CheckCategory, TerraformSection
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import Allowlist, register_check
 
@@ -181,7 +182,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         org_account_ids: Set[str],
         org_id: str,
         exclude_account_ids: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         """
         Initialize the service confused deputy check.
@@ -302,7 +303,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
     def categorize_result(
         self,
         result: ServicePrincipalSourceFinding
-    ) -> tuple[CheckCategory, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single service principal source finding.
 
@@ -317,7 +318,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
         Returns:
             Tuple of (category, result_dict)
         """
-        result_dict = {
+        result_dict: JsonDict = {
             "resource_type": result.resource_type,
             "resource_identifier": result.resource_identifier,
             "region": result.region,
@@ -337,7 +338,7 @@ class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):
     def build_summary_fields(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build service confused deputy check-specific summary fields.
 

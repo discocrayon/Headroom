@@ -94,7 +94,7 @@ whether it bounds what the wildcard reaches
 | `ClientError` in any region | Logged and re-raised, aborting the run |
 | A response carrying no `policyText` | `KeyError`, aborting the run. Indexed rather than defaulted: botocore marks the field optional, but `GetRepositoryPolicy` and `GetRegistryPolicy` raise `RepositoryPolicyNotFoundException` or `RegistryPolicyNotFoundException` when there is no policy, so a response carrying neither the field nor the exception is an unread policy, not an empty one (INV-01) |
 | Unparseable policy JSON | Not caught; propagates and aborts |
-| `Statement` neither object nor list | `MalformedPolicyError` |
+| `Statement` neither object nor list, or a list holding anything but objects | `MalformedPolicyError` |
 | `Principal` neither string, list, nor object | `MalformedPolicyError` |
 | An `Allow` carrying neither `Principal` nor `NotPrincipal` | `MalformedPolicyError` — AWS stores no such statement, so it is a document misread rather than a grant to nobody |
 | A `Federated` or `CanonicalUser` principal, or an ARN naming no account | Recorded as `has_non_account_principals`; the account is blocked |
@@ -178,7 +178,7 @@ Nothing fails today, because nothing reads either key. There is one reader of an
 RCP result file, `parse_rcp_result_files` in
 `headroom/terraform/generate_rcps.py`, which loads each file and reads its
 allowlist through the helpers `headroom/parse_results.py` shares with SCP
-parsing (`_load_result_file_json`, `_extract_account_id_from_result`,
+parsing (`_load_result_summary`, `_read_result_account`, `_read_violations_count`,
 `_read_declared_allowlist`). That reader takes five summary keys and nothing
 outside `summary`: `account_id`, `account_name`, `check`, `violations`, and
 `unique_third_party_accounts`. A missing `account_id` falls back to

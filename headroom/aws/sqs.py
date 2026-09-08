@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError
 from mypy_boto3_sqs.client import SQSClient
 
 from ..enums import PolicyService
-from .helpers import get_all_regions, memoize_per_session, paginate
+from .helpers import get_all_regions, memoize_per_session
 from .policy_documents import (
     normalize_actions,
     RESOURCE_POLICY_PRINCIPAL_TYPES,
@@ -119,7 +119,8 @@ def _analyze_queue_policy(
         UnknownPrincipalTypeError: If a statement names a principal key AWS
             does not document
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     policy = json.loads(policy_json)
     third_party_account_ids: Set[str] = set()
@@ -223,13 +224,14 @@ def _analyze_queues_in_region(
         UnknownPrincipalTypeError: If a statement names a principal key AWS
             does not document
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     sqs_client: SQSClient = session.client("sqs", region_name=region)
     results: List[SQSQueuePolicyAnalysis] = []
 
     try:
-        for page in paginate(sqs_client, "list_queues", PaginationConfig={"PageSize": LIST_QUEUES_PAGE_SIZE}):
+        for page in sqs_client.get_paginator("list_queues").paginate(PaginationConfig={"PageSize": LIST_QUEUES_PAGE_SIZE}):
             queue_urls = page.get("QueueUrls", [])
 
             for queue_url in queue_urls:
@@ -312,7 +314,8 @@ def analyze_sqs_queue_policies(
         UnknownPrincipalTypeError: If a statement names a principal key AWS
             does not document
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     all_results: List[SQSQueuePolicyAnalysis] = []
     regions = get_all_regions(session)

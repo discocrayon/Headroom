@@ -259,7 +259,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
 
 def categorize_result(self, result: {DataModel}) -> tuple[CheckCategory, JsonDict]:
     """Categorize with exemption support."""
-    result_dict = {
+    result_dict: JsonDict = {
         "field": result.field,
         "exemption_tag": result.exemption_tag_value,
     }
@@ -414,7 +414,7 @@ def _analyze_single_item(
 
 """Check for {DESCRIPTION}."""
 
-from typing import Any, List, Set
+from typing import List, Set
 
 import boto3
 
@@ -447,7 +447,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         org_account_ids: Set[str],  # RCP-specific
         org_id: str,                # RCP-specific
         exclude_account_ids: bool = False,
-        **kwargs: Any
+        **kwargs: object
     ) -> None:
         """Initialize with the organization's account IDs and its own ID."""
         super().__init__(
@@ -488,7 +488,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
         result: {DataModel}
     ) -> tuple[CheckCategory, JsonDict]:
         """Categorize on what no allowlist can express, not on third parties."""
-        result_dict = {
+        result_dict: JsonDict = {
             "resource_arn": result.resource_arn,
             "third_party_account_ids": sorted(result.third_party_account_ids),
             "has_wildcard_principal": result.has_wildcard_principal,
@@ -851,8 +851,8 @@ If you cannot name the codes and say what they mean, catch nothing.
 ```yaml
 type_annotations:
   rule: ALL functions must have complete type annotations
-  no_any: Use JsonDict instead of Dict[str, Any]
-  exception: "Only **kwargs: Any when matching base class"
+  no_any: "Use JsonDict instead of Dict[str, Any]; disallow_any_explicit in mypy.ini fails the build on an explicit Any, and tests/test_mypy_gate.py on a type: ignore that silences it"
+  kwargs: "**kwargs: object, matching BaseCheck.__init__"
   verify: "mypy headroom/ tests/"
 
 imports:
@@ -1572,7 +1572,7 @@ for item in [item for page in pages for item in page.get("Items", [])]:
 # COPY: This exact pattern
 
 def categorize_result(self, result: Model) -> tuple[CheckCategory, JsonDict]:
-    result_dict = {
+    result_dict: JsonDict = {
         "id": result.id,
         "exemption_tag": result.exemption_tag,
     }
@@ -1674,7 +1674,7 @@ error_type_checking_fails:
   fix:
     - "Add type hints to ALL functions"
     - "from ...types import JsonDict"
-    - "Only use Any in **kwargs"
+    - "**kwargs is object, matching BaseCheck.__init__"
 
 error_tests_fail:
   symptom: "pytest failures"
@@ -1986,7 +1986,6 @@ helpers:
   file: headroom/aws/helpers.py
   functions:
     - get_all_regions(session): "Get all AWS regions"
-    - paginate(client, operation, **kwargs): "Generic pagination"
 
 constants:
   file: headroom/constants.py

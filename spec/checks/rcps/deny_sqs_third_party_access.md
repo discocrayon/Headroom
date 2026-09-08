@@ -97,7 +97,7 @@ whether it bounds what the wildcard reaches
 | `AWS.SimpleQueueService.NonExistentQueue` or `QueueDoesNotExist` | The queue was deleted mid-scan; skipped |
 | No `Policy` attribute | Skipped; the queue grants nothing |
 | Any other `ClientError` in any region | Logged and re-raised, aborting the run |
-| `Statement` neither object nor list | `MalformedPolicyError`, aborting the run |
+| `Statement` neither object nor list, or a list holding anything but objects | `MalformedPolicyError`, aborting the run |
 | `Principal` neither string, list, nor object | `MalformedPolicyError`, aborting the run |
 | An `Allow` carrying neither `Principal` nor `NotPrincipal` | `MalformedPolicyError`, aborting the run — AWS stores no such statement, so it is a document misread rather than a grant to nobody |
 | Unparseable policy JSON | `json.JSONDecodeError`, aborting the run |

@@ -1,12 +1,13 @@
 """Check for EC2 instances that violate the deny_ec2_imds_hop_limit SCP."""
 
-from typing import Any, Dict, List
+from typing import List
 
 import boto3
 
 from ...aws.ec2 import DenyEc2ImdsHopLimit, get_ec2_imds_hop_limit_analysis
 from ...constants import DENY_EC2_IMDS_HOP_LIMIT
 from ...enums import CheckCategory, TerraformSection
+from ...types import JsonDict
 from ..base import BaseCheck, CategorizedCheckResult
 from ..registry import register_check
 
@@ -47,7 +48,7 @@ class DenyEc2ImdsHopLimitCheck(BaseCheck[DenyEc2ImdsHopLimit]):
     def categorize_result(
         self,
         result: DenyEc2ImdsHopLimit
-    ) -> tuple[CheckCategory, Dict[str, Any]]:
+    ) -> tuple[CheckCategory, JsonDict]:
         """
         Categorize a single EC2 IMDS hop limit analysis result.
 
@@ -70,7 +71,7 @@ class DenyEc2ImdsHopLimitCheck(BaseCheck[DenyEc2ImdsHopLimit]):
             - CheckCategory.VIOLATION: hop limit above 1
             - CheckCategory.COMPLIANT: hop limit 1
         """
-        result_dict = {
+        result_dict: JsonDict = {
             "instance_id": result.instance_id,
             "region": result.region,
             "hop_limit": result.hop_limit,
@@ -85,7 +86,7 @@ class DenyEc2ImdsHopLimitCheck(BaseCheck[DenyEc2ImdsHopLimit]):
     def build_summary_fields(
         self,
         check_result: CategorizedCheckResult
-    ) -> Dict[str, Any]:
+    ) -> JsonDict:
         """
         Build EC2 IMDS hop limit check-specific summary fields.
 

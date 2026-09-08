@@ -1,4 +1,4 @@
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, Iterator, List, Mapping, Tuple
 import argparse
 from contextlib import contextmanager
 import logging
@@ -26,7 +26,7 @@ from .output import OutputHandler
 logger = logging.getLogger(__name__)
 
 
-def setup_configuration(cli_args: argparse.Namespace, yaml_config: Dict) -> HeadroomConfig:
+def setup_configuration(cli_args: argparse.Namespace, yaml_config: Mapping[str, object]) -> HeadroomConfig:
     """
     Merge and validate configuration from YAML and CLI arguments.
 

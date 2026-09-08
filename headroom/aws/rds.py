@@ -2,14 +2,13 @@
 
 import logging
 from dataclasses import dataclass
-from typing import List, Sequence
-from typing import cast
+from typing import List
 
 from boto3.session import Session
 from mypy_boto3_rds.client import RDSClient
 from mypy_boto3_rds.type_defs import DBClusterTypeDef, DBInstanceTypeDef
 
-from .helpers import get_all_regions, paginate
+from .helpers import get_all_regions
 
 
 logger = logging.getLogger(__name__)
@@ -97,15 +96,15 @@ def _analyze_rds_in_region(
     results = []
 
     # Analyze RDS instances
-    for instance_page in paginate(rds_client, "describe_db_instances"):
-        instances = cast(Sequence[DBInstanceTypeDef], instance_page.get("DBInstances", []))
+    for instance_page in rds_client.get_paginator("describe_db_instances").paginate():
+        instances = instance_page.get("DBInstances", [])
         for instance in instances:
             result = _analyze_rds_instance(instance, region)
             results.append(result)
 
     # Analyze Aurora clusters
-    for cluster_page in paginate(rds_client, "describe_db_clusters"):
-        clusters = cast(Sequence[DBClusterTypeDef], cluster_page.get("DBClusters", []))
+    for cluster_page in rds_client.get_paginator("describe_db_clusters").paginate():
+        clusters = cluster_page.get("DBClusters", [])
         for cluster in clusters:
             result = _analyze_rds_cluster(cluster, region)
             results.append(result)

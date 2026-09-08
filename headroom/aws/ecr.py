@@ -21,7 +21,7 @@ from mypy_boto3_ecr.type_defs import RepositoryTypeDef
 
 from ..enums import PolicyService
 from ..types import JsonDict
-from .helpers import get_all_regions, memoize_per_session, paginate
+from .helpers import get_all_regions, memoize_per_session
 from .policy_documents import (
     normalize_actions,
     RESOURCE_POLICY_PRINCIPAL_TYPES,
@@ -140,7 +140,8 @@ def _analyze_policy_statements(
 
     Raises:
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
     """
     third_party_accounts: Set[str] = set()
     actions_by_account: defaultdict[str, Set[str]] = defaultdict(set)
@@ -222,7 +223,8 @@ def _analyze_repository_in_region(
 
     Raises:
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
         KeyError: If a 200 response carries no `policyText`. Indexed rather
             than defaulted: a repository with no policy is answered with
             `RepositoryPolicyNotFoundException`, never a 200 without the
@@ -314,7 +316,8 @@ def _analyze_registry_policy(
     Raises:
         ClientError: If the call fails for any reason other than a missing policy
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
         KeyError: If a 200 response carries no `policyText`. Indexed rather
             than defaulted: a registry with no policy is answered with
             `RegistryPolicyNotFoundException`, never a 200 without the
@@ -406,7 +409,7 @@ def analyze_ecr_policies(
             if registry_analysis is not None and _grants_third_party_access(registry_analysis):
                 results.append(registry_analysis)
 
-            for page in paginate(ecr_client, "describe_repositories"):
+            for page in ecr_client.get_paginator("describe_repositories").paginate():
                 for repository in page.get("repositories", []):
                     analysis = _analyze_repository_in_region(
                         ecr_client,

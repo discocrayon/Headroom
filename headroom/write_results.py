@@ -12,9 +12,10 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Union, cast
+from typing import cast
 
 from .constants import REDACTED_ACCOUNT_ID
+from .types import JsonDict
 from .utils import format_account_identifier
 
 # Set up logging
@@ -135,7 +136,7 @@ class ResultFilePathResolver:
         return alternate.get_file_path()
 
 
-def _redact_account_ids_from_arns(data: Union[Dict[str, Any], List[Any], str, Any]) -> Union[Dict[str, Any], List[Any], str, Any]:
+def _redact_account_ids_from_arns(data: object) -> object:
     """
     Recursively redact account IDs from ARNs in data structures.
 
@@ -187,7 +188,7 @@ def write_check_results(
     check_type: str,
     account_name: str,
     account_id: str,
-    results_data: Dict[str, Any],
+    results_data: JsonDict,
     results_base_dir: str,
     exclude_account_ids: bool = False,
 ) -> None:
@@ -224,14 +225,13 @@ def write_check_results(
 
     output_file = results_resolver.get_file_path()
 
-    # If excluding account IDs, remove account_id from the results data
-    # and redact account IDs from ARNs
     data_to_write = results_data
     if exclude_account_ids:
-        data_to_write = cast(Dict[str, Any], _redact_account_ids_from_arns(results_data))
-        if "summary" in data_to_write:
-            data_to_write["summary"] = data_to_write["summary"].copy()
-            data_to_write["summary"].pop("account_id", None)
+        # Redaction rebuilds every dict it walks, so popping account_id from
+        # the redacted summary leaves the caller's own summary intact
+        data_to_write = cast(JsonDict, _redact_account_ids_from_arns(results_data))
+        summary = cast(JsonDict, data_to_write["summary"])
+        summary.pop("account_id", None)
 
     # Serialized before the file is opened, and with no `default`: a value
     # JSON cannot encode raises TypeError here, leaving nothing on disk that

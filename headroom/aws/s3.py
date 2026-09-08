@@ -17,7 +17,7 @@ from mypy_boto3_s3.client import S3Client
 
 from ..enums import PolicyService
 from ..types import JsonDict
-from .helpers import memoize_per_session, paginate
+from .helpers import memoize_per_session
 from .policy_documents import (
     normalize_actions,
     RESOURCE_POLICY_PRINCIPAL_TYPES,
@@ -246,7 +246,8 @@ def analyze_s3_bucket_policies(
 
     Raises:
         MalformedPolicyError: If a Statement is neither an object nor a list,
-            or a Principal is neither a string, a list, nor an object
+            the list holds anything but objects, or a Principal is neither
+            a string, a list, nor an object
         UnknownGranteeTypeError: If an ACL grantee's type or group is unrecognized
         UnknownPrincipalTypeError: If a bucket policy names a principal key
             AWS does not document
@@ -258,7 +259,7 @@ def analyze_s3_bucket_policies(
     # raised here, where it is reported as the listing failure it is, rather
     # than inside the loop where the bucket-policy handler would catch it.
     try:
-        pages = list(paginate(s3_client, "list_buckets"))
+        pages = list(s3_client.get_paginator("list_buckets").paginate())
     except ClientError as e:
         logger.error(f"Failed to list S3 buckets from AWS API: {e}")
         raise

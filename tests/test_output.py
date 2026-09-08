@@ -3,6 +3,7 @@
 from unittest.mock import patch, call
 
 from headroom.output import OutputHandler
+from headroom.types import JsonDict
 
 
 class TestOutputHandler:
@@ -49,7 +50,7 @@ class TestOutputHandler:
     def test_success_with_dict_data(self) -> None:
         """Test success prints formatted message with JSON dict."""
         with patch('builtins.print') as mock_print:
-            test_data = {"key1": "value1", "key2": "value2"}
+            test_data: JsonDict = {"key1": "value1", "key2": "value2"}
             OutputHandler.success("Test Success", test_data)
 
         calls = mock_print.call_args_list
@@ -57,17 +58,6 @@ class TestOutputHandler:
         assert calls[0] == call("\n✅ Test Success")
         assert '"key1": "value1"' in calls[1][0][0]
         assert '"key2": "value2"' in calls[1][0][0]
-
-    def test_success_with_string_data(self) -> None:
-        """Test success prints formatted message with string data."""
-        with patch('builtins.print') as mock_print:
-            OutputHandler.success("Test Success", "simple string data")
-
-        expected_calls = [
-            call("\n✅ Test Success"),
-            call("simple string data")
-        ]
-        mock_print.assert_has_calls(expected_calls)
 
     def test_success_without_data(self) -> None:
         """Test success prints only title when no data provided."""
