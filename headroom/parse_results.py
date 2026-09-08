@@ -331,8 +331,6 @@ def _read_violations_count(summary: JsonDict, result_file: Path) -> int:
         RuntimeError: If the summary has no violations key, or holds anything
             but a non-negative integer under it
     """
-    # deny_iam_saml_provider_not_aws_sso shipped without the key and had every
-    # account it rejected cleared for a root-level deny.
     if "violations" not in summary:
         raise RuntimeError(
             f"{result_file} has no violations count in its summary. Placement "
