@@ -35,6 +35,10 @@ registry's bare `Type[BaseCheck]` can be written neither as
 `headroom/config.py` carry the only `type: ignore[explicit-any]`: mypy
 synthesizes `__dataclass_fields__: dict[str, Any]` on a `dataclass_transform`
 class and reports it at the class line as though the file wrote it.
+`tests/test_mypy_gate.py` fails when `disallow_any_explicit` leaves `mypy.ini`
+and when a `type: ignore[explicit-any]` appears on any line but those two: like
+`pragma: no cover`, the ignore is an escape hatch, not a budget, and a new one
+needs a reason in review.
 
 Nothing runs those five steps for you. The repository has no `.github/`
 directory and no workflow, and whether `pre-commit`'s git hook is installed is a

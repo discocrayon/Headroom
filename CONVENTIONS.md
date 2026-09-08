@@ -27,7 +27,11 @@ this file, so these rules are loaded on every change.
 - Do not put a blank line between a class docstring and the class's first attribute: the closing `"""` and the attribute, or the comment above it, are adjacent lines. Only a first method gets PEP 257's blank line after the docstring.
 - Never do an import inside of a function
 - Do not overengineer, for example, making new types with one attribute, or a new class with one function
-- Do not use the type of Any, if you change the existing code to Any, you are making it worse.
+- Never use `Any`. `disallow_any_explicit` in `mypy.ini` fails `tox` on one, in `headroom/` and `tests/` alike. When mypy rejects an `Any`, replace it with the type the code already knows, never with an ignore or a cast: `JsonDict` from `headroom/types.py` for a JSON document or the dict a check builds; `Mapping[str, object]` for a read-only input that may arrive as a boto3 TypedDict, since `dict` is invariant and a `Dict[str, object]` parameter rejects it; `object` for a value the function only inspects with `isinstance`; the boto3-stubs TypedDict, taken from the typed client or paginator, for an API response.
+- `Callable[..., X]` counts as an explicit `Any`. Spell the parameters, or return `object` with a docstring saying why.
+- Never add `# type: ignore[explicit-any]`. The two pydantic classes in `headroom/config.py` carry the only ones, for a `__dataclass_fields__` mypy synthesizes, and `tests/test_mypy_gate.py` fails on a third.
+- A `cast` is a claim that the type is known at that boundary, and carries a comment saying why. Never cast a boto3 response to the type its typed client or paginator already returns.
+- Tests are type-checked too. Type a fixture as `JsonDict`, and give a test module one accessor per nested shape it reads, like `_summary(data)` and `_entries(data, key)` in `tests/test_checks_deny_service_confused_deputy.py`, instead of a `cast` at each assertion.
 - Never commit without asking me first.
 - Do not commit without asking me first.
 - Never push or open a pull request without asking me first. Approval of a plan that lists a push or a PR as a step is not approval to push or open the PR; ask again at that step, each time.

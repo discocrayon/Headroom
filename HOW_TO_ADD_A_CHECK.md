@@ -851,7 +851,7 @@ If you cannot name the codes and say what they mean, catch nothing.
 ```yaml
 type_annotations:
   rule: ALL functions must have complete type annotations
-  no_any: "Use JsonDict instead of Dict[str, Any]; disallow_any_explicit in mypy.ini fails the build on an explicit Any"
+  no_any: "Use JsonDict instead of Dict[str, Any]; disallow_any_explicit in mypy.ini fails the build on an explicit Any, and tests/test_mypy_gate.py on a type: ignore that silences it"
   kwargs: "**kwargs: object, matching BaseCheck.__init__"
   verify: "mypy headroom/ tests/"
 
