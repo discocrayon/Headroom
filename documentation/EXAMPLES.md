@@ -101,9 +101,11 @@ module "scps_root" {
   ]
 
   # Lambda
-  # Enforced below at OU high_value_assets; blocked elsewhere by 2 of 4
-  # analyzed accounts (acme-co, shared-foo-bar)
-  deny_lambda_auth_type_none = false
+  deny_lambda_auth_type_none = true
+  lambda_allowed_public_function_urls = [
+    "arn:aws:lambda:us-east-1:${local.acme_co_account_id}:function:webhook-receiver",
+    "arn:aws:lambda:us-east-1:${local.shared_foo_bar_account_id}:function:status-page:prod",
+  ]
 
   # RDS
   # Enforced below at OU high_value_assets; blocked elsewhere by 2 of 4
@@ -114,7 +116,7 @@ module "scps_root" {
 
 Three things to read here. All nine registered SCP checks appear, and a comment
 above every `false` says why it is `false`. Five different comments can sit
-there, and this block shows two. Six checks are enforced at targets below the
+there, and this block shows two. Five checks are enforced at targets below the
 root, and each comment names those targets and the accounts that kept the check
 off the root. A target is an OU when every analyzed account under it was safe,
 and a single account when a sibling in its OU was not, which is why
@@ -129,11 +131,14 @@ check. A run scans every registered check in every account, so it shows up on
 results older than the registry, as the committed
 `test_environment/scps/root_scps.tf` shows four times: its results predate four
 of the nine checks. The check's own comment for an allowlist that came back
-empty (INV-06) does not, because both allowlists here have entries.
+empty (INV-06) does not, because all three allowlists here have entries.
 [`../spec/contracts/terraform.md`](../spec/contracts/terraform.md#why-a-check-renders-false)
 defines the four shapes and the INV-06 case. And an allowlist is the union
 across every account the target covers — `iam_allowed_users` names users in
-two accounts because the statement attaches at the root.
+two accounts because the statement attaches at the root. The Lambda allowlist
+shows the other thing an ARN allowlist can carry: `status-page:prod` is an
+alias-qualified ARN, because that account's public URL sits on the `prod`
+alias and Lambda spares an alias's URL only by its qualified ARN.
 
 ### RCP module call
 

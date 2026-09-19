@@ -301,6 +301,25 @@ def test_get_allowlist_returns_the_declared_allowlist() -> None:
     assert allowlist.restores_account_ids is True
 
 
+def test_deny_lambda_auth_type_none_declares_the_public_function_url_allowlist() -> None:
+    """
+    The Lambda statement is scoped by NotResource, so the check declares it.
+
+    The values are function ARNs, qualified by alias where the URL sits on
+    one, so `exclude_account_ids` redacts their account field on write and
+    parsing must restore it. An empty allowlist renders `NotResource: []`,
+    which Organizations rejects, so the check carries a comment for that case
+    (INV-06).
+    """
+    allowlist = get_allowlist("deny_lambda_auth_type_none")
+
+    assert allowlist.summary_key == "public_function_urls"
+    assert allowlist.terraform_variable == "lambda_allowed_public_function_urls"
+    assert allowlist.restores_account_ids is True
+    assert allowlist.empty_allowlist_comment is not None
+    assert allowlist.empty_allowlist_comment.startswith("deny_lambda_auth_type_none stays off here")
+
+
 def test_get_allowlist_check_without_an_allowlist_raises_value_error() -> None:
     """
     A check with no allowlist is a caller error, not an empty allowlist.

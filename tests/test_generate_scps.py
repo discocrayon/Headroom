@@ -1321,6 +1321,88 @@ def test_build_scp_terraform_module_iam_user_creation_renders_a_populated_allowl
     assert "arn:aws:iam::111111111111:user/breakglass" in result
 
 
+def test_build_scp_terraform_module_lambda_auth_type_none_empty_allowlist_stays_off() -> None:
+    """
+    An empty public function URL allowlist turns the policy off rather than rendering.
+
+    `lambda_allowed_public_function_urls = []` renders `NotResource: []`, the
+    same malformed document `iam_allowed_users = []` renders, and the whole
+    SCP fails to attach with it (INV-06). The comment is the check's own
+    sentence; this pins how the registered text wraps in a rendered module.
+    """
+    org = make_org_empty()
+    rec = SCPPlacementRecommendations(
+        check_name="deny_lambda_auth_type_none",
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=[],
+        compliance_percentage=100.0,
+        reasoning="test",
+        allowlist_values=[],
+    )
+    result = _build_scp_terraform_module(
+        module_name="scps_root",
+        target_id_reference="local.root_ou_id",
+        recommendations=[rec],
+        comment="Organization Root",
+        organization_hierarchy=org,
+        target_id=org.root_id,
+        placed=placed_targets([rec], org),
+        coverage=coverage_for("scps"),
+        flipped={},
+        flipped_comment={},
+    )
+
+    assert "deny_lambda_auth_type_none = false" in result
+    assert "lambda_allowed_public_function_urls" not in result
+    assert (
+        "  # deny_lambda_auth_type_none stays off here: no function URL with AuthType\n"
+        "  # NONE in the accounts this module covers, so the allowlist would be empty\n"
+        "  # - and NotResource: [] is rejected as a malformed policy.\n"
+        "  deny_lambda_auth_type_none = false\n"
+    ) in result
+
+
+def test_build_scp_terraform_module_lambda_auth_type_none_renders_the_qualified_arn() -> None:
+    """
+    A populated allowlist renders with the alias qualifier kept.
+
+    The account field is rewritten to the account's generated local, as for
+    every allowlist declaring `restores_account_ids`; the `:prod` qualifier
+    after the function name is data and survives untouched, because it is
+    the part Lambda matches an alias's request against.
+    """
+    org = make_nested_org()
+    rec = SCPPlacementRecommendations(
+        check_name="deny_lambda_auth_type_none",
+        recommended_level="root",
+        target_ou_id=None,
+        affected_accounts=["111111111111"],
+        compliance_percentage=100.0,
+        reasoning="test",
+        allowlist_values=["arn:aws:lambda:us-east-1:111111111111:function:status-page:prod"],
+    )
+    result = _build_scp_terraform_module(
+        module_name="scps_root",
+        target_id_reference="local.root_ou_id",
+        recommendations=[rec],
+        comment="Organization Root",
+        organization_hierarchy=org,
+        target_id=org.root_id,
+        placed=placed_targets([rec], org),
+        coverage=coverage_for("scps"),
+        flipped={},
+        flipped_comment={},
+    )
+
+    assert "deny_lambda_auth_type_none = true" in result
+    assert (
+        "  lambda_allowed_public_function_urls = [\n"
+        '    "arn:aws:lambda:us-east-1:${local.acme_co_account_id}:function:status-page:prod",\n'
+        "  ]\n"
+    ) in result
+
+
 def test_a_root_placement_an_empty_allowlist_flipped_off_claims_nothing_below(
     tmp_path: Path
 ) -> None:

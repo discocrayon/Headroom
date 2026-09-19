@@ -129,7 +129,7 @@ the policy statement, the decision table, and the acceptance scenarios.
 | [`deny_eks_create_cluster_without_tag`](spec/checks/scps/deny_eks_create_cluster_without_tag.md) | An EKS cluster created without the `PavedRoad=true` tag | — |
 | [`deny_iam_saml_provider_not_aws_sso`](spec/checks/scps/deny_iam_saml_provider_not_aws_sso.md) | An IAM SAML provider, so federation goes through IAM Identity Center alone | — |
 | [`deny_iam_user_creation`](spec/checks/scps/deny_iam_user_creation.md) | A new IAM user, except the users that already exist | IAM users that exist |
-| [`deny_lambda_auth_type_none`](spec/checks/scps/deny_lambda_auth_type_none.md) | A Lambda function URL with `NONE` authentication | — |
+| [`deny_lambda_auth_type_none`](spec/checks/scps/deny_lambda_auth_type_none.md) | A Lambda function URL made public with `NONE` authentication, except the URLs that already are | Public function URLs that exist |
 | [`deny_rds_unencrypted`](spec/checks/scps/deny_rds_unencrypted.md) | An RDS instance or cluster without encryption at rest | — |
 | [`deny_ecr_third_party_access`](spec/checks/rcps/deny_ecr_third_party_access.md) | ECR access by any principal outside the organization | Third-party accounts repository policies already grant |
 | [`deny_kms_third_party_access`](spec/checks/rcps/deny_kms_third_party_access.md) | KMS access by any principal outside the organization | Third-party accounts key policies already grant |

@@ -22,6 +22,11 @@ module "scps" {
     "arn:aws:iam::444444444444:user/terraform-user",
     "arn:aws:iam::444444444444:user/github-actions",
   ]
+  deny_lambda_auth_type_none         = true
+  lambda_allowed_public_function_urls = [
+    "arn:aws:lambda:us-east-1:444444444444:function:webhook-receiver",
+    "arn:aws:lambda:us-east-1:444444444444:function:status-page:prod",
+  ]
   deny_rds_unencrypted               = true
 }
 ```
@@ -45,6 +50,8 @@ module "scps" {
 - **`deny_iam_user_creation`** (bool): Deny creation of IAM users not on the allowed list
 - **`deny_iam_saml_provider_not_aws_sso`** (bool): Deny creation of IAM SAML providers so only AWS IAM Identity Center (AWS SSO) managed providers remain
 - **`iam_allowed_users`** (list(string)): List of IAM user ARNs that are allowed to be created. Format: `arn:aws:iam::ACCOUNT_ID:user/USERNAME`
+- **`deny_lambda_auth_type_none`** (bool): Deny Lambda function URLs with no authentication (auth type NONE), except on the functions listed below
+- **`lambda_allowed_public_function_urls`** (list(string)): List of function ARNs whose function URL may keep auth type NONE. Format: `arn:aws:lambda:REGION:ACCOUNT_ID:function:NAME`, or `arn:aws:lambda:REGION:ACCOUNT_ID:function:NAME:ALIAS` when the URL sits on an alias
 - **`deny_rds_unencrypted`** (bool): Deny creation of unencrypted RDS databases
 
 ## Architecture
@@ -209,6 +216,22 @@ When enabled, this absolute deny control removes the ability to create new IAM S
 - Prevents shadow SAML integrations that bypass centralized access management
 - Complements detection checks that verify only a single AWS SSO-managed provider exists
 - `AWSServiceRoleForSSO` continues to provision the official provider in new accounts and is not affected by SCPs, so denying `iam:CreateSAMLProvider` to all principals blocks only custom provider creation
+
+### Public Function URL Restriction (`deny_lambda_auth_type_none`)
+
+When enabled, this policy denies making a Lambda function URL public - `lambda:CreateFunctionUrlConfig`, `lambda:UpdateFunctionUrlConfig`, and `lambda:AddPermission` with `lambda:FunctionUrlAuthType` of `NONE` - through:
+
+**DenyPublicFunctionUrls**: Denies the three actions with auth type `NONE` for every function ARN not specified in `lambda_allowed_public_function_urls`
+
+This policy uses the `NotResource` element so the function URLs that are already public keep working: a re-apply that sends `AuthType: NONE` for a listed ARN is spared, and every other function is denied the value.
+
+#### Configuration
+
+Lambda authorizes these actions against the function or the alias, comparing the policy's resource with both the function name and the qualifier in the request. A URL on an alias is therefore spared only by its qualified ARN.
+
+Specify allowed ARNs using the format: `arn:aws:lambda:REGION:ACCOUNT_ID:function:NAME` for a URL on `$LATEST`, or `arn:aws:lambda:REGION:ACCOUNT_ID:function:NAME:ALIAS` for a URL on an alias
+
+Example: `arn:aws:lambda:us-east-1:444444444444:function:status-page:prod`
 
 ### Root LeaveOrganization Protection
 

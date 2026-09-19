@@ -42,12 +42,16 @@ class DenyLambdaAuthTypeNone:
         region: AWS region where function exists
         has_function_url: True if function has a function URL configured
         function_url_auth_type: Auth type of the function URL (NONE or AWS_IAM), None if no URL
+        public_function_url_arns: The FunctionArn of every URL config whose AuthType
+            is NONE, as the API returns it - qualified by alias where the URL sits
+            on one - and empty when no config carries it
     """
     function_name: str
     function_arn: str
     region: str
     has_function_url: bool
     function_url_auth_type: Optional[str]
+    public_function_url_arns: List[str]
 
 
 def get_deny_lambda_auth_type_none_analysis(
@@ -64,7 +68,8 @@ def get_deny_lambda_auth_type_none_analysis(
           list_function_url_configs(), paginated: one URL may sit on $LATEST
           and one on each alias
        c. Record the auth type as NONE if any config carries it, otherwise
-          the first config's type (AWS_IAM)
+          the first config's type (AWS_IAM), and the FunctionArn of every
+          config that carries NONE
        d. Create DenyLambdaAuthTypeNone results
     3. Return all results across all regions
 
@@ -146,6 +151,7 @@ def _analyze_lambda_function(
 
     has_function_url = False
     function_url_auth_type = None
+    public_function_url_arns: List[str] = []
 
     try:
         url_configs = [
@@ -162,6 +168,21 @@ def _analyze_lambda_function(
                 if FUNCTION_URL_AUTH_TYPE_NONE in auth_types
                 else auth_types[0]
             )
+            # Lambda authorizes UpdateFunctionUrlConfig and AddPermission
+            # against the function or the alias, comparing the policy's
+            # resource with both FunctionName and Qualifier, so the allowlist
+            # spares an alias's URL only by its qualified ARN. The config's
+            # own FunctionArn is that ARN, whichever qualifier it sits on.
+            # Measured with a live probe: a URL on $LATEST reports the
+            # unqualified ARN, a URL on an alias reports
+            # ...:function:NAME:ALIAS, and the URL APIs reject $LATEST as a
+            # Qualifier outright - so the unqualified entry is the ARN every
+            # re-apply of a $LATEST URL is authorized against.
+            public_function_url_arns = [
+                config["FunctionArn"]
+                for config in url_configs
+                if config["AuthType"] == FUNCTION_URL_AUTH_TYPE_NONE
+            ]
 
     except ClientError as e:
         if e.response.get("Error", {}).get("Code", "") != FUNCTION_GONE_ERROR_CODE:
@@ -179,5 +200,6 @@ def _analyze_lambda_function(
         function_arn=function_arn,
         region=region,
         has_function_url=has_function_url,
-        function_url_auth_type=function_url_auth_type
+        function_url_auth_type=function_url_auth_type,
+        public_function_url_arns=public_function_url_arns,
     )

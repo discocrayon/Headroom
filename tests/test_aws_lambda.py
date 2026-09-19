@@ -22,7 +22,8 @@ class TestDenyLambdaAuthTypeNone:
             function_arn="arn:aws:lambda:us-east-1:111111111111:function:public-function",
             region="us-east-1",
             has_function_url=True,
-            function_url_auth_type="NONE"
+            function_url_auth_type="NONE",
+            public_function_url_arns=["arn:aws:lambda:us-east-1:111111111111:function:public-function"]
         )
 
         assert result.function_name == "public-function"
@@ -38,7 +39,8 @@ class TestDenyLambdaAuthTypeNone:
             function_arn="arn:aws:lambda:us-west-2:222222222222:function:secure-function",
             region="us-west-2",
             has_function_url=True,
-            function_url_auth_type="AWS_IAM"
+            function_url_auth_type="AWS_IAM",
+            public_function_url_arns=[]
         )
 
         assert result.function_name == "secure-function"
@@ -54,7 +56,8 @@ class TestDenyLambdaAuthTypeNone:
             function_arn="arn:aws:lambda:eu-west-1:333333333333:function:no-url-function",
             region="eu-west-1",
             has_function_url=False,
-            function_url_auth_type=None
+            function_url_auth_type=None,
+            public_function_url_arns=[]
         )
 
         assert result.function_name == "no-url-function"
@@ -70,7 +73,8 @@ class TestDenyLambdaAuthTypeNone:
             function_arn="arn:aws:lambda:us-east-1:111111111111:function:test-function",
             region="us-east-1",
             has_function_url=True,
-            function_url_auth_type="NONE"
+            function_url_auth_type="NONE",
+            public_function_url_arns=["arn:aws:lambda:us-east-1:111111111111:function:test-function"]
         )
 
         result2 = DenyLambdaAuthTypeNone(
@@ -78,7 +82,8 @@ class TestDenyLambdaAuthTypeNone:
             function_arn="arn:aws:lambda:us-east-1:111111111111:function:test-function",
             region="us-east-1",
             has_function_url=True,
-            function_url_auth_type="NONE"
+            function_url_auth_type="NONE",
+            public_function_url_arns=["arn:aws:lambda:us-east-1:111111111111:function:test-function"]
         )
 
         result3 = DenyLambdaAuthTypeNone(
@@ -86,7 +91,8 @@ class TestDenyLambdaAuthTypeNone:
             function_arn="arn:aws:lambda:us-east-1:111111111111:function:different-function",
             region="us-east-1",
             has_function_url=False,
-            function_url_auth_type=None
+            function_url_auth_type=None,
+            public_function_url_arns=[]
         )
 
         assert result1 == result2
@@ -99,7 +105,8 @@ class TestDenyLambdaAuthTypeNone:
             function_arn="arn:aws:lambda:us-east-1:111111111111:function:test-function",
             region="us-east-1",
             has_function_url=True,
-            function_url_auth_type="NONE"
+            function_url_auth_type="NONE",
+            public_function_url_arns=["arn:aws:lambda:us-east-1:111111111111:function:test-function"]
         )
 
         repr_str = repr(result)
@@ -172,8 +179,14 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
                 ]
             }],
             lambda FunctionName: {
-                "function-with-none-auth": [{"FunctionUrlConfigs": [{"AuthType": "NONE"}]}],
-                "function-with-iam-auth": [{"FunctionUrlConfigs": [{"AuthType": "AWS_IAM"}]}],
+                "function-with-none-auth": [{"FunctionUrlConfigs": [{
+                    "AuthType": "NONE",
+                    "FunctionArn": "arn:aws:lambda:us-east-1:111111111111:function:function-with-none-auth",
+                }]}],
+                "function-with-iam-auth": [{"FunctionUrlConfigs": [{
+                    "AuthType": "AWS_IAM",
+                    "FunctionArn": "arn:aws:lambda:us-east-1:111111111111:function:function-with-iam-auth",
+                }]}],
                 "function-without-url": [{"FunctionUrlConfigs": []}],
             }[FunctionName],
         )
@@ -233,7 +246,16 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
         """
         mock_session = self._one_function_session(
             lambda FunctionName: [{
-                "FunctionUrlConfigs": [{"AuthType": "AWS_IAM"}, {"AuthType": "NONE"}]
+                "FunctionUrlConfigs": [
+                    {
+                        "AuthType": "AWS_IAM",
+                        "FunctionArn": "arn:aws:lambda:us-east-1:111111111111:function:test-function",
+                    },
+                    {
+                        "AuthType": "NONE",
+                        "FunctionArn": "arn:aws:lambda:us-east-1:111111111111:function:test-function:prod",
+                    },
+                ]
             }]
         )
 
@@ -241,6 +263,38 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
 
         assert results[0].has_function_url is True
         assert results[0].function_url_auth_type == "NONE"
+
+    def test_a_public_url_is_recorded_by_its_own_arn(self) -> None:
+        """
+        The ARN recorded for a NONE URL is the config's own, alias and all.
+
+        Lambda authorizes UpdateFunctionUrlConfig and AddPermission against
+        the function or the alias, comparing the policy's resource with both
+        FunctionName and Qualifier, so a NotResource entry holding the
+        unqualified ARN would not spare a re-apply of an alias's public URL.
+        The allowlist therefore carries each public URL's FunctionArn as the
+        API returns it, and nothing for a URL that is not public.
+        """
+        mock_session = self._one_function_session(
+            lambda FunctionName: [{
+                "FunctionUrlConfigs": [
+                    {
+                        "AuthType": "AWS_IAM",
+                        "FunctionArn": "arn:aws:lambda:us-east-1:111111111111:function:test-function",
+                    },
+                    {
+                        "AuthType": "NONE",
+                        "FunctionArn": "arn:aws:lambda:us-east-1:111111111111:function:test-function:prod",
+                    },
+                ]
+            }]
+        )
+
+        results = get_deny_lambda_auth_type_none_analysis(mock_session)
+
+        assert results[0].public_function_url_arns == [
+            "arn:aws:lambda:us-east-1:111111111111:function:test-function:prod"
+        ]
 
     def test_url_configs_are_read_across_pages(self) -> None:
         """
@@ -252,8 +306,14 @@ class TestGetDenyLambdaAuthTypeNoneAnalysis:
         """
         mock_session = self._one_function_session(
             lambda FunctionName: [
-                {"FunctionUrlConfigs": [{"AuthType": "AWS_IAM"}]},
-                {"FunctionUrlConfigs": [{"AuthType": "NONE"}]},
+                {"FunctionUrlConfigs": [{
+                    "AuthType": "AWS_IAM",
+                    "FunctionArn": "arn:aws:lambda:us-east-1:111111111111:function:test-function",
+                }]},
+                {"FunctionUrlConfigs": [{
+                    "AuthType": "NONE",
+                    "FunctionArn": "arn:aws:lambda:us-east-1:111111111111:function:test-function:prod",
+                }]},
             ]
         )
 

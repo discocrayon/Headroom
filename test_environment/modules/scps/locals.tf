@@ -235,8 +235,20 @@ locals {
     # var.deny_lambda_auth_type_none
     # -->
     # Sid: DenyPublicFunctionUrls
-    # Denies Lambda function URLs with no authentication (auth type NONE)
+    # Denies Lambda function URLs with no authentication (auth type NONE),
+    # except on the functions whose URL already has it
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awslambda.html
+    #
+    # The allowlist is expressed as NotResource so a re-apply of an existing
+    # public URL - UpdateFunctionUrlConfig or AddPermission re-sending
+    # AuthType NONE - is spared while every other function is denied.
+    #
+    # Lambda authorizes these actions against the function or the alias, by
+    # comparing the policy's resource with both FunctionName and Qualifier:
+    # https://docs.aws.amazon.com/lambda/latest/dg/lambda-api-permissions-ref.html
+    # A URL on an alias is therefore spared only by its qualified ARN,
+    # arn:aws:lambda:REGION:ACCOUNT_ID:function:NAME:ALIAS, and the scan
+    # records each public URL's own FunctionArn for that reason.
     {
       include = var.deny_lambda_auth_type_none,
       statement = {
@@ -245,7 +257,7 @@ locals {
           "lambda:UpdateFunctionUrlConfig",
           "lambda:AddPermission"
         ]
-        Resource = "*"
+        NotResource = var.lambda_allowed_public_function_urls
         Condition = {
           "StringEquals" = {
             "lambda:FunctionUrlAuthType" = "NONE"

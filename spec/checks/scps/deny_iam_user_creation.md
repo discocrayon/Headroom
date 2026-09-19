@@ -161,6 +161,27 @@ ordinary fact about that account, not a broken run.
 5. An ARN naming an account absent from the hierarchy → emitted literally rather
    than as a `local.` reference.
 
+## Known conflict: every user is `COMPLIANT`, where the framework reads `EXEMPTION`
+
+Status: unresolved. Conflict 11 in
+[`../index.md`](../index.md).
+
+The decision table above categorizes every user found as `COMPLIANT`, and the
+check does. [`../../architecture/check-framework.md`](../../architecture/check-framework.md#the-three-categories)
+defines `COMPLIANT` as a resource the statement would allow and `EXEMPTION` as
+one the statement's condition would spare. This statement has no `Condition`,
+and a `Deny iam:CreateUser` scoped by `NotResource` alone has no state a user
+can be in but spared: a user is not denied only because its ARN is on the list.
+By the framework's letter that is an exemption, which is the reading
+[`deny_lambda_auth_type_none`](deny_lambda_auth_type_none.md) takes for the
+URLs its own `NotResource` spares.
+
+Nothing downstream turns on the difference. Placement reads `violations`
+alone, and no reader reads the entry lists. Settling it is not a prose change:
+every entry would move from `compliant_instances` to `exemptions` in the result
+file, and `total_users` would be read off the other list, so it is a wire
+change (INV-14) and is recorded rather than made.
+
 ## Referenced invariants
 
 INV-02, INV-06, INV-07, INV-13.

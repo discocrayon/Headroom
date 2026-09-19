@@ -9,23 +9,7 @@ from boto3.session import Session
 from headroom.aws.iam import IamUserAnalysis
 from headroom.checks.scps.deny_iam_user_creation import DenyIamUserCreationCheck
 from headroom.parse_results import parse_scp_result_files
-from headroom.types import AccountOrgPlacement, OrganizationHierarchy
-
-
-def make_single_account_hierarchy() -> OrganizationHierarchy:
-    """Build a one-account hierarchy naming 111111111111 as test-account."""
-    return OrganizationHierarchy(
-        root_id="r-1111",
-        organizational_units={},
-        accounts={
-            "111111111111": AccountOrgPlacement(
-                account_id="111111111111",
-                account_name="test-account",
-                parent_ou_id=None,
-                ou_path=["Root"],
-            )
-        },
-    )
+from tests.hierarchies import make_single_account_hierarchy
 
 
 class TestCheckDenyIamUserCreation:

@@ -71,6 +71,12 @@ variable "deny_lambda_auth_type_none" {
   description = "Deny Lambda function URLs with no authentication (auth type NONE)"
 }
 
+variable "lambda_allowed_public_function_urls" {
+  type        = list(string)
+  default     = []
+  description = "List of function ARNs whose function URL may keep auth type NONE, qualified by alias where the URL sits on one. Format: arn:aws:lambda:REGION:ACCOUNT_ID:function:NAME or arn:aws:lambda:REGION:ACCOUNT_ID:function:NAME:ALIAS"
+}
+
 # RDS
 
 variable "deny_rds_unencrypted" {

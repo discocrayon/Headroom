@@ -43,14 +43,25 @@ check declares its shape rather than inventing one.
 | 5a | **Principal account allowlist** | `Deny` unless `aws:PrincipalAccount` is allowlisted | the six third-party-access RCP checks |
 | 5b | **Resource ARN allowlist** | `Deny` with `NotResource` naming approved ARNs | `deny_iam_user_creation` |
 | 5c | **Condition value allowlist** | `Deny` unless a condition key's value is allowlisted | `deny_ec2_ami_owner` |
-| 6 | **Composition** | Two or more of the above in one statement | `deny_service_confused_deputy` |
+| 6 | **Composition** | Two or more of the above in one statement | `deny_lambda_auth_type_none`, `deny_service_confused_deputy` |
 
-Pattern 6 is `deny_service_confused_deputy`, the only composition. It is not
-5a because the allowlisted account is not the principal: the principal is the
-AWS service, and the account allowlisted is the one that configured it. The
-statement composes a conditional deny — the `Null` and `Bool` gates — with a
-condition value allowlist on `aws:SourceAccount`. What it renders is specified
-in [`../checks/rcps/deny_service_confused_deputy.md`](../checks/rcps/deny_service_confused_deputy.md).
+Pattern 6 has two members.
+
+`deny_lambda_auth_type_none` composes a resource ARN allowlist (5b) with a
+conditional deny (2): `NotResource` names the function URLs that are already
+public, and the condition confines the deny to `lambda:FunctionUrlAuthType =
+NONE`, so a function outside the allowlist may still do anything with its URL
+except make it public. It is not plain 5b because 5b denies the action
+outright for every resource off the list, and here the resources off the list
+are denied one value of one key. What it renders is specified in
+[`../checks/scps/deny_lambda_auth_type_none.md`](../checks/scps/deny_lambda_auth_type_none.md).
+
+`deny_service_confused_deputy` is not 5a because the allowlisted account is
+not the principal: the principal is the AWS service, and the account
+allowlisted is the one that configured it. The statement composes a
+conditional deny — the `Null` and `Bool` gates — with a condition value
+allowlist on `aws:SourceAccount`. What it renders is specified in
+[`../checks/rcps/deny_service_confused_deputy.md`](../checks/rcps/deny_service_confused_deputy.md).
 
 ### Pattern 3 versus pattern 4
 

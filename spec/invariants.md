@@ -137,7 +137,7 @@ values leaves its policy **off**, with a rendered comment saying why:
 | Shape | What an empty list would do |
 |---|---|
 | A condition allowlist, `StringNotEquals`-style | Denies every call rather than none. `deny_ec2_ami_owner`. |
-| A resource allowlist, `NotResource` | Not a valid document at all. The IAM policy grammar admits one or more values in a resource array, so Organizations rejects the whole policy at apply time — every other statement in that module with it. `deny_iam_user_creation`. |
+| A resource allowlist, `NotResource` | Not a valid document at all. The IAM policy grammar admits one or more values in a resource array, so Organizations rejects the whole policy at apply time — every other statement in that module with it. `deny_iam_user_creation`, `deny_lambda_auth_type_none`. |
 
 The second shape is the wider blast radius of the two, because the rejected
 document is the module's whole policy rather than the one statement that was
