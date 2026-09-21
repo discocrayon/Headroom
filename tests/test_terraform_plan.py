@@ -73,7 +73,7 @@ def rcp_rec(level: str = "root") -> RCPPlacementRecommendations:
         recommended_level=level,
         target_ou_id=None,
         affected_accounts=[],
-        third_party_account_ids=[],
+        allowlist_values={"unique_third_party_accounts": []},
         reasoning="test",
     )
 

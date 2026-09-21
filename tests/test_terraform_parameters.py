@@ -6,7 +6,7 @@ nothing here depends on which checks happen to be registered.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Tuple
 
 import pytest
 
@@ -15,13 +15,14 @@ from headroom.checks.scps.deny_ec2_public_ip import DenyEc2PublicIpCheck
 from headroom.enums import TerraformSection
 from headroom.terraform.models import TerraformComment, TerraformParameter
 from headroom.terraform.parameters import empty_allowlist_comments, render_check_parameters, renders_enabled
-from headroom.types import AccountOrgPlacement, OrganizationHierarchy
+from headroom.types import AccountOrgPlacement, AllowlistValues, OrganizationHierarchy
 
 
 def make_definition(
     check_name: str,
     terraform_section: TerraformSection,
-    allowlist: Optional[Allowlist] = None,
+    *,
+    allowlists: Tuple[Allowlist, ...] = (),
 ) -> CheckDefinition:
     """
     Build a definition for a check that does not exist.
@@ -32,7 +33,7 @@ def make_definition(
     Args:
         check_name: Name the definition renders its boolean under
         terraform_section: Section the definition renders in
-        allowlist: The allowlist its statement is scoped by, if any
+        allowlists: The allowlists its statement is scoped by, empty for none
 
     Returns:
         A definition the renderer can consume
@@ -42,7 +43,7 @@ def make_definition(
         check_name=check_name,
         check_type="scps",
         terraform_section=terraform_section,
-        allowlist=allowlist,
+        allowlists=allowlists,
     )
 
 
@@ -73,7 +74,7 @@ def test_one_section_with_nothing_enabled_renders_a_comment_then_false() -> None
         make_definition("deny_ec2_alpha", TerraformSection.EC2),
         make_definition("deny_ec2_beta", TerraformSection.EC2),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {}
+    allowlists: Dict[str, AllowlistValues] = {}
 
     elements = render_check_parameters(
         definitions,
@@ -96,7 +97,7 @@ def test_two_sections_are_separated_by_a_blank_line() -> None:
         make_definition("deny_ec2_alpha", TerraformSection.EC2),
         make_definition("deny_eks_alpha", TerraformSection.EKS),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {}
+    allowlists: Dict[str, AllowlistValues] = {}
 
     elements = render_check_parameters(
         definitions,
@@ -128,12 +129,12 @@ def test_check_with_no_allowlist_renders_only_its_boolean() -> None:
         make_definition(
             "deny_ec2_beta",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things"),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things"),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {
-        "deny_ec2_alpha": None,
-        "deny_ec2_beta": ["thing"],
+    allowlists: Dict[str, AllowlistValues] = {
+        "deny_ec2_alpha": {},
+        "deny_ec2_beta": {"unique_things": ["thing"]},
     }
 
     elements = render_check_parameters(
@@ -158,10 +159,10 @@ def test_enabled_allowlist_renders_its_values_in_the_order_given() -> None:
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things"),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things"),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {"deny_ec2_alpha": ["b", "a"]}
+    allowlists: Dict[str, AllowlistValues] = {"deny_ec2_alpha": {"unique_things": ["b", "a"]}}
 
     elements = render_check_parameters(
         definitions,
@@ -184,10 +185,10 @@ def test_disabled_check_with_an_allowlist_renders_only_its_boolean() -> None:
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things"),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things"),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {}
+    allowlists: Dict[str, AllowlistValues] = {}
 
     elements = render_check_parameters(
         definitions,
@@ -216,14 +217,16 @@ def test_empty_allowlist_with_a_comment_leaves_the_check_off(
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist(
-                "unique_things",
-                "ec2_allowed_things",
-                empty_allowlist_comment="deny_ec2_alpha stays off here: reason",
+            allowlists=(
+                Allowlist(
+                    "unique_things",
+                    "ec2_allowed_things",
+                    empty_allowlist_comment="deny_ec2_alpha stays off here: reason",
+                ),
             ),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {"deny_ec2_alpha": []}
+    allowlists: Dict[str, AllowlistValues] = {"deny_ec2_alpha": {"unique_things": []}}
 
     with caplog.at_level(logging.WARNING):
         elements = render_check_parameters(
@@ -246,25 +249,29 @@ def test_empty_allowlist_with_a_comment_leaves_the_check_off(
 
 def test_none_value_for_a_check_that_declares_an_allowlist_aborts() -> None:
     """
-    A declaring check whose recommendation carries None is lost data.
+    A declaring check whose recommendation carries no values is lost data.
 
     Parsing gives every such check a list, empty when nothing was observed,
-    or aborts. None can only mean the values went missing on the way here,
-    and rendering it as empty would quietly turn the statement off.
+    or aborts. A missing key can only mean the values went missing on the
+    way here, and rendering it as empty would quietly turn the statement
+    off.
     """
     definitions = [
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things"),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things"),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {"deny_ec2_alpha": None}
+    allowlists: Dict[str, AllowlistValues] = {"deny_ec2_alpha": {}}
 
     with pytest.raises(
         RuntimeError,
-        match="scps_test: deny_ec2_alpha declares an allowlist but its recommendation carries None",
-    ) as raised:
+        match=(
+            r"deny_ec2_alpha declares the allowlist 'unique_things' but its recommendation "
+            r"carries no values for it - an observed-empty allowlist is \[\]\."
+        ),
+    ):
         render_check_parameters(
             definitions,
             allowlists=allowlists,
@@ -272,10 +279,6 @@ def test_none_value_for_a_check_that_declares_an_allowlist_aborts() -> None:
             organization_hierarchy=make_hierarchy(),
             reasons={},
         )
-
-    assert str(raised.value).endswith(
-        "instead of a list - an observed-empty allowlist is []."
-    )
 
 
 def test_empty_allowlist_without_a_comment_renders_the_empty_list(
@@ -291,10 +294,10 @@ def test_empty_allowlist_without_a_comment_renders_the_empty_list(
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things"),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things"),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {"deny_ec2_alpha": []}
+    allowlists: Dict[str, AllowlistValues] = {"deny_ec2_alpha": {"unique_things": []}}
 
     with caplog.at_level(logging.WARNING):
         elements = render_check_parameters(
@@ -324,15 +327,17 @@ def test_restores_account_ids_rewrites_arns_for_accounts_in_the_hierarchy() -> N
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things", restores_account_ids=True),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things", restores_account_ids=True),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {
-        "deny_ec2_alpha": [
-            "arn:aws:iam::111111111111:user/x",
-            "arn:aws:iam::999999999999:user/y",
-            "amazon",
-        ],
+    allowlists: Dict[str, AllowlistValues] = {
+        "deny_ec2_alpha": {
+            "unique_things": [
+                "arn:aws:iam::111111111111:user/x",
+                "arn:aws:iam::999999999999:user/y",
+                "amazon",
+            ],
+        },
     }
 
     elements = render_check_parameters(
@@ -368,14 +373,16 @@ def test_restores_account_ids_rewrites_the_account_field_of_any_service_arn() ->
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things", restores_account_ids=True),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things", restores_account_ids=True),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {
-        "deny_ec2_alpha": [
-            "arn:aws:kms:us-east-1:111111111111:key/11111111-1111-1111-1111-111111111111",
-            "arn:aws:s3:::acme-co-bucket",
-        ],
+    allowlists: Dict[str, AllowlistValues] = {
+        "deny_ec2_alpha": {
+            "unique_things": [
+                "arn:aws:kms:us-east-1:111111111111:key/11111111-1111-1111-1111-111111111111",
+                "arn:aws:s3:::acme-co-bucket",
+            ],
+        },
     }
 
     elements = render_check_parameters(
@@ -410,15 +417,17 @@ def test_restores_account_ids_escapes_every_segment_but_the_reference() -> None:
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things", restores_account_ids=True),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things", restores_account_ids=True),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {
-        "deny_ec2_alpha": [
-            'arn:aws:iam::111111111111:user/${team}/"deploy"',
-            'arn:aws:iam::999999999999:user/${team}',
-            'amazon"',
-        ],
+    allowlists: Dict[str, AllowlistValues] = {
+        "deny_ec2_alpha": {
+            "unique_things": [
+                'arn:aws:iam::111111111111:user/${team}/"deploy"',
+                'arn:aws:iam::999999999999:user/${team}',
+                'amazon"',
+            ],
+        },
     }
 
     elements = render_check_parameters(
@@ -444,11 +453,11 @@ def test_allowlist_that_does_not_restore_account_ids_renders_arns_literally() ->
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things"),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things"),),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {
-        "deny_ec2_alpha": ["arn:aws:iam::111111111111:user/x"],
+    allowlists: Dict[str, AllowlistValues] = {
+        "deny_ec2_alpha": {"unique_things": ["arn:aws:iam::111111111111:user/x"]},
     }
 
     elements = render_check_parameters(
@@ -474,7 +483,7 @@ def test_recommendation_for_an_unregistered_check_aborts() -> None:
     placement asked for, so the run stops instead.
     """
     definitions = [make_definition("deny_ec2_alpha", TerraformSection.EC2)]
-    allowlists: Dict[str, Optional[List[str]]] = {"deny_ec2_unknown": None}
+    allowlists: Dict[str, AllowlistValues] = {"deny_ec2_unknown": {}}
 
     with pytest.raises(
         RuntimeError,
@@ -505,14 +514,16 @@ def test_disabled_check_with_an_empty_allowlist_comment_stays_silent(
         make_definition(
             "deny_ec2_alpha",
             TerraformSection.EC2,
-            Allowlist(
-                "unique_things",
-                "ec2_allowed_things",
-                empty_allowlist_comment="deny_ec2_alpha stays off here: reason",
+            allowlists=(
+                Allowlist(
+                    "unique_things",
+                    "ec2_allowed_things",
+                    empty_allowlist_comment="deny_ec2_alpha stays off here: reason",
+                ),
             ),
         ),
     ]
-    allowlists: Dict[str, Optional[List[str]]] = {}
+    allowlists: Dict[str, AllowlistValues] = {}
 
     with caplog.at_level(logging.WARNING):
         elements = render_check_parameters(
@@ -551,7 +562,7 @@ def test_a_reason_renders_above_the_boolean_it_explains() -> None:
 
     elements = render_check_parameters(
         definitions,
-        allowlists={"deny_ec2_imds_v1": None},
+        allowlists={"deny_ec2_imds_v1": {}},
         module_name="scps_root",
         organization_hierarchy=make_hierarchy(),
         reasons=reasons,
@@ -579,12 +590,12 @@ def test_an_empty_allowlist_keeps_its_own_comment() -> None:
         empty_allowlist_comment="No AMI owners observed - leaving this off",
     )
     definitions = [
-        make_definition("deny_ec2_ami_owner", TerraformSection.EC2, allowlist)
+        make_definition("deny_ec2_ami_owner", TerraformSection.EC2, allowlists=(allowlist,))
     ]
 
     elements = render_check_parameters(
         definitions,
-        allowlists={"deny_ec2_ami_owner": []},
+        allowlists={"deny_ec2_ami_owner": {"unique_ami_owners": []}},
         module_name="scps_root",
         organization_hierarchy=make_hierarchy(),
         reasons={},
@@ -617,12 +628,12 @@ def test_a_long_empty_allowlist_comment_wraps_like_every_reason_beside_it(
             "empty."
         ),
     )
-    definitions = [make_definition("deny_ec2_alpha", TerraformSection.EC2, allowlist)]
+    definitions = [make_definition("deny_ec2_alpha", TerraformSection.EC2, allowlists=(allowlist,))]
 
     with caplog.at_level(logging.WARNING):
         elements = render_check_parameters(
             definitions,
-            allowlists={"deny_ec2_alpha": []},
+            allowlists={"deny_ec2_alpha": {"unique_things": []}},
             module_name="scps_root",
             organization_hierarchy=make_hierarchy(),
             reasons={},
@@ -659,15 +670,17 @@ def test_only_a_check_that_declares_the_comment_is_mapped_to_one() -> None:
         make_definition(
             "deny_ec2_beta",
             TerraformSection.EC2,
-            Allowlist("unique_things", "ec2_allowed_things"),
+            allowlists=(Allowlist("unique_things", "ec2_allowed_things"),),
         ),
         make_definition(
             "deny_ec2_gamma",
             TerraformSection.EC2,
-            Allowlist(
-                "unique_widgets",
-                "ec2_allowed_widgets",
-                empty_allowlist_comment="deny_ec2_gamma stays off here: no widgets",
+            allowlists=(
+                Allowlist(
+                    "unique_widgets",
+                    "ec2_allowed_widgets",
+                    empty_allowlist_comment="deny_ec2_gamma stays off here: no widgets",
+                ),
             ),
         ),
     ]
@@ -694,7 +707,7 @@ def test_a_reason_for_an_enabled_check_aborts() -> None:
     ):
         render_check_parameters(
             definitions,
-            allowlists={"deny_ec2_imds_v1": None},
+            allowlists={"deny_ec2_imds_v1": {}},
             module_name="scps_root",
             organization_hierarchy=make_hierarchy(),
             reasons={"deny_ec2_imds_v1": ["No results for this check - not evidence of safety"]},
@@ -706,15 +719,67 @@ def test_renders_enabled_rejects_none_for_a_declaring_check() -> None:
     The one rule that classifies a placement must refuse lost data too.
 
     The generators ask this before any module is built, to split placements
-    into live and flipped. Reading None as an empty list here would file the
-    recommendation as flipped, compute every other module's comments from
-    that wrong split, and only abort when the check's own module rendered.
+    into live and flipped. Reading a missing key as an empty list here would
+    file the recommendation as flipped, compute every other module's
+    comments from that wrong split, and only abort when the check's own
+    module rendered.
     """
     definition = make_definition(
         "deny_ec2_alpha",
         TerraformSection.EC2,
-        Allowlist("unique_things", "ec2_allowed_things"),
+        allowlists=(Allowlist("unique_things", "ec2_allowed_things"),),
     )
 
-    with pytest.raises(RuntimeError, match="deny_ec2_alpha declares an allowlist but its recommendation carries None"):
-        renders_enabled(definition, None)
+    with pytest.raises(
+        RuntimeError,
+        match="deny_ec2_alpha declares the allowlist 'unique_things' but its recommendation carries no values for it",
+    ):
+        renders_enabled(definition, values={})
+
+
+def test_a_check_with_two_allowlists_renders_both_variables_in_declaration_order() -> None:
+    """
+    Each declared entry renders its own variable, after the boolean, in the order declared.
+    """
+    definition = make_definition(
+        "deny_ec2_alpha",
+        TerraformSection.EC2,
+        allowlists=(
+            Allowlist(summary_key="unique_widgets", terraform_variable="ec2_allowed_widgets"),
+            Allowlist(summary_key="exempt_gadget_arns", terraform_variable="ec2_exempt_gadget_arns"),
+        ),
+    )
+    allowlists: Dict[str, AllowlistValues] = {
+        "deny_ec2_alpha": {"unique_widgets": ["111111111111"], "exempt_gadget_arns": []},
+    }
+
+    elements = render_check_parameters(
+        [definition],
+        allowlists=allowlists,
+        module_name="scps_test",
+        organization_hierarchy=make_hierarchy(),
+        reasons={},
+    )
+
+    assert [element for element in elements if isinstance(element, TerraformParameter)] == [
+        TerraformParameter("deny_ec2_alpha", True),
+        TerraformParameter("ec2_allowed_widgets", ["111111111111"]),
+        TerraformParameter("ec2_exempt_gadget_arns", []),
+    ]
+
+
+def test_an_empty_entry_without_a_comment_renders_as_an_empty_list_beside_a_full_one() -> None:
+    """
+    Only an entry that declares a comment can turn the statement off; the other renders [].
+    """
+    definition = make_definition(
+        "deny_ec2_alpha",
+        TerraformSection.EC2,
+        allowlists=(
+            Allowlist(summary_key="unique_widgets", terraform_variable="ec2_allowed_widgets", empty_allowlist_comment="alpha stays off: no widget observed"),
+            Allowlist(summary_key="exempt_gadget_arns", terraform_variable="ec2_exempt_gadget_arns"),
+        ),
+    )
+
+    assert renders_enabled(definition, values={"unique_widgets": ["111111111111"], "exempt_gadget_arns": []}) is True
+    assert renders_enabled(definition, values={"unique_widgets": [], "exempt_gadget_arns": ["arn:aws:s3:::example-bucket"]}) is False

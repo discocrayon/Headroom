@@ -6,7 +6,7 @@ to avoid circular import issues and provide a single source of truth
 for data structures.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Union
 
 
@@ -15,8 +15,11 @@ JsonDict = Dict[str, object]
 """Type for JSON-serializable dictionaries with runtime-typed values."""
 
 # Type aliases for commonly-used complex types
-AccountThirdPartyMap = Dict[str, Set[str]]
-"""Mapping of account IDs to sets of third-party account IDs they grant access to."""
+AllowlistValues = Dict[str, List[str]]
+"""One check's observed allowlist values, keyed by each declared allowlist's summary key; {} for a check declaring none."""
+
+AccountAllowlistMap = Dict[str, AllowlistValues]
+"""Mapping of account IDs to the allowlist values each account's results observed."""
 
 GroupedSCPRecommendations = Dict[str, List["SCPPlacementRecommendations"]]
 """Mapping of target IDs (account/OU) to lists of SCP placement recommendations."""
@@ -141,11 +144,8 @@ class SCPCheckResult(CheckResult):
     organizational policies. They track violations, exemptions, and
     compliant resources.
 
-    `allowlist_values` holds the values a check's allowlist observed, read
-    from the summary key its `Allowlist` declares. None for a check whose
-    statement takes no allowlist; an empty list for one that observed
-    nothing, which is a fact about the account rather than a missing
-    observation (INV-01, INV-07).
+    `allowlist_values` holds values under each allowlist the check
+    declares, keyed by summary key; {} for a check declaring none.
 
     TODO: As more SCP checks are added, consider moving check-specific
     fields (like total_instances) to per-check subclasses if the fields
@@ -156,7 +156,7 @@ class SCPCheckResult(CheckResult):
     compliant: int
     compliance_percentage: float
     total_instances: Optional[int] = None
-    allowlist_values: Optional[List[str]] = None
+    allowlist_values: AllowlistValues = field(default_factory=dict)
 
     @property
     def is_safe(self) -> bool:
@@ -201,8 +201,9 @@ class SCPPlacementRecommendations:
     SCP placement recommendation for a specific check.
 
     `allowlist_values` is the sorted union of `SCPCheckResult.allowlist_values`
-    over the accounts this recommendation covers. None for a check with no
-    allowlist; an empty list when the covered accounts observed nothing.
+    over the accounts this recommendation covers. Each declared key holds the
+    sorted union over the covered accounts, [] when they observed nothing;
+    {} for a check declaring no allowlist.
     """
     check_name: str
     recommended_level: str  # "root", "ou", or "account"
@@ -210,7 +211,7 @@ class SCPPlacementRecommendations:
     affected_accounts: List[str]
     compliance_percentage: float
     reasoning: str
-    allowlist_values: Optional[List[str]] = None
+    allowlist_values: AllowlistValues = field(default_factory=dict)
 
 
 @dataclass
@@ -219,7 +220,9 @@ class RCPCheckResult(CheckResult):
     One account's findings for one RCP check.
 
     Attributes:
-        third_party_account_ids: Third parties this account's policies allow
+        allowlist_values: Values under each allowlist the check declares,
+            keyed by summary key - the third parties this account's
+            policies allow under `unique_third_party_accounts`, first
         blocks_rcp: True if this check counted a violation, meaning a
             resource names a principal that no allowlist can express and
             the RCP is unsafe to deploy here. A wildcard principal is the
@@ -236,7 +239,7 @@ class RCPCheckResult(CheckResult):
             `spec/architecture/aws-execution.md`, "What a policy document
             may and may not stop the run over"
     """
-    third_party_account_ids: List[str]
+    allowlist_values: AllowlistValues
     blocks_rcp: bool
 
 
@@ -247,13 +250,13 @@ class RCPCheckParseResult:
 
     Attributes:
         check_name: Name of the RCP check these findings belong to
-        account_third_party_map: Accounts that can take this RCP, mapped to
-            the third-party accounts their policies grant access to
+        account_allowlist_map: Accounts that can take this RCP, mapped to
+            the allowlist values their results observed
         accounts_with_blockers: Accounts that cannot take this RCP, because a
             resource policy names a principal that no allowlist can express
     """
     check_name: str
-    account_third_party_map: AccountThirdPartyMap
+    account_allowlist_map: AccountAllowlistMap
     accounts_with_blockers: Set[str]
 
 
@@ -264,5 +267,5 @@ class RCPPlacementRecommendations:
     recommended_level: str  # "root", "ou", or "account"
     target_ou_id: Optional[str]
     affected_accounts: List[str]
-    third_party_account_ids: List[str]
+    allowlist_values: AllowlistValues
     reasoning: str

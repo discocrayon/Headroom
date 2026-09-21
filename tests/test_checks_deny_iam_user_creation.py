@@ -167,7 +167,7 @@ class TestWhatThisCheckWritesCanBeParsedBack:
 
         assert [result.violations for result in parsed] == [0]
         assert [result.allowlist_values for result in parsed] == [
-            ["arn:aws:iam::111111111111:user/breakglass"]
+            {"users": ["arn:aws:iam::111111111111:user/breakglass"]}
         ]
 
     def test_a_redacted_result_parses_back_to_the_real_arn(self, tmp_path: Path) -> None:
@@ -208,5 +208,5 @@ class TestWhatThisCheckWritesCanBeParsedBack:
         parsed = parse_scp_result_files(str(tmp_path), hierarchy)
 
         assert [result.allowlist_values for result in parsed] == [
-            ["arn:aws:iam::111111111111:user/breakglass"]
+            {"users": ["arn:aws:iam::111111111111:user/breakglass"]}
         ]

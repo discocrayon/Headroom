@@ -18,10 +18,12 @@ A check registers itself:
     "scps",
     "deny_ec2_ami_owner",
     terraform_section=TerraformSection.EC2,
-    allowlist=Allowlist(
-        summary_key="unique_ami_owners",
-        terraform_variable="ec2_allowed_ami_owners",
-        empty_allowlist_comment="deny_ec2_ami_owner stays off here: ...",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_ami_owners",
+            terraform_variable="ec2_allowed_ami_owners",
+            empty_allowlist_comment="deny_ec2_ami_owner stays off here: ...",
+        ),
     ),
 )
 class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
@@ -29,14 +31,18 @@ class DenyEc2AmiOwnerCheck(BaseCheck[DenyEc2AmiOwner]):
 
 The decorator records a frozen `CheckDefinition` under the check's name — the
 class, the name and type, the `TerraformSection` its parameters render under,
-and the `Allowlist` its statement is scoped by, if any — and stamps `CHECK_NAME`
+and the `Allowlist`s its statement is scoped by, as a tuple in the order their
+variables render, empty when it takes none — and stamps `CHECK_NAME`
 and `CHECK_TYPE` onto the class. The check passes `CHECK_TYPE` to the result
 writer, which looks nothing up. It validates first: a
-duplicate name, a class already registered under another name, an unknown type,
-an RCP check with no allowlist, an empty allowlist key or variable, a blank
-`empty_allowlist_comment` (empty or only whitespace), or a name or allowlist
-variable another definition already claims fails at import time and inserts
-nothing. So does a `CheckType` member passed as the type: it is a `str` and
+duplicate name, a class already registered under another name, an unknown
+type, an RCP check with no allowlist, two allowlists on one check sharing a
+summary key, two on one check sharing a Terraform variable, two on one
+check each carrying an `empty_allowlist_comment`, an empty allowlist key or
+variable, a blank `empty_allowlist_comment` (empty or only whitespace), or a
+name or allowlist variable another definition already claims fails at
+import time and inserts nothing. So does a `CheckType` member passed as
+the type: it is a `str` and
 compares equal to its value, but it formats as `CheckType.SCPS`, and the result
 writer builds a check's directory by formatting the type, so the check would
 write under `results/CheckType.SCPS/` while the parser reads `results/scps/`.
@@ -151,15 +157,18 @@ itself requires only:
 1. A module under `headroom/checks/scps/` or `headroom/checks/rcps/`, so
    discovery imports it.
 2. `@register_check` with a type, a name, a `terraform_section`, and — where
-   the statement is scoped by an allowlist — an `Allowlist` naming the summary
-   key it writes and the module variable it fills. A check whose empty
-   allowlist must leave the statement off states why as
+   the statement is scoped by an allowlist — a tuple of `Allowlist`s, each
+   naming the summary key it writes and the module variable it fills; a
+   statement scoped by a principal list and a resource list declares two. A
+   check whose empty allowlist must leave the statement off states why as
    `empty_allowlist_comment` (INV-06); one whose values are ARNs sets
    `restores_account_ids`. That sentence is not module-local: it renders in
    the module the placement names and in every module below it, over a
    smaller account set and at a target of a different kind, so it must read
    true of any subset of the accounts it was written about.
-   [`../contracts/terraform.md`](../contracts/terraform.md) owns why.
+   [`../contracts/terraform.md`](../contracts/terraform.md) owns why. Values
+   travel from parsing to rendering keyed by summary key, so the key is the
+   name the rest of the pipeline knows the list by.
 3. The three abstract methods.
 4. A specification under [`../checks/`](../checks/index.md) — enforced by
    `tests/test_spec_corpus.py`.

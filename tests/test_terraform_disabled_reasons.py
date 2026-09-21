@@ -1053,7 +1053,7 @@ def test_split_placements_files_each_target_by_what_its_allowlist_renders() -> N
         affected_accounts=["111111111111"],
         compliance_percentage=100.0,
         reasoning="one owner observed",
-        allowlist_values=["111111111111"],
+        allowlist_values={"unique_ami_owners": ["111111111111"]},
     )
     off = SCPPlacementRecommendations(
         check_name="deny_ec2_ami_owner",
@@ -1062,12 +1062,10 @@ def test_split_placements_files_each_target_by_what_its_allowlist_renders() -> N
         affected_accounts=["333333333333"],
         compliance_percentage=100.0,
         reasoning="no owner observed",
-        allowlist_values=[],
+        allowlist_values={"unique_ami_owners": []},
     )
 
-    placed, flipped = split_placements(
-        [live, off], lambda rec: rec.allowlist_values, make_nested_hierarchy()
-    )
+    placed, flipped = split_placements([live, off], make_nested_hierarchy())
 
     assert placed == {"deny_ec2_ami_owner": frozenset({"ou-1111-11111111"})}
     assert flipped == {"deny_ec2_ami_owner": frozenset({"ou-1111-22222222"})}
@@ -1078,7 +1076,7 @@ def test_split_placements_drops_a_none_recommendation_before_reading_its_allowli
     A `none` recommendation places nothing, so the split files it nowhere.
 
     Placement materializes one when no account is safe for a check, and it
-    leaves `allowlist_values` at None because it unioned nothing over the
+    leaves `allowlist_values` at {} because it unioned nothing over the
     accounts it covers - there are none. Asking `renders_enabled` about it
     would raise over that None as if it were lost data, and abort Terraform
     generation for the whole organization over one unplaceable check.
@@ -1092,9 +1090,7 @@ def test_split_placements_drops_a_none_recommendation_before_reading_its_allowli
         reasoning="no account is safe",
     )
 
-    placed, flipped = split_placements(
-        [none_rec], lambda rec: rec.allowlist_values, make_nested_hierarchy()
-    )
+    placed, flipped = split_placements([none_rec], make_nested_hierarchy())
 
     assert placed == {}
     assert flipped == {}

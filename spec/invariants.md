@@ -279,24 +279,28 @@ locals they name, and the plan-time failure a second implementation produces.
 Between check collection and Terraform generation, no stage may branch on a
 hardcoded check name. A check registers itself with `@register_check`, which
 records a frozen `CheckDefinition` — class, name, type, the `TerraformSection`
-its parameters render under, and the `Allowlist` its statement is scoped by,
-if any — and every stage reads that definition rather than naming the check.
+its parameters render under, and the tuple of `Allowlist`s its statement is
+scoped by, empty when it takes none — and every stage reads that definition
+rather than naming the check.
 
 What each stage reads:
 
 | Stage | Reads from the definition |
 |---|---|
 | Collection, result writing, resume | Class, name, type; result writing resolves the check's directory through the name-to-type mirror `register_check` fills in `headroom/constants.py` |
-| SCP parsing | `allowlist.summary_key`, and whether to restore redacted account IDs. An unregistered check name aborts: the one the file's `summary.check` declares, or the directory's when the file declares none |
-| RCP parsing | `allowlist.summary_key`, through the same reader SCP parsing uses. A registered check with no results directory aborts, and so does a directory under `rcps/` naming no registered check |
-| SCP placement | Nothing. It unions whatever `allowlist_values` the results carry |
-| Both generators | `get_check_definitions(check_type)`: every definition of that type in render order, with its section, its boolean, and its allowlist variable. A recommendation naming an unregistered check aborts |
+| SCP parsing | Each entry's `summary_key` in `allowlists`, and whether to restore redacted account IDs. The values come back as one map keyed by summary key. An unregistered check name aborts: the one the file's `summary.check` declares, or the directory's when the file declares none |
+| RCP parsing | The same entries, through the same reader SCP parsing uses. A registered check with no results directory aborts, and so does a directory under `rcps/` naming no registered check |
+| SCP placement | The definition's entries, to union each declared key over the covered accounts through `parse_results.union_allowlist_values` — one rule for both policy types |
+| Both generators | `get_check_definitions(check_type)`: every definition of that type in render order, with its section, its boolean, and one variable per allowlist entry. A recommendation naming an unregistered check aborts |
 
 One rule reads a declared allowlist for both policy types:
 `parse_results._read_declared_allowlist` takes the key the definition names,
 aborts when it is absent, and restores the owning account ID when the
 definition says so. A change to that abort or that restoration is a change to
-SCP and RCP parsing together.
+SCP and RCP parsing together. One rule unions them too:
+`parse_results.union_allowlist_values` takes the definition and the covered
+accounts' observations and returns one sorted list per declared key, so a
+check with two allowlists is placed by the same code as a check with one.
 
 Render order is `(TerraformSection rank, check name)`, so neither import order
 nor registration order can move a parameter. `TerraformSection` in

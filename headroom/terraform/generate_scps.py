@@ -6,7 +6,7 @@ Generates Terraform files for SCP deployment based on compliance analysis recomm
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Mapping, Optional
+from typing import Dict, FrozenSet, List, Mapping
 
 from .disabled_reasons import disabled_reasons, split_placements
 from .models import RenderedTerraformFiles, TerraformModule
@@ -22,6 +22,7 @@ from .utils import (
 from ..checks.registry import get_check_definitions
 from ..enums import PlacementLevel
 from ..types import (
+    AllowlistValues,
     CheckCoverage,
     GroupedSCPRecommendations,
     OrganizationHierarchy,
@@ -32,7 +33,7 @@ from ..types import (
 def _get_safe_to_enable_policies(
     module_name: str,
     recommendations: List[SCPPlacementRecommendations]
-) -> Dict[str, Optional[List[str]]]:
+) -> Dict[str, AllowlistValues]:
     """
     Map the checks to enable for one module to their allowlist values.
 
@@ -53,14 +54,14 @@ def _get_safe_to_enable_policies(
         recommendations: Placement recommendations targeting this module
 
     Returns:
-        Each recommended check's registered name, mapped to the allowlist
-        values placement unioned for it - None where the check declares no
-        allowlist
+        Each recommended check's registered name, mapped to the values
+        placement unioned for it, keyed by summary key - {} where the check
+        declares no allowlist
 
     Raises:
         RuntimeError: If a "none" recommendation reaches a module
     """
-    allowlists: Dict[str, Optional[List[str]]] = {}
+    allowlists: Dict[str, AllowlistValues] = {}
     for rec in recommendations:
         if rec.recommended_level == PlacementLevel.NONE.value:
             raise RuntimeError(
@@ -348,9 +349,7 @@ def render_scp_terraform(
         Rendered file contents, keyed by destination path. Nothing is
         written; the caller compiles these into the run's plan.
     """
-    placed, flipped = split_placements(
-        recommendations, lambda rec: rec.allowlist_values, organization_hierarchy
-    )
+    placed, flipped = split_placements(recommendations, organization_hierarchy)
     flipped_comment = empty_allowlist_comments(get_check_definitions("scps"))
 
     # Group recommendations by level and target

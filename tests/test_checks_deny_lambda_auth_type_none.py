@@ -443,7 +443,7 @@ class TestCheckDenyLambdaAuthTypeNone:
         assert [result.violations for result in parsed] == [0]
         assert [result.exemptions for result in parsed] == [1]
         assert [result.allowlist_values for result in parsed] == [
-            ["arn:aws:lambda:us-east-1:111111111111:function:public-function:prod"]
+            {"public_function_urls": ["arn:aws:lambda:us-east-1:111111111111:function:public-function:prod"]}
         ]
 
     def test_a_redacted_result_parses_back_to_the_real_arn(self, temp_results_dir: str) -> None:
@@ -487,5 +487,5 @@ class TestCheckDenyLambdaAuthTypeNone:
         parsed = parse_scp_result_files(temp_results_dir, make_single_account_hierarchy())
 
         assert [result.allowlist_values for result in parsed] == [
-            ["arn:aws:lambda:us-east-1:111111111111:function:public-function:prod"]
+            {"public_function_urls": ["arn:aws:lambda:us-east-1:111111111111:function:public-function:prod"]}
         ]

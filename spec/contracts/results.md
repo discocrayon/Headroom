@@ -193,13 +193,15 @@ missing key and a legitimately empty value mean opposite things (INV-01).
 |---|---|---|
 | `check` | RCP parsing | The file cannot be confirmed to belong to its directory |
 | `violations` | SCP and RCP parsing | Whether the account is safe is unknown, and defaulting answers it in the safest direction. `results_exist` skips an account whose result file already exists, so re-running without deleting the file repeats the same failure; both readers' errors name the file and prescribe exactly that. `ResultFilePathResolver.exists()` accepts either filename format, so the remedy also names the directory holding the other form — deleting only the file the reader tripped on leaves the skip in place when both are present. The check the remedy names is the directory's, since `results_exist` looks in the directory named for the check being run: a misfiled SCP result is attributed to its `summary.check`, but the skip it holds is the directory's |
-| `unique_third_party_accounts` | RCP parsing, as the `summary_key` every RCP definition declares | The allowlist would render empty, which denies every third party (INV-06) |
-| The `summary_key` an SCP check's `Allowlist` declares — `unique_ami_owners` for `deny_ec2_ami_owner`, `users` for `deny_iam_user_creation` | SCP parsing | Indistinguishable from an account that observed nothing, which would leave the policy off rather than flag a stale result |
+| `unique_third_party_accounts` | RCP parsing, as the `summary_key` of the first allowlist every RCP definition declares | The allowlist would render empty, which denies every third party (INV-06) |
+| The `summary_key` of each `Allowlist` a check declares — `unique_ami_owners` for `deny_ec2_ami_owner`, `users` for `deny_iam_user_creation`, `public_function_urls` for `deny_lambda_auth_type_none`; a check declaring two allowlists requires both keys | SCP and RCP parsing | Indistinguishable from an account that observed nothing, which would leave the policy off rather than flag a stale result |
 
 A key that is present but holds anything other than a list aborts the same way,
 naming the file and the key: `null` is neither an observation nor an absent key,
 and carrying it forward crashed on the account-ID restore or was dropped by the
-placement union as though the check declared no allowlist.
+placement union as though the check declared no allowlist. The parsed values
+are one map per result, keyed by summary key, with one entry per declared
+allowlist; `{}` for a check declaring none.
 
 A file whose root is not an object — a list, a string, a number, `null` — aborts
 the same way, naming the file and the type it found, before `summary` is looked

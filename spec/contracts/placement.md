@@ -105,16 +105,17 @@ A recommendation reaching Terraform generation **is** the signal to enable the
 policy. Generation does not re-derive safety, and a `none` recommendation
 reaching a module raises rather than being rendered.
 
-An SCP check that feeds an allowlist carries its values on
-`SCPCheckResult.allowlist_values`, and every recommendation for it carries the
-sorted union over the accounts it covers — root, OU, or account — on
-`SCPPlacementRecommendations.allowlist_values`. An account-level recommendation
-covers exactly one account and so carries that account's values alone;
-[Allowlist union](#allowlist-union) states the rule for every level. Placement
-reads nothing from the registry to do this: a result carrying a list is a
-result whose check declared an allowlist, and one carrying `None` is not. `[]`
-is a legitimate union, meaning the covered accounts observed nothing;
-generation decides what that renders as (INV-06).
+A check that feeds allowlists carries its values on `allowlist_values`, a map
+from each declared allowlist's summary key to the values that account
+observed, on `SCPCheckResult` and `RCPCheckResult` alike; every recommendation
+for it carries the sorted union over the accounts it covers — root, OU, or
+account — under the same keys, on `SCPPlacementRecommendations.allowlist_values`
+and `RCPPlacementRecommendations.allowlist_values`. An account-level
+recommendation covers exactly one account and so carries that account's values
+alone; [Allowlist union](#allowlist-union) states the rule for every level. A
+check declaring no allowlist carries `{}`. `[]` under a key is a legitimate
+union, meaning the covered accounts observed nothing under it; generation
+decides what that renders as (INV-06).
 
 ## RCP placement
 
@@ -200,10 +201,10 @@ second pass over the results:
 | Policy type | Built by | `analyzed_accounts` | `unsafe_accounts` |
 |---|---|---|---|
 | SCP | `scp_check_coverage` in `headroom/parse_results.py` | Every account with a result in that check's group | Those whose result is not `is_safe`, the one predicate placement itself reads |
-| RCP | `rcp_check_coverage` in `headroom/terraform/generate_rcps.py` | The keys of `account_third_party_map`, unioned with `accounts_with_blockers` | `accounts_with_blockers` |
+| RCP | `rcp_check_coverage` in `headroom/terraform/generate_rcps.py` | The keys of `account_allowlist_map`, unioned with `accounts_with_blockers` | `accounts_with_blockers` |
 
 The union is the RCP definition of "produced a result" because parsing puts an
-account in exactly one of the two: the third-party map when the policy is
+account in exactly one of the two: the allowlist map when the policy is
 deployable there, `accounts_with_blockers` when a principal no allowlist can
 express rules it out.
 
@@ -224,11 +225,13 @@ answers cannot disagree.
 
 ## Allowlist union
 
-The allowlist attached to a placement is the **union** of the allowlist values
-observed across the accounts that placement covers: third-party account IDs
-for RCPs, IAM user ARNs and AMI owner IDs for SCPs. A cleared account is one
-the policy type's safety predicate passes — zero violations for an SCP, no
-blocker for an RCP.
+The allowlist attached to a placement is the **union**, key by key, of the
+allowlist values observed across the accounts that placement covers:
+third-party account IDs for every RCP, IAM user ARNs, AMI owner IDs, and
+public function URL ARNs for SCPs. `parse_results.union_allowlist_values` is
+the one rule, and both policy types call it at every level. A cleared account
+is one the policy type's safety predicate passes — zero violations for an
+SCP, no blocker for an RCP.
 
 | Level | Union over |
 |---|---|

@@ -7,12 +7,13 @@ targets, and the filename collisions the plan aborts on.
 """
 
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Sequence
 
 import pytest
 
 from headroom.types import (
     AccountOrgPlacement,
+    AllowlistValues,
     CheckCoverage,
     OrganizationHierarchy,
     OrganizationalUnit,
@@ -224,7 +225,7 @@ def test_build_scp_terraform_module_multiple_checks_all_compliant() -> None:
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowlist_values=["arn:aws:iam::111111111111:user/terraform-user"],
+            allowlist_values={"users": ["arn:aws:iam::111111111111:user/terraform-user"]},
         ),
     ]
     result = _build_scp_terraform_module(
@@ -274,10 +275,10 @@ def test_build_scp_terraform_module_renders_iam_allowed_users() -> None:
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowlist_values=[
+            allowlist_values={"users": [
                 "arn:aws:iam::111111111111:user/terraform-user",
                 "arn:aws:iam::222222222222:user/github-actions"
-            ]
+            ]}
         ),
     ]
     result = _build_scp_terraform_module(
@@ -325,7 +326,7 @@ def test_build_scp_terraform_module_escapes_an_iam_user_path() -> None:
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowlist_values=['arn:aws:iam::111111111111:user/${team}/"deploy"'],
+            allowlist_values={"users": ['arn:aws:iam::111111111111:user/${team}/"deploy"']},
         ),
     ]
     result = _build_scp_terraform_module(
@@ -365,10 +366,10 @@ def test_build_scp_terraform_module_iam_allowed_users_unknown_account() -> None:
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowlist_values=[
+            allowlist_values={"users": [
                 "arn:aws:iam::111111111111:user/terraform-user",
                 "arn:aws:iam::999999999999:user/unknown-account"
-            ]
+            ]}
         ),
     ]
     result = _build_scp_terraform_module(
@@ -479,7 +480,7 @@ def test_build_scp_terraform_module_enables_every_recommendation_it_is_given() -
             affected_accounts=[],
             compliance_percentage=100.0,
             reasoning="test",
-            allowlist_values=["arn:aws:iam::111111111111:user/terraform-user"],
+            allowlist_values={"users": ["arn:aws:iam::111111111111:user/terraform-user"]},
         ),
     ]
     result = _build_scp_terraform_module(
@@ -539,7 +540,7 @@ def make_rec(
     level: str = "root",
     target_ou_id: str | None = None,
     affected_accounts: list[str] | None = None,
-    allowlist_values: list[str] | None = None,
+    allowlist_values: AllowlistValues | None = None,
 ) -> SCPPlacementRecommendations:
     return SCPPlacementRecommendations(
         check_name=check_name,
@@ -548,7 +549,7 @@ def make_rec(
         affected_accounts=affected_accounts if affected_accounts is not None else [],
         compliance_percentage=100.0,
         reasoning="test",
-        allowlist_values=allowlist_values if allowlist_values is not None else [],
+        allowlist_values=allowlist_values if allowlist_values is not None else {},
     )
 
 
@@ -692,7 +693,7 @@ def test_render_root_scp_terraform_multiple_checks() -> None:
         make_rec(),
         make_rec(
             check_name="deny_iam_user_creation",
-            allowlist_values=["arn:aws:iam::111111111111:user/terraform-user"],
+            allowlist_values={"users": ["arn:aws:iam::111111111111:user/terraform-user"]},
         ),
     ]
 
@@ -878,7 +879,7 @@ def test_an_ou_file_says_the_root_already_enforces_the_check(tmp_path: Path) -> 
             affected_accounts=["111111111111"],
             compliance_percentage=100.0,
             reasoning="test",
-            allowlist_values=["amazon"],
+            allowlist_values={"unique_ami_owners": ["amazon"]},
         ),
         SCPPlacementRecommendations(
             check_name="deny_ec2_imds_v1",
@@ -918,7 +919,7 @@ def test_build_scp_terraform_module_with_ec2_ami_owner_check_with_allowed_owners
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
-        allowlist_values=["amazon", "aws-marketplace"]
+        allowlist_values={"unique_ami_owners": ["amazon", "aws-marketplace"]}
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -958,7 +959,7 @@ def test_build_scp_terraform_module_ec2_ami_owner_empty_allowlist_stays_off() ->
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
-        allowlist_values=[],
+        allowlist_values={"unique_ami_owners": []},
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -1029,7 +1030,7 @@ def test_account_level_recommendation_enables_its_policy() -> None:
 def _synthetic_allowlist_values(
     definition: CheckDefinition,
     observed_nothing: Sequence[str],
-) -> Optional[List[str]]:
+) -> AllowlistValues:
     """
     Give one definition the allowlist values that let it render enabled.
 
@@ -1045,13 +1046,12 @@ def _synthetic_allowlist_values(
         observed_nothing: Allowlist checks to hand an empty list
 
     Returns:
-        None for a check with no allowlist, otherwise its values
+        {} for a check with no allowlist, otherwise one value or [] under
+        each declared key
     """
-    if definition.allowlist is None:
-        return None
     if definition.check_name in observed_nothing:
-        return []
-    return ["observed-value"]
+        return {allowlist.summary_key: [] for allowlist in definition.allowlists}
+    return {allowlist.summary_key: ["observed-value"] for allowlist in definition.allowlists}
 
 
 def _render_every_scp_check(observed_nothing: Sequence[str] = ()) -> str:
@@ -1188,7 +1188,7 @@ def test_a_registered_scp_check_renders_without_a_generator_edit(
             check_name="deny_ec2_unrendered",
             check_type="scps",
             terraform_section=TerraformSection.EC2,
-            allowlist=None,
+            allowlists=(),
         ),
     )
     rec = SCPPlacementRecommendations(
@@ -1237,10 +1237,12 @@ def test_the_render_guard_covers_a_new_allowlist_check_without_an_edit(
             check_name="deny_ec2_unrendered_allowlisted",
             check_type="scps",
             terraform_section=TerraformSection.EC2,
-            allowlist=Allowlist(
-                summary_key="unique_widgets",
-                terraform_variable="ec2_allowed_widgets",
-                empty_allowlist_comment="No widgets observed",
+            allowlists=(
+                Allowlist(
+                    summary_key="unique_widgets",
+                    terraform_variable="ec2_allowed_widgets",
+                    empty_allowlist_comment="No widgets observed",
+                ),
             ),
         ),
     )
@@ -1267,7 +1269,7 @@ def test_build_scp_terraform_module_iam_user_creation_empty_allowlist_stays_off(
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
-        allowlist_values=[],
+        allowlist_values={"users": []},
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -1302,7 +1304,7 @@ def test_build_scp_terraform_module_iam_user_creation_renders_a_populated_allowl
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
-        allowlist_values=["arn:aws:iam::111111111111:user/breakglass"],
+        allowlist_values={"users": ["arn:aws:iam::111111111111:user/breakglass"]},
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -1338,7 +1340,7 @@ def test_build_scp_terraform_module_lambda_auth_type_none_empty_allowlist_stays_
         affected_accounts=[],
         compliance_percentage=100.0,
         reasoning="test",
-        allowlist_values=[],
+        allowlist_values={"public_function_urls": []},
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -1380,7 +1382,9 @@ def test_build_scp_terraform_module_lambda_auth_type_none_renders_the_qualified_
         affected_accounts=["111111111111"],
         compliance_percentage=100.0,
         reasoning="test",
-        allowlist_values=["arn:aws:lambda:us-east-1:111111111111:function:status-page:prod"],
+        allowlist_values={"public_function_urls": [
+            "arn:aws:lambda:us-east-1:111111111111:function:status-page:prod"
+        ]},
     )
     result = _build_scp_terraform_module(
         module_name="scps_root",
@@ -1422,7 +1426,7 @@ def test_a_root_placement_an_empty_allowlist_flipped_off_claims_nothing_below(
     """
     org = make_nested_org()
     recommendations = [
-        make_rec(check_name="deny_ec2_ami_owner", level="root", allowlist_values=[]),
+        make_rec(check_name="deny_ec2_ami_owner", level="root", allowlist_values={"unique_ami_owners": []}),
         make_rec(
             check_name="deny_ec2_imds_v1",
             level="ou",
@@ -1463,7 +1467,7 @@ def test_a_root_placement_the_allowlist_did_populate_is_still_enforced_below(
         make_rec(
             check_name="deny_ec2_ami_owner",
             level="root",
-            allowlist_values=["111111111111"],
+            allowlist_values={"unique_ami_owners": ["111111111111"]},
         ),
         make_rec(
             check_name="deny_ec2_imds_v1",
@@ -1535,14 +1539,14 @@ def test_one_check_live_at_one_ou_and_flipped_at_its_sibling(tmp_path: Path) -> 
             level="ou",
             target_ou_id="ou-1111-11111111",
             affected_accounts=["111111111111"],
-            allowlist_values=["amazon"],
+            allowlist_values={"unique_ami_owners": ["amazon"]},
         ),
         make_rec(
             check_name="deny_ec2_ami_owner",
             level="ou",
             target_ou_id="ou-1111-22222222",
             affected_accounts=["222222222222"],
-            allowlist_values=[],
+            allowlist_values={"unique_ami_owners": []},
         ),
         make_rec(
             check_name="deny_ec2_imds_v1",

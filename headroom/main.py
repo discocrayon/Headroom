@@ -112,7 +112,7 @@ def handle_rcp_workflow(
     # deleting every RCP the organization currently deploys. An account that
     # blocks a check is evidence, and it leaves accounts_with_blockers non-empty.
     if not any(
-        parsed.account_third_party_map or parsed.accounts_with_blockers
+        parsed.account_allowlist_map or parsed.accounts_with_blockers
         for parsed in parse_results
     ):
         raise RuntimeError(

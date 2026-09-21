@@ -37,7 +37,7 @@ from headroom.checks.registry import (
     _CHECK_REGISTRY,
     Allowlist,
     CheckDefinition,
-    get_allowlist,
+    get_check_definition,
     get_check_names,
 )
 from headroom.checks.rcps.deny_kms_third_party_access import DenyKMSThirdPartyAccessCheck
@@ -46,7 +46,7 @@ from headroom.enums import TerraformSection
 from headroom.placement.hierarchy import PlacementCandidate
 from headroom.types import (
     JsonDict,
-    AccountThirdPartyMap,
+    AccountAllowlistMap,
     CheckCoverage,
     OrganizationHierarchy,
     OrganizationalUnit,
@@ -102,18 +102,15 @@ def write_rcp_result(
     check_dir = Path(results_dir) / "rcps" / check_name
     check_dir.mkdir(parents=True, exist_ok=True)
 
-    payload = {
-        "summary": {
-            "account_id": account_id,
-            "account_name": account_name,
-            "check": check_name,
-            "unique_third_party_accounts": third_party_account_ids,
-            "violations": violations,
-        }
+    summary: JsonDict = {
+        "account_id": account_id,
+        "account_name": account_name,
+        "check": check_name,
+        "unique_third_party_accounts": third_party_account_ids,
+        "violations": violations,
     }
-
     with open(check_dir / f"{account_name}.json", "w") as f:
-        json.dump(payload, f)
+        json.dump({"summary": summary}, f)
 
 
 def seed_all_rcp_check_dirs(results_dir: str) -> None:
@@ -222,8 +219,8 @@ class TestParseRcpResultFiles:
         results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
         sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
-        assert len(sts.account_third_party_map) == 1
-        assert sts.account_third_party_map["111111111111"] == {"999999999999", "888888888888"}
+        assert len(sts.account_allowlist_map) == 1
+        assert sts.account_allowlist_map["111111111111"] == {"unique_third_party_accounts": ["888888888888", "999999999999"]}
         assert len(sts.accounts_with_blockers) == 0
 
     def test_parse_multiple_accounts(
@@ -251,9 +248,9 @@ class TestParseRcpResultFiles:
         results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
         sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
-        assert len(sts.account_third_party_map) == 2
-        assert sts.account_third_party_map["111111111111"] == {"999999999999"}
-        assert sts.account_third_party_map["222222222222"] == {"888888888888", "777777777777"}
+        assert len(sts.account_allowlist_map) == 2
+        assert sts.account_allowlist_map["111111111111"] == {"unique_third_party_accounts": ["999999999999"]}
+        assert sts.account_allowlist_map["222222222222"] == {"unique_third_party_accounts": ["777777777777", "888888888888"]}
         assert len(sts.accounts_with_blockers) == 0
 
     def test_parse_nonexistent_directory(self, sample_org_hierarchy: OrganizationHierarchy) -> None:
@@ -278,7 +275,7 @@ class TestParseRcpResultFiles:
         results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
         sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
-        assert sts.account_third_party_map == {}
+        assert sts.account_allowlist_map == {}
         assert sts.accounts_with_blockers == set()
 
     def test_parse_invalid_json(
@@ -348,10 +345,10 @@ class TestParseRcpResultFiles:
         sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
 
         # Only the account with no blocking violation should be in the map
-        assert len(sts.account_third_party_map) == 1
-        assert "222222222222" in sts.account_third_party_map
-        assert "111111111111" not in sts.account_third_party_map
-        assert sts.account_third_party_map["222222222222"] == {"888888888888"}
+        assert len(sts.account_allowlist_map) == 1
+        assert "222222222222" in sts.account_allowlist_map
+        assert "111111111111" not in sts.account_allowlist_map
+        assert sts.account_allowlist_map["222222222222"] == {"unique_third_party_accounts": ["888888888888"]}
 
         # The account with a blocking violation should be in the blocked set
         assert len(sts.accounts_with_blockers) == 1
@@ -394,7 +391,7 @@ class TestParseRcpResultFiles:
         kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
 
         assert kms.accounts_with_blockers == {"111111111111"}
-        assert kms.account_third_party_map == {"222222222222": {"999999999999"}}
+        assert kms.account_allowlist_map == {"222222222222": {"unique_third_party_accounts": ["999999999999"]}}
 
         recommendations = determine_rcp_placement([kms], sample_org_hierarchy)
 
@@ -402,7 +399,7 @@ class TestParseRcpResultFiles:
         assert recommendations[0].check_name == DENY_KMS_THIRD_PARTY_ACCESS
         assert recommendations[0].recommended_level == "account"
         assert recommendations[0].affected_accounts == ["222222222222"]
-        assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["999999999999"]}
 
     def test_a_decoded_kms_grant_is_allowlisted_and_blocks_nobody(
         self,
@@ -433,7 +430,7 @@ class TestParseRcpResultFiles:
         kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
 
         assert kms.accounts_with_blockers == set()
-        assert kms.account_third_party_map == {"111111111111": {"999999999999"}}
+        assert kms.account_allowlist_map == {"111111111111": {"unique_third_party_accounts": ["999999999999"]}}
 
     def test_a_decoded_kms_grant_still_reaches_root_level_placement(
         self,
@@ -473,7 +470,7 @@ class TestParseRcpResultFiles:
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
         assert recommendations[0].affected_accounts == ["111111111111", "222222222222"]
-        assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["999999999999"]}
 
     def test_one_unreadable_grantee_does_not_block_the_account_beside_it(
         self,
@@ -510,7 +507,7 @@ class TestParseRcpResultFiles:
         kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
 
         assert kms.accounts_with_blockers == {"111111111111"}
-        assert kms.account_third_party_map == {"222222222222": {"999999999999"}}
+        assert kms.account_allowlist_map == {"222222222222": {"unique_third_party_accounts": ["999999999999"]}}
 
     def test_a_grant_written_before_it_named_its_grantee_reads_the_same(
         self,
@@ -574,9 +571,9 @@ class TestParseRcpResultFiles:
         kms = next(r for r in parsed if r.check_name == DENY_KMS_THIRD_PARTY_ACCESS)
 
         assert kms.accounts_with_blockers == set()
-        assert kms.account_third_party_map == {
-            "111111111111": {"999999999999"},
-            "222222222222": {"999999999999"},
+        assert kms.account_allowlist_map == {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["999999999999"]},
         }
 
     def test_parse_looks_up_missing_account_id(
@@ -606,9 +603,9 @@ class TestParseRcpResultFiles:
         sts = next(r for r in results if r.check_name == DENY_STS_THIRD_PARTY_ASSUMEROLE)
 
         # Should have looked up account_id from account_name
-        assert len(sts.account_third_party_map) == 1
-        assert "111111111111" in sts.account_third_party_map
-        assert sts.account_third_party_map["111111111111"] == {"999999999999"}
+        assert len(sts.account_allowlist_map) == 1
+        assert "111111111111" in sts.account_allowlist_map
+        assert sts.account_allowlist_map["111111111111"] == {"unique_third_party_accounts": ["999999999999"]}
 
     def test_parse_fails_when_account_name_not_found(
         self,
@@ -810,9 +807,11 @@ class TestParseRcpResultFiles:
                 check_name="deny_kms_custom_key",
                 check_type="rcps",
                 terraform_section=TerraformSection.KMS,
-                allowlist=Allowlist(
-                    "unique_partners",
-                    "kms_custom_key_account_ids_allowlist",
+                allowlists=(
+                    Allowlist(
+                        "unique_partners",
+                        "kms_custom_key_account_ids_allowlist",
+                    ),
                 ),
             ),
         )
@@ -832,8 +831,8 @@ class TestParseRcpResultFiles:
         parse_results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
 
         by_check = {result.check_name: result for result in parse_results}
-        assert by_check["deny_kms_custom_key"].account_third_party_map == {
-            "111111111111": {"333333333333"}
+        assert by_check["deny_kms_custom_key"].account_allowlist_map == {
+            "111111111111": {"unique_partners": ["333333333333"]}
         }
 
     def test_parse_aborts_when_summary_check_field_is_absent(
@@ -1065,8 +1064,8 @@ class TestTheRCPReaderRequiresOneFilePerAccount:
 
         s3 = next(r for r in results if r.check_name == DENY_S3_THIRD_PARTY_ACCESS)
         sqs = next(r for r in results if r.check_name == DENY_SQS_THIRD_PARTY_ACCESS)
-        assert s3.account_third_party_map == {"111111111111": {"999999999999"}}
-        assert sqs.account_third_party_map == {"111111111111": {"888888888888"}}
+        assert s3.account_allowlist_map == {"111111111111": {"unique_third_party_accounts": ["999999999999"]}}
+        assert sqs.account_allowlist_map == {"111111111111": {"unique_third_party_accounts": ["888888888888"]}}
 
     def test_duplicates_under_two_checks_abort_in_one_error(
         self,
@@ -1241,17 +1240,17 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test root level placement when all accounts have same third-party accounts."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"999999999999"},
-            "333333333333": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["999999999999"]},
+            "333333333333": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     accounts_with_blockers=set(),
                 )
             ],
@@ -1263,7 +1262,7 @@ class TestDetermineRcpPlacement:
         assert recommendations[0].target_ou_id is None
         # Verify affected_accounts includes ALL accounts in the org
         assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
-        assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["999999999999"]}
         assert "All 3 accounts can be protected with root-level RCP" in recommendations[0].reasoning
 
     def test_recommends_root_level_with_different_third_party_accounts_unioned(
@@ -1271,17 +1270,17 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test root level placement unions different third-party accounts from different accounts."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"888888888888"},
-            "333333333333": {"999999999999", "777777777777"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["888888888888"]},
+            "333333333333": {"unique_third_party_accounts": ["777777777777", "999999999999"]}
         }
 
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     accounts_with_blockers=set(),
                 )
             ],
@@ -1294,26 +1293,26 @@ class TestDetermineRcpPlacement:
         # Verify affected_accounts includes ALL accounts in the org
         assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
         # Should union all third-party account IDs
-        assert set(recommendations[0].third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["777777777777", "888888888888", "999999999999"]}
         assert "All 3 accounts can be protected with root-level RCP" in recommendations[0].reasoning
-        assert "allowlist contains 3 third-party accounts" in recommendations[0].reasoning
+        assert "allowlist union: 3 unique_third_party_accounts" in recommendations[0].reasoning
 
     def test_recommends_ou_level_when_ou_accounts_have_identical_third_party_accounts(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test OU level placement unions third-party accounts from accounts in OU."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999", "888888888888"},
-            "222222222222": {"999999999999", "666666666666"},
-            "333333333333": {"777777777777"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["888888888888", "999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["666666666666", "999999999999"]},
+            "333333333333": {"unique_third_party_accounts": ["777777777777"]}
         }
 
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     accounts_with_blockers=set(),
                 )
             ],
@@ -1334,7 +1333,7 @@ class TestDetermineRcpPlacement:
         assert len(account_recs) == 0
 
         # Root should have union of all third-party IDs
-        assert set(root_recs[0].third_party_account_ids) == {"666666666666", "777777777777", "888888888888", "999999999999"}
+        assert root_recs[0].allowlist_values == {"unique_third_party_accounts": ["666666666666", "777777777777", "888888888888", "999999999999"]}
 
     def test_recommends_account_level_when_each_account_has_unique_third_party_accounts(
         self,
@@ -1345,17 +1344,17 @@ class TestDetermineRcpPlacement:
 
         With union logic, different third-party requirements can be combined at root level.
         """
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"888888888888"},
-            "333333333333": {"777777777777"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["888888888888"]},
+            "333333333333": {"unique_third_party_accounts": ["777777777777"]}
         }
 
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     accounts_with_blockers=set(),
                 )
             ],
@@ -1365,20 +1364,20 @@ class TestDetermineRcpPlacement:
         # With union logic, this should recommend root-level with all IDs unioned
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
-        assert set(recommendations[0].third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["777777777777", "888888888888", "999999999999"]}
 
     def test_returns_empty_list_when_no_third_party_accounts_found(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test with no third-party accounts."""
-        account_third_party_map: AccountThirdPartyMap = {}
+        account_allowlist_map: AccountAllowlistMap = {}
 
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     accounts_with_blockers=set(),
                 )
             ],
@@ -1399,16 +1398,16 @@ class TestDetermineRcpPlacement:
         the root RCP would affect those accounts too.
         """
         # Two accounts with identical (empty) third-party sets
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": set(),
-            "222222222222": set()
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": []},
+            "222222222222": {"unique_third_party_accounts": []}
         }
 
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     # One account has wildcards (like shared-foo-bar in test_environment)
                     accounts_with_blockers={"333333333333"},
                 )
@@ -1425,24 +1424,24 @@ class TestDetermineRcpPlacement:
         assert len(ou_recs) == 1
         assert ou_recs[0].target_ou_id == "ou-1111"
         # OU-level should union the third-party IDs from both accounts (even if they're both empty)
-        assert ou_recs[0].third_party_account_ids == []
+        assert ou_recs[0].allowlist_values == {"unique_third_party_accounts": []}
 
     def test_skips_ou_level_recommendation_when_any_account_in_ou_has_wildcards(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that OU-level RCP is skipped when any account in OU has wildcards, falls back to account-level."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
             # 222222222222 has wildcards, not in map
-            "333333333333": {"777777777777"}
+            "333333333333": {"unique_third_party_accounts": ["777777777777"]}
         }
 
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     accounts_with_blockers={"222222222222"},
                 )
             ],
@@ -1474,10 +1473,10 @@ class TestDetermineRcpPlacement:
 
         We need to block root-level with wildcards to force OU-level processing.
         """
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"999999999999"},
-            "999999999999": {"888888888888"}  # This account doesn't exist in hierarchy
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["999999999999"]},
+            "999999999999": {"unique_third_party_accounts": ["888888888888"]}  # This account doesn't exist in hierarchy
         }
         # Should raise exception for account not in hierarchy during OU-level processing
         with pytest.raises(RuntimeError, match="Account \\(999999999999\\) not found in organization hierarchy"):
@@ -1485,7 +1484,7 @@ class TestDetermineRcpPlacement:
                 [
                     RCPCheckParseResult(
                         check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                        account_third_party_map=account_third_party_map,
+                        account_allowlist_map=account_allowlist_map,
                         # Add a blocker to prevent root-level and force OU-level processing
                         accounts_with_blockers={"some_wildcard_account"},
                     )
@@ -1498,17 +1497,17 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test with accounts that have empty third-party sets."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": set(),
-            "222222222222": set(),
-            "333333333333": set()
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": []},
+            "222222222222": {"unique_third_party_accounts": []},
+            "333333333333": {"unique_third_party_accounts": []}
         }
 
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     accounts_with_blockers=set(),
                 )
             ],
@@ -1517,9 +1516,9 @@ class TestDetermineRcpPlacement:
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
-        assert recommendations[0].third_party_account_ids == []
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": []}
         assert "All 3 accounts can be protected with root-level RCP" in recommendations[0].reasoning
-        assert "allowlist contains 0 third-party accounts" in recommendations[0].reasoning
+        assert "allowlist union: 0 unique_third_party_accounts" in recommendations[0].reasoning
         # Verify affected_accounts includes ALL accounts in the org
         assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222", "333333333333"}
 
@@ -1528,14 +1527,14 @@ class TestDetermineRcpPlacement:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that OU-level RCP works even for single-account OUs (no minimum threshold)."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "333333333333": {"999999999999"}  # Single account in Development OU (ou-2222)
+        account_allowlist_map: AccountAllowlistMap = {
+            "333333333333": {"unique_third_party_accounts": ["999999999999"]}  # Single account in Development OU (ou-2222)
         }
         recommendations = determine_rcp_placement(
             [
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map=account_third_party_map,
+                    account_allowlist_map=account_allowlist_map,
                     accounts_with_blockers={"dummy_account"},  # Block root to force OU processing
                 )
             ],
@@ -1563,14 +1562,14 @@ class TestDetermineRcpPlacement:
         parse_results = [
             RCPCheckParseResult(
                 check_name=DENY_S3_THIRD_PARTY_ACCESS,
-                account_third_party_map={"222222222222": {"999999999999"}},
+                account_allowlist_map={"222222222222": {"unique_third_party_accounts": ["999999999999"]}},
                 accounts_with_blockers={"111111111111"},
             ),
             RCPCheckParseResult(
                 check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                account_third_party_map={
-                    "111111111111": {"999999999999"},
-                    "222222222222": {"999999999999"},
+                account_allowlist_map={
+                    "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+                    "222222222222": {"unique_third_party_accounts": ["999999999999"]},
                 },
                 accounts_with_blockers=set(),
             ),
@@ -1621,13 +1620,13 @@ class TestCreateRootLevelRcpRecommendation:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test creating root recommendation with single account."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendation = _create_root_level_rcp_recommendation(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
@@ -1635,82 +1634,82 @@ class TestCreateRootLevelRcpRecommendation:
         assert recommendation.recommended_level == "root"
         assert recommendation.target_ou_id is None
         assert set(recommendation.affected_accounts) == {"111111111111", "222222222222"}
-        assert recommendation.third_party_account_ids == ["999999999999"]
+        assert recommendation.allowlist_values == {"unique_third_party_accounts": ["999999999999"]}
         assert "All 2 accounts can be protected with root-level RCP" in recommendation.reasoning
-        assert "allowlist contains 1 third-party accounts" in recommendation.reasoning
+        assert "allowlist union: 1 unique_third_party_accounts" in recommendation.reasoning
 
     def test_creates_root_recommendation_with_multiple_accounts(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test creating root recommendation with multiple accounts."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999", "888888888888"},
-            "222222222222": {"777777777777"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["888888888888", "999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["777777777777"]}
         }
 
         recommendation = _create_root_level_rcp_recommendation(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
         assert recommendation.recommended_level == "root"
         assert set(recommendation.affected_accounts) == {"111111111111", "222222222222"}
-        assert set(recommendation.third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
-        assert "allowlist contains 3 third-party accounts" in recommendation.reasoning
+        assert recommendation.allowlist_values == {"unique_third_party_accounts": ["777777777777", "888888888888", "999999999999"]}
+        assert "allowlist union: 3 unique_third_party_accounts" in recommendation.reasoning
 
     def test_creates_root_recommendation_with_empty_third_party_sets(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test creating root recommendation with empty third-party sets."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": set(),
-            "222222222222": set()
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": []},
+            "222222222222": {"unique_third_party_accounts": []}
         }
 
         recommendation = _create_root_level_rcp_recommendation(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
         assert recommendation.recommended_level == "root"
-        assert recommendation.third_party_account_ids == []
-        assert "allowlist contains 0 third-party accounts" in recommendation.reasoning
+        assert recommendation.allowlist_values == {"unique_third_party_accounts": []}
+        assert "allowlist union: 0 unique_third_party_accounts" in recommendation.reasoning
 
     def test_unions_overlapping_third_party_accounts(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that overlapping third-party accounts are properly unioned."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999", "888888888888"},
-            "222222222222": {"999999999999", "777777777777"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["888888888888", "999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["777777777777", "999999999999"]}
         }
 
         recommendation = _create_root_level_rcp_recommendation(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
-        assert set(recommendation.third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
-        assert len(recommendation.third_party_account_ids) == 3
+        assert recommendation.allowlist_values == {"unique_third_party_accounts": ["777777777777", "888888888888", "999999999999"]}
+        assert len(recommendation.allowlist_values["unique_third_party_accounts"]) == 3
 
     def test_includes_all_org_accounts_in_affected_accounts(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that affected_accounts includes all accounts in the org, not just those in map."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendation = _create_root_level_rcp_recommendation(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
@@ -1721,17 +1720,17 @@ class TestCreateRootLevelRcpRecommendation:
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
         """Test that third-party account IDs are sorted."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999", "111111111111", "555555555555"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["111111111111", "555555555555", "999999999999"]}
         }
 
         recommendation = _create_root_level_rcp_recommendation(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
-        assert recommendation.third_party_account_ids == ["111111111111", "555555555555", "999999999999"]
+        assert recommendation.allowlist_values == {"unique_third_party_accounts": ["111111111111", "555555555555", "999999999999"]}
 
 
 class TestCreateOuLevelRcpRecommendations:
@@ -1793,15 +1792,15 @@ class TestCreateOuLevelRcpRecommendations:
                 reasoning="OU-level deployment safe"
             )
         ]
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
@@ -1809,7 +1808,7 @@ class TestCreateOuLevelRcpRecommendations:
         assert recommendations[0].recommended_level == "ou"
         assert recommendations[0].target_ou_id == "ou-1111"
         assert set(recommendations[0].affected_accounts) == {"111111111111", "222222222222"}
-        assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["999999999999"]}
         assert "Production" in recommendations[0].reasoning
         assert covered_accounts == {"111111111111", "222222222222"}
 
@@ -1832,16 +1831,16 @@ class TestCreateOuLevelRcpRecommendations:
                 reasoning="OU-level deployment safe"
             )
         ]
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"999999999999"},
-            "333333333333": {"888888888888"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["999999999999"]},
+            "333333333333": {"unique_third_party_accounts": ["888888888888"]}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
@@ -1867,14 +1866,14 @@ class TestCreateOuLevelRcpRecommendations:
                 reasoning="Account-level deployment"
             )
         ]
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
@@ -1894,14 +1893,14 @@ class TestCreateOuLevelRcpRecommendations:
                 reasoning="Invalid OU candidate"
             )
         ]
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
@@ -1921,20 +1920,20 @@ class TestCreateOuLevelRcpRecommendations:
                 reasoning="OU-level deployment safe"
             )
         ]
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999", "888888888888"},
-            "222222222222": {"777777777777", "999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["888888888888", "999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["777777777777", "999999999999"]}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
         assert len(recommendations) == 1
-        assert set(recommendations[0].third_party_account_ids) == {"777777777777", "888888888888", "999999999999"}
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["777777777777", "888888888888", "999999999999"]}
 
     def test_handles_accounts_not_in_map(
         self,
@@ -1949,19 +1948,19 @@ class TestCreateOuLevelRcpRecommendations:
                 reasoning="OU-level deployment safe"
             )
         ]
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
         assert len(recommendations) == 1
-        assert recommendations[0].third_party_account_ids == ["999999999999"]
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["999999999999"]}
         assert covered_accounts == {"111111111111", "222222222222"}
 
     def test_handles_empty_third_party_sets(
@@ -1977,19 +1976,19 @@ class TestCreateOuLevelRcpRecommendations:
                 reasoning="OU-level deployment safe"
             )
         ]
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": set()
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": []}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
         assert len(recommendations) == 1
-        assert recommendations[0].third_party_account_ids == []
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": []}
 
     def test_returns_empty_for_empty_candidates(
         self,
@@ -1997,14 +1996,14 @@ class TestCreateOuLevelRcpRecommendations:
     ) -> None:
         """Test that empty candidates list returns empty results."""
         candidates: List[PlacementCandidate] = []
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
@@ -2024,14 +2023,14 @@ class TestCreateOuLevelRcpRecommendations:
                 reasoning="OU-level deployment safe"
             )
         ]
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
 
         recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
             candidates,
-            account_third_party_map,
+            account_allowlist_map,
             sample_org_hierarchy
         )
 
@@ -2044,16 +2043,16 @@ class TestCreateAccountLevelRcpRecommendations:
 
     def test_creates_recommendations_for_uncovered_accounts(self) -> None:
         """Test creating account-level recommendations for uncovered accounts."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"888888888888"},
-            "333333333333": {"777777777777"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["888888888888"]},
+            "333333333333": {"unique_third_party_accounts": ["777777777777"]}
         }
         covered_accounts: Set[str] = {"222222222222"}
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
@@ -2065,15 +2064,15 @@ class TestCreateAccountLevelRcpRecommendations:
 
     def test_skips_covered_accounts(self) -> None:
         """Test that covered accounts are not included in recommendations."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"888888888888"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["888888888888"]}
         }
         covered_accounts: Set[str] = {"111111111111", "222222222222"}
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
@@ -2081,14 +2080,14 @@ class TestCreateAccountLevelRcpRecommendations:
 
     def test_creates_recommendation_with_correct_structure(self) -> None:
         """Test that recommendations have correct structure."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999", "888888888888"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["888888888888", "999999999999"]}
         }
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
@@ -2098,35 +2097,34 @@ class TestCreateAccountLevelRcpRecommendations:
         assert rec.recommended_level == "account"
         assert rec.target_ou_id is None
         assert rec.affected_accounts == ["111111111111"]
-        assert set(rec.third_party_account_ids) == {"888888888888", "999999999999"}
-        assert "Account has unique third-party account requirements" in rec.reasoning
-        assert "2 accounts" in rec.reasoning
+        assert rec.allowlist_values == {"unique_third_party_accounts": ["888888888888", "999999999999"]}
+        assert "Account has unique allowlist requirements (2 unique_third_party_accounts)" in rec.reasoning
 
     def test_handles_empty_third_party_sets(self) -> None:
         """Test handling of empty third-party account sets."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": set()
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": []}
         }
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
         assert len(recommendations) == 1
-        assert recommendations[0].third_party_account_ids == []
-        assert "0 accounts" in recommendations[0].reasoning
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": []}
+        assert "Account has unique allowlist requirements (0 unique_third_party_accounts)" in recommendations[0].reasoning
 
     def test_returns_empty_for_empty_map(self) -> None:
         """Test that empty account map returns empty recommendations."""
-        account_third_party_map: AccountThirdPartyMap = {}
+        account_allowlist_map: AccountAllowlistMap = {}
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
@@ -2134,14 +2132,14 @@ class TestCreateAccountLevelRcpRecommendations:
 
     def test_returns_empty_when_all_accounts_covered(self) -> None:
         """Test that all covered accounts returns empty recommendations."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
         covered_accounts: Set[str] = {"111111111111"}
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
@@ -2149,31 +2147,31 @@ class TestCreateAccountLevelRcpRecommendations:
 
     def test_sorts_third_party_account_ids(self) -> None:
         """Test that third-party account IDs are sorted."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999", "111111111111", "555555555555"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["111111111111", "555555555555", "999999999999"]}
         }
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
-        assert recommendations[0].third_party_account_ids == ["111111111111", "555555555555", "999999999999"]
+        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["111111111111", "555555555555", "999999999999"]}
 
     def test_multiple_accounts_each_get_own_recommendation(self) -> None:
         """Test that each account gets its own recommendation."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"888888888888"},
-            "333333333333": {"777777777777"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["888888888888"]},
+            "333333333333": {"unique_third_party_accounts": ["777777777777"]}
         }
         covered_accounts: Set[str] = set()
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
@@ -2184,17 +2182,17 @@ class TestCreateAccountLevelRcpRecommendations:
 
     def test_handles_partially_covered_accounts(self) -> None:
         """Test handling of partially covered account sets."""
-        account_third_party_map: AccountThirdPartyMap = {
-            "111111111111": {"999999999999"},
-            "222222222222": {"888888888888"},
-            "333333333333": {"777777777777"},
-            "444444444444": {"666666666666"}
+        account_allowlist_map: AccountAllowlistMap = {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"]},
+            "222222222222": {"unique_third_party_accounts": ["888888888888"]},
+            "333333333333": {"unique_third_party_accounts": ["777777777777"]},
+            "444444444444": {"unique_third_party_accounts": ["666666666666"]}
         }
         covered_accounts: Set[str] = {"111111111111", "333333333333"}
 
         recommendations = _create_account_level_rcp_recommendations(
             DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map,
+            account_allowlist_map,
             covered_accounts
         )
 
@@ -2254,7 +2252,7 @@ class TestRenderRcpTerraform:
                 recommended_level="root",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
-                third_party_account_ids=["999999999999", "888888888888"],
+                allowlist_values={"unique_third_party_accounts": ["999999999999", "888888888888"]},
                 reasoning="Test root level"
             )
         ]
@@ -2285,7 +2283,7 @@ class TestRenderRcpTerraform:
                 recommended_level="ou",
                 target_ou_id="ou-1111",
                 affected_accounts=["111111111111"],
-                third_party_account_ids=["999999999999"],
+                allowlist_values={"unique_third_party_accounts": ["999999999999"]},
                 reasoning="Test OU level"
             )
         ]
@@ -2315,7 +2313,7 @@ class TestRenderRcpTerraform:
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
-                third_party_account_ids=["999999999999"],
+                allowlist_values={"unique_third_party_accounts": ["999999999999"]},
                 reasoning="Test account level"
             )
         ]
@@ -2345,7 +2343,7 @@ class TestRenderRcpTerraform:
                 recommended_level="ou",
                 target_ou_id="ou-9999",
                 affected_accounts=["111111111111"],
-                third_party_account_ids=["999999999999"],
+                allowlist_values={"unique_third_party_accounts": ["999999999999"]},
                 reasoning="Test OU not found"
             )
         ]
@@ -2366,7 +2364,7 @@ class TestRenderRcpTerraform:
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=["999999999999"],
-                third_party_account_ids=["888888888888"],
+                allowlist_values={"unique_third_party_accounts": ["888888888888"]},
                 reasoning="Test account not found"
             )
         ]
@@ -2405,7 +2403,7 @@ class TestRenderRcpTerraform:
                 recommended_level="root",
                 target_ou_id=None,
                 affected_accounts=[],
-                third_party_account_ids=["999999999999"],
+                allowlist_values={"unique_third_party_accounts": ["999999999999"]},
                 reasoning="Test root level"
             ),
             RCPPlacementRecommendations(
@@ -2413,7 +2411,7 @@ class TestRenderRcpTerraform:
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
-                third_party_account_ids=["999999999999"],
+                allowlist_values={"unique_third_party_accounts": ["999999999999"]},
                 reasoning="Test account level"
             ),
         ]
@@ -2467,7 +2465,7 @@ def test_an_ou_file_says_the_root_already_enforces_the_check(tmp_path: Path) -> 
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=["111111111111"],
-            third_party_account_ids=["999999999999"],
+            allowlist_values={"unique_third_party_accounts": ["999999999999"]},
             reasoning="test",
         ),
         RCPPlacementRecommendations(
@@ -2475,7 +2473,7 @@ def test_an_ou_file_says_the_root_already_enforces_the_check(tmp_path: Path) -> 
             recommended_level="ou",
             target_ou_id="ou-1111-11111111",
             affected_accounts=["111111111111"],
-            third_party_account_ids=["888888888888"],
+            allowlist_values={"unique_third_party_accounts": ["888888888888"]},
             reasoning="test",
         ),
     ]
@@ -2524,9 +2522,11 @@ class TestBuildRcpTerraformModule:
                 check_name="deny_kms_unrendered",
                 check_type="rcps",
                 terraform_section=TerraformSection.KMS,
-                allowlist=Allowlist(
-                    "unique_third_party_accounts",
-                    "kms_unrendered_account_ids_allowlist",
+                allowlists=(
+                    Allowlist(
+                        "unique_third_party_accounts",
+                        "kms_unrendered_account_ids_allowlist",
+                    ),
                 ),
             ),
         )
@@ -2535,7 +2535,7 @@ class TestBuildRcpTerraformModule:
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=["111111111111"],
-            third_party_account_ids=["333333333333"],
+            allowlist_values={"unique_third_party_accounts": ["333333333333"]},
             reasoning="test",
         )
 
@@ -2568,7 +2568,7 @@ class TestBuildRcpTerraformModule:
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["111111111111", "222222222222"],
+            allowlist_values={"unique_third_party_accounts": ["111111111111", "222222222222"]},
             reasoning="Test"
         )
         result = _build_rcp_terraform_module(
@@ -2606,7 +2606,7 @@ class TestBuildRcpTerraformModule:
                 recommended_level="root",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
-                third_party_account_ids=["333333333333"],
+                allowlist_values={"unique_third_party_accounts": ["333333333333"]},
                 reasoning="test",
             )
             for check_name in get_check_names("rcps")
@@ -2630,7 +2630,8 @@ class TestBuildRcpTerraformModule:
             # placement and rendering and one rendered `false` are the same
             # missing statement in the deployed policy.
             assert f"{check_name} = true" in result
-            assert f"{get_allowlist(check_name).terraform_variable} = [" in result
+            for allowlist in get_check_definition(check_name).allowlists:
+                assert f"{allowlist.terraform_variable} = [" in result
 
     def test_build_module_includes_comment(self) -> None:
         """Should include comment in generated content."""
@@ -2639,7 +2640,7 @@ class TestBuildRcpTerraformModule:
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["000000000000"],
+            allowlist_values={"unique_third_party_accounts": ["000000000000"]},
             reasoning="Test"
         )
         result = _build_rcp_terraform_module(
@@ -2671,7 +2672,7 @@ class TestBuildRcpTerraformModule:
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["555555555555"],
+            allowlist_values={"unique_third_party_accounts": ["555555555555"]},
             reasoning="Test"
         )
         result = _build_rcp_terraform_module(
@@ -2736,7 +2737,7 @@ module "rcps_test" {{
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["333333333333", "444444444444"],
+            allowlist_values={"unique_third_party_accounts": ["333333333333", "444444444444"]},
             reasoning="Test S3 access"
         )
         result = _build_rcp_terraform_module(
@@ -2784,7 +2785,7 @@ module "rcps_test" {{
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["333333333333", "444444444444"],
+            allowlist_values={"unique_third_party_accounts": ["333333333333", "444444444444"]},
             reasoning="Test ECR access"
         )
         result = _build_rcp_terraform_module(
@@ -2813,7 +2814,7 @@ module "rcps_test" {{
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["000011113333"],
+            allowlist_values={"unique_third_party_accounts": ["000011113333"]},
             reasoning="Test KMS access"
         )
         result = _build_rcp_terraform_module(
@@ -2841,7 +2842,7 @@ module "rcps_test" {{
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["000011112222"],
+            allowlist_values={"unique_third_party_accounts": ["000011112222"]},
             reasoning="Test Secrets Manager access"
         )
         result = _build_rcp_terraform_module(
@@ -2868,7 +2869,7 @@ module "rcps_test" {{
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["333333333333"],
+            allowlist_values={"unique_third_party_accounts": ["333333333333"]},
             reasoning="Test ECR access"
         )
         iam_rec = RCPPlacementRecommendations(
@@ -2876,7 +2877,7 @@ module "rcps_test" {{
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["999999999999"],
+            allowlist_values={"unique_third_party_accounts": ["999999999999"]},
             reasoning="Test IAM access"
         )
         result = _build_rcp_terraform_module(
@@ -2912,7 +2913,7 @@ module "rcps_test" {{
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=["111111111111"],
-            third_party_account_ids=["999999999999"],
+            allowlist_values={"unique_third_party_accounts": ["999999999999"]},
             reasoning="test",
         )
 
@@ -2965,7 +2966,7 @@ class TestRenderAccountRcpTerraform:
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["999999999999", "888888888888"],
+            allowlist_values={"unique_third_party_accounts": ["999999999999", "888888888888"]},
             reasoning="Test recommendation"
         )
 
@@ -3093,7 +3094,7 @@ class TestRenderOuRcpTerraform:
             recommended_level="ou",
             target_ou_id="ou-12345",
             affected_accounts=["000000000000"],
-            third_party_account_ids=["999999999999"],
+            allowlist_values={"unique_third_party_accounts": ["999999999999"]},
             reasoning="Test OU recommendation"
         )
 
@@ -3152,7 +3153,7 @@ class TestRenderRootRcpTerraform:
             recommended_level="root",
             target_ou_id=None,
             affected_accounts=["000000000000", "000011114444"],
-            third_party_account_ids=["999999999999", "888888888888"],
+            allowlist_values={"unique_third_party_accounts": ["999999999999", "888888888888"]},
             reasoning="Test root recommendation"
         )
 
@@ -3187,7 +3188,7 @@ class TestRenderRootRcpTerraform:
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            third_party_account_ids=["444444444444", "555555555555"],
+            allowlist_values={"unique_third_party_accounts": ["444444444444", "555555555555"]},
             reasoning="Test SQS"
         )
         terraform = _build_rcp_terraform_module(
@@ -3297,7 +3298,8 @@ class TestEveryRcpCheckReachesTerraform:
 
         for check_name in get_check_names("rcps"):
             assert f"{check_name} = true" in content
-            assert get_allowlist(check_name).terraform_variable in content
+            for allowlist in get_check_definition(check_name).allowlists:
+                assert f"{allowlist.terraform_variable} = [" in content
         assert '"999999999999"' in content
 
     def test_parse_returns_one_result_per_registered_check(
@@ -3389,9 +3391,9 @@ def test_rcp_check_coverage_unions_cleared_and_blocked_accounts() -> None:
     parsed = [
         RCPCheckParseResult(
             check_name="deny_s3_third_party_access",
-            account_third_party_map={
-                "111111111111": {"999911114444"},
-                "222222222222": set(),
+            account_allowlist_map={
+                "111111111111": {"unique_third_party_accounts": ["999911114444"]},
+                "222222222222": {"unique_third_party_accounts": []},
             },
             accounts_with_blockers={"333333333333"},
         )
@@ -3419,7 +3421,7 @@ def test_rcp_check_coverage_keeps_a_check_that_read_nothing() -> None:
     parsed = [
         RCPCheckParseResult(
             check_name="deny_sqs_third_party_access",
-            account_third_party_map={},
+            account_allowlist_map={},
             accounts_with_blockers=set(),
         )
     ]

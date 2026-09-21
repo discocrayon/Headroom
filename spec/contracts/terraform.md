@@ -310,17 +310,18 @@ account ID, an `ou-` prefixed OU ID, or an `r-` prefixed root ID.
 
 ### SCP module
 
-One boolean per check, named exactly for the check. An allowlist variable for
-each check whose definition declares one, rendered **only when its check is
-enabled**; today two:
+One boolean per check, named exactly for the check. One allowlist variable per
+`Allowlist` a check declares, rendered **only when its check is enabled**, in
+declaration order after the boolean; today three:
 
 | Allowlist variable | Fed by |
 |---|---|
 | `ec2_allowed_ami_owners` | `deny_ec2_ami_owner` |
 | `iam_allowed_users` | `deny_iam_user_creation` |
+| `lambda_allowed_public_function_urls` | `deny_lambda_auth_type_none` |
 
-Both names come from the check's `Allowlist` in its own module; nothing in
-`generate_scps.py` names either.
+Every name comes from the check's `allowlists` in its own module; nothing in
+`generate_scps.py` names any of them.
 
 `iam_allowed_users` entries have their account ID rewritten to
 `${local.<account_name>_account_id}` so the ARN resolves through the same
@@ -330,9 +331,9 @@ whatever service the ARN names, so a future KMS or SQS allowlist declaring the
 flag renders locals rather than the accounts' real IDs. An ARN naming an account
 outside the hierarchy, or one with no account field, is emitted literally.
 
-A check whose `Allowlist` declares an `empty_allowlist_comment` — both of these
-do — is forced **off**, with that comment rendered, when the covered accounts
-observed no value at all (INV-06).
+A check one of whose allowlists declares an `empty_allowlist_comment` — all
+three of these do — is forced **off**, with that comment rendered, when the
+covered accounts observed no value at all (INV-06).
 [`../invariants.md`](../invariants.md#inv-06--an-empty-allowlist-is-never-rendered-as-an-empty-list)
 owns what an empty allowlist would do were it rendered. The renderer logs the
 same comment at warning level as `Module <module name>: <comment>`, so the run's
@@ -346,13 +347,14 @@ existing workload.
 
 ### RCP module
 
-One boolean and one allowlist variable per check. The boolean is the check
-name; the allowlist variable is the `terraform_variable` the check's
-`Allowlist` declares in its own module. Both generators render from
+One boolean per check and one variable per allowlist it declares. The boolean
+is the check name; each variable is the `terraform_variable` of one entry in
+the check's `allowlists`, rendered in declaration order. Today every RCP
+check declares one list. Both generators render from
 `get_check_definitions`, so a registered check cannot be dropped at render;
 `test_every_registered_rcp_check_is_rendered` pins it (INV-13).
 
-Every check appears in every rendered module call: enabled with its allowlist, or
+Every check appears in every rendered module call: enabled with its allowlists, or
 explicitly `false`. Variable names are listed in
 [`policy-model.md`](policy-model.md) alongside the statements they gate.
 
@@ -368,9 +370,9 @@ within a section. Import order and registration order play no part, so two
 runs over one registry render identically. `headroom/terraform/parameters.py`
 is the one renderer both generators call. It aborts the run on a
 recommendation naming a check no definition of that module's policy type
-describes, and on a recommendation for an allowlist check that carries no list
-at all — an observed-empty allowlist is `[]`, and `None` there is lost data
-(INV-01).
+describes, and on a recommendation for an allowlist check whose values lack a
+declared summary key — an observed-empty allowlist is `[]` under its key, and
+a missing key is lost data (INV-01).
 
 ### Policy size
 

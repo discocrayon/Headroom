@@ -108,8 +108,9 @@ execution_order:
     action: |
       Nothing outside the check module. @register_check takes
       terraform_section=TerraformSection.<SERVICE> and, where the statement
-      is scoped by an allowlist, allowlist=Allowlist(summary_key=...,
-      terraform_variable=...). Both generators render every registered
+      is scoped by an allowlist, allowlists=(Allowlist(summary_key=...,
+      terraform_variable=...),) — a tuple, because a statement scoped by two
+      lists declares two. Both generators render every registered
       definition from the registry (INV-13).
     new_service: |
       Add one member to TerraformSection in headroom/enums.py, in
@@ -430,9 +431,11 @@ from ..registry import Allowlist, register_check
     "rcps",
     {CHECK_CONSTANT},
     terraform_section=TerraformSection.{SERVICE},
-    allowlist=Allowlist(
-        summary_key="unique_third_party_accounts",
-        terraform_variable="{allowlist_var}",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_third_party_accounts",
+            terraform_variable="{allowlist_var}",
+        ),
     ),
 )
 class {CheckClass}(BaseCheck[{DataModel}]):
@@ -1425,14 +1428,14 @@ if_check_has_allowlist:
   - path: headroom/checks/{type}/{check_name}.py
     decorator: "@register_check"
     add_kwarg: |
-      allowlist=Allowlist(
+      allowlists=(Allowlist(
           summary_key="unique_{thing}s",
           terraform_variable="{service}_allowed_{thing}s",
           restores_account_ids=<True when the values are ARNs>,
           empty_allowlist_comment="{check_name} stays off here: <why the covered accounts observed nothing, and what an empty list would do>",
           # Renders in this module and in every module below it, so it must
           # read true of any subset of those accounts and at any target kind.
-      )
+      ),)
     purpose: |
       Parsing reads summary_key and aborts when it is absent - an absent key
       and an empty list mean opposite things. Placement unions the values
@@ -1966,7 +1969,7 @@ base_class:
 
 registry:
   file: headroom/checks/registry.py
-  decorator: "@register_check(type, name, terraform_section=..., allowlist=...)"
+  decorator: "@register_check(type, name, terraform_section=..., allowlists=(...))"
   discovery: "Automatic from scps/ and rcps/ directories"
 
 type_aliases:

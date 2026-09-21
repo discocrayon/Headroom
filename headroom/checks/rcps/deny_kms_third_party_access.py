@@ -22,9 +22,11 @@ from ..registry import Allowlist, register_check
     "rcps",
     DENY_KMS_THIRD_PARTY_ACCESS,
     terraform_section=TerraformSection.KMS,
-    allowlist=Allowlist(
-        summary_key="unique_third_party_accounts",
-        terraform_variable="kms_third_party_access_account_ids_allowlist",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_third_party_accounts",
+            terraform_variable="kms_third_party_access_account_ids_allowlist",
+        ),
     ),
 )
 class DenyKMSThirdPartyAccessCheck(BaseCheck[KMSKeyPolicyAnalysis]):

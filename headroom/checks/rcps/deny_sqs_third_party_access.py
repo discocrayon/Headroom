@@ -21,9 +21,11 @@ from ..registry import Allowlist, register_check
     "rcps",
     DENY_SQS_THIRD_PARTY_ACCESS,
     terraform_section=TerraformSection.SQS,
-    allowlist=Allowlist(
-        summary_key="unique_third_party_accounts",
-        terraform_variable="sqs_third_party_access_account_ids_allowlist",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_third_party_accounts",
+            terraform_variable="sqs_third_party_access_account_ids_allowlist",
+        ),
     ),
 )
 class DenySQSThirdPartyAccessCheck(BaseCheck[SQSQueuePolicyAnalysis]):
