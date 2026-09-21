@@ -93,7 +93,9 @@ class TestDenyS3ThirdPartyAccessCheck:
             assert summary["total_buckets_analyzed"] == 2
             assert summary["buckets_with_wildcards"] == 1
             assert summary["buckets_third_parties_can_access"] == 2
-            assert summary["violations"] == 1
+            assert summary["violations"] == 0
+            assert summary["exemptions"] == 1
+            assert summary["exempt_bucket_arns"] == ["arn:aws:s3:::wildcard-bucket"]
             assert set(summary["unique_third_party_accounts"]) == {"111111111111", "222222222222"}
             assert summary["third_party_account_count"] == 2
 
@@ -137,18 +139,20 @@ class TestDenyS3ThirdPartyAccessCheck:
             summary = results_data["summary"]
 
             assert summary["violations"] == 0
+            assert summary["exemptions"] == 0
+            assert summary["exempt_bucket_arns"] == []
             assert summary["buckets_with_wildcards"] == 0
             assert summary["buckets_third_parties_can_access"] == 1
 
-    def test_check_all_violations(
+    def test_check_all_exemptions(
         self,
         org_account_ids: set[str],
         temp_results_dir: str,
     ) -> None:
-        """Test check with all buckets having violations."""
+        """Test check with all buckets exempted."""
         mock_session = MagicMock()
 
-        all_violations = [
+        all_exemptions = [
             S3BucketPolicyAnalysis(
                 bucket_name="wildcard-bucket-1",
                 bucket_arn="arn:aws:s3:::wildcard-bucket-1",
@@ -164,7 +168,7 @@ class TestDenyS3ThirdPartyAccessCheck:
             patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
-            mock_analysis.return_value = all_violations
+            mock_analysis.return_value = all_exemptions
 
             check = DenyS3ThirdPartyAccessCheck(
                 check_name=DENY_S3_THIRD_PARTY_ACCESS,
@@ -179,7 +183,8 @@ class TestDenyS3ThirdPartyAccessCheck:
             results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
-            assert summary["violations"] == 1
+            assert summary["violations"] == 0
+            assert summary["exemptions"] == 1
             assert summary["buckets_with_wildcards"] == 1
 
     def test_check_empty_results(
@@ -212,12 +217,16 @@ class TestDenyS3ThirdPartyAccessCheck:
 
             assert summary["total_buckets_analyzed"] == 0
             assert summary["violations"] == 0
+            assert summary["exemptions"] == 0
+            assert summary["exempt_bucket_arns"] == []
 
-    def test_categorize_result_violation(
+    def test_categorize_result_wildcard_is_an_exemption_and_records_the_bucket_arn(
         self,
         org_account_ids: set[str],
     ) -> None:
-        """Test categorization of violation."""
+        """
+        A wildcard grant is spared by NotResource, so it is an exemption and its ARN is the allowlist value.
+        """
         check = DenyS3ThirdPartyAccessCheck(
             check_name=DENY_S3_THIRD_PARTY_ACCESS,
             account_name="test",
@@ -238,8 +247,9 @@ class TestDenyS3ThirdPartyAccessCheck:
 
         category, result_dict = check.categorize_result(result)
 
-        assert category == "violation"
+        assert category == "exemption"
         assert result_dict["has_wildcard_principal"] is True
+        assert check.exempt_bucket_arns == ["arn:aws:s3:::wildcard-bucket"]
 
     def test_categorize_result_compliant(
         self,
@@ -382,7 +392,7 @@ class TestDenyS3ThirdPartyAccessCheck:
         self,
         org_account_ids: set[str],
     ) -> None:
-        """Test categorization of bucket with non-account principals (violation)."""
+        """Test categorization of bucket with non-account principals (exemption)."""
         check = DenyS3ThirdPartyAccessCheck(
             check_name=DENY_S3_THIRD_PARTY_ACCESS,
             account_name="test",
@@ -403,8 +413,9 @@ class TestDenyS3ThirdPartyAccessCheck:
 
         category, result_dict = check.categorize_result(result)
 
-        assert category == "violation"
+        assert category == "exemption"
         assert result_dict["has_non_account_principals"] is True
+        assert check.exempt_bucket_arns == ["arn:aws:s3:::federated-bucket"]
 
     def test_the_maps_are_keyed_in_sorted_order(
         self,
@@ -496,6 +507,50 @@ class TestDenyS3ThirdPartyAccessCheck:
                 "s3:ListBucket",
                 "s3:PutObject",
             ]
+
+    def test_a_public_bucket_with_no_third_party_is_counted_as_a_wildcard_but_not_as_third_party_access(
+        self,
+        org_account_ids: set[str],
+        temp_results_dir: str,
+    ) -> None:
+        """
+        buckets_third_parties_can_access counts exemptions only where a third-party ID rides along.
+        """
+        with (
+            patch("headroom.checks.rcps.deny_s3_third_party_access.analyze_s3_bucket_policies") as mock_analysis,
+            patch("headroom.checks.base.write_check_results") as mock_write,
+            patch("builtins.print"),
+        ):
+            mock_analysis.return_value = [
+                S3BucketPolicyAnalysis(
+                    bucket_name="public-site",
+                    bucket_arn="arn:aws:s3:::public-site",
+                    third_party_account_ids=set(),
+                    has_wildcard_principal=True,
+                    has_non_account_principals=False,
+                    actions_by_account={},
+                ),
+            ]
+            check = DenyS3ThirdPartyAccessCheck(
+                check_name=DENY_S3_THIRD_PARTY_ACCESS,
+                account_name="test-account",
+                account_id="111111111111",
+                results_dir=temp_results_dir,
+                org_account_ids=org_account_ids,
+                org_id=ORG_ID,
+            )
+            check.execute(MagicMock())
+
+            results_data = mock_write.call_args[1]["results_data"]
+            summary = results_data["summary"]
+
+        assert summary["violations"] == 0
+        assert summary["exemptions"] == 1
+        assert summary["buckets_with_wildcards"] == 1
+        assert summary["buckets_third_parties_can_access"] == 0
+        assert summary["exempt_bucket_arns"] == ["arn:aws:s3:::public-site"]
+        assert len(results_data["buckets_with_wildcards"]) == 1
+        assert len(results_data["buckets_third_parties_can_access"]) == 1
 
 
 # One statement whose bare wildcard `aws:PrincipalAccount` bounds to a single

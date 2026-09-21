@@ -56,26 +56,34 @@ locals {
     # var.deny_s3_third_party_access
     # -->
     # Sid: DenyS3ThirdPartyAccess
-    # Restricts S3 access to organization accounts and allowlisted third-party accounts
+    # Restricts S3 access to organization accounts and allowlisted third-party
+    # accounts. Buckets whose grants no account allowlist can express are
+    # spared by ARN instead - the bucket and its objects, since object actions
+    # authorize against arn:aws:s3:::BUCKET/KEY - and the deny keeps every
+    # other bucket. With no bucket to spare, the statement covers every
+    # resource: an RCP resource array must hold at least one value, so an
+    # empty NotResource is never rendered.
     {
       include = var.deny_s3_third_party_access,
-      statement = {
-        "Sid"       = "DenyS3ThirdPartyAccess"
-        "Principal" = "*"
-        "Action"    = "s3:*"
-        "Resource"  = "*"
-        "Condition" = {
-          "StringNotEqualsIfExists" = merge(
-            {
-              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            },
-            length(var.s3_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.s3_third_party_access_account_ids_allowlist } : {},
-          )
-          "BoolIfExists" = {
-            "aws:PrincipalIsAWSService" = "false"
+      statement = merge(
+        {
+          "Sid"       = "DenyS3ThirdPartyAccess"
+          "Principal" = "*"
+          "Action"    = "s3:*"
+          "Condition" = {
+            "StringNotEqualsIfExists" = merge(
+              {
+                "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+              },
+              length(var.s3_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.s3_third_party_access_account_ids_allowlist } : {},
+            )
+            "BoolIfExists" = {
+              "aws:PrincipalIsAWSService" = "false"
+            }
           }
-        }
-      }
+        },
+        length(var.s3_third_party_access_exempt_bucket_arns) > 0 ? { "NotResource" = flatten([for arn in var.s3_third_party_access_exempt_bucket_arns : [arn, "${arn}/*"]]) } : { "Resource" = "*" },
+      )
     },
     # var.deny_secrets_manager_third_party_access
     # -->

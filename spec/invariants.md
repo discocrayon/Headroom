@@ -143,8 +143,8 @@ The second shape is the wider blast radius of the two, because the rejected
 document is the module's whole policy rather than the one statement that was
 malformed.
 
-**Two RCP allowlist clauses are a third shape, and this invariant does not
-disable either.** The `aws:PrincipalAccount` clause on the six third-party-access
+**Three RCP allowlist clauses are a third shape, and this invariant does not
+disable any of them.** The `aws:PrincipalAccount` clause on the six third-party-access
 checks, and `deny_service_confused_deputy`'s `aws:SourceAccount` clause, are each
 omitted from the rendered condition rather than written as `[]` when their
 allowlist is empty; the statement still renders and still denies every
@@ -152,10 +152,19 @@ out-of-organization principal or source.
 [`contracts/policy-model.md`](contracts/policy-model.md#the-rcp-allowlist-statement)
 states what the `aws:PrincipalAccount` omission changes and why;
 [`checks/rcps/deny_service_confused_deputy.md`](checks/rcps/deny_service_confused_deputy.md)
-does the same for `aws:SourceAccount`. Leaving either off for an empty allowlist
-would be wrong: it would disable the six checks on exactly the accounts that
-granted no third party anything, and `deny_service_confused_deputy` on exactly
-the accounts that pinned no third-party source.
+does the same for `aws:SourceAccount`. `deny_s3_third_party_access`'s
+`NotResource` is the third: with no bucket to spare, the module renders
+`Resource: "*"` in its place, and the statement denies every out-of-organization
+principal on every bucket. An empty `NotResource` would be malformed, as the
+second shape says — the difference is that this statement has a correct thing
+to render instead of the empty list, where an SCP whose whole purpose is the
+sparing does not.
+[`checks/rcps/deny_s3_third_party_access.md`](checks/rcps/deny_s3_third_party_access.md)
+states it. Leaving any of the three off for an empty allowlist would be wrong:
+it would disable the six checks on exactly the accounts that granted no third
+party anything, and `deny_service_confused_deputy` on exactly
+the accounts that pinned no third-party source, and `deny_s3_third_party_access`
+on exactly the accounts with no bucket to spare.
 
 This is distinct from INV-01: observing nothing is a legitimate fact about those
 accounts, whereas failing to record an observation is a broken artifact and
@@ -485,6 +494,12 @@ placeholders, which cost nothing — Terraform builds those names at apply time
 from `data.aws_caller_identity`, so nothing reads the recorded value. A live run
 regenerates the files and reintroduces them, so it is a manual step after every
 refresh until the scenarios stop naming buckets after the account.
+`exempt_bucket_arns` opened a second route for the same names: they flow from
+`headroom_results/` through placement into the
+`s3_third_party_access_exempt_bucket_arns` Terraform variable, so a live run
+also writes them into the generated `test_environment/rcps/*.tf`. The manual
+rewrite after every refresh covers that generated Terraform as well as
+`test_environment/headroom_results/`.
 
 The count above is not maintained by hand. `tests/test_data_standards.py` reads
 it back and fails when it disagrees with what the directory holds, which is how

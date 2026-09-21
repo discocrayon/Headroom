@@ -473,7 +473,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
             self.org_id
         )
         # Filter here, as five of the six shipped RCP checks do
-        # (deny_s3_third_party_access.py:84-88). A resource with none of the
+        # (deny_s3_third_party_access.py:104-107). A resource with none of the
         # three is nothing the RCP would change, and counting it inflates
         # total_{resources} and compliant with resources no check reports.
         # deny_sts_third_party_assumerole.py:82-85 tests two of the three
@@ -778,7 +778,7 @@ The check's `analyze` filters again, and that is the filter that decides what
 gets counted: a resource whose only finding is one of the three - both flags
 and `third_party_account_ids` - is discarded before it is counted unless all
 three are tested. Five of the six shipped checks test all three
-(`deny_s3_third_party_access.py:84-88`).
+(`deny_s3_third_party_access.py:104-107`).
 `deny_sts_third_party_assumerole.py:82-85` tests two, because
 `TrustPolicyAnalysis` (`headroom/aws/iam/roles.py:62-66`) carries no
 `has_non_account_principals` field at all;
@@ -1428,14 +1428,16 @@ if_check_has_allowlist:
   - path: headroom/checks/{type}/{check_name}.py
     decorator: "@register_check"
     add_kwarg: |
-      allowlists=(Allowlist(
-          summary_key="unique_{thing}s",
-          terraform_variable="{service}_allowed_{thing}s",
-          restores_account_ids=<True when the values are ARNs>,
-          empty_allowlist_comment="{check_name} stays off here: <why the covered accounts observed nothing, and what an empty list would do>",
-          # Renders in this module and in every module below it, so it must
-          # read true of any subset of those accounts and at any target kind.
-      ),)
+      allowlists=(
+          Allowlist(
+              summary_key="unique_{thing}s",
+              terraform_variable="{service}_allowed_{thing}s",
+              restores_account_ids=<True when the values are ARNs>,
+              empty_allowlist_comment="{check_name} stays off here: <why the covered accounts observed nothing, and what an empty list would do>",
+              # Renders in this module and in every module below it, so it must
+              # read true of any subset of those accounts and at any target kind.
+          ),
+      )
     purpose: |
       Parsing reads summary_key and aborts when it is absent - an absent key
       and an empty list mean opposite things. Placement unions the values
@@ -1976,7 +1978,8 @@ type_aliases:
   file: headroom/types.py
   use:
     - JsonDict: "Instead of Dict[str, Any]"
-    - AccountThirdPartyMap: "Account ID to the third-party accounts it reaches"
+    - AllowlistValues: "One check's observed values, keyed by each declared allowlist's summary key"
+    - AccountAllowlistMap: "Account ID to the allowlist values its results observed"
 
 enums:
   file: headroom/enums.py

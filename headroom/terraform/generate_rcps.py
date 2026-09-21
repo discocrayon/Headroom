@@ -338,7 +338,7 @@ def _create_ou_level_rcp_recommendations(
 
         unioned = union_allowlist_values(
             get_check_definition(check_name),
-            observations=[account_allowlist_map[acc_id] for acc_id in candidate.affected_accounts if acc_id in account_allowlist_map],
+            observations=[account_allowlist_map[acc_id] for acc_id in candidate.affected_accounts],
         )
 
         ou_info = organization_hierarchy.organizational_units.get(candidate.target_id)

@@ -349,9 +349,9 @@ existing workload.
 
 One boolean per check and one variable per allowlist it declares. The boolean
 is the check name; each variable is the `terraform_variable` of one entry in
-the check's `allowlists`, rendered in declaration order. Today every RCP
-check declares one list. Both generators render from
-`get_check_definitions`, so a registered check cannot be dropped at render;
+the check's `allowlists`, rendered in declaration order. Six checks declare
+one list; `deny_s3_third_party_access` declares two. Both generators render
+from `get_check_definitions`, so a registered check cannot be dropped at render;
 `test_every_registered_rcp_check_is_rendered` pins it (INV-13).
 
 Every check appears in every rendered module call: enabled with its allowlists, or
@@ -699,8 +699,12 @@ run against this fixture reaches rendering at all. Its calls also disagree with
 what placement would produce from the results that are committed:
 `deny_s3_third_party_access` blocks only in fort-knox, which makes it safe at OU
 `acme_acquisition` and at the account `security-tooling`, and both files render
-it `false`. `deny_ecr_third_party_access` is not one of those — it is clean in
-all four results, so it places at the root, and `false` below its target is
-exactly what a root placement renders; what is missing there is a committed
-`root_rcps.tf`. [`../checks/index.md`](../checks/index.md#unresolved-conflicts)
+it `false`. Since `deny_s3_third_party_access` stopped producing violations,
+the committed calls are stale in a second way: a re-run would enable it
+everywhere with `s3_third_party_access_exempt_bucket_arns` carrying
+fort-knox's wildcard bucket. `deny_ecr_third_party_access` is not one of those
+— it is clean in all four results, so it places at the root, and `false` below
+its target is exactly what a root placement renders; what is missing there is
+a committed `root_rcps.tf`.
+[`../checks/index.md`](../checks/index.md#unresolved-conflicts)
 carries the two as conflicts 9 and 10.

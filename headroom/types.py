@@ -226,12 +226,14 @@ class RCPCheckResult(CheckResult):
         blocks_rcp: True if this check counted a violation, meaning a
             resource names a principal that no allowlist can express and
             the RCP is unsafe to deploy here. A wildcard principal is the
-            one case every check flags this way. Federated and
+            one case every other check flags this way. Federated and
             CanonicalUser principals carry no account ID to allowlist
             either, and which answer they get depends on the policy type
-            reading them. All five resource-policy analyzers - ECR, KMS,
-            S3, Secrets Manager and SQS - accept both keys and record them
-            as violations, so any of the five can set this flag from them.
+            reading them. Four resource-policy checks - ECR, KMS, Secrets
+            Manager and SQS - accept both keys and record them as
+            violations, so any of the four can set this flag from them. S3
+            accepts them too and records an exemption instead: its
+            statement spares the bucket by ARN, so it never sets this flag.
             A role trust policy does not accept CanonicalUser at all, so
             the STS analyzer aborts the run on one rather than blocking the
             account, and it aborts too on a Federated principal granted the

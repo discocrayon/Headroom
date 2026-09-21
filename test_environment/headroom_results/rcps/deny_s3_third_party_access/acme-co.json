@@ -6,10 +6,12 @@
     "buckets_third_parties_can_access": 1,
     "buckets_with_wildcards": 0,
     "violations": 0,
+    "exemptions": 0,
     "unique_third_party_accounts": [
       "999911114444"
     ],
     "third_party_account_count": 1,
+    "exempt_bucket_arns": [],
     "actions_by_third_party_account": {
       "999911114444": [
         "s3:GetObject",

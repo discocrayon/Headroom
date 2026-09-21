@@ -684,6 +684,8 @@ def test_two_allowlists_sharing_a_summary_key_are_rejected(isolated_registry: No
             ),
         )(DuplicateSummaryKeyCheck)
 
+    assert "deny_ec2_widgets" not in get_check_names()
+
 
 def test_two_allowlists_sharing_a_terraform_variable_are_rejected(isolated_registry: None) -> None:
     """
@@ -704,6 +706,8 @@ def test_two_allowlists_sharing_a_terraform_variable_are_rejected(isolated_regis
             ),
         )(DuplicateVariableCheck)
 
+    assert "deny_ec2_widgets" not in get_check_names()
+
 
 def test_two_allowlists_each_carrying_an_empty_comment_are_rejected(isolated_registry: None) -> None:
     """
@@ -723,6 +727,8 @@ def test_two_allowlists_each_carrying_an_empty_comment_are_rejected(isolated_reg
                 Allowlist(summary_key="b", terraform_variable="ec2_b", empty_allowlist_comment="b stays off"),
             ),
         )(DoubleCommentedCheck)
+
+    assert "deny_ec2_widgets" not in get_check_names()
 
 
 @pytest.mark.parametrize("accessor", [get_check_names, get_all_check_classes], ids=["names", "classes"])
@@ -765,7 +771,7 @@ def test_every_rcp_allowlist_collects_third_party_accounts() -> None:
     assert summary_keys == {
         "deny_ecr_third_party_access": ["unique_third_party_accounts"],
         "deny_kms_third_party_access": ["unique_third_party_accounts"],
-        "deny_s3_third_party_access": ["unique_third_party_accounts"],
+        "deny_s3_third_party_access": ["unique_third_party_accounts", "exempt_bucket_arns"],
         "deny_secrets_manager_third_party_access": ["unique_third_party_accounts"],
         "deny_sqs_third_party_access": ["unique_third_party_accounts"],
         "deny_sts_third_party_assumerole": ["unique_third_party_accounts"],

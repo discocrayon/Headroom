@@ -248,7 +248,7 @@ INV-01, INV-02, INV-06, INV-07, INV-08, INV-13, INV-16.
 - `headroom/checks/scps/deny_ec2_ami_owner.py`
 - `headroom/aws/ec2.py` — `get_ec2_ami_owner_analysis`
 - `headroom/enums.py` — `AmiOwnerUnknownReason`
-- `headroom/parse_results.py` — `_read_declared_allowlist`, `_union_allowlist_values`
+- `headroom/parse_results.py` — `_read_declared_allowlist`, `union_allowlist_values`
 - `headroom/terraform/parameters.py` — `render_check_parameters`
 - Tests: `tests/test_checks_deny_ec2_ami_owner.py`, `tests/test_aws_ec2.py`,
   `tests/test_parse_results.py`, `tests/test_generate_scps.py`

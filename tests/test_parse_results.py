@@ -1900,9 +1900,10 @@ class TestAmiOwnerValuesAreParsed:
     """
     The parser carries deny_ec2_ami_owner's summary values into a result.
 
-    `unique_ami_owners` reaches `SCPCheckResult.allowlist_values` unchanged:
-    a populated list, an empty list (the check ran and observed nothing),
-    and an absent key (a stale result, rejected rather than read as empty).
+    `unique_ami_owners` reaches `SCPCheckResult.allowlist_values` under its
+    own summary key: a populated list, an empty list (the check ran and
+    observed nothing), and an absent key (a stale result, rejected rather
+    than read as empty).
     """
     OBSERVED_OWNERS = ["amazon", "aws-marketplace"]
 
@@ -2258,8 +2259,9 @@ class TestAllowlistValuesFollowTheRegistry:
 
         The summary here also holds another check's summary key. The values
         belong to the check that declared the key, so this one still carries
-        nothing: None is "this check has no allowlist", not "the file had no
-        recognizable key".
+        nothing: {} is "this check has no allowlist", not "the file had no
+        recognizable key". `[{}]` is what the union sees for one such
+        account: one observation, carrying no declared key.
         """
         parsed = self.parse_one_summary("deny_rds_unencrypted", {
             "account_name": "test-account",
@@ -2625,6 +2627,24 @@ def test_union_allowlist_values_for_a_check_without_an_allowlist_is_empty() -> N
     A check whose statement takes no allowlist unions to {}.
     """
     assert union_allowlist_values(get_check_definition("deny_rds_unencrypted"), observations=[{}, {}]) == {}
+
+
+def test_union_allowlist_values_aborts_when_an_observation_lacks_a_declared_key() -> None:
+    """
+    An observation missing a declared key is lost data, not an empty allowlist.
+
+    Every observation reaching this function comes from a reader that is
+    total over the declared keys, so this never fires from a real parse; it
+    exists so a caller that skips the reader fails loudly by name instead of
+    dropping the gap into a silent empty union (INV-01).
+    """
+    definition = get_check_definition("deny_ec2_ami_owner")
+
+    with pytest.raises(
+        RuntimeError,
+        match="deny_ec2_ami_owner declares the allowlist 'unique_ami_owners' but an observation carries no values for it",
+    ):
+        union_allowlist_values(definition, observations=[{}])
 
 
 def test_describe_allowlist_union_names_each_key_with_its_count() -> None:

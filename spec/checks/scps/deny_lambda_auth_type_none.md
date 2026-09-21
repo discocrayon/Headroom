@@ -251,7 +251,7 @@ the case where this statement has nothing to spare.
 9. A result written with `exclude_account_ids` → the ARNs carry `REDACTED`,
    and parsing restores the account ID before the union is built.
 10. A written result parses with zero violations, one exemption, and
-    `allowlist_values` holding the qualified ARN.
+    `allowlist_values` holding the qualified ARN under `public_function_urls`.
 
 ## Referenced invariants
 
@@ -261,7 +261,7 @@ INV-01, INV-02, INV-06, INV-07, INV-13, INV-16.
 
 - `headroom/checks/scps/deny_lambda_auth_type_none.py`
 - `headroom/aws/lambda_functions.py` — `get_deny_lambda_auth_type_none_analysis`
-- `headroom/parse_results.py` — `_read_declared_allowlist`, `_union_allowlist_values`
+- `headroom/parse_results.py` — `_read_declared_allowlist`, `union_allowlist_values`
 - `headroom/terraform/parameters.py` — `render_check_parameters`,
   `_replace_account_id_in_arn`
 - `test_environment/modules/scps/locals.tf`

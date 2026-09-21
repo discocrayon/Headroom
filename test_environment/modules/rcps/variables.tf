@@ -72,6 +72,19 @@ variable "s3_third_party_access_account_ids_allowlist" {
   }
 }
 
+variable "s3_third_party_access_exempt_bucket_arns" {
+  type        = list(string)
+  default     = []
+  description = "Bucket ARNs the S3 statement spares by NotResource, each expanded to the bucket and its objects: buckets whose grants no account allowlist can express - a wildcard principal, a Federated or CanonicalUser principal, a CloudFront origin access identity, or a public ACL. Format: arn:aws:s3:::BUCKET_NAME"
+
+  validation {
+    condition = alltrue([
+      for arn in var.s3_third_party_access_exempt_bucket_arns : startswith(arn, "arn:aws:s3:::") && length(arn) > 13 && !strcontains(arn, "/")
+    ])
+    error_message = "All s3_third_party_access_exempt_bucket_arns must be bucket ARNs of the form arn:aws:s3:::BUCKET_NAME, with a non-empty bucket name and no object key; the statement appends /* itself."
+  }
+}
+
 # Secrets Manager
 
 variable "deny_secrets_manager_third_party_access" {

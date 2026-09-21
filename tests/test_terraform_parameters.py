@@ -247,7 +247,7 @@ def test_empty_allowlist_with_a_comment_leaves_the_check_off(
     assert warnings[0].message == "Module scps_test: deny_ec2_alpha stays off here: reason"
 
 
-def test_none_value_for_a_check_that_declares_an_allowlist_aborts() -> None:
+def test_missing_key_for_a_check_that_declares_an_allowlist_aborts() -> None:
     """
     A declaring check whose recommendation carries no values is lost data.
 
@@ -714,7 +714,7 @@ def test_a_reason_for_an_enabled_check_aborts() -> None:
         )
 
 
-def test_renders_enabled_rejects_none_for_a_declaring_check() -> None:
+def test_renders_enabled_rejects_a_missing_key_for_a_declaring_check() -> None:
     """
     The one rule that classifies a placement must refuse lost data too.
 

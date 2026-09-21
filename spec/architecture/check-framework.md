@@ -90,12 +90,14 @@ A category the framework does not recognize is silently dropped from all three
 buckets, so a check must return one of the three.
 
 `EXEMPTION` may only be claimed where the scan can see the dimension the
-exemption turns on, or something that reliably stands in for it (INV-09). Two
+exemption turns on, or something that reliably stands in for it (INV-09). Three
 checks produce exemptions. `deny_lambda_auth_type_none` sees the dimension
 directly: the exemption turns on the resource ARN its `NotResource` names, and
-the scan reads that ARN off the URL configuration. `deny_ec2_imds_v1`
-substitutes an instance tag for the launch request's tag; its document states
-what that costs.
+the scan reads that ARN off the URL configuration. `deny_s3_third_party_access`
+sees it the same way: the exemption turns on the bucket ARN its `NotResource`
+names, and the scan synthesizes that ARN from the bucket it read.
+`deny_ec2_imds_v1` substitutes an instance tag for the launch request's tag;
+its document states what that costs.
 
 ## What `execute` does
 

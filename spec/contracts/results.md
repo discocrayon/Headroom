@@ -133,9 +133,13 @@ the base shape above.
 | `deny_sts_third_party_assumerole` | `roles_third_parties_can_access`, `roles_with_wildcards` |
 | `deny_service_confused_deputy` | `violations`, `exemptions`, `compliant_instances` |
 
-`*_third_parties_can_access` is `violations + compliant`, so a wildcard finding
-appears in both lists. `*_with_wildcards` is `violations` alone. Renaming either
-key, in any of the six, is a wire-format migration (INV-14).
+`*_third_parties_can_access` is `violations + compliant` in five of the six, so
+a wildcard finding appears in both lists, and `*_with_wildcards` is `violations`
+alone. `deny_s3_third_party_access` produces no violations: its
+`buckets_third_parties_can_access` is `exemptions + compliant` and its
+`buckets_with_wildcards` is `exemptions`, the buckets its statement spares by
+ARN. Renaming either key, in any of the six, is a wire-format migration
+(INV-14).
 
 A reader that expects a `*_third_parties_can_access` pair in every RCP file gets
 the seventh wrong; one that switches on `summary.check` does not. Beyond the
@@ -194,6 +198,7 @@ missing key and a legitimately empty value mean opposite things (INV-01).
 | `check` | RCP parsing | The file cannot be confirmed to belong to its directory |
 | `violations` | SCP and RCP parsing | Whether the account is safe is unknown, and defaulting answers it in the safest direction. `results_exist` skips an account whose result file already exists, so re-running without deleting the file repeats the same failure; both readers' errors name the file and prescribe exactly that. `ResultFilePathResolver.exists()` accepts either filename format, so the remedy also names the directory holding the other form — deleting only the file the reader tripped on leaves the skip in place when both are present. The check the remedy names is the directory's, since `results_exist` looks in the directory named for the check being run: a misfiled SCP result is attributed to its `summary.check`, but the skip it holds is the directory's |
 | `unique_third_party_accounts` | RCP parsing, as the `summary_key` of the first allowlist every RCP definition declares | The allowlist would render empty, which denies every third party (INV-06) |
+| `exempt_bucket_arns` | RCP parsing, as the second `summary_key` `deny_s3_third_party_access` declares | The buckets the statement spares would be unknown, and rendering none would deny every public bucket in the organization (INV-07) |
 | The `summary_key` of each `Allowlist` a check declares — `unique_ami_owners` for `deny_ec2_ami_owner`, `users` for `deny_iam_user_creation`, `public_function_urls` for `deny_lambda_auth_type_none`; a check declaring two allowlists requires both keys | SCP and RCP parsing | Indistinguishable from an account that observed nothing, which would leave the policy off rather than flag a stale result |
 
 A key that is present but holds anything other than a list aborts the same way,

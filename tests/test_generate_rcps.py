@@ -10,7 +10,7 @@ import tempfile
 import shutil
 import pytest
 from pathlib import Path
-from typing import Dict, List, Set, Generator
+from typing import Dict, Generator, List, Mapping, Optional, Set
 from headroom.constants import (
     DENY_ECR_THIRD_PARTY_ACCESS,
     DENY_KMS_THIRD_PARTY_ACCESS,
@@ -87,9 +87,15 @@ def write_rcp_result(
     account_name: str,
     third_party_account_ids: List[str],
     violations: int = 0,
+    *,
+    other_allowlists: Optional[Mapping[str, List[str]]] = None,
 ) -> None:
     """
     Write one RCP check result file, shaped as the checks write it.
+
+    Every allowlist the check declares gets its summary key: the first is
+    `unique_third_party_accounts`, and any other is written from
+    `other_allowlists` or as [], so a stale-key abort never fires from here.
 
     Args:
         results_dir: Base results directory
@@ -98,6 +104,9 @@ def write_rcp_result(
         account_name: Account name, also used as the filename stem
         third_party_account_ids: Third parties the account's policies allow
         violations: Resources whose principals no allowlist can express
+        other_allowlists: Values for this check's declared allowlists other
+            than the first, keyed by summary key; [] for a declared key
+            absent from the mapping
     """
     check_dir = Path(results_dir) / "rcps" / check_name
     check_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +118,10 @@ def write_rcp_result(
         "unique_third_party_accounts": third_party_account_ids,
         "violations": violations,
     }
+    for allowlist in get_check_definition(check_name).allowlists:
+        if allowlist.summary_key in summary:
+            continue
+        summary[allowlist.summary_key] = list((other_allowlists or {}).get(allowlist.summary_key, []))
     with open(check_dir / f"{account_name}.json", "w") as f:
         json.dump({"summary": summary}, f)
 
@@ -786,6 +799,40 @@ class TestParseRcpResultFiles:
 
         assert "sts_third_party_assumerole_account_ids_allowlist" in str(exc_info.value)
 
+    def test_parse_aborts_when_exempt_bucket_arns_field_is_absent(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        An S3 result file written before its second allowlist existed aborts.
+
+        deny_s3_third_party_access declares exempt_bucket_arns second, after
+        unique_third_party_accounts; a file carrying the first but not the
+        second is exactly the stale-file shape scenario 15 names, and it
+        must abort naming the file, the key, and the check rather than
+        reading the gap as no bucket to spare.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "check": DENY_S3_THIRD_PARTY_ACCESS,
+                    "violations": 0,
+                    "unique_third_party_accounts": [],
+                }
+            }, f)
+
+        with pytest.raises(
+            RuntimeError,
+            match="test-account.json.*exempt_bucket_arns"
+        ) as exc_info:
+            parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        assert "deny_s3_third_party_access" in str(exc_info.value)
+
     def test_parse_reads_the_summary_key_the_check_declares(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1064,7 +1111,9 @@ class TestTheRCPReaderRequiresOneFilePerAccount:
 
         s3 = next(r for r in results if r.check_name == DENY_S3_THIRD_PARTY_ACCESS)
         sqs = next(r for r in results if r.check_name == DENY_SQS_THIRD_PARTY_ACCESS)
-        assert s3.account_allowlist_map == {"111111111111": {"unique_third_party_accounts": ["999999999999"]}}
+        assert s3.account_allowlist_map == {
+            "111111111111": {"unique_third_party_accounts": ["999999999999"], "exempt_bucket_arns": []},
+        }
         assert sqs.account_allowlist_map == {"111111111111": {"unique_third_party_accounts": ["888888888888"]}}
 
     def test_duplicates_under_two_checks_abort_in_one_error(
@@ -1562,7 +1611,9 @@ class TestDetermineRcpPlacement:
         parse_results = [
             RCPCheckParseResult(
                 check_name=DENY_S3_THIRD_PARTY_ACCESS,
-                account_allowlist_map={"222222222222": {"unique_third_party_accounts": ["999999999999"]}},
+                account_allowlist_map={
+                    "222222222222": {"unique_third_party_accounts": ["999999999999"], "exempt_bucket_arns": []},
+                },
                 accounts_with_blockers={"111111111111"},
             ),
             RCPCheckParseResult(
@@ -1935,11 +1986,19 @@ class TestCreateOuLevelRcpRecommendations:
         assert len(recommendations) == 1
         assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["777777777777", "888888888888", "999999999999"]}
 
-    def test_handles_accounts_not_in_map(
+    def test_an_affected_account_missing_from_the_map_raises(
         self,
         sample_org_hierarchy: OrganizationHierarchy
     ) -> None:
-        """Test that accounts not in the third-party map are handled gracefully."""
+        """
+        An affected account absent from the map must raise, not lose its values.
+
+        Real callers build a candidate's affected_accounts from the map's
+        own keys (headroom/placement/hierarchy.py), so this can only happen
+        if that invariant is broken - and FAIL FAST means it surfaces as a
+        KeyError naming the account rather than silently dropping its
+        contribution to the union.
+        """
         candidates = [
             PlacementCandidate(
                 level="ou",
@@ -1952,16 +2011,13 @@ class TestCreateOuLevelRcpRecommendations:
             "111111111111": {"unique_third_party_accounts": ["999999999999"]}
         }
 
-        recommendations, covered_accounts = _create_ou_level_rcp_recommendations(
-            DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            candidates,
-            account_allowlist_map,
-            sample_org_hierarchy
-        )
-
-        assert len(recommendations) == 1
-        assert recommendations[0].allowlist_values == {"unique_third_party_accounts": ["999999999999"]}
-        assert covered_accounts == {"111111111111", "222222222222"}
+        with pytest.raises(KeyError, match="222222222222"):
+            _create_ou_level_rcp_recommendations(
+                DENY_STS_THIRD_PARTY_ASSUMEROLE,
+                candidates,
+                account_allowlist_map,
+                sample_org_hierarchy
+            )
 
     def test_handles_empty_third_party_sets(
         self,
@@ -2606,7 +2662,14 @@ class TestBuildRcpTerraformModule:
                 recommended_level="root",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
-                allowlist_values={"unique_third_party_accounts": ["333333333333"]},
+                # Every RCP check's first entry is its account-ID allowlist. A
+                # later entry holds resource ARNs, so an account ID under it
+                # would misstate the shape; the rendering this test pins needs
+                # only the key present, and [] is that entry's honest value.
+                allowlist_values={
+                    allowlist.summary_key: ["333333333333"] if position == 0 else []
+                    for position, allowlist in enumerate(get_check_definition(check_name).allowlists)
+                },
                 reasoning="test",
             )
             for check_name in get_check_names("rcps")
@@ -2737,7 +2800,10 @@ module "rcps_test" {{
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            allowlist_values={"unique_third_party_accounts": ["333333333333", "444444444444"]},
+            allowlist_values={
+                "unique_third_party_accounts": ["333333333333", "444444444444"],
+                "exempt_bucket_arns": [],
+            },
             reasoning="Test S3 access"
         )
         result = _build_rcp_terraform_module(
@@ -2777,6 +2843,69 @@ module "rcps_test" {{
         assert 'module "rcps_test"' in result
         assert "s3_third_party_access_account_ids_allowlist" not in result
         assert "deny_s3_third_party_access = false" in result
+
+    def test_build_module_with_exempt_bucket_arns_from_the_real_pipeline(self, tmp_path: Path) -> None:
+        """
+        A bucket ARN written to a result file must reach the rendered module.
+
+        Every other link in the exempt-bucket round trip is tested in
+        isolation with a synthetic definition; this one drives
+        write_rcp_result, parse_rcp_result_files, determine_rcp_placement,
+        and render_rcp_terraform together, so a broken join between them
+        cannot hide behind green unit tests on either side (INV-07).
+        """
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1111",
+            organizational_units={
+                "ou-1111": OrganizationalUnit(
+                    ou_id="ou-1111",
+                    name="Production",
+                    parent_ou_id="r-1111",
+                    child_ous=[],
+                    accounts=["111111111111", "222222222222"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="test-account",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    account_id="222222222222",
+                    account_name="account2",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                )
+            }
+        )
+        seed_all_rcp_check_dirs(str(tmp_path))
+        write_rcp_result(
+            str(tmp_path),
+            "deny_s3_third_party_access",
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=[],
+            other_allowlists={"exempt_bucket_arns": ["arn:aws:s3:::wildcard-bucket"]},
+        )
+        write_rcp_result(
+            str(tmp_path),
+            "deny_s3_third_party_access",
+            account_id="222222222222",
+            account_name="account2",
+            third_party_account_ids=[],
+        )
+
+        parse_results = parse_rcp_result_files(str(tmp_path), hierarchy)
+        recommendations = determine_rcp_placement(parse_results, hierarchy)
+        rendered = render_rcp_terraform(recommendations, hierarchy, tmp_path, coverage_for("rcps"))
+
+        content = rendered[tmp_path / "root_rcps.tf"]
+
+        assert "s3_third_party_access_exempt_bucket_arns = [" in content
+        assert '"arn:aws:s3:::wildcard-bucket"' in content
+        assert "deny_s3_third_party_access = true" in content
 
     def test_build_module_with_ecr_recommendations(self) -> None:
         """Should generate module with ECR recommendations."""

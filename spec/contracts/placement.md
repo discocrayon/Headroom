@@ -121,7 +121,10 @@ decides what that renders as (INV-06).
 
 Safety is per account and binary too, but the blocking condition is different: an
 account is blocked when a resource policy names a principal **no allowlist can
-express** — a wildcard principal above all. Third-party access is not itself a
+express** — a wildcard principal above all — for the five checks whose only
+allowlist is a principal list. `deny_s3_third_party_access` carries a second,
+resource-shaped allowlist and spares such a bucket by ARN instead, so it has no
+blocker and always places at root. Third-party access is not itself a
 blocker; it is the thing the allowlist is built from.
 
 | Predicate | Definition |
@@ -227,7 +230,8 @@ answers cannot disagree.
 
 The allowlist attached to a placement is the **union**, key by key, of the
 allowlist values observed across the accounts that placement covers:
-third-party account IDs for every RCP, IAM user ARNs, AMI owner IDs, and
+third-party account IDs for every RCP, exempt bucket ARNs for
+`deny_s3_third_party_access` as well, IAM user ARNs, AMI owner IDs, and
 public function URL ARNs for SCPs. `parse_results.union_allowlist_values` is
 the one rule, and both policy types call it at every level. A cleared account
 is one the policy type's safety predicate passes — zero violations for an

@@ -124,10 +124,9 @@ def _build_scp_terraform_module(
         RuntimeError: If a recommendation that is not a placement reaches a
             module, or names a check no registered definition describes,
             which would otherwise render as a module silently missing that
-            statement, or carries None for a check that declares an
-            allowlist - `allowlist_values` defaults to None, and an
-            observed-empty allowlist is [], so None is lost data rather
-            than a fact about the covered accounts
+            statement, or a check declares an allowlist whose key its
+            recommendation does not carry, which is lost data rather than a
+            fact about the covered accounts
     """
     allowlists = _get_safe_to_enable_policies(module_name, recommendations)
     definitions = get_check_definitions("scps")

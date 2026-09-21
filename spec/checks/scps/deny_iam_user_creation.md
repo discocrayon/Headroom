@@ -190,7 +190,7 @@ INV-02, INV-06, INV-07, INV-13.
 
 - `headroom/checks/scps/deny_iam_user_creation.py`
 - `headroom/aws/iam/users.py` — `get_iam_users_analysis`
-- `headroom/parse_results.py` — `_read_declared_allowlist`, `_union_allowlist_values`
+- `headroom/parse_results.py` — `_read_declared_allowlist`, `union_allowlist_values`
 - `headroom/terraform/parameters.py` — `render_check_parameters`,
   `_replace_account_id_in_arn`
 - Tests: `tests/test_checks_deny_iam_user_creation.py`, `tests/test_aws_iam.py`,

@@ -9,7 +9,7 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
+from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, cast
 
 from .config import HeadroomConfig
 from .types import (
@@ -565,6 +565,22 @@ def _create_no_deployment_recommendation(
     )
 
 
+def _observations_for(
+    check_results: List[SCPCheckResult],
+    affected_accounts: List[str]
+) -> List[AllowlistValues]:
+    """
+    Filter to the allowlist values of the accounts a recommendation covers.
+
+    One entry per result in `check_results` whose account is in `affected_accounts`.
+    """
+    return [
+        result.allowlist_values
+        for result in check_results
+        if result.account_id in affected_accounts
+    ]
+
+
 def union_allowlist_values(
     definition: CheckDefinition,
     *,
@@ -587,17 +603,21 @@ def union_allowlist_values(
         Each declared summary key, mapped to the sorted union under it
 
     Raises:
-        KeyError: If an observation lacks a declared key, which parsing
+        RuntimeError: If an observation lacks a declared key, which parsing
             never produces (INV-01)
     """
-    return {
-        allowlist.summary_key: sorted({
-            value
-            for observation in observations
-            for value in observation[allowlist.summary_key]
-        })
-        for allowlist in definition.allowlists
-    }
+    union: AllowlistValues = {}
+    for allowlist in definition.allowlists:
+        values: Set[str] = set()
+        for observation in observations:
+            if allowlist.summary_key not in observation:
+                raise RuntimeError(
+                    f"{definition.check_name} declares the allowlist {allowlist.summary_key!r} "
+                    f"but an observation carries no values for it"
+                )
+            values.update(observation[allowlist.summary_key])
+        union[allowlist.summary_key] = sorted(values)
+    return union
 
 
 def describe_allowlist_union(values: AllowlistValues) -> str:
@@ -676,7 +696,7 @@ def _build_root_recommendation(
         reasoning=_coverage_reasoning(len(affected_accounts), reached, "reached by root", "root"),
         allowlist_values=union_allowlist_values(
             get_check_definition(check_name),
-            observations=[result.allowlist_values for result in check_results if result.account_id in affected_accounts],
+            observations=_observations_for(check_results, affected_accounts),
         ),
     )
 
@@ -721,7 +741,7 @@ def _build_ou_recommendation(
         reasoning=reasoning,
         allowlist_values=union_allowlist_values(
             get_check_definition(check_name),
-            observations=[result.allowlist_values for result in check_results if result.account_id in affected_accounts],
+            observations=_observations_for(check_results, affected_accounts),
         ),
     )
 

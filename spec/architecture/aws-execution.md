@@ -374,7 +374,7 @@ its consequence for this document is that only the first kind reaches INV-02:
 | Kind | Example | Answer |
 |---|---|---|
 | A document AWS could not have stored | Unparseable JSON, a `Statement` that is neither object nor list, an `Allow` carrying neither `Principal` nor `NotPrincipal`, a principal key the policy type does not accept, an `Action` that is neither a string nor an array | **Aborts.** |
-| A document AWS accepted that no allowlist can express | `Principal: "*"`, an `Allow` with `NotPrincipal`, and — in one of the five resource policies — a `Federated` or `CanonicalUser` principal | **Blocks the account** for that check. Recorded as a violation; the scan continues |
+| A document AWS accepted that no allowlist can express | `Principal: "*"`, an `Allow` with `NotPrincipal`, and — in one of four resource policies — a `Federated` or `CanonicalUser` principal | **Blocks the account** for that check. Recorded as a violation; the scan continues. `deny_s3_third_party_access` instead records an exemption and spares the bucket by ARN; the account is not blocked |
 | A document AWS accepted that the check deliberately does not act on | A `Federated` principal in a role trust policy, paired with any grant of `sts:AssumeRole` other than that literal string | **Neither.** No finding is recorded and the account stays eligible |
 
 A statement's `Condition` is the one element the first row does not reach. A
@@ -401,13 +401,15 @@ states what that cost and why the line falls where it does.
 
 Which row a principal key lands in depends on the policy type reading it, so the
 first row's set is not the four keys AWS documents. A `CanonicalUser` is a
-blocker in the five resource policies and an abort in a role trust policy, which
+blocker in four resource policies, an exemption the statement spares by bucket
+ARN in `deny_s3_third_party_access`, and an abort in a role trust policy, which
 does not accept the key.
 [`../contracts/policy-model.md`](../contracts/policy-model.md) owns both sets and
 why they differ.
 
-A `Federated` principal reaches all three rows. In the five resource policies it
-blocks the account. In a role trust policy it aborts when the statement grants
+A `Federated` principal reaches all three rows. In four resource policies it
+blocks the account; `deny_s3_third_party_access` instead exempts the bucket by
+ARN. In a role trust policy it aborts when the statement grants
 the literal `sts:AssumeRole`, raising `InvalidFederatedPrincipalError` in
 `headroom/aws/iam/roles.py` — an abort no resource policy has. Written any other
 way that still reaches `sts:AssumeRole` — `sts:*`, `sts:Assume*`, or

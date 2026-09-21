@@ -88,6 +88,7 @@ _CHECK_TYPES: Tuple[str, str] = (CheckType.SCPS.value, CheckType.RCPS.value)
 def _validate_registration(
     check_class: Type[BaseCheck],
     check_name: str,
+    *,
     check_type: str,
     allowlists: Tuple[Allowlist, ...],
 ) -> None:
@@ -228,7 +229,7 @@ def register_check(
             ...
     """
     def decorator(cls: Type[BaseCheck]) -> Type[BaseCheck]:
-        _validate_registration(cls, check_name, check_type, allowlists)
+        _validate_registration(cls, check_name, check_type=check_type, allowlists=allowlists)
         definition = CheckDefinition(
             check_class=cls,
             check_name=check_name,

@@ -48,6 +48,7 @@ The `deny_s3_third_party_access` RCP denies all `s3:*` actions unless one of the
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `s3_third_party_access_account_ids_allowlist`
 3. The principal is an AWS service
+4. The bucket is in `s3_third_party_access_exempt_bucket_arns`: the statement lists each such bucket and its objects under `NotResource`, so a bucket whose grants no account allowlist can express keeps working. With no exempt bucket the statement covers every resource
 
 ### Secrets Manager Secret Access Restriction
 
@@ -110,6 +111,7 @@ module "account_rcp" {
   s3_third_party_access_account_ids_allowlist = [
     "444444444444"
   ]
+  s3_third_party_access_exempt_bucket_arns = ["arn:aws:s3:::public-website-bucket"]
 
   # Secrets Manager
   deny_secrets_manager_third_party_access = true
@@ -156,6 +158,7 @@ module "account_rcp" {
 - `ecr_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access ECR repositories
 - `kms_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access KMS keys
 - `s3_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access S3 buckets
+- `s3_third_party_access_exempt_bucket_arns` (list(string), default: []): Bucket ARNs spared by NotResource, expanded to the bucket and its objects; buckets whose grants no account allowlist can express
 - `secrets_manager_third_party_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access Secrets Manager secrets
 - `sqs_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access SQS queues
 - `sts_third_party_assumerole_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs that are permitted to assume roles

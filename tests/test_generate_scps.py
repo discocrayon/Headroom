@@ -1584,7 +1584,7 @@ def test_a_none_recommendation_for_an_allowlist_check_still_renders_the_run(tmp_
     No account is safe for an allowlist check: the run still renders, and says why.
 
     Placement materializes a `none` recommendation for the check and leaves
-    its allowlist at None, having unioned nothing over no accounts. The split
+    its allowlist at {}, having unioned nothing over no accounts. The split
     that files placements as live or flipped must drop it before asking what
     its allowlist renders, or one unresolvable AMI owner in every account
     aborts Terraform generation for the whole organization.
