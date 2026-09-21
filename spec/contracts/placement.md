@@ -121,11 +121,12 @@ decides what that renders as (INV-06).
 
 Safety is per account and binary too, but the blocking condition is different: an
 account is blocked when a resource policy names a principal **no allowlist can
-express** — a wildcard principal above all — for the five checks whose only
-allowlist is a principal list. `deny_s3_third_party_access` carries a second,
-resource-shaped allowlist and spares such a bucket by ARN instead, so it has no
-blocker and always places at root. Third-party access is not itself a
-blocker; it is the thing the allowlist is built from.
+express** — a wildcard principal above all — for the four checks whose only
+allowlist is a principal list. `deny_s3_third_party_access` and
+`deny_sqs_third_party_access` each carry a second, resource-shaped allowlist
+and spare such a bucket or queue by ARN instead, so neither has a blocker and
+both always place at root. Third-party access is not itself a blocker; it is
+the thing the allowlist is built from.
 
 | Predicate | Definition |
 |---|---|

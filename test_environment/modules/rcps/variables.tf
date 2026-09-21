@@ -125,6 +125,19 @@ variable "sqs_third_party_access_account_ids_allowlist" {
   }
 }
 
+variable "sqs_third_party_access_exempt_queue_arns" {
+  type        = list(string)
+  default     = []
+  description = "Queue ARNs the SQS statement spares by NotResource: queues whose grants no account allowlist can express - a wildcard principal, an Allow with NotPrincipal, or a Federated or CanonicalUser principal. Format: arn:aws:sqs:REGION:ACCOUNT_ID:QUEUE_NAME"
+
+  validation {
+    condition = alltrue([
+      for arn in var.sqs_third_party_access_exempt_queue_arns : can(regex("^arn:aws:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+(\\.fifo)?$", arn))
+    ])
+    error_message = "All sqs_third_party_access_exempt_queue_arns must be queue ARNs of the form arn:aws:sqs:REGION:ACCOUNT_ID:QUEUE_NAME."
+  }
+}
+
 # STS
 
 variable "deny_sts_third_party_assumerole" {

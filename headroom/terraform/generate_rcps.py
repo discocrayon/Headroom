@@ -562,10 +562,9 @@ def _build_rcp_terraform_module(
         recommendations: List of RCP recommendations for this target
         comment: Comment line describing the configuration (e.g., "Organization Root")
         organization_hierarchy: Organization structure, forwarded to the
-            shared renderer so an ARN allowlist can be rewritten to
-            generated locals. No RCP allowlist declares
-            `restores_account_ids` today, so the rewrite is a no-op for
-            every RCP module
+            shared renderer so an ARN allowlist declaring
+            `restores_account_ids` has each ARN's account field rewritten
+            to the account's generated local, exactly as an SCP allowlist is
         target_id: The real organization root, OU, or account ID this
             module targets - not `target_id_reference`, which is the HCL
             local the rendered module attaches to
@@ -759,10 +758,9 @@ def _render_root_rcp_terraform(
     Args:
         recs: List of RCP recommendations for root level
         organization_hierarchy: Organization structure, forwarded to the
-            shared renderer so an ARN allowlist can be rewritten to
-            generated locals. No RCP allowlist declares
-            `restores_account_ids` today, so the rewrite is a no-op for
-            every RCP module
+            shared renderer so an ARN allowlist declaring
+            `restores_account_ids` has each ARN's account field rewritten
+            to the account's generated local, exactly as an SCP allowlist is
         output_path: Directory the file belongs in
         placed: Each check mapped to the target IDs carrying it and
             rendering true there

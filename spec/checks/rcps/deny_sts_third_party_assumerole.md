@@ -131,9 +131,10 @@ than on every `sts:*` grant to a federated principal.
 
 ### Why a `Federated` principal is otherwise no finding here
 
-Four resource-policy checks count a `Federated` principal as a blocker,
+Three resource-policy checks count a `Federated` principal as a blocker,
 because it carries no account ID and their RCPs deny a whole service;
-`deny_s3_third_party_access` spares the bucket by ARN instead. This one
+`deny_s3_third_party_access` and `deny_sqs_third_party_access` spare the
+bucket or queue by ARN instead. This one
 denies `sts:AssumeRole` alone, and a federated identity cannot call it — AWS
 routes federation through `AssumeRoleWithSAML` and `AssumeRoleWithWebIdentity`.
 So the grant this RCP could break is not one a `Federated` principal holds, and
@@ -220,8 +221,9 @@ an account is blocked at `violations > 0`; the allowlist is the union of
    allowlist
    ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#what-is-deliberately-not-read)).
 3. A `CanonicalUser` principal aborts the run rather than being recorded,
-   unlike [`deny_s3_third_party_access`](deny_s3_third_party_access.md), which
-   records it as an exemption. A trust policy does not accept the key, so the
+   unlike [`deny_s3_third_party_access`](deny_s3_third_party_access.md) and
+   [`deny_sqs_third_party_access`](deny_sqs_third_party_access.md), which
+   record it as an exemption. A trust policy does not accept the key, so the
    case should not arise; if it does, the document is one AWS should not have
    stored.
 4. This check's tests cannot pin a "not recorded" verdict the way the other

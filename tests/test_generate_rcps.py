@@ -833,6 +833,44 @@ class TestParseRcpResultFiles:
 
         assert "deny_s3_third_party_access" in str(exc_info.value)
 
+    def test_parse_restores_the_account_id_in_exempt_queue_arns(
+        self,
+        temp_results_dir: str,
+        sample_org_hierarchy: OrganizationHierarchy
+    ) -> None:
+        """
+        A redacted queue ARN parses back with the account the file belongs to.
+
+        A queue ARN carries the account between the region and the queue
+        name, so `exclude_account_ids` writes it as REDACTED. The list feeds
+        NotResource, and an ARN reading REDACTED spares no queue, so
+        deny_sqs_third_party_access declares `restores_account_ids` and
+        parsing puts the account back. It is the first RCP allowlist to take
+        that path, which SCP parsing alone had exercised.
+        """
+        seed_all_rcp_check_dirs(temp_results_dir)
+        check_dir = Path(temp_results_dir) / "rcps" / DENY_SQS_THIRD_PARTY_ACCESS
+        with open(check_dir / "test-account.json", "w") as f:
+            json.dump({
+                "summary": {
+                    "account_id": "111111111111",
+                    "check": DENY_SQS_THIRD_PARTY_ACCESS,
+                    "violations": 0,
+                    "unique_third_party_accounts": [],
+                    "exempt_queue_arns": ["arn:aws:sqs:us-east-1:REDACTED:wildcard-queue"],
+                }
+            }, f)
+
+        parse_results = parse_rcp_result_files(temp_results_dir, sample_org_hierarchy)
+
+        by_check = {result.check_name: result for result in parse_results}
+        assert by_check[DENY_SQS_THIRD_PARTY_ACCESS].account_allowlist_map == {
+            "111111111111": {
+                "unique_third_party_accounts": [],
+                "exempt_queue_arns": ["arn:aws:sqs:us-east-1:111111111111:wildcard-queue"],
+            }
+        }
+
     def test_parse_reads_the_summary_key_the_check_declares(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1114,7 +1152,9 @@ class TestTheRCPReaderRequiresOneFilePerAccount:
         assert s3.account_allowlist_map == {
             "111111111111": {"unique_third_party_accounts": ["999999999999"], "exempt_bucket_arns": []},
         }
-        assert sqs.account_allowlist_map == {"111111111111": {"unique_third_party_accounts": ["888888888888"]}}
+        assert sqs.account_allowlist_map == {
+            "111111111111": {"unique_third_party_accounts": ["888888888888"], "exempt_queue_arns": []},
+        }
 
     def test_duplicates_under_two_checks_abort_in_one_error(
         self,
@@ -2907,6 +2947,69 @@ module "rcps_test" {{
         assert '"arn:aws:s3:::wildcard-bucket"' in content
         assert "deny_s3_third_party_access = true" in content
 
+    def test_build_module_with_exempt_queue_arns_from_the_real_pipeline(self, tmp_path: Path) -> None:
+        """
+        A queue ARN written to a result file reaches the module with its account as a local.
+
+        The exempt-bucket test above drives the same joins for a list with
+        no account field. A queue ARN has one, and this is the first RCP
+        allowlist to declare `restores_account_ids`, so the render must
+        rewrite that field to the account's generated local rather than
+        commit the ID into Terraform (INV-07, INV-15).
+        """
+        hierarchy = OrganizationHierarchy(
+            root_id="r-1111",
+            organizational_units={
+                "ou-1111": OrganizationalUnit(
+                    ou_id="ou-1111",
+                    name="Production",
+                    parent_ou_id="r-1111",
+                    child_ous=[],
+                    accounts=["111111111111", "222222222222"]
+                )
+            },
+            accounts={
+                "111111111111": AccountOrgPlacement(
+                    account_id="111111111111",
+                    account_name="test-account",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                ),
+                "222222222222": AccountOrgPlacement(
+                    account_id="222222222222",
+                    account_name="account2",
+                    parent_ou_id="ou-1111",
+                    ou_path=["Production"]
+                )
+            }
+        )
+        seed_all_rcp_check_dirs(str(tmp_path))
+        write_rcp_result(
+            str(tmp_path),
+            DENY_SQS_THIRD_PARTY_ACCESS,
+            account_id="111111111111",
+            account_name="test-account",
+            third_party_account_ids=[],
+            other_allowlists={"exempt_queue_arns": ["arn:aws:sqs:us-east-1:111111111111:wildcard-queue"]},
+        )
+        write_rcp_result(
+            str(tmp_path),
+            DENY_SQS_THIRD_PARTY_ACCESS,
+            account_id="222222222222",
+            account_name="account2",
+            third_party_account_ids=[],
+        )
+
+        parse_results = parse_rcp_result_files(str(tmp_path), hierarchy)
+        recommendations = determine_rcp_placement(parse_results, hierarchy)
+        rendered = render_rcp_terraform(recommendations, hierarchy, tmp_path, coverage_for("rcps"))
+
+        content = rendered[tmp_path / "root_rcps.tf"]
+
+        assert "sqs_third_party_access_exempt_queue_arns = [" in content
+        assert '"arn:aws:sqs:us-east-1:${local.test_account_account_id}:wildcard-queue"' in content
+        assert "deny_sqs_third_party_access = true" in content
+
     def test_build_module_with_ecr_recommendations(self) -> None:
         """Should generate module with ECR recommendations."""
         ecr_rec = RCPPlacementRecommendations(
@@ -3317,7 +3420,10 @@ class TestRenderRootRcpTerraform:
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=["000000000000"],
-            allowlist_values={"unique_third_party_accounts": ["444444444444", "555555555555"]},
+            allowlist_values={
+                "unique_third_party_accounts": ["444444444444", "555555555555"],
+                "exempt_queue_arns": [],
+            },
             reasoning="Test SQS"
         )
         terraform = _build_rcp_terraform_module(

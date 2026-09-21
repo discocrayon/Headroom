@@ -268,9 +268,10 @@ CloudFront OAI are folded into the same field, so the name understates what it
 holds. The equivalent field on
 [`deny_ecr_third_party_access`](deny_ecr_third_party_access.md),
 [`deny_kms_third_party_access`](deny_kms_third_party_access.md),
-[`deny_secrets_manager_third_party_access`](deny_secrets_manager_third_party_access.md),
-and [`deny_sqs_third_party_access`](deny_sqs_third_party_access.md) understates
-the same way, holding their violations.
+and [`deny_secrets_manager_third_party_access`](deny_secrets_manager_third_party_access.md)
+understates the same way, holding their violations; on
+[`deny_sqs_third_party_access`](deny_sqs_third_party_access.md) it holds
+exemptions, as here.
 
 ## Placement and generated policy
 

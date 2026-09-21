@@ -65,6 +65,7 @@ The `deny_sqs_third_party_access` RCP denies all `sqs:*` actions unless one of t
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `sqs_third_party_access_account_ids_allowlist`
 3. The principal is an AWS service
+4. The queue is in `sqs_third_party_access_exempt_queue_arns`: the statement lists each such queue under `NotResource`, so a queue whose grants no account allowlist can express keeps working. With no exempt queue the statement covers every resource
 
 ### IAM AssumeRole Restriction
 
@@ -124,6 +125,7 @@ module "account_rcp" {
   sqs_third_party_access_account_ids_allowlist = [
     "555555555555"
   ]
+  sqs_third_party_access_exempt_queue_arns = ["arn:aws:sqs:us-east-1:111111111111:public-events-queue"]
 
   # STS
   deny_sts_third_party_assumerole = true
@@ -161,6 +163,7 @@ module "account_rcp" {
 - `s3_third_party_access_exempt_bucket_arns` (list(string), default: []): Bucket ARNs spared by NotResource, expanded to the bucket and its objects; buckets whose grants no account allowlist can express
 - `secrets_manager_third_party_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access Secrets Manager secrets
 - `sqs_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access SQS queues
+- `sqs_third_party_access_exempt_queue_arns` (list(string), default: []): Queue ARNs spared by NotResource; queues whose grants no account allowlist can express
 - `sts_third_party_assumerole_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs that are permitted to assume roles
 - `service_confused_deputy_source_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to drive AWS service calls into resources
 

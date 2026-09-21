@@ -94,9 +94,11 @@ class TestDenySQSThirdPartyAccessCheck:
             assert summary["total_queues_analyzed"] == 2
             assert summary["queues_with_wildcards"] == 1
             assert summary["queues_third_parties_can_access"] == 2
-            assert summary["violations"] == 1
+            assert summary["violations"] == 0
+            assert summary["exemptions"] == 1
             assert set(summary["unique_third_party_accounts"]) == {"111111111111", "222222222222"}
             assert summary["third_party_account_count"] == 2
+            assert summary["exempt_queue_arns"] == ["arn:aws:sqs:us-east-1:222222222222:wildcard-queue"]
 
     def test_check_all_compliant(
         self,
@@ -139,18 +141,26 @@ class TestDenySQSThirdPartyAccessCheck:
             summary = results_data["summary"]
 
             assert summary["violations"] == 0
+            assert summary["exemptions"] == 0
             assert summary["queues_with_wildcards"] == 0
             assert summary["queues_third_parties_can_access"] == 1
+            assert summary["exempt_queue_arns"] == []
 
-    def test_check_all_violations(
+    def test_check_all_exemptions(
         self,
         org_account_ids: set[str],
         temp_results_dir: str,
     ) -> None:
-        """Test check with all queues having violations."""
+        """
+        Every queue whose grant no account list can express is an exemption.
+
+        Neither queue names a third-party account, so both count as wildcards
+        and neither counts as third-party access; both ARNs enter the list
+        the statement spares, sorted.
+        """
         mock_session = MagicMock()
 
-        all_violations = [
+        all_exemptions = [
             SQSQueuePolicyAnalysis(
                 queue_url="https://sqs.us-east-1.amazonaws.com/111111111111/wildcard-queue-1",
                 queue_arn="arn:aws:sqs:us-east-1:111111111111:wildcard-queue-1",
@@ -176,7 +186,7 @@ class TestDenySQSThirdPartyAccessCheck:
             patch("headroom.checks.base.write_check_results") as mock_write,
             patch("builtins.print")
         ):
-            mock_analysis.return_value = all_violations
+            mock_analysis.return_value = all_exemptions
 
             check = DenySQSThirdPartyAccessCheck(
                 check_name=DENY_SQS_THIRD_PARTY_ACCESS,
@@ -191,9 +201,16 @@ class TestDenySQSThirdPartyAccessCheck:
             results_data = mock_write.call_args[1]["results_data"]
             summary = results_data["summary"]
 
-            assert summary["violations"] == 2
+            assert len(results_data["queues_with_wildcards"]) == 2
+            assert len(results_data["queues_third_parties_can_access"]) == 2
+            assert summary["violations"] == 0
+            assert summary["exemptions"] == 2
             assert summary["queues_with_wildcards"] == 2
-            assert summary["queues_third_parties_can_access"] == 2
+            assert summary["queues_third_parties_can_access"] == 0
+            assert summary["exempt_queue_arns"] == [
+                "arn:aws:sqs:us-east-1:111111111111:wildcard-queue-1",
+                "arn:aws:sqs:us-west-2:111111111111:federated-queue",
+            ]
 
     def test_check_empty_results(
         self,
@@ -225,14 +242,22 @@ class TestDenySQSThirdPartyAccessCheck:
 
             assert summary["total_queues_analyzed"] == 0
             assert summary["violations"] == 0
+            assert summary["exemptions"] == 0
             assert summary["queues_third_parties_can_access"] == 0
+            assert summary["exempt_queue_arns"] == []
 
-    def test_categorize_result_violation_wildcard(
+    def test_categorize_result_wildcard_is_an_exemption_and_records_the_queue_arn(
         self,
         org_account_ids: set[str],
         temp_results_dir: str,
     ) -> None:
-        """Test categorization of violation with wildcard."""
+        """
+        A wildcard queue is spared by ARN, not counted against the account.
+
+        No aws:PrincipalAccount list can express the grant, so the statement
+        lifts the deny from the queue under NotResource; the ARN recorded
+        here is the value that clause renders (INV-07).
+        """
         check = DenySQSThirdPartyAccessCheck(
             check_name=DENY_SQS_THIRD_PARTY_ACCESS,
             account_name="test",
@@ -254,16 +279,18 @@ class TestDenySQSThirdPartyAccessCheck:
 
         category, result_dict = check.categorize_result(result)
 
-        from headroom.enums import CheckCategory
-        assert category == CheckCategory.VIOLATION
+        assert category == CheckCategory.EXEMPTION
         assert result_dict["has_wildcard_principal"] is True
+        assert check.exempt_queue_arns == ["arn:aws:sqs:us-east-1:111111111111:wildcard-queue"]
 
-    def test_categorize_result_violation_federated(
+    def test_categorize_result_with_non_account_principals(
         self,
         org_account_ids: set[str],
         temp_results_dir: str,
     ) -> None:
-        """Test categorization of violation with Federated principal."""
+        """
+        A Federated principal carries no account ID, so the queue is spared by ARN.
+        """
         check = DenySQSThirdPartyAccessCheck(
             check_name=DENY_SQS_THIRD_PARTY_ACCESS,
             account_name="test",
@@ -285,9 +312,9 @@ class TestDenySQSThirdPartyAccessCheck:
 
         category, result_dict = check.categorize_result(result)
 
-        from headroom.enums import CheckCategory
-        assert category == CheckCategory.VIOLATION
+        assert category == CheckCategory.EXEMPTION
         assert result_dict["has_non_account_principals"] is True
+        assert check.exempt_queue_arns == ["arn:aws:sqs:us-east-1:111111111111:federated-queue"]
 
     def test_categorize_result_compliant(
         self,
@@ -316,10 +343,10 @@ class TestDenySQSThirdPartyAccessCheck:
 
         category, result_dict = check.categorize_result(result)
 
-        from headroom.enums import CheckCategory
         assert category == CheckCategory.COMPLIANT
         assert result_dict["has_wildcard_principal"] is False
         assert result_dict["has_non_account_principals"] is False
+        assert check.exempt_queue_arns == []
 
     def test_summary_fields_actions_by_account(
         self,

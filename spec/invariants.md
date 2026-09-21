@@ -152,19 +152,22 @@ out-of-organization principal or source.
 [`contracts/policy-model.md`](contracts/policy-model.md#the-rcp-allowlist-statement)
 states what the `aws:PrincipalAccount` omission changes and why;
 [`checks/rcps/deny_service_confused_deputy.md`](checks/rcps/deny_service_confused_deputy.md)
-does the same for `aws:SourceAccount`. `deny_s3_third_party_access`'s
-`NotResource` is the third: with no bucket to spare, the module renders
-`Resource: "*"` in its place, and the statement denies every out-of-organization
-principal on every bucket. An empty `NotResource` would be malformed, as the
+does the same for `aws:SourceAccount`. The `NotResource` on
+`deny_s3_third_party_access` and `deny_sqs_third_party_access` is the third:
+with no bucket or queue to spare, the module renders `Resource: "*"` in its
+place, and the statement denies every out-of-organization principal on every
+bucket or queue. An empty `NotResource` would be malformed, as the
 second shape says — the difference is that this statement has a correct thing
 to render instead of the empty list, where an SCP whose whole purpose is the
 sparing does not.
 [`checks/rcps/deny_s3_third_party_access.md`](checks/rcps/deny_s3_third_party_access.md)
-states it. Leaving any of the three off for an empty allowlist would be wrong:
+states it for buckets and
+[`checks/rcps/deny_sqs_third_party_access.md`](checks/rcps/deny_sqs_third_party_access.md)
+for queues. Leaving any of the three off for an empty allowlist would be wrong:
 it would disable the six checks on exactly the accounts that granted no third
 party anything, and `deny_service_confused_deputy` on exactly
-the accounts that pinned no third-party source, and `deny_s3_third_party_access`
-on exactly the accounts with no bucket to spare.
+the accounts that pinned no third-party source, and the two `NotResource`
+checks on exactly the accounts with nothing to spare.
 
 This is distinct from INV-01: observing nothing is a legitimate fact about those
 accounts, whereas failing to record an observation is a broken artifact and
@@ -499,7 +502,11 @@ refresh until the scenarios stop naming buckets after the account.
 `s3_third_party_access_exempt_bucket_arns` Terraform variable, so a live run
 also writes them into the generated `test_environment/rcps/*.tf`. The manual
 rewrite after every refresh covers that generated Terraform as well as
-`test_environment/headroom_results/`.
+`test_environment/headroom_results/`. `exempt_queue_arns` is not a third route
+for the account field: a queue ARN's account is redacted on write and rewritten
+to the account's generated local on render, so the generated Terraform names
+the account only by reference. A queue *name* that embeds the account ID would
+still reach both places, as a bucket name does.
 
 The count above is not maintained by hand. `tests/test_data_standards.py` reads
 it back and fails when it disagrees with what the directory holds, which is how

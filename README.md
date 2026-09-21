@@ -135,7 +135,7 @@ the policy statement, the decision table, and the acceptance scenarios.
 | [`deny_kms_third_party_access`](spec/checks/rcps/deny_kms_third_party_access.md) | KMS access by any principal outside the organization | Third-party accounts key policies already grant |
 | [`deny_s3_third_party_access`](spec/checks/rcps/deny_s3_third_party_access.md) | S3 access by any principal outside the organization | Third-party accounts bucket policies already grant, and the buckets whose grants no account list can express |
 | [`deny_secrets_manager_third_party_access`](spec/checks/rcps/deny_secrets_manager_third_party_access.md) | Secrets Manager access by any principal outside the organization | Third-party accounts secret policies already grant |
-| [`deny_sqs_third_party_access`](spec/checks/rcps/deny_sqs_third_party_access.md) | SQS access by any principal outside the organization | Third-party accounts queue policies already grant |
+| [`deny_sqs_third_party_access`](spec/checks/rcps/deny_sqs_third_party_access.md) | SQS access by any principal outside the organization | Third-party accounts queue policies already grant, and the queues whose grants no account list can express |
 | [`deny_sts_third_party_assumerole`](spec/checks/rcps/deny_sts_third_party_assumerole.md) | `sts:AssumeRole` by any principal outside the organization | Third-party accounts role trust policies already allow |
 | [`deny_service_confused_deputy`](spec/checks/rcps/deny_service_confused_deputy.md) | An AWS service acting for an account outside the organization, on calls that name the account they act for, across the six services above | Source accounts named in service-mediated grants |
 

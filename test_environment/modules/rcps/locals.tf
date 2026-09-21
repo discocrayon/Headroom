@@ -115,29 +115,41 @@ locals {
     # var.deny_sqs_third_party_access
     # -->
     # Sid: DenySQSThirdPartyAccess
-    # Restricts SQS access to organization accounts and allowlisted third-party accounts
+    # Restricts SQS access to organization accounts and allowlisted third-party
+    # accounts. Queues whose grants no account allowlist can express are
+    # spared by ARN instead, and the deny keeps every other queue. A queue has
+    # no sub-resource - every sqs action authorizes against the queue ARN
+    # itself - so each entry is the ARN as the scan recorded it. With no
+    # queue to spare, the statement covers every resource: an RCP resource
+    # array must hold at least one value, so an empty NotResource is never
+    # rendered. The two clauses are merged from two conditionals rather than
+    # one because Terraform requires both arms of a conditional to share a
+    # type, and objects keyed NotResource and Resource do not.
     # Reference: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonsqs.html
     {
       include = var.deny_sqs_third_party_access,
-      statement = {
-        "Sid"       = "DenySQSThirdPartyAccess"
-        "Principal" = "*"
-        "Action" = [
-          "sqs:*",
-        ]
-        "Resource" = "*"
-        "Condition" = {
-          "StringNotEqualsIfExists" = merge(
-            {
-              "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
-            },
-            length(var.sqs_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sqs_third_party_access_account_ids_allowlist } : {},
-          )
-          "BoolIfExists" = {
-            "aws:PrincipalIsAWSService" = "false"
+      statement = merge(
+        {
+          "Sid"       = "DenySQSThirdPartyAccess"
+          "Principal" = "*"
+          "Action" = [
+            "sqs:*",
+          ]
+          "Condition" = {
+            "StringNotEqualsIfExists" = merge(
+              {
+                "aws:PrincipalOrgID" = data.aws_organizations_organization.current.id
+              },
+              length(var.sqs_third_party_access_account_ids_allowlist) > 0 ? { "aws:PrincipalAccount" = var.sqs_third_party_access_account_ids_allowlist } : {},
+            )
+            "BoolIfExists" = {
+              "aws:PrincipalIsAWSService" = "false"
+            }
           }
-        }
-      }
+        },
+        length(var.sqs_third_party_access_exempt_queue_arns) > 0 ? { "NotResource" = var.sqs_third_party_access_exempt_queue_arns } : {},
+        length(var.sqs_third_party_access_exempt_queue_arns) > 0 ? {} : { "Resource" = "*" },
+      )
     },
     # var.deny_sts_third_party_assumerole
     # -->

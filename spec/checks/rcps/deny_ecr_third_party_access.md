@@ -160,8 +160,9 @@ served from the analyzer's per-session memo and issues no AWS request;
 literal wildcard principal. A `Federated` or `CanonicalUser` principal is now
 recorded as a violation rather than aborting, so it is folded into the same
 field and the name understates what the field holds. The same is true of the
-equivalent field on the other three resource-policy checks, and of
-`deny_s3_third_party_access`'s, which holds exemptions.
+equivalent field on the other two resource-policy checks, and of
+`deny_s3_third_party_access`'s and `deny_sqs_third_party_access`'s, which hold
+exemptions.
 
 ## Known conflict: the committed result files carry the old key names
 

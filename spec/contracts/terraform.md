@@ -327,9 +327,10 @@ Every name comes from the check's `allowlists` in its own module; nothing in
 `${local.<account_name>_account_id}` so the ARN resolves through the same
 generated locals as everything else. The rewrite belongs to the
 `restores_account_ids` flag, not to IAM: it reads the ARN's account field
-whatever service the ARN names, so a future KMS or SQS allowlist declaring the
-flag renders locals rather than the accounts' real IDs. An ARN naming an account
-outside the hierarchy, or one with no account field, is emitted literally.
+whatever service the ARN names: `sqs_third_party_access_exempt_queue_arns`
+declares the flag on the RCP side and renders locals rather than the accounts'
+real IDs, as a future KMS allowlist would. An ARN naming an account outside the
+hierarchy, or one with no account field, is emitted literally.
 
 A check one of whose allowlists declares an `empty_allowlist_comment` — all
 three of these do — is forced **off**, with that comment rendered, when the
@@ -349,8 +350,9 @@ existing workload.
 
 One boolean per check and one variable per allowlist it declares. The boolean
 is the check name; each variable is the `terraform_variable` of one entry in
-the check's `allowlists`, rendered in declaration order. Six checks declare
-one list; `deny_s3_third_party_access` declares two. Both generators render
+the check's `allowlists`, rendered in declaration order. Five checks declare
+one list; `deny_s3_third_party_access` and `deny_sqs_third_party_access`
+declare two. Both generators render
 from `get_check_definitions`, so a registered check cannot be dropped at render;
 `test_every_registered_rcp_check_is_rendered` pins it (INV-13).
 
@@ -702,7 +704,10 @@ what placement would produce from the results that are committed:
 it `false`. Since `deny_s3_third_party_access` stopped producing violations,
 the committed calls are stale in a second way: a re-run would enable it
 everywhere with `s3_third_party_access_exempt_bucket_arns` carrying
-fort-knox's wildcard bucket. `deny_ecr_third_party_access` is not one of those
+fort-knox's wildcard bucket. `deny_sqs_third_party_access` stopped producing
+violations the same way and now always places at root; no SQS result is
+committed at all, so its `false` in both files is the below-target rendering
+described next. `deny_ecr_third_party_access` is not one of those
 — it is clean in all four results, so it places at the root, and `false` below
 its target is exactly what a root placement renders; what is missing there is
 a committed `root_rcps.tf`.

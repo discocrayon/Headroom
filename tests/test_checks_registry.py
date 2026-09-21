@@ -308,6 +308,24 @@ def test_deny_lambda_auth_type_none_declares_the_public_function_url_allowlist()
     assert allowlist.empty_allowlist_comment.startswith("deny_lambda_auth_type_none stays off here")
 
 
+def test_deny_sqs_third_party_access_declares_the_exempt_queue_allowlist() -> None:
+    """
+    The SQS check's second allowlist is the queue ARN list its NotResource spares.
+
+    A queue ARN carries the account between the region and the queue name,
+    so `exclude_account_ids` redacts it on write and the definition must say
+    so for parsing to put it back. An empty list renders `Resource: "*"`,
+    the strongest form of the deny rather than a broken one, so no comment
+    turns the statement off.
+    """
+    (_, exempt) = get_check_definition("deny_sqs_third_party_access").allowlists
+
+    assert exempt.summary_key == "exempt_queue_arns"
+    assert exempt.terraform_variable == "sqs_third_party_access_exempt_queue_arns"
+    assert exempt.restores_account_ids is True
+    assert exempt.empty_allowlist_comment is None
+
+
 def test_a_check_without_an_allowlist_records_an_empty_tuple() -> None:
     """
     No allowlist is the empty tuple, never None: every reader iterates it.
@@ -773,7 +791,7 @@ def test_every_rcp_allowlist_collects_third_party_accounts() -> None:
         "deny_kms_third_party_access": ["unique_third_party_accounts"],
         "deny_s3_third_party_access": ["unique_third_party_accounts", "exempt_bucket_arns"],
         "deny_secrets_manager_third_party_access": ["unique_third_party_accounts"],
-        "deny_sqs_third_party_access": ["unique_third_party_accounts"],
+        "deny_sqs_third_party_access": ["unique_third_party_accounts", "exempt_queue_arns"],
         "deny_sts_third_party_assumerole": ["unique_third_party_accounts"],
         "deny_service_confused_deputy": ["unique_third_party_accounts"],
     }

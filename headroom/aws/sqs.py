@@ -66,7 +66,8 @@ class SQSQueuePolicyAnalysis:
             analyzer cannot enumerate - `Principal: "*"`, or an Allow with
             NotPrincipal, which reaches everyone it does not name
         has_non_account_principals: True if the policy grants to a principal
-            type carrying no account ID, which no allowlist can preserve
+            type carrying no account ID, which no account allowlist can
+            preserve
         actions_by_account: Dict mapping account IDs to sets of allowed actions
         service_principal_sources: Service principals this policy trusts,
             with the cross-service source guard on each. Read by the
@@ -191,9 +192,10 @@ def _analyze_queues_in_region(
     A read that fails aborts the run rather than returning an empty list.
     Returning nothing would be indistinguishable from a region that genuinely
     holds no queues with third-party access, and these results populate
-    `sqs_third_party_access_account_ids_allowlist`, so the generated RCP would
-    omit every partner whose queues live only in the unreadable region and deny
-    them on deploy.
+    `sqs_third_party_access_account_ids_allowlist` and
+    `sqs_third_party_access_exempt_queue_arns`, so the generated RCP would
+    omit every partner whose queues live only in the unreadable region, leave
+    every spared queue there out of the exempt list, and deny both on deploy.
 
     This assumes the `Headroom` role is exempt from region-allowlist SCPs, which
     makes an `AccessDenied` here a genuine permissions gap rather than an
@@ -292,8 +294,9 @@ def analyze_sqs_queue_policies(
        d. Parse policy JSON
        e. Extract principal account IDs
        f. Identify wildcard principals
-       g. Identify principals carrying no account ID, which no allowlist can
-          preserve and which therefore block the account
+       g. Identify principals carrying no account ID, which no account
+          allowlist can preserve and which the check therefore spares by
+          queue ARN
        h. Record third-party accounts (not in org) and the actions each may
           take, admitting an account to both in one step so the two cannot
           disagree
