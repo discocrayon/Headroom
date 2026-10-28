@@ -241,7 +241,13 @@ locals {
     #
     # The allowlist is expressed as NotResource so a re-apply of an existing
     # public URL - UpdateFunctionUrlConfig or AddPermission re-sending
-    # AuthType NONE - is spared while every other function is denied.
+    # AuthType NONE - is spared while every other function is denied. With
+    # no URL to spare, the statement covers every function: a policy
+    # resource array must hold at least one value, so an empty NotResource
+    # is never rendered and Resource = "*" takes its place. The two clauses
+    # are merged from two conditionals rather than one because Terraform
+    # requires both arms of a conditional to share a type, and objects keyed
+    # NotResource and Resource do not.
     #
     # Lambda authorizes these actions against the function or the alias, by
     # comparing the policy's resource with both FunctionName and Qualifier:
@@ -251,19 +257,22 @@ locals {
     # records each public URL's own FunctionArn for that reason.
     {
       include = var.deny_lambda_auth_type_none,
-      statement = {
-        Action = [
-          "lambda:CreateFunctionUrlConfig",
-          "lambda:UpdateFunctionUrlConfig",
-          "lambda:AddPermission"
-        ]
-        NotResource = var.lambda_allowed_public_function_urls
-        Condition = {
-          "StringEquals" = {
-            "lambda:FunctionUrlAuthType" = "NONE"
+      statement = merge(
+        {
+          Action = [
+            "lambda:CreateFunctionUrlConfig",
+            "lambda:UpdateFunctionUrlConfig",
+            "lambda:AddPermission"
+          ]
+          Condition = {
+            "StringEquals" = {
+              "lambda:FunctionUrlAuthType" = "NONE"
+            }
           }
-        }
-      }
+        },
+        length(var.lambda_allowed_public_function_urls) > 0 ? { NotResource = var.lambda_allowed_public_function_urls } : {},
+        length(var.lambda_allowed_public_function_urls) > 0 ? {} : { Resource = "*" },
+      )
     },
     # var.deny_rds_unencrypted
     # -->

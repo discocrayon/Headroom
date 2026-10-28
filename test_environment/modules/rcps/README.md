@@ -171,3 +171,20 @@ module "account_rcp" {
 
 - RCPs have a maximum size of 5,120 bytes
 - There is a maximum limit of 5 direct RCP attachments per target
+
+## Testing
+
+`tests/plan.tftest.hcl` plans this module with the real provider and no AWS
+credentials, and asserts on the policy document the provider renders. Run it
+from this directory:
+
+```bash
+terraform init
+terraform test
+```
+
+`tox` at the repository root runs it too, through
+`tests/test_terraform_module_plans.py`. It is a plan rather than a validate
+because the clauses built from conditionals in `locals.tf` are typed only once
+their lists are known, and `terraform validate` accepts a conditional that
+`terraform plan` refuses.

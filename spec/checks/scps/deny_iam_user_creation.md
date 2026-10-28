@@ -138,6 +138,10 @@ the reason, logs a warning, and continues — an account holding no IAM user is 
 ordinary fact about that account, not a broken run.
 
 [`deny_ec2_ami_owner`](deny_ec2_ami_owner.md) guards the identical case.
+[`deny_lambda_auth_type_none`](deny_lambda_auth_type_none.md) does not: its
+module renders `Resource: "*"` for an empty list and the statement stays on.
+Whether this check should do the same is conflict 12 in
+[`../index.md`](../index.md#unresolved-conflicts).
 
 ## Accepted limitations
 

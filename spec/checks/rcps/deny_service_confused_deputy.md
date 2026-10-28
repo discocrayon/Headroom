@@ -80,8 +80,10 @@ Condition: StringNotEqualsIfExists
              aws:PrincipalIsAWSService = "true"
 ```
 
-Pattern 6, composition — one of two, with
-[`deny_lambda_auth_type_none`](../scps/deny_lambda_auth_type_none.md) — and
+Pattern 6, composition — one of four, with
+[`deny_lambda_auth_type_none`](../scps/deny_lambda_auth_type_none.md),
+[`deny_s3_third_party_access`](deny_s3_third_party_access.md) and
+[`deny_sqs_third_party_access`](deny_sqs_third_party_access.md) — and
 not 5a because the allowlisted account is not the principal.
 [`../../contracts/policy-model.md`](../../contracts/policy-model.md) owns that
 argument.

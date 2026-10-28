@@ -40,9 +40,12 @@ def two_list_shape_pair(document: JsonDict) -> Optional[Tuple[str, str]]:
     `spec/contracts/results.md` fixes both suffixes: a key ending
     `_with_wildcards` holds `violations` alone, and the key sharing its
     prefix but ending `_third_parties_can_access` holds `violations +
-    compliant`. A document holding neither suffix takes the base shape
-    instead - every SCP check, and `deny_service_confused_deputy` among
-    the seven RCP checks.
+    compliant` - or, for `deny_s3_third_party_access` and
+    `deny_sqs_third_party_access`, which spare by ARN and produce no
+    violations, `exemptions` alone and `exemptions + compliant`, the
+    same two-segment shape. A document holding neither suffix takes the
+    base shape instead - every SCP check, and `deny_service_confused_deputy`
+    among the seven RCP checks.
 
     Args:
         document: One committed result file, parsed
@@ -65,11 +68,12 @@ def unsorted_evidence_lists(document: JsonDict) -> List[str]:
 
     The base shape's three lists are each checked globally sorted. The
     two-list shape's `*_with_wildcards` is checked the same way; its
-    `*_third_parties_can_access` counterpart is `violations + compliant`,
-    which `spec/contracts/results.md` sorts within each segment rather than
+    `*_third_parties_can_access` counterpart is `violations + compliant`
+    (`exemptions + compliant` for the two ARN-sparing checks), which
+    `spec/contracts/results.md` sorts within each segment rather than
     across their join, so it is split at `len(*_with_wildcards)`: the
     prefix must be the `*_with_wildcards` list itself, since both are the
-    same `violations`, and the remainder is checked sorted on its own. A
+    same list, and the remainder is checked sorted on its own. A
     global check would fail the STS shared-account worked example, which is
     sorted exactly that way on purpose.
 

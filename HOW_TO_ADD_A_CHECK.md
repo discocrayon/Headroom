@@ -1455,7 +1455,7 @@ if_check_has_allowlist:
         description = "..."
       }
     location: "alphabetical by service"
-    purpose: "The statement in locals.tf reads it as var.{service}_allowed_{thing}s. Without the declaration the rendered module does not plan; without default = [] every module call where the check is off stops planning, because the renderer emits the allowlist only for an enabled check."
+    purpose: "The statement in locals.tf reads it as var.{service}_allowed_{thing}s. Without the declaration the rendered module does not plan; without default = [] every module call where the check is off stops planning, because the renderer emits the allowlist only for an enabled check. A statement that builds a clause from a conditional on this list also gets a run in the module's tests/plan.tftest.hcl, which tests/test_terraform_module_plans.py plans under tox: terraform validate does not type a conditional's arms, terraform plan does."
 
   - path: tests/test_checks_{check_name}.py
     must_test: [summary_key_carries_the_observed_values, summary_key_present_when_nothing_observed]

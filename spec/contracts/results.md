@@ -133,13 +133,13 @@ the base shape above.
 | `deny_sts_third_party_assumerole` | `roles_third_parties_can_access`, `roles_with_wildcards` |
 | `deny_service_confused_deputy` | `violations`, `exemptions`, `compliant_instances` |
 
-`*_third_parties_can_access` is `violations + compliant` in five of the six, so
+`*_third_parties_can_access` is `violations + compliant` in four of the six, so
 a wildcard finding appears in both lists, and `*_with_wildcards` is `violations`
-alone. `deny_s3_third_party_access` produces no violations: its
-`buckets_third_parties_can_access` is `exemptions + compliant` and its
-`buckets_with_wildcards` is `exemptions`, the buckets its statement spares by
-ARN. Renaming either key, in any of the six, is a wire-format migration
-(INV-14).
+alone. `deny_s3_third_party_access` and `deny_sqs_third_party_access` produce
+no violations: their `*_third_parties_can_access` is `exemptions + compliant`
+and their `*_with_wildcards` is `exemptions`, the buckets and queues their
+statements spare by ARN. Renaming either key, in any of the six, is a
+wire-format migration (INV-14).
 
 A reader that expects a `*_third_parties_can_access` pair in every RCP file gets
 the seventh wrong; one that switches on `summary.check` does not. Beyond the

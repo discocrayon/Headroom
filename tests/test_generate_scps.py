@@ -1323,14 +1323,16 @@ def test_build_scp_terraform_module_iam_user_creation_renders_a_populated_allowl
     assert "arn:aws:iam::111111111111:user/breakglass" in result
 
 
-def test_build_scp_terraform_module_lambda_auth_type_none_empty_allowlist_stays_off() -> None:
+def test_build_scp_terraform_module_lambda_auth_type_none_empty_allowlist_renders_on() -> None:
     """
-    An empty public function URL allowlist turns the policy off rather than rendering.
+    An empty public function URL allowlist renders the check on, with the empty list.
 
-    `lambda_allowed_public_function_urls = []` renders `NotResource: []`, the
-    same malformed document `iam_allowed_users = []` renders, and the whole
-    SCP fails to attach with it (INV-06). The comment is the check's own
-    sentence; this pins how the registered text wraps in a rendered module.
+    The module turns `lambda_allowed_public_function_urls = []` into
+    `Resource: "*"` rather than `NotResource: []`, so the statement denies
+    every new public URL and there is nothing for a comment to turn off
+    (INV-06, the third shape). Before the check took an allowlist the
+    statement always read `Resource: "*"`, and an organization with no
+    public URL keeps that protection.
     """
     org = make_org_empty()
     rec = SCPPlacementRecommendations(
@@ -1355,14 +1357,8 @@ def test_build_scp_terraform_module_lambda_auth_type_none_empty_allowlist_stays_
         flipped_comment={},
     )
 
-    assert "deny_lambda_auth_type_none = false" in result
-    assert "lambda_allowed_public_function_urls" not in result
-    assert (
-        "  # deny_lambda_auth_type_none stays off here: no function URL with AuthType\n"
-        "  # NONE in the accounts this module covers, so the allowlist would be empty\n"
-        "  # - and NotResource: [] is rejected as a malformed policy.\n"
-        "  deny_lambda_auth_type_none = false\n"
-    ) in result
+    assert "deny_lambda_auth_type_none = true\n  lambda_allowed_public_function_urls = []\n" in result
+    assert "stays off" not in result
 
 
 def test_build_scp_terraform_module_lambda_auth_type_none_renders_the_qualified_arn() -> None:

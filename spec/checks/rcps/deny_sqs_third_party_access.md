@@ -15,6 +15,7 @@ depends_on:
   - INV-13
   - INV-16
 verification:
+  - tests/test_terraform_module_plans.py
   - tests/test_checks_deny_sqs_third_party_access.py
   - tests/test_aws_sqs.py
   - tests/test_aws_policy_documents.py
@@ -91,7 +92,9 @@ of the deny, not a broken one.
 The module builds the resource clause from two conditionals merged into the
 statement rather than one, because Terraform requires both arms of a
 conditional to share a type and objects keyed `NotResource` and `Resource` do
-not.
+not. `terraform validate` does not check that, `terraform plan` does, and the
+module's `tests/plan.tftest.hcl` is that plan, run under `tox` by
+`tests/test_terraform_module_plans.py`.
 
 Terraform variables: `deny_sqs_third_party_access`,
 `sqs_third_party_access_account_ids_allowlist`, and
@@ -420,7 +423,10 @@ omitted `aws:PrincipalAccount` clause; the declaration therefore sets no
 17. An account with no exempt queue → `violations: 0`, `exemptions: 0`, and
     `exempt_queue_arns: []`, present rather than absent; a module covering
     only such accounts renders `sqs_third_party_access_exempt_queue_arns = []`
-    and the statement carries `Resource: "*"`.
+    and the statement carries `Resource: "*"`
+    (`empty_exempt_lists_render_resource_star` in the module's
+    `tests/plan.tftest.hcl`; `populated_exempt_lists_render_not_resource`
+    there pins the queue ARN under `NotResource`).
 18. Two accounts, one with an exempt queue and one without → the root
     recommendation carries that one ARN, and the module call renders it with
     the account field as that account's generated local
@@ -433,11 +439,13 @@ omitted `aws:PrincipalAccount` clause; the declaration therefore sets no
     the file and re-running. The reader is generic;
     `tests/test_generate_rcps.py` pins the abort for
     `deny_s3_third_party_access`.
-21. An entry that is not a queue ARN — a bucket ARN, a queue ARN with no name,
-    or one carrying `/` → the module's variable validation rejects the plan
-    with a message naming the variable and the required form (verified by
-    exercising the validation regex outside the test suite, and by `terraform
-    validate` on the module).
+21. An entry that is not a queue ARN — a bucket ARN, a queue ARN with no
+    account field, or one carrying `/` → the module's variable validation
+    rejects the plan with a message naming the variable and the required form
+    (`queue_arn_without_account_is_rejected` in
+    `test_environment/modules/rcps/tests/plan.tftest.hcl`, run under `tox` by
+    `tests/test_terraform_module_plans.py`; the other two forms were exercised
+    against the regex outside the suite).
 
 ## Referenced invariants
 

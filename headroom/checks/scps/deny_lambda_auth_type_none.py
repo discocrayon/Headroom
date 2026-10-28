@@ -27,20 +27,11 @@ from ..registry import Allowlist, register_check
             # The values are function ARNs - qualified by alias where the URL
             # sits on one - so `exclude_account_ids` redacts their account field
             # on write. Parsing restores it, and rendering rewrites it to the
-            # account's generated local.
+            # account's generated local. No `empty_allowlist_comment`: with no
+            # URL to spare, the module renders Resource: "*" in place of
+            # NotResource, and the statement denies every new public URL - the
+            # full deny rather than a malformed one (INV-06, the third shape).
             restores_account_ids=True,
-            # An empty allowlist renders NotResource: [], and a policy array
-            # takes one or more values, so Organizations rejects the document
-            # and the entire SCP fails to attach - every other statement in this
-            # module with it (INV-06). Covered accounts holding no public
-            # function URL is an ordinary fact about them rather than a broken
-            # run, so the policy stays off and the rest of the organization
-            # still generates.
-            empty_allowlist_comment=(
-                "deny_lambda_auth_type_none stays off here: no function URL with "
-                "AuthType NONE in the accounts this module covers, so the allowlist "
-                "would be empty - and NotResource: [] is rejected as a malformed policy."
-            ),
         ),
     ),
 )

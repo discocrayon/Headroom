@@ -13,6 +13,7 @@ depends_on:
   - INV-13
   - INV-16
 verification:
+  - tests/test_terraform_module_plans.py
   - tests/test_checks_deny_lambda_auth_type_none.py
   - tests/test_aws_lambda.py
 ---
@@ -50,7 +51,7 @@ Effect:      Deny
 Action:      lambda:CreateFunctionUrlConfig,
              lambda:UpdateFunctionUrlConfig,
              lambda:AddPermission
-NotResource: <lambda_allowed_public_function_urls>
+NotResource: <lambda_allowed_public_function_urls>   (Resource: "*" when the list is empty)
 Condition:   StringEquals
                lambda:FunctionUrlAuthType = "NONE"
 ```
@@ -193,20 +194,31 @@ The allowlist round trip (INV-07):
 
 Terraform variables: `deny_lambda_auth_type_none` (boolean) and
 `lambda_allowed_public_function_urls` (list, rendered whenever the boolean is
-true).
+true). The module validates each entry as a function ARN of one of the two
+shapes above, with or without the alias qualifier, so an entry of any other
+form is refused at plan time rather than by Organizations at apply time.
 
-**An empty allowlist leaves the policy off** (INV-06). When the accounts a module
-covers hold no public function URL at all, step 6 would render
-`lambda_allowed_public_function_urls = []` and so `NotResource: []`, which is
-not a valid policy document.
+**An empty allowlist leaves the policy on.** When the accounts a module covers
+hold no public function URL at all, step 6 renders
+`lambda_allowed_public_function_urls = []`, and the module renders
+`Resource: "*"` in place of `NotResource`: a resource array must hold at least
+one value, and an empty `NotResource` would be rejected as malformed (INV-06).
 [`../../invariants.md`](../../invariants.md#inv-06--an-empty-allowlist-is-never-rendered-as-an-empty-list)
-owns why an empty resource array is invalid and how far the rejection reaches.
-Generation therefore emits `deny_lambda_auth_type_none = false` with a comment
-giving the reason, logs a warning, and continues — an organization with no
-public function URL is the good case rather than a broken run, and it is also
-the case where this statement has nothing to spare.
+owns why an empty resource array is invalid. This is the third shape INV-06
+names, not the second — the empty list does not turn the statement off,
+because a statement with nothing to spare is the full deny of `AuthType NONE`,
+the protection the statement carried before it took an allowlist, and an
+organization with no public URL is the one it protects best. The declaration
+therefore sets no `empty_allowlist_comment`. The module builds the resource
+clause from two conditionals merged into the statement rather than one,
+because Terraform requires both arms of a conditional to share a type and
+objects keyed `NotResource` and `Resource` do not. The module's
+`tests/plan.tftest.hcl` plans both cases and the validation, under `tox`
+through `tests/test_terraform_module_plans.py`.
 
-[`deny_iam_user_creation`](deny_iam_user_creation.md) guards the identical case.
+[`deny_iam_user_creation`](deny_iam_user_creation.md) leaves its policy off in
+the same case; whether it should render `Resource: "*"` instead is conflict 12
+in [`../index.md`](../index.md#unresolved-conflicts).
 
 ## Accepted limitations
 
@@ -246,12 +258,20 @@ the case where this statement has nothing to spare.
    second → exemption; every page is read.
 8. An account with no public URL → `violations: 0`, `exemptions: 0`, and
    `public_function_urls: []`, present rather than absent; a module covering
-   only such accounts renders `deny_lambda_auth_type_none = false` with a
-   comment rather than an empty `NotResource`.
+   only such accounts renders `deny_lambda_auth_type_none = true` with
+   `lambda_allowed_public_function_urls = []`, and the statement carries
+   `Resource: "*"` rather than an empty `NotResource`
+   (`empty_public_url_list_renders_resource_star` in the module's
+   `tests/plan.tftest.hcl`).
 9. A result written with `exclude_account_ids` → the ARNs carry `REDACTED`,
    and parsing restores the account ID before the union is built.
 10. A written result parses with zero violations, one exemption, and
     `allowlist_values` holding the qualified ARN under `public_function_urls`.
+11. An allowlist entry that is not a function ARN of either shape, such as one
+    missing the `function:` segment → the module's variable validation rejects
+    the plan, naming the variable and both forms
+    (`function_arn_without_the_function_segment_is_rejected` in
+    `test_environment/modules/scps/tests/plan.tftest.hcl`).
 
 ## Referenced invariants
 

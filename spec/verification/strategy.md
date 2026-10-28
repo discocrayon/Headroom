@@ -11,7 +11,7 @@ step must pass:
 
 | Step | Requirement |
 |---|---|
-| `pytest tests/` | Every test passes |
+| `pytest tests/` | Every test passes. `tests/test_terraform_module_plans.py` needs `terraform` on the PATH, below |
 | Coverage of `headroom/` | **100%**. `.coveragerc` omits `*/__main__.py` and `.tox/*`, which are not source |
 | Coverage of `tests/` | **100%** — the test suite must exercise its own helpers |
 | `mypy headroom/ tests/` | Clean. `mypy.ini` turns on every check `--strict` does except `disallow_any_generics`, and `disallow_any_explicit` besides |
@@ -45,6 +45,24 @@ directory and no workflow, and whether `pre-commit`'s git hook is installed is a
 per-clone fact — it is not installed in this clone. `pre-commit run --all-files`
 is a `tox` step either way. Every gate this document names runs when a human
 types `tox`.
+
+**`tox` needs `terraform` on the PATH.** Each Terraform module under
+`test_environment/modules/` carries `tests/plan.tftest.hcl`, which plans the
+module with the real provider and no credentials — `aws_iam_policy_document`
+is computed locally, and the one data source that would call AWS is overridden
+— and asserts on the policy document the provider renders.
+`tests/test_terraform_module_plans.py` runs `terraform init` and
+`terraform test` in each module and compares the passed count with the run
+blocks the file declares, so a test file that went missing fails rather than
+passing vacuously. A missing binary fails the same way; a skip would report the
+modules as planned when nothing ran (INV-01). The first `init` downloads the
+AWS provider into the module's git-ignored `.terraform/`, and later runs reuse
+it; no lock file is committed, so the provider version floats as it does for
+every other Terraform in `test_environment/`. The plan is the point: `terraform
+validate` accepted a conditional whose arms were objects keyed `NotResource`
+and `Resource`, because the list the arm is built from is unknown at validate
+time, and `terraform plan` refused it once the list was known. Two commits
+shipped on validate alone before this test existed.
 
 The `pytest` configuration lives in `pytest.ini` under a `[pytest]` section.
 `[tool:pytest]` is a valid section name only inside `setup.cfg`; a `pytest.ini`
@@ -138,17 +156,19 @@ Four of the seven helper modules have a test file by that rule: `conftest.py`,
 `data_standards.py`, `documentation_links.py`, and `spec_corpus.py`.
 `constants.py`, `coverage_maps.py`, and `hierarchies.py` are shared fixture
 data, and the functions that build it, with no logic of their own to assert on;
-each is covered by the files that import it. Three test files cover neither a
+each is covered by the files that import it. Four test files cover neither a
 `headroom/` module nor a helper, because what they check is a repository
 convention rather than code: `tests/test_pytest_configuration.py`, that pytest
 reads the settings `pytest.ini` declares;
 `tests/test_committed_terraform_examples.py`, that the committed Terraform
 under `test_environment/` still plans and that each module declares every
-variable the registry will make the generator pass; and
+variable the registry will make the generator pass;
 `tests/test_committed_results_examples.py`, that the committed result files
 under `test_environment/headroom_results/` hold their evidence lists, the
 record lists nested inside entries, and their identifier-keyed maps in the
-order `spec/contracts/results.md` documents.
+order `spec/contracts/results.md` documents; and
+`tests/test_terraform_module_plans.py`, that each module's own
+`tests/plan.tftest.hcl` plans and passes, as the gate section above states.
 
 Four cases depart from that, each deliberate:
 
@@ -199,6 +219,7 @@ replacing it removes an invariant's only enforcement.
 | `test_every_committed_module_call_passes_every_required_variable` | The committed worked examples still plan — a module variable with no default is passed by every generated call under `test_environment/` |
 | `test_every_registered_check_is_declared_by_its_module` | INV-13 — the other direction: every registered check name and allowlist variable is a variable its module's `variables.tf` declares, so the argument the generator passes is one `terraform plan` accepts |
 | `test_every_registered_check_is_read_by_a_statement` | INV-13 — the step after declaration: a statement in the module's `locals.tf` is gated by every registered check's boolean and reads its allowlist variable, so a declared variable the policy would silently ignore fails by name. What the statement denies is not read; the check specification owns that |
+| `test_every_run_in_the_module_plan_tests_passes` | Both modules plan with the real provider and no credentials, and the resource clauses their statements build from conditionals render as the check specifications state — `Resource: "*"` for an empty list, `NotResource` for a populated one, and a malformed ARN refused by the variable's validation. A plan, because `terraform validate` accepted a conditional that `terraform plan` refused |
 | `tests/test_spec_corpus.py` | Every registered check has exactly one specification |
 | `test_the_conflict_register_and_the_check_documents_agree` | The conflict register and the per-check documents name the same checks |
 | `test_every_named_guard_resolves_to_a_real_test` | This table itself — every guard named below or above resolves to a test that exists. The table named `test_only_the_aws_package_constructs_a_client` for as long as no such test did |

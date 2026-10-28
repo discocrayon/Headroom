@@ -229,11 +229,12 @@ class RCPCheckResult(CheckResult):
             one case every other check flags this way. Federated and
             CanonicalUser principals carry no account ID to allowlist
             either, and which answer they get depends on the policy type
-            reading them. Four resource-policy checks - ECR, KMS, Secrets
-            Manager and SQS - accept both keys and record them as
-            violations, so any of the four can set this flag from them. S3
-            accepts them too and records an exemption instead: its
-            statement spares the bucket by ARN, so it never sets this flag.
+            reading them. Three resource-policy checks - ECR, KMS and
+            Secrets Manager - accept both keys and record them as
+            violations, so any of the three can set this flag from them. S3
+            and SQS accept them too and record an exemption instead: their
+            statements spare the bucket or queue by ARN, so neither ever
+            sets this flag.
             A role trust policy does not accept CanonicalUser at all, so
             the STS analyzer aborts the run on one rather than blocking the
             account, and it aborts too on a Federated principal granted the

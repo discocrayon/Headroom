@@ -14,6 +14,7 @@ depends_on:
   - INV-07
   - INV-13
 verification:
+  - tests/test_terraform_module_plans.py
   - tests/test_checks_deny_s3_third_party_access.py
   - tests/test_aws_s3.py
   - tests/test_aws_policy_documents.py
@@ -89,6 +90,15 @@ array must hold at least one value, and an empty `NotResource` would be
 rejected as malformed (INV-06). This is the third shape INV-06 names, not the
 second — the empty list does not turn the statement off, because a statement
 with nothing to spare is the strongest form of the deny, not a broken one.
+
+The module builds the resource clause from two conditionals merged into the
+statement rather than one, because Terraform requires both arms of a
+conditional to share a type and objects keyed `NotResource` and `Resource` do
+not. A single conditional passes `terraform validate`, where the list is
+unknown and `flatten()` leaves its arm untyped, and fails `terraform plan`,
+where the list is known — so a plan, not a validate, is what proves this
+clause renders, and the module's `tests/plan.tftest.hcl` is that plan, run
+under `tox` by `tests/test_terraform_module_plans.py`.
 
 `Action` is rendered as a bare string here rather than a one-element list,
 unlike its five siblings. The semantics are identical.
@@ -389,16 +399,22 @@ omitted `aws:PrincipalAccount` clause; the declaration therefore sets no
 13. An account with no exempt bucket → `violations: 0`, `exemptions: 0`, and
     `exempt_bucket_arns: []`, present rather than absent; a module covering
     only such accounts renders `s3_third_party_access_exempt_bucket_arns = []`
-    and the statement carries `Resource: "*"`.
+    and the statement carries `Resource: "*"`
+    (`empty_exempt_lists_render_resource_star` in the module's
+    `tests/plan.tftest.hcl`).
 14. Two accounts, one with an exempt bucket and one without → the root
     recommendation carries that one ARN, and the module renders it as the
-    bucket ARN and the bucket ARN with `/*` appended under `NotResource`.
+    bucket ARN and the bucket ARN with `/*` appended under `NotResource`
+    (`populated_exempt_lists_render_not_resource` in the module's
+    `tests/plan.tftest.hcl`).
 15. A result file written before `exempt_bucket_arns` existed → RCP parsing
     aborts naming the file, the key, and the check, and prescribes deleting
     the file and re-running.
 16. An exempt-bucket entry carrying `/` → the module's variable validation
     rejects the plan with a message naming the variable and the required form
-    (verified by `terraform validate`, not by the test suite).
+    (`bucket_arn_with_object_key_is_rejected` in
+    `test_environment/modules/rcps/tests/plan.tftest.hcl`, run under `tox` by
+    `tests/test_terraform_module_plans.py`).
 
 ## Referenced invariants
 

@@ -246,3 +246,20 @@ When at least one policy is enabled:
 - `aws_organizations_policy_attachment.attach_scp_1_to_account`: Attaches the SCP to the specified target
 
 When all policies are disabled, no resources are created.
+
+## Testing
+
+`tests/plan.tftest.hcl` plans this module with the real provider and no AWS
+credentials, and asserts on the policy document the provider renders. Run it
+from this directory:
+
+```bash
+terraform init
+terraform test
+```
+
+`tox` at the repository root runs it too, through
+`tests/test_terraform_module_plans.py`. It is a plan rather than a validate
+because the clauses built from conditionals in `locals.tf` are typed only once
+their lists are known, and `terraform validate` accepts a conditional that
+`terraform plan` refuses.

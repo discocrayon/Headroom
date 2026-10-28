@@ -308,6 +308,14 @@ the one other reference, and it is emitted unquoted, never as a string value.
 Both generated module calls take a `target_id` validated to be a 12-digit
 account ID, an `ou-` prefixed OU ID, or an `r-` prefixed root ID.
 
+Each module carries `tests/plan.tftest.hcl`, which plans it with the real
+provider and no credentials and asserts on the document the provider renders:
+the resource clause each `NotResource` statement builds from conditionals
+reads `Resource: "*"` for an empty list and the listed ARNs otherwise, and a
+malformed ARN is refused by the variable's validation.
+`tests/test_terraform_module_plans.py` runs both files under `tox`
+([`../verification/strategy.md`](../verification/strategy.md#the-gate)).
+
 ### SCP module
 
 One boolean per check, named exactly for the check. One allowlist variable per
@@ -332,9 +340,10 @@ declares the flag on the RCP side and renders locals rather than the accounts'
 real IDs, as a future KMS allowlist would. An ARN naming an account outside the
 hierarchy, or one with no account field, is emitted literally.
 
-A check one of whose allowlists declares an `empty_allowlist_comment` — all
-three of these do — is forced **off**, with that comment rendered, when the
-covered accounts observed no value at all (INV-06).
+A check one of whose allowlists declares an `empty_allowlist_comment` — the
+first two of these do; `deny_lambda_auth_type_none` declares none, because its
+module renders `Resource: "*"` for an empty list — is forced **off**, with that
+comment rendered, when the covered accounts observed no value at all (INV-06).
 [`../invariants.md`](../invariants.md#inv-06--an-empty-allowlist-is-never-rendered-as-an-empty-list)
 owns what an empty allowlist would do were it rendered. The renderer logs the
 same comment at warning level as `Module <module name>: <comment>`, so the run's
@@ -392,24 +401,24 @@ per target and does not manage that budget.
 
 **The RCP budget is exhaustible.** `modules/rcps/rcps.tf` creates exactly one
 `aws_organizations_policy`, so all seven statements share one document. With
-seven statements includable simultaneously the scaffolding alone costs roughly
-2,240 of the 5,120 characters, and each additional twelve-digit account ID costs
-about 14 more, leaving room for a couple of hundred allowlist entries across all
-seven lists combined. `DenyServiceConfusedDeputy` is 339 of that scaffolding on
-its own, measured with an empty allowlist, because it carries six services'
-actions and three condition blocks. A large enough organization will hit the
-plan-time `error()`, now slightly sooner.
+seven statements includable simultaneously the scaffolding alone costs 1,772 of
+the 5,120 characters. The first account ID in a list costs about 38 more — the
+`aws:PrincipalAccount` or `aws:SourceAccount` key arrives with it — and each
+further ID in the same list 15, so the seven lists together have room for about
+two hundred entries. `DenyServiceConfusedDeputy` is 316 of that scaffolding on
+its own, because it carries six services' actions and three condition blocks.
+A large enough organization will hit the plan-time `error()`.
 
-**Both figures are carried forward, not re-measured.** They come from `8bdeb4d`,
-the commit that added the seventh statement, and no `terraform plan` has been
-run against the module since to confirm either. The 339 in particular is
-asserted there as measured, and a later reader encoding `local.rcp_1_policy`
-directly reached 317 for that statement and 1,772 for the whole document without
-being able to close the gap — the length that counts is the provider's
-rendering, which needs credentials for
-`data.aws_organizations_organization.current` to read. The 14 does check out
-from the repository alone: a quoted twelve-digit account ID is 14 characters, 15
-with the comma joining it to the next.
+**The figures are the provider's rendering, measured without credentials.**
+The module's `tests/plan.tftest.hcl` plans it with the real provider and the
+organization read overridden, and the length of
+`aws_organizations_policy.rcp_1.content` in that plan, read off a scratch copy
+with an output added, is where the numbers come from: 1,772 with every
+statement on and every allowlist empty, 355 with the confused-deputy statement
+alone, which is 316 once the 39-character document frame is taken off, and
+2,035 with one placeholder ID in each of the seven lists. The pair of figures
+this paragraph used to carry forward from the commit that added the seventh
+statement, 2,240 and 339, did not survive the measurement.
 
 **Splitting across a second policy is deliberately not implemented.** A loud
 failure at plan time is the correct outcome: the alternative is silently

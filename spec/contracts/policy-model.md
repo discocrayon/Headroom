@@ -43,9 +43,9 @@ check declares its shape rather than inventing one.
 | 5a | **Principal account allowlist** | `Deny` unless `aws:PrincipalAccount` is allowlisted | the six third-party-access RCP checks |
 | 5b | **Resource ARN allowlist** | `Deny` with `NotResource` naming approved ARNs | `deny_iam_user_creation` |
 | 5c | **Condition value allowlist** | `Deny` unless a condition key's value is allowlisted | `deny_ec2_ami_owner` |
-| 6 | **Composition** | Two or more of the above in one statement | `deny_lambda_auth_type_none`, `deny_s3_third_party_access`, `deny_service_confused_deputy` |
+| 6 | **Composition** | Two or more of the above in one statement | `deny_lambda_auth_type_none`, `deny_s3_third_party_access`, `deny_sqs_third_party_access`, `deny_service_confused_deputy` |
 
-Pattern 6 has three members.
+Pattern 6 has four members.
 
 `deny_lambda_auth_type_none` composes a resource ARN allowlist (5b) with a
 conditional deny (2): `NotResource` names the function URLs that are already
@@ -120,12 +120,14 @@ applied.
 | Granularity | Account | Resource ARN | Attribute |
 
 No 5-family statement renders an empty allowlist as `[]` (INV-06), but the
-remedy differs by shape: a 5b or 5c SCP whose covered accounts observed no
-values leaves its policy off; a 5a check omits its `aws:PrincipalAccount`
-clause and still renders; and the one 5b clause in an RCP,
-`deny_s3_third_party_access`'s `NotResource`, gives way to `Resource: "*"` and
-still renders, because a deny with nothing to spare is the full deny rather
-than a broken one.
+remedy differs by shape: the 5c SCP and the plain 5b SCP,
+`deny_iam_user_creation`, leave their policy off when the covered accounts
+observed no values; a 5a check omits its `aws:PrincipalAccount` clause and
+still renders; and the 5b clause inside each pattern 6 statement that has
+one — the `NotResource` on `deny_lambda_auth_type_none`,
+`deny_s3_third_party_access` and `deny_sqs_third_party_access` — gives way to
+`Resource: "*"` and still renders, because a deny with nothing to spare is the
+full deny rather than a broken one.
 [`../invariants.md`](../invariants.md#inv-06--an-empty-allowlist-is-never-rendered-as-an-empty-list)
 owns the rule and why each shape earns the remedy it gets, and
 [the section below](#the-rcp-allowlist-statement) states what the 5a omission
@@ -582,7 +584,8 @@ and aborts as a `Principal` that is neither a string, a list, nor an object.
 The dividing line is the same one that governs unparseable JSON and a malformed
 `Statement`: **a document AWS could not have stored aborts the run; a document
 AWS accepted that no allowlist can express blocks the account, except at
-`deny_s3_third_party_access`, which exempts the bucket by ARN instead.**
+`deny_s3_third_party_access` and `deny_sqs_third_party_access`, which exempt
+the bucket or queue by ARN instead.**
 Aborting protects the account at the cost of every other account's results and
 puts the finding in a stack trace instead of the report, so it is reserved for
 the case where continuing would mean guessing.

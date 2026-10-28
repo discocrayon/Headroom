@@ -232,7 +232,8 @@ answers cannot disagree.
 The allowlist attached to a placement is the **union**, key by key, of the
 allowlist values observed across the accounts that placement covers:
 third-party account IDs for every RCP, exempt bucket ARNs for
-`deny_s3_third_party_access` as well, IAM user ARNs, AMI owner IDs, and
+`deny_s3_third_party_access` and exempt queue ARNs for
+`deny_sqs_third_party_access` as well, IAM user ARNs, AMI owner IDs, and
 public function URL ARNs for SCPs. `parse_results.union_allowlist_values` is
 the one rule, and both policy types call it at every level. A cleared account
 is one the policy type's safety predicate passes — zero violations for an

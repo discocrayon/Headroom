@@ -298,14 +298,18 @@ def test_a_declaring_check_records_its_allowlist_in_the_definition() -> None:
 def test_deny_lambda_auth_type_none_declares_the_public_function_url_allowlist() -> None:
     """
     The Lambda check's one allowlist is the public function URL list.
+
+    No comment turns the statement off on an empty list: the module renders
+    `Resource: "*"` in place of `NotResource`, the full deny rather than a
+    broken one, so an organization with no public URL keeps the protection
+    the statement had before it took an allowlist.
     """
     (allowlist,) = get_check_definition("deny_lambda_auth_type_none").allowlists
 
     assert allowlist.summary_key == "public_function_urls"
     assert allowlist.terraform_variable == "lambda_allowed_public_function_urls"
     assert allowlist.restores_account_ids is True
-    assert allowlist.empty_allowlist_comment is not None
-    assert allowlist.empty_allowlist_comment.startswith("deny_lambda_auth_type_none stays off here")
+    assert allowlist.empty_allowlist_comment is None
 
 
 def test_deny_sqs_third_party_access_declares_the_exempt_queue_allowlist() -> None:

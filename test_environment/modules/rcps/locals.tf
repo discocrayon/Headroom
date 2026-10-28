@@ -62,7 +62,12 @@ locals {
     # authorize against arn:aws:s3:::BUCKET/KEY - and the deny keeps every
     # other bucket. With no bucket to spare, the statement covers every
     # resource: an RCP resource array must hold at least one value, so an
-    # empty NotResource is never rendered.
+    # empty NotResource is never rendered. The two clauses are merged from
+    # two conditionals rather than one because Terraform requires both arms
+    # of a conditional to share a type, and objects keyed NotResource and
+    # Resource do not. A single conditional passes `terraform validate`,
+    # where the list is unknown and flatten() leaves its arm untyped, and
+    # fails `terraform plan`, where the list is known.
     {
       include = var.deny_s3_third_party_access,
       statement = merge(
@@ -82,7 +87,8 @@ locals {
             }
           }
         },
-        length(var.s3_third_party_access_exempt_bucket_arns) > 0 ? { "NotResource" = flatten([for arn in var.s3_third_party_access_exempt_bucket_arns : [arn, "${arn}/*"]]) } : { "Resource" = "*" },
+        length(var.s3_third_party_access_exempt_bucket_arns) > 0 ? { "NotResource" = flatten([for arn in var.s3_third_party_access_exempt_bucket_arns : [arn, "${arn}/*"]]) } : {},
+        length(var.s3_third_party_access_exempt_bucket_arns) > 0 ? {} : { "Resource" = "*" },
       )
     },
     # var.deny_secrets_manager_third_party_access

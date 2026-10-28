@@ -137,37 +137,47 @@ values leaves its policy **off**, with a rendered comment saying why:
 | Shape | What an empty list would do |
 |---|---|
 | A condition allowlist, `StringNotEquals`-style | Denies every call rather than none. `deny_ec2_ami_owner`. |
-| A resource allowlist, `NotResource` | Not a valid document at all. The IAM policy grammar admits one or more values in a resource array, so Organizations rejects the whole policy at apply time — every other statement in that module with it. `deny_iam_user_creation`, `deny_lambda_auth_type_none`. |
+| A resource allowlist, `NotResource` | Not a valid document at all. The IAM policy grammar admits one or more values in a resource array, so Organizations rejects the whole policy at apply time — every other statement in that module with it. `deny_iam_user_creation`. |
 
 The second shape is the wider blast radius of the two, because the rejected
 document is the module's whole policy rather than the one statement that was
 malformed.
 
-**Three RCP allowlist clauses are a third shape, and this invariant does not
-disable any of them.** The `aws:PrincipalAccount` clause on the six third-party-access
-checks, and `deny_service_confused_deputy`'s `aws:SourceAccount` clause, are each
-omitted from the rendered condition rather than written as `[]` when their
-allowlist is empty; the statement still renders and still denies every
-out-of-organization principal or source.
+**A third shape has a correct thing to render in place of the empty list, and
+this invariant does not disable any statement in it.** The `aws:PrincipalAccount`
+clause on the six third-party-access checks, and `deny_service_confused_deputy`'s
+`aws:SourceAccount` clause, are each omitted from the rendered condition rather
+than written as `[]` when their allowlist is empty; the statement still renders
+and still denies every out-of-organization principal or source.
 [`contracts/policy-model.md`](contracts/policy-model.md#the-rcp-allowlist-statement)
 states what the `aws:PrincipalAccount` omission changes and why;
 [`checks/rcps/deny_service_confused_deputy.md`](checks/rcps/deny_service_confused_deputy.md)
 does the same for `aws:SourceAccount`. The `NotResource` on
-`deny_s3_third_party_access` and `deny_sqs_third_party_access` is the third:
-with no bucket or queue to spare, the module renders `Resource: "*"` in its
-place, and the statement denies every out-of-organization principal on every
-bucket or queue. An empty `NotResource` would be malformed, as the
-second shape says — the difference is that this statement has a correct thing
-to render instead of the empty list, where an SCP whose whole purpose is the
-sparing does not.
+`deny_lambda_auth_type_none`, `deny_s3_third_party_access` and
+`deny_sqs_third_party_access` is the third: with no URL, bucket or queue to
+spare, the module renders `Resource: "*"` in its place, and the statement
+denies every new public function URL, or every out-of-organization principal
+on every bucket or queue. An empty `NotResource` would be malformed, as the
+second shape says — the difference is that these statements have a correct
+thing to render instead of the empty list.
+[`checks/scps/deny_lambda_auth_type_none.md`](checks/scps/deny_lambda_auth_type_none.md)
+states it for function URLs,
 [`checks/rcps/deny_s3_third_party_access.md`](checks/rcps/deny_s3_third_party_access.md)
-states it for buckets and
+for buckets and
 [`checks/rcps/deny_sqs_third_party_access.md`](checks/rcps/deny_sqs_third_party_access.md)
-for queues. Leaving any of the three off for an empty allowlist would be wrong:
+for queues. Leaving any of them off for an empty allowlist would be wrong:
 it would disable the six checks on exactly the accounts that granted no third
-party anything, and `deny_service_confused_deputy` on exactly
-the accounts that pinned no third-party source, and the two `NotResource`
-checks on exactly the accounts with nothing to spare.
+party anything, `deny_service_confused_deputy` on exactly the accounts that
+pinned no third-party source, and the three `NotResource` statements on
+exactly the accounts with nothing to spare — for `deny_lambda_auth_type_none`,
+the organization with no public URL, which is the one the deny protects best,
+and the one that had the deny before the statement took an allowlist.
+
+`deny_iam_user_creation` is the one `NotResource` statement left in the second
+shape. `Resource: "*"` would be a correct full deny of `iam:CreateUser` there
+too, so the second shape no longer rests on a difference between the
+statements; whether that check should move is conflict 12 in
+[`checks/index.md`](checks/index.md#unresolved-conflicts).
 
 This is distinct from INV-01: observing nothing is a legitimate fact about those
 accounts, whereas failing to record an observation is a broken artifact and
