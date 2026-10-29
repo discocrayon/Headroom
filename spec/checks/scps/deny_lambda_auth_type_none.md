@@ -242,6 +242,15 @@ in [`../index.md`](../index.md#unresolved-conflicts).
    A permission re-applied with that explicit qualifier is authorized against
    `...:function:NAME:$LATEST`, which the entry does not match, and is denied;
    the default form, with no qualifier, is spared.
+7. An account excluded from analysis — one in `skip_account_ids`, in a
+   non-ACTIVE lifecycle state, or created between the scan and the apply —
+   contributes no public URL, and the root placement this check always
+   produces reaches it anyway. The management account is not part of this
+   gap, since no SCP reaches it.
+   [`../../contracts/placement.md`](../../contracts/placement.md#scp-placement)
+   records the general case as "excluded from analysis" and calls it open and
+   deliberate. A URL already public in such an account is denied on its next
+   re-apply, while the check itself reports every analyzed account compliant.
 
 ## Acceptance scenarios
 

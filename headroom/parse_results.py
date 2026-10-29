@@ -567,6 +567,7 @@ def _create_no_deployment_recommendation(
 
 def _observations_for(
     check_results: List[SCPCheckResult],
+    *,
     affected_accounts: List[str]
 ) -> List[AllowlistValues]:
     """
@@ -696,7 +697,7 @@ def _build_root_recommendation(
         reasoning=_coverage_reasoning(len(affected_accounts), reached, "reached by root", "root"),
         allowlist_values=union_allowlist_values(
             get_check_definition(check_name),
-            observations=_observations_for(check_results, affected_accounts),
+            observations=_observations_for(check_results, affected_accounts=affected_accounts),
         ),
     )
 
@@ -741,7 +742,7 @@ def _build_ou_recommendation(
         reasoning=reasoning,
         allowlist_values=union_allowlist_values(
             get_check_definition(check_name),
-            observations=_observations_for(check_results, affected_accounts),
+            observations=_observations_for(check_results, affected_accounts=affected_accounts),
         ),
     )
 

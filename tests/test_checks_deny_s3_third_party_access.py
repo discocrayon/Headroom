@@ -6,6 +6,7 @@ import json
 import pytest
 import tempfile
 import shutil
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from typing import Generator, List, cast
 
@@ -13,8 +14,11 @@ from headroom.checks.rcps.deny_s3_third_party_access import DenyS3ThirdPartyAcce
 from headroom.constants import DENY_S3_THIRD_PARTY_ACCESS
 from headroom.config import DEFAULT_RESULTS_DIR
 from headroom.aws.s3 import S3BucketPolicyAnalysis
+from headroom.checks.registry import get_check_names
+from headroom.terraform.generate_rcps import parse_rcp_result_files
 from headroom.types import JsonDict
 from tests.constants import ORG_ID
+from tests.hierarchies import make_single_account_hierarchy
 
 
 class TestDenyS3ThirdPartyAccessCheck:
@@ -551,6 +555,59 @@ class TestDenyS3ThirdPartyAccessCheck:
         assert summary["exempt_bucket_arns"] == ["arn:aws:s3:::public-site"]
         assert len(results_data["buckets_with_wildcards"]) == 1
         assert len(results_data["buckets_third_parties_can_access"]) == 1
+
+    def test_a_bucket_named_with_the_account_id_survives_redaction(self, temp_results_dir: str) -> None:
+        """
+        `exclude_account_ids` leaves a bucket ARN alone, even one named after the account.
+
+        A bucket ARN has an empty account field, so there is nothing to
+        redact and nothing to restore, and this check's `Allowlist` does not
+        set `restores_account_ids`. The redaction is anchored on the ARN's
+        account field, not on twelve digits wherever they appear: a bucket
+        named after its account, the usual way to make a name globally
+        unique, has to reach `NotResource` as written, or the statement
+        spares a bucket that does not exist.
+        """
+        for check_name in get_check_names("rcps"):
+            (Path(temp_results_dir) / "rcps" / check_name).mkdir(parents=True, exist_ok=True)
+        check = DenyS3ThirdPartyAccessCheck(
+            check_name=DENY_S3_THIRD_PARTY_ACCESS,
+            account_name="test-account",
+            account_id="111111111111",
+            results_dir=temp_results_dir,
+            exclude_account_ids=True,
+            org_account_ids={"111111111111"},
+            org_id=ORG_ID,
+        )
+        bucket = S3BucketPolicyAnalysis(
+            bucket_name="public-111111111111",
+            bucket_arn="arn:aws:s3:::public-111111111111",
+            third_party_account_ids=set(),
+            has_wildcard_principal=True,
+            has_non_account_principals=False,
+            actions_by_account={},
+        )
+
+        with (
+            patch("headroom.checks.rcps.deny_s3_third_party_access.analyze_s3_bucket_policies") as mock_analysis,
+            patch("builtins.print"),
+        ):
+            mock_analysis.return_value = [bucket]
+            check.execute(MagicMock())
+
+        written = (Path(temp_results_dir) / "rcps" / DENY_S3_THIRD_PARTY_ACCESS / "test-account.json").read_text()
+        assert "arn:aws:s3:::public-111111111111" in written
+        assert "REDACTED" not in written
+
+        parsed = parse_rcp_result_files(temp_results_dir, make_single_account_hierarchy())
+
+        by_check = {result.check_name: result for result in parsed}
+        assert by_check[DENY_S3_THIRD_PARTY_ACCESS].account_allowlist_map == {
+            "111111111111": {
+                "unique_third_party_accounts": [],
+                "exempt_bucket_arns": ["arn:aws:s3:::public-111111111111"],
+            }
+        }
 
 
 # One statement whose bare wildcard `aws:PrincipalAccount` bounds to a single

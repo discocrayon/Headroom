@@ -5,6 +5,7 @@ Tests for headroom.checks.rcps.deny_sqs_third_party_access module.
 import pytest
 import tempfile
 import shutil
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from typing import Generator, List
 
@@ -12,8 +13,11 @@ from headroom.checks.rcps.deny_sqs_third_party_access import DenySQSThirdPartyAc
 from headroom.constants import DENY_SQS_THIRD_PARTY_ACCESS
 from headroom.aws.policy_documents import unreadable_service_principal_source
 from headroom.aws.sqs import SQSQueuePolicyAnalysis
+from headroom.checks.registry import get_check_names
 from headroom.enums import CheckCategory
+from headroom.terraform.generate_rcps import parse_rcp_result_files
 from tests.constants import ORG_ID
+from tests.hierarchies import make_single_account_hierarchy
 
 
 class TestDenySQSThirdPartyAccessCheck:
@@ -675,3 +679,57 @@ class TestDenySQSThirdPartyAccessCheck:
                 "333333333333",
                 "555555555555",
             ]
+
+    def test_a_redacted_result_parses_back_to_the_real_queue_arn(self, temp_results_dir: str) -> None:
+        """
+        The writer's redaction and the reader's restoration are one round trip.
+
+        `write_check_results` scrubs the account ID from every ARN when
+        `exclude_account_ids` is set - a queue ARN carries it between the
+        region and the queue name - and RCP parsing has to restore exactly
+        that account ID, or `NotResource` names a placeholder and spares no
+        queue. The round trip in `tests/test_generate_rcps.py` starts from a
+        hand-written REDACTED file, so the writer and the reader could drift
+        apart under it; this one starts from `execute`.
+        """
+        for check_name in get_check_names("rcps"):
+            (Path(temp_results_dir) / "rcps" / check_name).mkdir(parents=True, exist_ok=True)
+        check = DenySQSThirdPartyAccessCheck(
+            check_name=DENY_SQS_THIRD_PARTY_ACCESS,
+            account_name="test-account",
+            account_id="111111111111",
+            results_dir=temp_results_dir,
+            exclude_account_ids=True,
+            org_account_ids={"111111111111"},
+            org_id=ORG_ID,
+        )
+        queue = SQSQueuePolicyAnalysis(
+            queue_url="https://sqs.us-east-1.amazonaws.com/111111111111/public-queue",
+            queue_arn="arn:aws:sqs:us-east-1:111111111111:public-queue",
+            region="us-east-1",
+            third_party_account_ids=set(),
+            has_wildcard_principal=True,
+            has_non_account_principals=False,
+            actions_by_account={},
+        )
+
+        with (
+            patch("headroom.checks.rcps.deny_sqs_third_party_access.analyze_sqs_queue_policies") as mock_analysis,
+            patch("builtins.print"),
+        ):
+            mock_analysis.return_value = [queue]
+            check.execute(MagicMock())
+
+        written = (Path(temp_results_dir) / "rcps" / DENY_SQS_THIRD_PARTY_ACCESS / "test-account.json").read_text()
+        assert "arn:aws:sqs:us-east-1:REDACTED:public-queue" in written
+        assert "arn:aws:sqs:us-east-1:111111111111:public-queue" not in written
+
+        parsed = parse_rcp_result_files(temp_results_dir, make_single_account_hierarchy())
+
+        by_check = {result.check_name: result for result in parsed}
+        assert by_check[DENY_SQS_THIRD_PARTY_ACCESS].account_allowlist_map == {
+            "111111111111": {
+                "unique_third_party_accounts": [],
+                "exempt_queue_arns": ["arn:aws:sqs:us-east-1:111111111111:public-queue"],
+            }
+        }

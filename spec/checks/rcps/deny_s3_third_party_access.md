@@ -31,7 +31,8 @@ buckets whose grants no account list can express — a wildcard, a `Federated`
 or `CanonicalUser` principal, a CloudFront origin access identity, a public
 ACL — which the statement spares by ARN. A bucket policy edit cannot quietly
 expose data to a new external account, and no bucket the organization already
-exposes stops working.
+exposes stops working on its bucket or object ARN. Limitation 2 names the
+access-point path those two ARNs do not spare.
 
 ### Scope
 
@@ -317,8 +318,22 @@ omitted `aws:PrincipalAccount` clause; the declaration therefore sets no
 ## Accepted limitations
 
 1. The synthesized bucket ARN hardcodes the `aws` partition.
-2. Access Points are unread, so cross-account access delivered through one is
-   invisible.
+2. Access Points are unread, and a spared bucket is spared on its bucket and
+   object ARNs only. A request through an access point is authorized against
+   the access-point object ARN,
+   `arn:aws:s3:REGION:111111111111:accesspoint/NAME/object/KEY`, which neither
+   `NotResource` entry matches, so a third party reading an exempt bucket
+   through an access point in the same account is expected to be denied once
+   the statement lands. This is AWS's recommended delegation pattern, not an
+   edge case: a bucket policy granting `Principal: "*"` under
+   `StringEquals s3:DataAccessPointAccount` reads as an unconfined wildcard,
+   because that key bounds no principal
+   ([`../../contracts/policy-model.md`](../../contracts/policy-model.md#condition-confined-wildcards)),
+   so the bucket is exempt and the account is not blocked. An access point
+   owned by an account outside the organization is expected to be unaffected:
+   that resource is outside the statement's reach, and the bucket-side
+   authorization is spared. Neither expectation has been verified against a
+   live organization.
 3. An ACL grantee's permission is not read, only that the grant exists. A
    grantee holding `READ_ACP` alone counts the same as one holding `FULL_CONTROL`.
 4. A bucket whose Object Ownership is `BucketOwnerEnforced` has ACLs disabled,

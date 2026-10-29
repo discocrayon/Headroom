@@ -150,6 +150,16 @@ Whether this check should do the same is conflict 12 in
 2. A user deleted after the scan stays in the allowlist, which is harmless: the
    `NotResource` entry simply matches nothing.
 3. Service-linked roles and IAM roles are out of scope; only users are read.
+4. An account excluded from analysis — one in `skip_account_ids`, in a
+   non-ACTIVE lifecycle state, or created between the scan and the apply —
+   contributes no user, and the root placement this check always produces
+   reaches it anyway. The management account is not part of this gap, since
+   no SCP reaches it.
+   [`../../contracts/placement.md`](../../contracts/placement.md#scp-placement)
+   records the general case as "excluded from analysis" and calls it open and
+   deliberate. Recreating a user that already exists in such an account is
+   denied, as limitation 1 describes for a user created after the scan, while
+   the check itself reports every analyzed account compliant.
 
 ## Acceptance scenarios
 

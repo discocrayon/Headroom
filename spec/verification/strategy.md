@@ -58,7 +58,10 @@ passing vacuously. A missing binary fails the same way; a skip would report the
 modules as planned when nothing ran (INV-01). The first `init` downloads the
 AWS provider into the module's git-ignored `.terraform/`, and later runs reuse
 it; no lock file is committed, so the provider version floats as it does for
-every other Terraform in `test_environment/`. The plan is the point: `terraform
+every other Terraform in `test_environment/`, above the floors each module's
+`versions.tf` sets: Terraform 1.7.0, which introduced the data-source override,
+and provider 5.77.0, the first whose `aws_organizations_policy` accepts
+`RESOURCE_CONTROL_POLICY`. The plan is the point: `terraform
 validate` accepted a conditional whose arms were objects keyed `NotResource`
 and `Resource`, because the list the arm is built from is unknown at validate
 time, and `terraform plan` refused it once the list was known. Two commits

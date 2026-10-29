@@ -374,7 +374,7 @@ its consequence for this document is that only the first kind reaches INV-02:
 | Kind | Example | Answer |
 |---|---|---|
 | A document AWS could not have stored | Unparseable JSON, a `Statement` that is neither object nor list, an `Allow` carrying neither `Principal` nor `NotPrincipal`, a principal key the policy type does not accept, an `Action` that is neither a string nor an array | **Aborts.** |
-| A document AWS accepted that no allowlist can express | `Principal: "*"`, an `Allow` with `NotPrincipal`, and — in one of four resource policies — a `Federated` or `CanonicalUser` principal | **Blocks the account** for that check. Recorded as a violation; the scan continues. `deny_s3_third_party_access` and `deny_sqs_third_party_access` instead record an exemption and spare the bucket or queue by ARN; the account is not blocked |
+| A document AWS accepted that no allowlist can express | `Principal: "*"`, an `Allow` with `NotPrincipal`, and — in one of three resource policies — a `Federated` or `CanonicalUser` principal | **Blocks the account** for that check. Recorded as a violation; the scan continues. `deny_s3_third_party_access` and `deny_sqs_third_party_access` instead record an exemption and spare the bucket or queue by ARN; the account is not blocked |
 | A document AWS accepted that the check deliberately does not act on | A `Federated` principal in a role trust policy, paired with any grant of `sts:AssumeRole` other than that literal string | **Neither.** No finding is recorded and the account stays eligible |
 
 A statement's `Condition` is the one element the first row does not reach. A
