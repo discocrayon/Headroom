@@ -15,7 +15,7 @@ from .models import TerraformComment, TerraformElement, TerraformParameter, hcl_
 from .utils import account_id_local_name
 from ..checks.registry import CheckDefinition
 from ..enums import TerraformSection
-from ..types import OrganizationHierarchy
+from ..types import AllowlistValues, OrganizationHierarchy
 from ..utils import make_safe_variable_name
 
 logger = logging.getLogger(__name__)
@@ -23,43 +23,66 @@ logger = logging.getLogger(__name__)
 
 def renders_enabled(
     definition: CheckDefinition,
-    values: Optional[List[str]]
+    *,
+    values: AllowlistValues,
 ) -> bool:
     """
     Say whether a recommendation for this check actually renders enabled.
 
-    A check whose statement takes no allowlist always does. One that takes
-    an allowlist and observed nothing renders disabled where the check
-    declares a comment for that case, because an empty allowlist denies
-    everything rather than narrowing anything (INV-06).
+    A check whose statement takes no allowlist always does. One whose
+    allowlist observed nothing renders disabled where that entry declares a
+    comment for the case, because an empty allowlist denies everything or
+    is rejected as malformed rather than narrowing anything (INV-06); an
+    entry declaring no comment renders its empty list and leaves the
+    statement on.
 
     Args:
         definition: The check being rendered
-        values: The allowlist values its recommendation carries
+        values: The values its recommendation carries, keyed by summary key
 
     Returns:
         True where the boolean renders true
 
     Raises:
-        RuntimeError: If the check declares an allowlist and values is None,
-            which is lost data rather than an observed-empty allowlist
+        RuntimeError: If a declared key is absent from values, which is lost
+            data rather than an observed-empty allowlist
     """
-    allowlist = definition.allowlist
-    if allowlist is None:
-        return True
-    # Parsing gives a declaring check a list, empty when the covered accounts
-    # observed nothing, or aborts before placement (INV-01). The generators
-    # ask this to split placements into live and flipped before any module
-    # is built, so reading None as empty here would file the placement as
-    # flipped and compute every other module's comments from that.
-    if values is None:
-        raise RuntimeError(
-            f"{definition.check_name} declares an allowlist but its recommendation "
-            f"carries None instead of a list - an observed-empty allowlist is []."
-        )
-    if values:
-        return True
-    return not allowlist.empty_allowlist_comment
+    for allowlist in definition.allowlists:
+        # Parsing gives a declaring check a list under every declared key,
+        # empty when the covered accounts observed nothing, or aborts before
+        # placement (INV-01). The generators ask this to split placements
+        # into live and flipped before any module is built, so reading an
+        # absent key as empty here would file the placement as flipped and
+        # compute every other module's comments from that.
+        if allowlist.summary_key not in values:
+            raise RuntimeError(
+                f"{definition.check_name} declares the allowlist {allowlist.summary_key!r} but its "
+                f"recommendation carries no values for it - an observed-empty allowlist is []."
+            )
+        if values[allowlist.summary_key]:
+            continue
+        if allowlist.empty_allowlist_comment:
+            return False
+    return True
+
+
+def empty_allowlist_comment_of(definition: CheckDefinition) -> Optional[str]:
+    """
+    The sentence a check wrote for the case where its allowlist is empty.
+
+    Registration admits at most one entry carrying a comment, so this is the
+    check's one reason for rendering false on an empty allowlist.
+
+    Args:
+        definition: The check
+
+    Returns:
+        The comment, or None when no entry declares one
+    """
+    for allowlist in definition.allowlists:
+        if allowlist.empty_allowlist_comment:
+            return allowlist.empty_allowlist_comment
+    return None
 
 
 def empty_allowlist_comments(
@@ -84,12 +107,10 @@ def empty_allowlist_comments(
     """
     comments: Dict[str, str] = {}
     for definition in definitions:
-        allowlist = definition.allowlist
-        if allowlist is None:
+        comment = empty_allowlist_comment_of(definition)
+        if comment is None:
             continue
-        if not allowlist.empty_allowlist_comment:
-            continue
-        comments[definition.check_name] = allowlist.empty_allowlist_comment
+        comments[definition.check_name] = comment
     return comments
 
 
@@ -153,7 +174,7 @@ def _replace_account_id_in_arn(
 def _render_definition(
     definition: CheckDefinition,
     *,
-    allowlists: Mapping[str, Optional[List[str]]],
+    allowlists: Mapping[str, AllowlistValues],
     module_name: str,
     organization_hierarchy: OrganizationHierarchy,
     reasons: Mapping[str, List[str]],
@@ -163,10 +184,9 @@ def _render_definition(
 
     Args:
         definition: The check being rendered
-        allowlists: Each check this module enables, mapped to the values its
-            allowlist carries - None for a check whose statement takes no
-            allowlist; a list, possibly empty, for one that does. A check
-            absent from the map renders disabled
+        allowlists: Each check this module enables, mapped to its values
+            keyed by summary key - {} for a check whose statement takes no
+            allowlist. A check absent from the map renders disabled
         module_name: Terraform module being built, named in the warning and
             the error
         organization_hierarchy: Organization structure, for rewriting
@@ -180,9 +200,9 @@ def _render_definition(
         by its allowlist where those apply
 
     Raises:
-        RuntimeError: If this check declares an allowlist and its
-            recommendation carries None rather than a list, or if it is
-            enabled here and the reasons map names it anyway
+        RuntimeError: If this check declares an allowlist whose key its
+            recommendation does not carry, or if it is enabled here and the
+            reasons map names it anyway
     """
     explanation: List[TerraformElement] = [
         TerraformComment(line) for line in reasons.get(definition.check_name, [])
@@ -198,28 +218,10 @@ def _render_definition(
             f"Module {module_name}: {definition.check_name} is enabled here and also "
             f"carries a reason for being off - the placements and the reasons disagree"
         )
-    allowlist = definition.allowlist
-    if allowlist is None or not recommended:
+    if not definition.allowlists or not recommended:
         return explanation + [TerraformParameter(definition.check_name, recommended)]
 
     values = allowlists[definition.check_name]
-    # Parsing gives a declaring check a list, empty when the covered accounts
-    # observed nothing, or aborts before placement (INV-01). None here is
-    # lost data, and rendering it as empty would turn the statement off over
-    # a bug rather than over a fact about the organization.
-    if values is None:
-        raise RuntimeError(
-            f"Module {module_name}: {definition.check_name} declares an allowlist but "
-            f"its recommendation carries None instead of a list - an observed-empty "
-            f"allowlist is []."
-        )
-
-    if allowlist.restores_account_ids:
-        values = [
-            _replace_account_id_in_arn(value, organization_hierarchy)
-            for value in values
-        ]
-
     elements: List[TerraformElement] = explanation
 
     # An empty allowlist is not a narrower statement. It is one that denies
@@ -227,18 +229,26 @@ def _render_definition(
     # declaring a comment for that case stays off and says why (INV-06). The
     # comment is the check's own sentence, wrapped to the width every other
     # comment in the file is wrapped to.
-    enabled = renders_enabled(definition, values)
-    comment = allowlist.empty_allowlist_comment
+    enabled = renders_enabled(definition, values=values)
+    comment = empty_allowlist_comment_of(definition)
     if not enabled and comment:
         logger.warning(f"Module {module_name}: {comment}")
         elements.extend(TerraformComment(line) for line in wrap_comment(comment))
 
     elements.append(TerraformParameter(definition.check_name, enabled))
-    if enabled:
+    if not enabled:
+        return elements
+    for allowlist in definition.allowlists:
+        entry_values = values[allowlist.summary_key]
+        if allowlist.restores_account_ids:
+            entry_values = [
+                _replace_account_id_in_arn(value, organization_hierarchy)
+                for value in entry_values
+            ]
         # A restored allowlist is template text: the rewrite escaped its data
         # and inserted the one interpolation that must survive rendering.
         elements.append(
-            TerraformParameter(allowlist.terraform_variable, values, template=allowlist.restores_account_ids)
+            TerraformParameter(allowlist.terraform_variable, entry_values, template=allowlist.restores_account_ids)
         )
     return elements
 
@@ -246,7 +256,7 @@ def _render_definition(
 def render_check_parameters(
     definitions: List[CheckDefinition],
     *,
-    allowlists: Mapping[str, Optional[List[str]]],
+    allowlists: Mapping[str, AllowlistValues],
     module_name: str,
     organization_hierarchy: OrganizationHierarchy,
     reasons: Mapping[str, List[str]],
@@ -257,10 +267,9 @@ def render_check_parameters(
     Args:
         definitions: Every definition of this module's policy type, already
             in render order
-        allowlists: Each check this module enables, mapped to the values its
-            allowlist carries - None for a check whose statement takes no
-            allowlist; a list, possibly empty, for one that does. A check
-            absent from the map renders disabled
+        allowlists: Each check this module enables, mapped to its values
+            keyed by summary key - {} for a check whose statement takes no
+            allowlist. A check absent from the map renders disabled
         module_name: Terraform module being built, named in the warning and
             the error
         organization_hierarchy: Organization structure, for rewriting
@@ -274,7 +283,8 @@ def render_check_parameters(
 
     Raises:
         RuntimeError: If `allowlists` names a check no definition describes,
-            or carries None for a check that declares an allowlist
+            or a check declares an allowlist whose key its recommendation
+            does not carry
     """
     described = {definition.check_name for definition in definitions}
     for check_name in allowlists:

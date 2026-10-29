@@ -41,7 +41,7 @@ def rcp_evidence() -> list[RCPCheckParseResult]:
     return [
         RCPCheckParseResult(
             check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-            account_third_party_map={"111111111111": {"999999999999"}},
+            account_allowlist_map={"111111111111": {"unique_third_party_accounts": ["999999999999"]}},
             accounts_with_blockers=set(),
         )
     ]
@@ -956,7 +956,7 @@ class TestMainIntegration:
             recommended_level="ou",
             target_ou_id="ou-test-123",
             affected_accounts=["111111111111", "222222222222"],
-            third_party_account_ids=["333333333333"],
+            allowlist_values={"unique_third_party_accounts": ["333333333333"]},
             reasoning="Test reasoning"
         )
 
@@ -979,7 +979,7 @@ class TestMainIntegration:
             patch('headroom.main.parse_rcp_result_files', return_value=[
                 RCPCheckParseResult(
                     check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                    account_third_party_map={"111111111111": {"333333333333"}},
+                    account_allowlist_map={"111111111111": {"unique_third_party_accounts": ["333333333333"]}},
                     accounts_with_blockers=set(),
                 )
             ]),
@@ -1000,7 +1000,7 @@ class TestMainIntegration:
         assert any("Recommended Level: OU" in msg for msg in printed)
         assert any("Target OU: TestOU (ou-test-123)" in msg for msg in printed)
         assert any("Affected Accounts: 2" in msg for msg in printed)
-        assert any("Third-Party Accounts: 1" in msg for msg in printed)
+        assert any("Allowlist union: 1 unique_third_party_accounts" in msg for msg in printed)
         assert any("Reasoning: Test reasoning" in msg for msg in printed)
         mocks['compile'].assert_called_once()
 
@@ -1198,7 +1198,7 @@ class TestGenerationLeavesTheTreeWholeOnFailure:
             recommended_level="ou",
             target_ou_id="ou-1111-99999999",
             affected_accounts=[],
-            third_party_account_ids=[],
+            allowlist_values={"unique_third_party_accounts": []},
             reasoning="test",
         )
 

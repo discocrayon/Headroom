@@ -674,7 +674,7 @@ class TestHandleRcpWorkflow:
         parse_result = [
             RCPCheckParseResult(
                 check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                account_third_party_map={"111111111111": {"999999999999"}},
+                account_allowlist_map={"111111111111": {"unique_third_party_accounts": ["999999999999"]}},
                 accounts_with_blockers=set(),
             )
         ]
@@ -733,7 +733,7 @@ class TestHandleRcpWorkflow:
         parse_result = [
             RCPCheckParseResult(
                 check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                account_third_party_map={},
+                account_allowlist_map={},
                 accounts_with_blockers={"111111111111"},
             )
         ]
@@ -763,7 +763,7 @@ class TestHandleRcpWorkflow:
         parse_result = [
             RCPCheckParseResult(
                 check_name=check_name,
-                account_third_party_map={},
+                account_allowlist_map={},
                 accounts_with_blockers=set(),
             )
             for check_name in get_check_names("rcps")
@@ -785,7 +785,7 @@ class TestHandleRcpWorkflow:
         parse_result = [
             RCPCheckParseResult(
                 check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                account_third_party_map={"111111111111": {"999999999999"}},
+                account_allowlist_map={"111111111111": {"unique_third_party_accounts": ["999999999999"]}},
                 accounts_with_blockers=set(),
             )
         ]
@@ -815,7 +815,7 @@ class TestHandleRcpWorkflow:
         parse_result = [
             RCPCheckParseResult(
                 check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                account_third_party_map={"111111111111": {"999999999999"}},
+                account_allowlist_map={"111111111111": {"unique_third_party_accounts": ["999999999999"]}},
                 accounts_with_blockers=set(),
             )
         ]
@@ -851,7 +851,7 @@ class TestHandleRcpWorkflow:
         parse_result = [
             RCPCheckParseResult(
                 check_name=DENY_STS_THIRD_PARTY_ASSUMEROLE,
-                account_third_party_map={"111111111111": {"999999999999"}},
+                account_allowlist_map={"111111111111": {"unique_third_party_accounts": ["999999999999"]}},
                 accounts_with_blockers=set(),
             )
         ]

@@ -140,9 +140,11 @@ def _findings_for_resource(
     # Not a service, so it renders after the alphabetical run rather than
     # inside it. One statement covers every service the other six do.
     terraform_section=TerraformSection.SERVICE_CONFUSED_DEPUTY,
-    allowlist=Allowlist(
-        summary_key="unique_third_party_accounts",
-        terraform_variable="service_confused_deputy_source_account_ids_allowlist",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_third_party_accounts",
+            terraform_variable="service_confused_deputy_source_account_ids_allowlist",
+        ),
     ),
 )
 class DenyServiceConfusedDeputyCheck(BaseCheck[ServicePrincipalSourceFinding]):

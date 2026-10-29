@@ -414,8 +414,10 @@ an unresolvable unique ID - which has no policy principal behind it at all, and
 no wildcard anywhere. Both are folded into the same field, so the name
 understates what it holds by more than the one route it was named for.
 `keys_with_unresolved_grants` is what separates the second route back out. The
-same understatement applies to the equivalent field on all five resource-policy
-checks, for the `Federated` and `CanonicalUser` route they share.
+same understatement applies to the equivalent field on the other four
+resource-policy checks, for the `Federated` and `CanonicalUser` route they
+share; on `deny_s3_third_party_access` and `deny_sqs_third_party_access` the
+field holds exemptions rather than violations, understated the same way.
 
 ## Placement and generated policy
 

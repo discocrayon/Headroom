@@ -76,14 +76,14 @@ classDiagram
     +int compliant
     +float compliance_percentage
     +int? total_instances
-    +List~str~? allowlist_values
+    +AllowlistValues allowlist_values
   }
 
   class RCPCheckResult {
     +str account_id
     +str account_name
     +str check_name
-    +List~str~ third_party_account_ids
+    +AllowlistValues allowlist_values
     +bool blocks_rcp
   }
 
@@ -99,7 +99,7 @@ classDiagram
     +List~str~ affected_accounts
     +float compliance_percentage
     +str reasoning
-    +List~str~? allowlist_values
+    +AllowlistValues allowlist_values
   }
 
   class RCPPlacementRecommendations {
@@ -107,13 +107,13 @@ classDiagram
     +str recommended_level
     +str? target_ou_id
     +List~str~ affected_accounts
-    +List~str~ third_party_account_ids
+    +AllowlistValues allowlist_values
     +str reasoning
   }
 
   class RCPCheckParseResult {
     +str check_name
-    +AccountThirdPartyMap account_third_party_map
+    +AccountAllowlistMap account_allowlist_map
     +Set~str~ accounts_with_blockers
   }
 
@@ -147,7 +147,7 @@ classDiagram
     +str check_name
     +str check_type
     +TerraformSection terraform_section
-    +Allowlist? allowlist
+    +Tuple~Allowlist~ allowlists
   }
 
   class Allowlist {

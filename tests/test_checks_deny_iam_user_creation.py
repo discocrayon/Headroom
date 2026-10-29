@@ -9,23 +9,7 @@ from boto3.session import Session
 from headroom.aws.iam import IamUserAnalysis
 from headroom.checks.scps.deny_iam_user_creation import DenyIamUserCreationCheck
 from headroom.parse_results import parse_scp_result_files
-from headroom.types import AccountOrgPlacement, OrganizationHierarchy
-
-
-def make_single_account_hierarchy() -> OrganizationHierarchy:
-    """Build a one-account hierarchy naming 111111111111 as test-account."""
-    return OrganizationHierarchy(
-        root_id="r-1111",
-        organizational_units={},
-        accounts={
-            "111111111111": AccountOrgPlacement(
-                account_id="111111111111",
-                account_name="test-account",
-                parent_ou_id=None,
-                ou_path=["Root"],
-            )
-        },
-    )
+from tests.hierarchies import make_single_account_hierarchy
 
 
 class TestCheckDenyIamUserCreation:
@@ -183,7 +167,7 @@ class TestWhatThisCheckWritesCanBeParsedBack:
 
         assert [result.violations for result in parsed] == [0]
         assert [result.allowlist_values for result in parsed] == [
-            ["arn:aws:iam::111111111111:user/breakglass"]
+            {"users": ["arn:aws:iam::111111111111:user/breakglass"]}
         ]
 
     def test_a_redacted_result_parses_back_to_the_real_arn(self, tmp_path: Path) -> None:
@@ -224,5 +208,5 @@ class TestWhatThisCheckWritesCanBeParsedBack:
         parsed = parse_scp_result_files(str(tmp_path), hierarchy)
 
         assert [result.allowlist_values for result in parsed] == [
-            ["arn:aws:iam::111111111111:user/breakglass"]
+            {"users": ["arn:aws:iam::111111111111:user/breakglass"]}
         ]

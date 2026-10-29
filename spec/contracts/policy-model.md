@@ -43,14 +43,41 @@ check declares its shape rather than inventing one.
 | 5a | **Principal account allowlist** | `Deny` unless `aws:PrincipalAccount` is allowlisted | the six third-party-access RCP checks |
 | 5b | **Resource ARN allowlist** | `Deny` with `NotResource` naming approved ARNs | `deny_iam_user_creation` |
 | 5c | **Condition value allowlist** | `Deny` unless a condition key's value is allowlisted | `deny_ec2_ami_owner` |
-| 6 | **Composition** | Two or more of the above in one statement | `deny_service_confused_deputy` |
+| 6 | **Composition** | Two or more of the above in one statement | `deny_lambda_auth_type_none`, `deny_s3_third_party_access`, `deny_sqs_third_party_access`, `deny_service_confused_deputy` |
 
-Pattern 6 is `deny_service_confused_deputy`, the only composition. It is not
-5a because the allowlisted account is not the principal: the principal is the
-AWS service, and the account allowlisted is the one that configured it. The
-statement composes a conditional deny — the `Null` and `Bool` gates — with a
-condition value allowlist on `aws:SourceAccount`. What it renders is specified
-in [`../checks/rcps/deny_service_confused_deputy.md`](../checks/rcps/deny_service_confused_deputy.md).
+Pattern 6 has four members.
+
+`deny_lambda_auth_type_none` composes a resource ARN allowlist (5b) with a
+conditional deny (2): `NotResource` names the function URLs that are already
+public, and the condition confines the deny to `lambda:FunctionUrlAuthType =
+NONE`, so a function outside the allowlist may still do anything with its URL
+except make it public. It is not plain 5b because 5b denies the action
+outright for every resource off the list, and here the resources off the list
+are denied one value of one key. What it renders is specified in
+[`../checks/scps/deny_lambda_auth_type_none.md`](../checks/scps/deny_lambda_auth_type_none.md).
+
+`deny_s3_third_party_access` and `deny_sqs_third_party_access` each compose
+the principal account allowlist all six third-party-access checks render (5a)
+with a resource ARN allowlist (5b): `NotResource` names the resources whose
+grants no account list can express — a wildcard, a `Federated` or
+`CanonicalUser` principal, and for S3 a CloudFront origin access identity or a
+public ACL — so those buckets and queues keep working and every other one is
+denied to every principal outside the organization. S3 lists each bucket
+twice, as the bucket ARN and the bucket ARN with `/*`, because object actions
+authorize against the key; SQS lists the queue ARN once, since every `sqs:*`
+action authorizes against the queue itself. They are the two RCPs that use
+`NotResource`; RCPs accept it and reject `NotPrincipal` and `NotAction`. What
+each renders is specified in
+[`../checks/rcps/deny_s3_third_party_access.md`](../checks/rcps/deny_s3_third_party_access.md)
+and
+[`../checks/rcps/deny_sqs_third_party_access.md`](../checks/rcps/deny_sqs_third_party_access.md).
+
+`deny_service_confused_deputy` is not 5a because the allowlisted account is
+not the principal: the principal is the AWS service, and the account
+allowlisted is the one that configured it. The statement composes a
+conditional deny — the `Null` and `Bool` gates — with a condition value
+allowlist on `aws:SourceAccount`. What it renders is specified in
+[`../checks/rcps/deny_service_confused_deputy.md`](../checks/rcps/deny_service_confused_deputy.md).
 
 ### Pattern 3 versus pattern 4
 
@@ -93,9 +120,14 @@ applied.
 | Granularity | Account | Resource ARN | Attribute |
 
 No 5-family statement renders an empty allowlist as `[]` (INV-06), but the
-remedy differs by shape: a 5b or 5c check whose covered accounts observed no
-values leaves its policy off, while a 5a check omits its `aws:PrincipalAccount`
-clause and still renders.
+remedy differs by shape: the 5c SCP and the plain 5b SCP,
+`deny_iam_user_creation`, leave their policy off when the covered accounts
+observed no values; a 5a check omits its `aws:PrincipalAccount` clause and
+still renders; and the 5b clause inside each pattern 6 statement that has
+one — the `NotResource` on `deny_lambda_auth_type_none`,
+`deny_s3_third_party_access` and `deny_sqs_third_party_access` — gives way to
+`Resource: "*"` and still renders, because a deny with nothing to spare is the
+full deny rather than a broken one.
 [`../invariants.md`](../invariants.md#inv-06--an-empty-allowlist-is-never-rendered-as-an-empty-list)
 owns the rule and why each shape earns the remedy it gets, and
 [the section below](#the-rcp-allowlist-statement) states what the 5a omission
@@ -110,13 +142,13 @@ in `Action` and in which allowlist variable feeds them:
 Effect:    Deny
 Principal: "*"
 Action:    <the service's actions>
-Resource:  "*"
+Resource:  "*"  (deny_s3_third_party_access and deny_sqs_third_party_access: NotResource naming their exempt buckets or queues instead, when they have any)
 Condition: StringNotEqualsIfExists  aws:PrincipalOrgID   = <this organization>
            StringNotEqualsIfExists  aws:PrincipalAccount = <allowlist>   (omitted when empty)
            BoolIfExists             aws:PrincipalIsAWSService = "false"
 ```
 
-Three consequences follow, and they are the same for all six:
+Four consequences follow. The first three are the same for all six:
 
 - **In-organization principals are never denied**, whatever the allowlist holds,
   because `aws:PrincipalOrgID` matches organization *membership* — which by
@@ -127,6 +159,10 @@ Three consequences follow, and they are the same for all six:
   empty**, rather than rendered as an empty list. With it omitted, the statement
   still denies every out-of-organization principal; rendered empty, the semantics
   would differ.
+- **`deny_s3_third_party_access` and `deny_sqs_third_party_access` lift the
+  deny from named resources.** Their `NotResource` spares each exempt bucket
+  and its objects, or each exempt queue, for every principal and every action;
+  the other four deny on `Resource: "*"` and have no resource-shaped exemption.
 
 `deny_service_confused_deputy`, the seventh registered RCP check, is pattern 6
 above and generates a different statement. It shares `Effect`, `Principal`, and
@@ -142,18 +178,22 @@ Terraform variables, for all seven registered RCP checks:
 |---|---|---|
 | `deny_ecr_third_party_access` | `deny_ecr_third_party_access` | `ecr_third_party_access_account_ids_allowlist` |
 | `deny_kms_third_party_access` | `deny_kms_third_party_access` | `kms_third_party_access_account_ids_allowlist` |
-| `deny_s3_third_party_access` | `deny_s3_third_party_access` | `s3_third_party_access_account_ids_allowlist` |
+| `deny_s3_third_party_access` | `deny_s3_third_party_access` | `s3_third_party_access_account_ids_allowlist` and `s3_third_party_access_exempt_bucket_arns` |
 | `deny_secrets_manager_third_party_access` | `deny_secrets_manager_third_party_access` | `secrets_manager_third_party_account_ids_allowlist` |
-| `deny_sqs_third_party_access` | `deny_sqs_third_party_access` | `sqs_third_party_access_account_ids_allowlist` |
+| `deny_sqs_third_party_access` | `deny_sqs_third_party_access` | `sqs_third_party_access_account_ids_allowlist` and `sqs_third_party_access_exempt_queue_arns` |
 | `deny_sts_third_party_assumerole` | `deny_sts_third_party_assumerole` | `sts_third_party_assumerole_account_ids_allowlist` |
 | `deny_service_confused_deputy` | `deny_service_confused_deputy` | `service_confused_deputy_source_account_ids_allowlist` |
 
-Five of the seven allowlist variables are the check name without `deny_`, plus
-`_account_ids_allowlist`. Two are not. Secrets Manager's drops the `_access_`
-segment its check name carries — the Terraform module defines it that way, and
-it is not a typo to fix in Python: the Python table matches the module, and
-normalizing the name there would emit a module call assigning a variable the
-module never declares, which `terraform plan` refuses.
+Five of the seven account-ID allowlist variables are the check name without
+`deny_`, plus `_account_ids_allowlist`. Two are not. `deny_s3_third_party_access`
+and `deny_sqs_third_party_access` each declare a second variable:
+`s3_third_party_access_exempt_bucket_arns` and
+`sqs_third_party_access_exempt_queue_arns` name resource ARNs, not account IDs,
+and fit neither count. Secrets Manager's drops the
+`_access_` segment its check name carries — the Terraform module defines it
+that way, and it is not a typo to fix in Python: the Python table matches the
+module, and normalizing the name there would emit a module call assigning a
+variable the module never declares, which `terraform plan` refuses.
 `deny_service_confused_deputy`'s inserts `source_`, because the list holds the
 accounts a service acted **for** rather than calling principals.
 [`../checks/rcps/deny_service_confused_deputy.md`](../checks/rcps/deny_service_confused_deputy.md)
@@ -513,8 +553,12 @@ Both an unconfined wildcard and a principal carrying no account ID mean the
 same thing: the RCP would deny a grant that exists today, because an allowlist
 keyed on `aws:PrincipalAccount` cannot carry it. That is **one verdict,
 recorded** — the resource becomes a violation, the account is blocked for that
-check, and the scan continues. Which of the two it was is reported and not
-acted on differently.
+check, and the scan continues. `deny_s3_third_party_access` and
+`deny_sqs_third_party_access` are the exceptions: the same shapes make the
+bucket or queue an exemption, its ARN enters `exempt_bucket_arns` or
+`exempt_queue_arns`, and the statement spares it by `NotResource`, so the
+account is never blocked for those checks. Which of the two it was is reported
+and not acted on differently.
 
 An undocumented principal key is the separate case and **aborts**. AWS validates
 the `Principal` element when it stores a policy, so a key outside the documented
@@ -539,10 +583,12 @@ and aborts as a `Principal` that is neither a string, a list, nor an object.
 
 The dividing line is the same one that governs unparseable JSON and a malformed
 `Statement`: **a document AWS could not have stored aborts the run; a document
-AWS accepted that no allowlist can express blocks the account.** Aborting
-protects the account at the cost of every other account's results and puts the
-finding in a stack trace instead of the report, so it is reserved for the case
-where continuing would mean guessing.
+AWS accepted that no allowlist can express blocks the account, except at
+`deny_s3_third_party_access` and `deny_sqs_third_party_access`, which exempt
+the bucket or queue by ARN instead.**
+Aborting protects the account at the cost of every other account's results and
+puts the finding in a stack trace instead of the report, so it is reserved for
+the case where continuing would mean guessing.
 
 [`deny_sts_third_party_assumerole`](../checks/rcps/deny_sts_third_party_assumerole.md#why-a-federated-principal-is-otherwise-no-finding-here)
 reads all five and acts on every one but the third: it is the one place the
@@ -620,8 +666,9 @@ one is a grant to whichever service delivers for those sources; AWS's own
 cross-account SNS-to-SQS queue policy is written that way, `Principal: "*"`
 under `ArnEquals aws:SourceArn`. Such a statement is recorded with
 `service_principal` `*`. A wildcard under no source key is not read here at
-all; it is the plain wildcard the six third-party-access checks block the
-account for, unless a confining key bounds it
+all; it is the plain wildcard the six third-party-access checks act on — four
+block the account, two spare the resource by ARN — unless a confining key
+bounds it
 ([above](#condition-confined-wildcards)). A `Principal` naming accounts and no
 service is never read here, whatever its `Condition` carries.
 
@@ -747,7 +794,10 @@ owns that skip.
 
 One limitation survives on the confining side: `aws:SourceArn`. A
 `Principal: "*"` guarded by `ArnLike aws:SourceArn` — the legacy console form
-of a cross-account SNS-to-SQS queue policy — still blocks its account.
+of a cross-account SNS-to-SQS queue policy — is still read as unconfined. In
+ECR, KMS, and Secrets Manager that blocks the account; in S3 and SQS the
+resource is spared by ARN instead, the queue carrying this very shape
+included.
 
 Not reading it is a decision rather than unfinished work, and the two are
 easily confused because the coverage it costs is on the roadmap. What is

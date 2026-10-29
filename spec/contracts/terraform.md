@@ -308,31 +308,42 @@ the one other reference, and it is emitted unquoted, never as a string value.
 Both generated module calls take a `target_id` validated to be a 12-digit
 account ID, an `ou-` prefixed OU ID, or an `r-` prefixed root ID.
 
+Each module carries `tests/plan.tftest.hcl`, which plans it with the real
+provider and no credentials and asserts on the document the provider renders:
+the resource clause each `NotResource` statement builds from conditionals
+reads `Resource: "*"` for an empty list and the listed ARNs otherwise, and a
+malformed ARN is refused by the variable's validation.
+`tests/test_terraform_module_plans.py` runs both files under `tox`
+([`../verification/strategy.md`](../verification/strategy.md#the-gate)).
+
 ### SCP module
 
-One boolean per check, named exactly for the check. An allowlist variable for
-each check whose definition declares one, rendered **only when its check is
-enabled**; today two:
+One boolean per check, named exactly for the check. One allowlist variable per
+`Allowlist` a check declares, rendered **only when its check is enabled**, in
+declaration order after the boolean; today three:
 
 | Allowlist variable | Fed by |
 |---|---|
 | `ec2_allowed_ami_owners` | `deny_ec2_ami_owner` |
 | `iam_allowed_users` | `deny_iam_user_creation` |
+| `lambda_allowed_public_function_urls` | `deny_lambda_auth_type_none` |
 
-Both names come from the check's `Allowlist` in its own module; nothing in
-`generate_scps.py` names either.
+Every name comes from the check's `allowlists` in its own module; nothing in
+`generate_scps.py` names any of them.
 
 `iam_allowed_users` entries have their account ID rewritten to
 `${local.<account_name>_account_id}` so the ARN resolves through the same
 generated locals as everything else. The rewrite belongs to the
 `restores_account_ids` flag, not to IAM: it reads the ARN's account field
-whatever service the ARN names, so a future KMS or SQS allowlist declaring the
-flag renders locals rather than the accounts' real IDs. An ARN naming an account
-outside the hierarchy, or one with no account field, is emitted literally.
+whatever service the ARN names: `sqs_third_party_access_exempt_queue_arns`
+declares the flag on the RCP side and renders locals rather than the accounts'
+real IDs, as a future KMS allowlist would. An ARN naming an account outside the
+hierarchy, or one with no account field, is emitted literally.
 
-A check whose `Allowlist` declares an `empty_allowlist_comment` — both of these
-do — is forced **off**, with that comment rendered, when the covered accounts
-observed no value at all (INV-06).
+A check one of whose allowlists declares an `empty_allowlist_comment` — the
+first two of these do; `deny_lambda_auth_type_none` declares none, because its
+module renders `Resource: "*"` for an empty list — is forced **off**, with that
+comment rendered, when the covered accounts observed no value at all (INV-06).
 [`../invariants.md`](../invariants.md#inv-06--an-empty-allowlist-is-never-rendered-as-an-empty-list)
 owns what an empty allowlist would do were it rendered. The renderer logs the
 same comment at warning level as `Module <module name>: <comment>`, so the run's
@@ -346,13 +357,15 @@ existing workload.
 
 ### RCP module
 
-One boolean and one allowlist variable per check. The boolean is the check
-name; the allowlist variable is the `terraform_variable` the check's
-`Allowlist` declares in its own module. Both generators render from
-`get_check_definitions`, so a registered check cannot be dropped at render;
+One boolean per check and one variable per allowlist it declares. The boolean
+is the check name; each variable is the `terraform_variable` of one entry in
+the check's `allowlists`, rendered in declaration order. Five checks declare
+one list; `deny_s3_third_party_access` and `deny_sqs_third_party_access`
+declare two. Both generators render
+from `get_check_definitions`, so a registered check cannot be dropped at render;
 `test_every_registered_rcp_check_is_rendered` pins it (INV-13).
 
-Every check appears in every rendered module call: enabled with its allowlist, or
+Every check appears in every rendered module call: enabled with its allowlists, or
 explicitly `false`. Variable names are listed in
 [`policy-model.md`](policy-model.md) alongside the statements they gate.
 
@@ -368,9 +381,9 @@ within a section. Import order and registration order play no part, so two
 runs over one registry render identically. `headroom/terraform/parameters.py`
 is the one renderer both generators call. It aborts the run on a
 recommendation naming a check no definition of that module's policy type
-describes, and on a recommendation for an allowlist check that carries no list
-at all — an observed-empty allowlist is `[]`, and `None` there is lost data
-(INV-01).
+describes, and on a recommendation for an allowlist check whose values lack a
+declared summary key — an observed-empty allowlist is `[]` under its key, and
+a missing key is lost data (INV-01).
 
 ### Policy size
 
@@ -388,24 +401,24 @@ per target and does not manage that budget.
 
 **The RCP budget is exhaustible.** `modules/rcps/rcps.tf` creates exactly one
 `aws_organizations_policy`, so all seven statements share one document. With
-seven statements includable simultaneously the scaffolding alone costs roughly
-2,240 of the 5,120 characters, and each additional twelve-digit account ID costs
-about 14 more, leaving room for a couple of hundred allowlist entries across all
-seven lists combined. `DenyServiceConfusedDeputy` is 339 of that scaffolding on
-its own, measured with an empty allowlist, because it carries six services'
-actions and three condition blocks. A large enough organization will hit the
-plan-time `error()`, now slightly sooner.
+seven statements includable simultaneously the scaffolding alone costs 1,772 of
+the 5,120 characters. The first account ID in a list costs about 38 more — the
+`aws:PrincipalAccount` or `aws:SourceAccount` key arrives with it — and each
+further ID in the same list 15, so the seven lists together have room for about
+two hundred entries. `DenyServiceConfusedDeputy` is 316 of that scaffolding on
+its own, because it carries six services' actions and three condition blocks.
+A large enough organization will hit the plan-time `error()`.
 
-**Both figures are carried forward, not re-measured.** They come from `8bdeb4d`,
-the commit that added the seventh statement, and no `terraform plan` has been
-run against the module since to confirm either. The 339 in particular is
-asserted there as measured, and a later reader encoding `local.rcp_1_policy`
-directly reached 317 for that statement and 1,772 for the whole document without
-being able to close the gap — the length that counts is the provider's
-rendering, which needs credentials for
-`data.aws_organizations_organization.current` to read. The 14 does check out
-from the repository alone: a quoted twelve-digit account ID is 14 characters, 15
-with the comma joining it to the next.
+**The figures are the provider's rendering, measured without credentials.**
+The module's `tests/plan.tftest.hcl` plans it with the real provider and the
+organization read overridden, and the length of
+`aws_organizations_policy.rcp_1.content` in that plan, read off a scratch copy
+with an output added, is where the numbers come from: 1,772 with every
+statement on and every allowlist empty, 355 with the confused-deputy statement
+alone, which is 316 once the 39-character document frame is taken off, and
+2,035 with one placeholder ID in each of the seven lists. The pair of figures
+this paragraph used to carry forward from the commit that added the seventh
+statement, 2,240 and 339, did not survive the measurement.
 
 **Splitting across a second policy is deliberately not implemented.** A loud
 failure at plan time is the correct outcome: the alternative is silently
@@ -697,8 +710,15 @@ run against this fixture reaches rendering at all. Its calls also disagree with
 what placement would produce from the results that are committed:
 `deny_s3_third_party_access` blocks only in fort-knox, which makes it safe at OU
 `acme_acquisition` and at the account `security-tooling`, and both files render
-it `false`. `deny_ecr_third_party_access` is not one of those — it is clean in
-all four results, so it places at the root, and `false` below its target is
-exactly what a root placement renders; what is missing there is a committed
-`root_rcps.tf`. [`../checks/index.md`](../checks/index.md#unresolved-conflicts)
+it `false`. Since `deny_s3_third_party_access` stopped producing violations,
+the committed calls are stale in a second way: a re-run would enable it
+everywhere with `s3_third_party_access_exempt_bucket_arns` carrying
+fort-knox's wildcard bucket. `deny_sqs_third_party_access` stopped producing
+violations the same way and now always places at root; no SQS result is
+committed at all, so its `false` in both files is the below-target rendering
+described next. `deny_ecr_third_party_access` is not one of those
+— it is clean in all four results, so it places at the root, and `false` below
+its target is exactly what a root placement renders; what is missing there is
+a committed `root_rcps.tf`.
+[`../checks/index.md`](../checks/index.md#unresolved-conflicts)
 carries the two as conflicts 9 and 10.

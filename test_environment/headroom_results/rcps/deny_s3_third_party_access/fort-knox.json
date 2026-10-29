@@ -5,9 +5,13 @@
     "total_buckets_analyzed": 1,
     "buckets_third_parties_can_access": 0,
     "buckets_with_wildcards": 1,
-    "violations": 1,
+    "violations": 0,
+    "exemptions": 1,
     "unique_third_party_accounts": [],
     "third_party_account_count": 0,
+    "exempt_bucket_arns": [
+      "arn:aws:s3:::headroom-test-wildcard-999900003333"
+    ],
     "actions_by_third_party_account": {},
     "buckets_by_third_party_account": {}
   },

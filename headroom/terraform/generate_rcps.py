@@ -21,9 +21,10 @@ from .utils import (
     ou_path_names,
 )
 from ..utils import delete_and_rerun_remedy
-from ..checks.registry import get_allowlist, get_check_definitions, get_check_names
+from ..checks.registry import get_check_definition, get_check_definitions, get_check_names
 from ..types import (
-    AccountThirdPartyMap,
+    AccountAllowlistMap,
+    AllowlistValues,
     CheckCoverage,
     OrganizationHierarchy,
     RCPCheckParseResult,
@@ -33,9 +34,11 @@ from ..types import (
 from ..write_results import get_results_dir
 from ..parse_results import (
     _load_result_summary,
-    _read_declared_allowlist,
+    _read_allowlist_values,
     _read_result_account,
     _read_violations_count,
+    describe_allowlist_union,
+    union_allowlist_values,
     verify_one_result_file_per_account,
 )
 from ..placement import HierarchyPlacementAnalyzer
@@ -92,12 +95,14 @@ def _parse_single_rcp_result_file(
 
     violations = _read_violations_count(summary, result_file)
 
-    third_party_account_ids = _read_declared_allowlist(
-        summary,
-        check_name,
-        get_allowlist(check_name),
-        account.account_id,
-        result_file
+    definition = get_check_definition(check_name)
+    # A single account's own reading is unioned with nothing else so that it
+    # comes back deduplicated and sorted, the same normal form a later union
+    # with other accounts would produce - equality against it is then
+    # ordinary dict equality, not a set comparison in disguise.
+    allowlist_values = union_allowlist_values(
+        definition,
+        observations=[_read_allowlist_values(summary, definition, account.account_id, result_file)],
     )
 
     blocks_rcp = violations > 0
@@ -114,7 +119,7 @@ def _parse_single_rcp_result_file(
         account_id=account.account_id,
         account_name=account.account_name,
         check_name=check_name,
-        third_party_account_ids=third_party_account_ids,
+        allowlist_values=allowlist_values,
         blocks_rcp=blocks_rcp,
     )
 
@@ -153,7 +158,7 @@ def parse_rcp_result_files(
             missing_check_dirs.append(check_name)
             continue
 
-        account_third_party_map: AccountThirdPartyMap = {}
+        account_allowlist_map: AccountAllowlistMap = {}
         accounts_with_blockers: Set[str] = set()
 
         for result_file in sorted(check_dir.glob("*.json")):
@@ -169,13 +174,11 @@ def parse_rcp_result_files(
             if rcp_result.blocks_rcp:
                 accounts_with_blockers.add(rcp_result.account_id)
             else:
-                account_third_party_map[rcp_result.account_id] = set(
-                    rcp_result.third_party_account_ids
-                )
+                account_allowlist_map[rcp_result.account_id] = rcp_result.allowlist_values
 
         parse_results.append(RCPCheckParseResult(
             check_name=check_name,
-            account_third_party_map=account_third_party_map,
+            account_allowlist_map=account_allowlist_map,
             accounts_with_blockers=accounts_with_blockers,
         ))
 
@@ -237,7 +240,7 @@ def rcp_check_coverage(
     """
     return {
         parsed.check_name: CheckCoverage(
-            analyzed_accounts=frozenset(parsed.account_third_party_map) | frozenset(parsed.accounts_with_blockers),
+            analyzed_accounts=frozenset(parsed.account_allowlist_map) | frozenset(parsed.accounts_with_blockers),
             unsafe_accounts=frozenset(parsed.accounts_with_blockers),
         )
         for parsed in parse_results
@@ -281,25 +284,21 @@ def _should_skip_ou_for_rcp(
 
 def _create_root_level_rcp_recommendation(
     check_name: str,
-    account_third_party_map: AccountThirdPartyMap,
+    account_allowlist_map: AccountAllowlistMap,
     organization_hierarchy: OrganizationHierarchy
 ) -> RCPPlacementRecommendations:
     """
-    Create root-level RCP recommendation by unioning all third-party accounts.
+    Create root-level RCP recommendation by unioning every safe account's allowlists.
 
     Args:
         check_name: Name of the RCP check this recommendation is for
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        account_allowlist_map: Safe accounts, mapped to the allowlist values their results observed
         organization_hierarchy: Organization structure information
 
     Returns:
         Root-level RCP recommendation
     """
-    all_third_party_accounts: Set[str] = set()
-    for third_party_set in account_third_party_map.values():
-        all_third_party_accounts.update(third_party_set)
-
-    unioned_third_party = sorted(list(all_third_party_accounts))
+    unioned = union_allowlist_values(get_check_definition(check_name), observations=list(account_allowlist_map.values()))
     all_account_ids = list(organization_hierarchy.accounts.keys())
 
     return RCPPlacementRecommendations(
@@ -307,15 +306,15 @@ def _create_root_level_rcp_recommendation(
         recommended_level="root",
         target_ou_id=None,
         affected_accounts=all_account_ids,
-        third_party_account_ids=unioned_third_party,
-        reasoning=f"All {len(all_account_ids)} accounts can be protected with root-level RCP (allowlist contains {len(unioned_third_party)} third-party accounts from union of all account requirements)"
+        allowlist_values=unioned,
+        reasoning=f"All {len(all_account_ids)} accounts can be protected with root-level RCP (allowlist union: {describe_allowlist_union(unioned)})"
     )
 
 
 def _create_ou_level_rcp_recommendations(
     check_name: str,
     candidates: List[PlacementCandidate],
-    account_third_party_map: AccountThirdPartyMap,
+    account_allowlist_map: AccountAllowlistMap,
     organization_hierarchy: OrganizationHierarchy
 ) -> tuple[List[RCPPlacementRecommendations], Set[str]]:
     """
@@ -324,7 +323,7 @@ def _create_ou_level_rcp_recommendations(
     Args:
         check_name: Name of the RCP check these recommendations are for
         candidates: Placement candidates from analyzer
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        account_allowlist_map: Safe accounts, mapped to the allowlist values their results observed
         organization_hierarchy: Organization structure information
 
     Returns:
@@ -337,22 +336,21 @@ def _create_ou_level_rcp_recommendations(
         if candidate.level != "ou" or candidate.target_id is None:
             continue
 
-        ou_third_party_accounts: Set[str] = set()
-        for acc_id in candidate.affected_accounts:
-            if acc_id in account_third_party_map:
-                ou_third_party_accounts.update(account_third_party_map[acc_id])
+        unioned = union_allowlist_values(
+            get_check_definition(check_name),
+            observations=[account_allowlist_map[acc_id] for acc_id in candidate.affected_accounts],
+        )
 
         ou_info = organization_hierarchy.organizational_units.get(candidate.target_id)
         ou_name = ou_info.name if ou_info else candidate.target_id
 
-        unioned_third_party = sorted(list(ou_third_party_accounts))
         recommendations.append(RCPPlacementRecommendations(
             check_name=check_name,
             recommended_level="ou",
             target_ou_id=candidate.target_id,
             affected_accounts=candidate.affected_accounts,
-            third_party_account_ids=unioned_third_party,
-            reasoning=f"OU '{ou_name}' with {len(candidate.affected_accounts)} accounts can be protected with OU-level RCP (allowlist contains {len(unioned_third_party)} third-party accounts from union of account requirements)"
+            allowlist_values=unioned,
+            reasoning=f"OU '{ou_name}' with {len(candidate.affected_accounts)} accounts can be protected with OU-level RCP (allowlist union: {describe_allowlist_union(unioned)})"
         ))
         ou_covered_accounts.update(candidate.affected_accounts)
 
@@ -361,7 +359,7 @@ def _create_ou_level_rcp_recommendations(
 
 def _create_account_level_rcp_recommendations(
     check_name: str,
-    account_third_party_map: AccountThirdPartyMap,
+    account_allowlist_map: AccountAllowlistMap,
     covered_accounts: Set[str]
 ) -> List[RCPPlacementRecommendations]:
     """
@@ -369,7 +367,7 @@ def _create_account_level_rcp_recommendations(
 
     Args:
         check_name: Name of the RCP check these recommendations are for
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        account_allowlist_map: Safe accounts, mapped to the allowlist values their results observed
         covered_accounts: Accounts already covered by OU-level policies
 
     Returns:
@@ -377,17 +375,18 @@ def _create_account_level_rcp_recommendations(
     """
     recommendations: List[RCPPlacementRecommendations] = []
 
-    for account_id, third_party_accounts in account_third_party_map.items():
+    for account_id, observed in account_allowlist_map.items():
         if account_id in covered_accounts:
             continue
 
+        unioned = union_allowlist_values(get_check_definition(check_name), observations=[observed])
         recommendations.append(RCPPlacementRecommendations(
             check_name=check_name,
             recommended_level="account",
             target_ou_id=None,
             affected_accounts=[account_id],
-            third_party_account_ids=sorted(list(third_party_accounts)),
-            reasoning=f"Account has unique third-party account requirements ({len(third_party_accounts)} accounts) - deploy at account level"
+            allowlist_values=unioned,
+            reasoning=f"Account has unique allowlist requirements ({describe_allowlist_union(unioned)}) - deploy at account level"
         ))
 
     return recommendations
@@ -422,7 +421,7 @@ def _is_safe_for_ou_rcp(
 def _process_rcp_placement_candidates(
     check_name: str,
     candidates: List[PlacementCandidate],
-    account_third_party_map: AccountThirdPartyMap,
+    account_allowlist_map: AccountAllowlistMap,
     organization_hierarchy: OrganizationHierarchy
 ) -> List[RCPPlacementRecommendations]:
     """
@@ -433,7 +432,7 @@ def _process_rcp_placement_candidates(
     Args:
         check_name: Name of the RCP check these candidates belong to
         candidates: List of placement candidates from analyzer
-        account_third_party_map: Dictionary mapping account_id -> set of third-party account IDs
+        account_allowlist_map: Safe accounts, mapped to the allowlist values their results observed
         organization_hierarchy: Organization structure information
 
     Returns:
@@ -443,7 +442,7 @@ def _process_rcp_placement_candidates(
         if candidate.level == "root":
             root_recommendation = _create_root_level_rcp_recommendation(
                 check_name,
-                account_third_party_map,
+                account_allowlist_map,
                 organization_hierarchy
             )
             return [root_recommendation]
@@ -451,13 +450,13 @@ def _process_rcp_placement_candidates(
     ou_recommendations, ou_covered_accounts = _create_ou_level_rcp_recommendations(
         check_name,
         candidates,
-        account_third_party_map,
+        account_allowlist_map,
         organization_hierarchy
     )
 
     account_recommendations = _create_account_level_rcp_recommendations(
         check_name,
-        account_third_party_map,
+        account_allowlist_map,
         ou_covered_accounts
     )
 
@@ -479,7 +478,7 @@ def _determine_check_rcp_placement(
         Placement recommendations for this check, empty if no account has
         findings that can be expressed as an allowlist
     """
-    if not parsed.account_third_party_map:
+    if not parsed.account_allowlist_map:
         logger.info(
             f"No deployable third-party findings for {parsed.check_name}"
         )
@@ -489,7 +488,7 @@ def _determine_check_rcp_placement(
     # predicates answer from `accounts_with_blockers`, and the third parties
     # are read from the map again when each recommendation is built.
     analyzer: HierarchyPlacementAnalyzer[str] = HierarchyPlacementAnalyzer(organization_hierarchy)
-    account_ids = list(parsed.account_third_party_map)
+    account_ids = list(parsed.account_allowlist_map)
 
     candidates = analyzer.determine_placement(
         check_results=account_ids,
@@ -503,7 +502,7 @@ def _determine_check_rcp_placement(
     return _process_rcp_placement_candidates(
         parsed.check_name,
         candidates,
-        parsed.account_third_party_map,
+        parsed.account_allowlist_map,
         organization_hierarchy
     )
 
@@ -563,10 +562,9 @@ def _build_rcp_terraform_module(
         recommendations: List of RCP recommendations for this target
         comment: Comment line describing the configuration (e.g., "Organization Root")
         organization_hierarchy: Organization structure, forwarded to the
-            shared renderer so an ARN allowlist can be rewritten to
-            generated locals. No RCP allowlist declares
-            `restores_account_ids` today, so the rewrite is a no-op for
-            every RCP module
+            shared renderer so an ARN allowlist declaring
+            `restores_account_ids` has each ARN's account field rewritten
+            to the account's generated local, exactly as an SCP allowlist is
         target_id: The real organization root, OU, or account ID this
             module targets - not `target_id_reference`, which is the HCL
             local the rendered module attaches to
@@ -591,8 +589,8 @@ def _build_rcp_terraform_module(
             definition describes, which would otherwise render as a module
             silently missing that statement
     """
-    allowlists = {
-        rec.check_name: rec.third_party_account_ids for rec in recommendations
+    allowlists: Dict[str, AllowlistValues] = {
+        rec.check_name: rec.allowlist_values for rec in recommendations
     }
     definitions = get_check_definitions("rcps")
 
@@ -760,10 +758,9 @@ def _render_root_rcp_terraform(
     Args:
         recs: List of RCP recommendations for root level
         organization_hierarchy: Organization structure, forwarded to the
-            shared renderer so an ARN allowlist can be rewritten to
-            generated locals. No RCP allowlist declares
-            `restores_account_ids` today, so the rewrite is a no-op for
-            every RCP module
+            shared renderer so an ARN allowlist declaring
+            `restores_account_ids` has each ARN's account field rewritten
+            to the account's generated local, exactly as an SCP allowlist is
         output_path: Directory the file belongs in
         placed: Each check mapped to the target IDs carrying it and
             rendering true there
@@ -822,9 +819,7 @@ def render_rcp_terraform(
     # needs, so `flipped` is empty for every RCP run today; the split is here
     # so that a check declaring one tomorrow is explained below its target
     # without an edit.
-    placed, flipped = split_placements(
-        recommendations, lambda rec: rec.third_party_account_ids, organization_hierarchy
-    )
+    placed, flipped = split_placements(recommendations, organization_hierarchy)
     flipped_comment = empty_allowlist_comments(get_check_definitions("rcps"))
 
     account_recommendations: defaultdict[str, List[RCPPlacementRecommendations]] = defaultdict(list)

@@ -9,6 +9,10 @@
 */*/.terraform*
 */.terraform/*
 */*/.terraform/*
+# What `terraform init` leaves in a module when `terraform test` runs it:
+# tests/test_terraform_module_plans.py inits test_environment/modules/* in place.
+.terraform/
+.terraform.lock.hcl
 */.DS_Store
 .DS_Store
 *.pyc

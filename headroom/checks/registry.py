@@ -3,7 +3,7 @@ Check registry: the one place a check is described.
 
 A check registers itself with `@register_check`, which records a frozen
 `CheckDefinition` - the class, the name and type, the Terraform section its
-parameters render under, and the allowlist its statement is scoped by, if
+parameters render under, and the allowlists its statement is scoped by, if
 any. Every later stage reads the definition rather than naming the check:
 collection and result writing iterate the registry, parsing reads each
 allowlist's summary key from it, and both Terraform generators render from
@@ -62,13 +62,14 @@ class CheckDefinition:
             Terraform boolean that enables the statement
         check_type: `scps` or `rcps`
         terraform_section: The section its parameters render under
-        allowlist: The allowlist its statement is scoped by, or None
+        allowlists: The allowlists its statement is scoped by, in the order
+            their variables render; empty for a statement that takes none
     """
     check_class: Type[BaseCheck]
     check_name: str
     check_type: str
     terraform_section: TerraformSection
-    allowlist: Optional[Allowlist]
+    allowlists: Tuple[Allowlist, ...]
 
 
 _CHECK_REGISTRY: Dict[str, CheckDefinition] = {}
@@ -87,8 +88,9 @@ _CHECK_TYPES: Tuple[str, str] = (CheckType.SCPS.value, CheckType.RCPS.value)
 def _validate_registration(
     check_class: Type[BaseCheck],
     check_name: str,
+    *,
     check_type: str,
-    allowlist: Optional[Allowlist],
+    allowlists: Tuple[Allowlist, ...],
 ) -> None:
     """
     Reject a registration the rest of the pipeline could not carry out.
@@ -101,15 +103,16 @@ def _validate_registration(
         check_class: The class being registered
         check_name: Name the check is registering under
         check_type: Type of check (scps, rcps)
-        allowlist: The allowlist the statement is scoped by, if any
+        allowlists: The allowlists the statement is scoped by, if any
 
     Raises:
         ValueError: If the name is taken or already claimed as an allowlist
             variable, the class is already registered under another name,
             the type is not a plain string or names no results directory, an
-            RCP declares no allowlist, an allowlist is missing a field or
-            carries an empty comment, or its Terraform variable is already
-            claimed
+            RCP declares no allowlist, two allowlists share a summary key or
+            a Terraform variable, two carry an empty-allowlist comment, an
+            allowlist is missing a field or carries a blank comment, or its
+            Terraform variable is already claimed
     """
     if check_name in _CHECK_REGISTRY:
         raise ValueError(f"Check {check_name!r} is already registered")
@@ -130,8 +133,8 @@ def _validate_registration(
     claimed_by: Dict[str, str] = {}
     for definition in _CHECK_REGISTRY.values():
         claimed_by[definition.check_name] = definition.check_name
-        if definition.allowlist is not None:
-            claimed_by[definition.allowlist.terraform_variable] = definition.check_name
+        for entry in definition.allowlists:
+            claimed_by[entry.terraform_variable] = definition.check_name
     if check_name in claimed_by:
         raise ValueError(
             f"Check {check_name!r} is already claimed as the allowlist variable of {claimed_by[check_name]!r}"
@@ -151,33 +154,49 @@ def _validate_registration(
         raise ValueError(
             f"Check {check_name!r} has unknown type {check_type!r}; expected 'scps' or 'rcps'"
         )
-    if check_type == CheckType.RCPS.value and allowlist is None:
+    if check_type == CheckType.RCPS.value and not allowlists:
         raise ValueError(
             f"RCP check {check_name!r} declares no allowlist; "
             "RCP placement is built from one"
         )
-    if allowlist is None:
-        return
-    if not allowlist.summary_key or not allowlist.terraform_variable:
+    # Values are keyed by summary key from parsing through rendering, so two
+    # entries under one key would be read as one list and rendered twice.
+    summary_keys = [entry.summary_key for entry in allowlists]
+    for summary_key in summary_keys:
+        if summary_keys.count(summary_key) > 1:
+            raise ValueError(
+                f"Check {check_name!r} declares the summary_key {summary_key!r} twice"
+            )
+    # The renderer turns a statement off over the one comment an empty list
+    # earns it; two comments would leave it choosing which reason to print.
+    commented = [entry for entry in allowlists if entry.empty_allowlist_comment is not None]
+    if len(commented) > 1:
         raise ValueError(
-            f"Check {check_name!r} allowlist needs a summary_key and a terraform_variable"
+            f"Check {check_name!r} declares empty_allowlist_comment on two allowlists; "
+            f"at most one list can turn the statement off"
         )
-    # The renderer tests the comment for truth, so "" would render the empty
-    # allowlist as [] while reading as though the author asked for the
-    # statement to be turned off with a reason. Whitespace is truthy, so it
-    # would turn the statement off and then wrap to zero comment lines - a
-    # bare false in the declaring module and in every module below it.
-    comment = allowlist.empty_allowlist_comment
-    if comment is not None and not comment.strip():
-        raise ValueError(
-            f"Check {check_name!r} allowlist empty_allowlist_comment is empty or only whitespace; "
-            f"pass None to render an empty allowlist as [], or a comment saying why the statement stays off"
-        )
-    variable = allowlist.terraform_variable
-    if variable in claimed_by:
-        raise ValueError(
-            f"Check {check_name!r} allowlist variable {variable!r} is already claimed by {claimed_by[variable]!r}"
-        )
+    for allowlist in allowlists:
+        if not allowlist.summary_key or not allowlist.terraform_variable:
+            raise ValueError(
+                f"Check {check_name!r} allowlist needs a summary_key and a terraform_variable"
+            )
+        # The renderer tests the comment for truth, so "" would render the empty
+        # allowlist as [] while reading as though the author asked for the
+        # statement to be turned off with a reason. Whitespace is truthy, so it
+        # would turn the statement off and then wrap to zero comment lines - a
+        # bare false in the declaring module and in every module below it.
+        comment = allowlist.empty_allowlist_comment
+        if comment is not None and not comment.strip():
+            raise ValueError(
+                f"Check {check_name!r} allowlist empty_allowlist_comment is empty or only whitespace; "
+                f"pass None to render an empty allowlist as [], or a comment saying why the statement stays off"
+            )
+        variable = allowlist.terraform_variable
+        if variable in claimed_by:
+            raise ValueError(
+                f"Check {check_name!r} allowlist variable {variable!r} is already claimed by {claimed_by[variable]!r}"
+            )
+        claimed_by[variable] = check_name
 
 
 def register_check(
@@ -185,7 +204,7 @@ def register_check(
     check_name: str,
     *,
     terraform_section: TerraformSection,
-    allowlist: Optional[Allowlist] = None,
+    allowlists: Tuple[Allowlist, ...] = (),
 ) -> Callable[[Type[BaseCheck]], Type[BaseCheck]]:
     """
     Decorator to register a check class under a complete definition.
@@ -194,7 +213,8 @@ def register_check(
         check_type: Type of check (scps, rcps)
         check_name: Name of the check (deny_ec2_imds_v1, deny_sts_third_party_assumerole)
         terraform_section: Section the check's parameters render under
-        allowlist: The allowlist the statement is scoped by, if any
+        allowlists: The allowlists the statement is scoped by, in the order
+            their variables render; empty when it takes none
 
     Returns:
         Decorator function that registers a check class
@@ -209,13 +229,13 @@ def register_check(
             ...
     """
     def decorator(cls: Type[BaseCheck]) -> Type[BaseCheck]:
-        _validate_registration(cls, check_name, check_type, allowlist)
+        _validate_registration(cls, check_name, check_type=check_type, allowlists=allowlists)
         definition = CheckDefinition(
             check_class=cls,
             check_name=check_name,
             check_type=check_type,
             terraform_section=terraform_section,
-            allowlist=allowlist,
+            allowlists=allowlists,
         )
         _CHECK_REGISTRY[check_name] = definition
         cls.CHECK_NAME = check_name
@@ -295,26 +315,6 @@ def get_check_definitions(check_type: str) -> List[CheckDefinition]:
             definition.check_name,
         ),
     )
-
-
-def get_allowlist(check_name: str) -> Allowlist:
-    """
-    Get the allowlist one check's statement is scoped by.
-
-    Args:
-        check_name: Name of the check
-
-    Returns:
-        The check's allowlist
-
-    Raises:
-        ValueError: If check name is not registered, or the check declares no
-            allowlist
-    """
-    allowlist = get_check_definition(check_name).allowlist
-    if allowlist is None:
-        raise ValueError(f"Check {check_name!r} declares no allowlist")
-    return allowlist
 
 
 def get_check_class(check_name: str) -> Type[BaseCheck]:

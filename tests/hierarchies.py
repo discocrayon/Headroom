@@ -50,3 +50,27 @@ def make_nested_org() -> OrganizationHierarchy:
             ),
         },
     )
+
+
+def make_single_account_hierarchy() -> OrganizationHierarchy:
+    """
+    Build a one-account organization: 111111111111 as test-account at the root.
+
+    The check round-trip tests write a result as this account and parse it
+    back, so the hierarchy names exactly the account the result carries.
+
+    Returns:
+        A hierarchy with one account attached directly to the root
+    """
+    return OrganizationHierarchy(
+        root_id="r-1111",
+        organizational_units={},
+        accounts={
+            "111111111111": AccountOrgPlacement(
+                account_id="111111111111",
+                account_name="test-account",
+                parent_ou_id=None,
+                ou_path=["Root"],
+            )
+        },
+    )

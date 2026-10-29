@@ -133,9 +133,13 @@ the base shape above.
 | `deny_sts_third_party_assumerole` | `roles_third_parties_can_access`, `roles_with_wildcards` |
 | `deny_service_confused_deputy` | `violations`, `exemptions`, `compliant_instances` |
 
-`*_third_parties_can_access` is `violations + compliant`, so a wildcard finding
-appears in both lists. `*_with_wildcards` is `violations` alone. Renaming either
-key, in any of the six, is a wire-format migration (INV-14).
+`*_third_parties_can_access` is `violations + compliant` in four of the six, so
+a wildcard finding appears in both lists, and `*_with_wildcards` is `violations`
+alone. `deny_s3_third_party_access` and `deny_sqs_third_party_access` produce
+no violations: their `*_third_parties_can_access` is `exemptions + compliant`
+and their `*_with_wildcards` is `exemptions`, the buckets and queues their
+statements spare by ARN. Renaming either key, in any of the six, is a
+wire-format migration (INV-14).
 
 A reader that expects a `*_third_parties_can_access` pair in every RCP file gets
 the seventh wrong; one that switches on `summary.check` does not. Beyond the
@@ -193,13 +197,17 @@ missing key and a legitimately empty value mean opposite things (INV-01).
 |---|---|---|
 | `check` | RCP parsing | The file cannot be confirmed to belong to its directory |
 | `violations` | SCP and RCP parsing | Whether the account is safe is unknown, and defaulting answers it in the safest direction. `results_exist` skips an account whose result file already exists, so re-running without deleting the file repeats the same failure; both readers' errors name the file and prescribe exactly that. `ResultFilePathResolver.exists()` accepts either filename format, so the remedy also names the directory holding the other form — deleting only the file the reader tripped on leaves the skip in place when both are present. The check the remedy names is the directory's, since `results_exist` looks in the directory named for the check being run: a misfiled SCP result is attributed to its `summary.check`, but the skip it holds is the directory's |
-| `unique_third_party_accounts` | RCP parsing, as the `summary_key` every RCP definition declares | The allowlist would render empty, which denies every third party (INV-06) |
-| The `summary_key` an SCP check's `Allowlist` declares — `unique_ami_owners` for `deny_ec2_ami_owner`, `users` for `deny_iam_user_creation` | SCP parsing | Indistinguishable from an account that observed nothing, which would leave the policy off rather than flag a stale result |
+| `unique_third_party_accounts` | RCP parsing, as the `summary_key` of the first allowlist every RCP definition declares | The allowlist would render empty, which denies every third party (INV-06) |
+| `exempt_bucket_arns` | RCP parsing, as the second `summary_key` `deny_s3_third_party_access` declares | The buckets the statement spares would be unknown, and rendering none would deny every public bucket in the organization (INV-07) |
+| `exempt_queue_arns` | RCP parsing, as the second `summary_key` `deny_sqs_third_party_access` declares | The queues the statement spares would be unknown, and rendering none would deny every public queue in the organization (INV-07) |
+| The `summary_key` of each `Allowlist` a check declares — `unique_ami_owners` for `deny_ec2_ami_owner`, `users` for `deny_iam_user_creation`, `public_function_urls` for `deny_lambda_auth_type_none`; a check declaring two allowlists requires both keys | SCP and RCP parsing | Indistinguishable from an account that observed nothing, which would leave the policy off rather than flag a stale result |
 
 A key that is present but holds anything other than a list aborts the same way,
 naming the file and the key: `null` is neither an observation nor an absent key,
 and carrying it forward crashed on the account-ID restore or was dropped by the
-placement union as though the check declared no allowlist.
+placement union as though the check declared no allowlist. The parsed values
+are one map per result, keyed by summary key, with one entry per declared
+allowlist; `{}` for a check declaring none.
 
 A file whose root is not an object — a list, a string, a number, `null` — aborts
 the same way, naming the file and the type it found, before `summary` is looked
@@ -266,10 +274,12 @@ commercial partition — the role ARNs it assumes are still hardcoded, per
 [`../architecture/aws-execution.md`](../architecture/aws-execution.md). This
 closes the leak ahead of that rather than after it.
 
-Redaction is not reversible in general. SCP parsing restores the account ID into
-the values of an allowlist whose definition sets `restores_account_ids` — today
-`deny_iam_user_creation`'s user ARNs — once the account has been identified,
-because the allowlist those ARNs feed must name real accounts. The restore
+Redaction is not reversible in general. Both readers restore the account ID
+into the values of an allowlist whose definition sets `restores_account_ids` —
+`deny_iam_user_creation`'s user ARNs, `deny_lambda_auth_type_none`'s function
+ARNs, and `deny_sqs_third_party_access`'s queue ARNs — once the account has
+been identified, because the allowlist those ARNs feed must name real
+accounts. The restore
 matches the same account field the redaction did — `restore_account_id_in_arns`
 in `headroom/write_results.py` is built from the same pattern — so a user or
 role whose name carries the literal `REDACTED` keeps its name. It once replaced

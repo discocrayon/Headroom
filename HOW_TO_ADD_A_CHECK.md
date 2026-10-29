@@ -108,8 +108,9 @@ execution_order:
     action: |
       Nothing outside the check module. @register_check takes
       terraform_section=TerraformSection.<SERVICE> and, where the statement
-      is scoped by an allowlist, allowlist=Allowlist(summary_key=...,
-      terraform_variable=...). Both generators render every registered
+      is scoped by an allowlist, allowlists=(Allowlist(summary_key=...,
+      terraform_variable=...),) — a tuple, because a statement scoped by two
+      lists declares two. Both generators render every registered
       definition from the registry (INV-13).
     new_service: |
       Add one member to TerraformSection in headroom/enums.py, in
@@ -430,9 +431,11 @@ from ..registry import Allowlist, register_check
     "rcps",
     {CHECK_CONSTANT},
     terraform_section=TerraformSection.{SERVICE},
-    allowlist=Allowlist(
-        summary_key="unique_third_party_accounts",
-        terraform_variable="{allowlist_var}",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_third_party_accounts",
+            terraform_variable="{allowlist_var}",
+        ),
     ),
 )
 class {CheckClass}(BaseCheck[{DataModel}]):
@@ -470,7 +473,7 @@ class {CheckClass}(BaseCheck[{DataModel}]):
             self.org_id
         )
         # Filter here, as five of the six shipped RCP checks do
-        # (deny_s3_third_party_access.py:84-88). A resource with none of the
+        # (deny_s3_third_party_access.py:104-107). A resource with none of the
         # three is nothing the RCP would change, and counting it inflates
         # total_{resources} and compliant with resources no check reports.
         # deny_sts_third_party_assumerole.py:82-85 tests two of the three
@@ -775,7 +778,7 @@ The check's `analyze` filters again, and that is the filter that decides what
 gets counted: a resource whose only finding is one of the three - both flags
 and `third_party_account_ids` - is discarded before it is counted unless all
 three are tested. Five of the six shipped checks test all three
-(`deny_s3_third_party_access.py:84-88`).
+(`deny_s3_third_party_access.py:104-107`).
 `deny_sts_third_party_assumerole.py:82-85` tests two, because
 `TrustPolicyAnalysis` (`headroom/aws/iam/roles.py:62-66`) carries no
 `has_non_account_principals` field at all;
@@ -1425,13 +1428,15 @@ if_check_has_allowlist:
   - path: headroom/checks/{type}/{check_name}.py
     decorator: "@register_check"
     add_kwarg: |
-      allowlist=Allowlist(
-          summary_key="unique_{thing}s",
-          terraform_variable="{service}_allowed_{thing}s",
-          restores_account_ids=<True when the values are ARNs>,
-          empty_allowlist_comment="{check_name} stays off here: <why the covered accounts observed nothing, and what an empty list would do>",
-          # Renders in this module and in every module below it, so it must
-          # read true of any subset of those accounts and at any target kind.
+      allowlists=(
+          Allowlist(
+              summary_key="unique_{thing}s",
+              terraform_variable="{service}_allowed_{thing}s",
+              restores_account_ids=<True when the values are ARNs>,
+              empty_allowlist_comment="{check_name} stays off here: <why the covered accounts observed nothing, and what an empty list would do>",
+              # Renders in this module and in every module below it, so it must
+              # read true of any subset of those accounts and at any target kind.
+          ),
       )
     purpose: |
       Parsing reads summary_key and aborts when it is absent - an absent key
@@ -1450,7 +1455,7 @@ if_check_has_allowlist:
         description = "..."
       }
     location: "alphabetical by service"
-    purpose: "The statement in locals.tf reads it as var.{service}_allowed_{thing}s. Without the declaration the rendered module does not plan; without default = [] every module call where the check is off stops planning, because the renderer emits the allowlist only for an enabled check."
+    purpose: "The statement in locals.tf reads it as var.{service}_allowed_{thing}s. Without the declaration the rendered module does not plan; without default = [] every module call where the check is off stops planning, because the renderer emits the allowlist only for an enabled check. A statement that builds a clause from a conditional on this list also gets a run in the module's tests/plan.tftest.hcl, which tests/test_terraform_module_plans.py plans under tox: terraform validate does not type a conditional's arms, terraform plan does."
 
   - path: tests/test_checks_{check_name}.py
     must_test: [summary_key_carries_the_observed_values, summary_key_present_when_nothing_observed]
@@ -1966,14 +1971,15 @@ base_class:
 
 registry:
   file: headroom/checks/registry.py
-  decorator: "@register_check(type, name, terraform_section=..., allowlist=...)"
+  decorator: "@register_check(type, name, terraform_section=..., allowlists=(...))"
   discovery: "Automatic from scps/ and rcps/ directories"
 
 type_aliases:
   file: headroom/types.py
   use:
     - JsonDict: "Instead of Dict[str, Any]"
-    - AccountThirdPartyMap: "Account ID to the third-party accounts it reaches"
+    - AllowlistValues: "One check's observed values, keyed by each declared allowlist's summary key"
+    - AccountAllowlistMap: "Account ID to the allowlist values its results observed"
 
 enums:
   file: headroom/enums.py

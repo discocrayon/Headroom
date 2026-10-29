@@ -21,9 +21,15 @@ from ..registry import Allowlist, register_check
     "rcps",
     DENY_S3_THIRD_PARTY_ACCESS,
     terraform_section=TerraformSection.S3,
-    allowlist=Allowlist(
-        summary_key="unique_third_party_accounts",
-        terraform_variable="s3_third_party_access_account_ids_allowlist",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_third_party_accounts",
+            terraform_variable="s3_third_party_access_account_ids_allowlist",
+        ),
+        Allowlist(
+            summary_key="exempt_bucket_arns",
+            terraform_variable="s3_third_party_access_exempt_bucket_arns",
+        ),
     ),
 )
 class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
@@ -32,7 +38,9 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
 
     This check identifies:
     - S3 buckets with policies allowing accounts outside the organization
-    - S3 buckets with wildcard principals in policies
+    - S3 buckets whose grants no account allowlist can express - a wildcard
+      principal, a Federated or CanonicalUser principal, a CloudFront origin
+      access identity, or a public ACL - which the statement spares by ARN
     - All unique third-party account IDs found
     - Which S3 actions each third-party account can perform
     - Which S3 buckets each third-party account can access
@@ -76,6 +84,7 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         self.all_third_party_accounts: Set[str] = set()
         self.actions_by_account: Dict[str, Set[str]] = {}
         self.buckets_by_account: Dict[str, Set[str]] = {}
+        self.exempt_bucket_arns: List[str] = []
 
     def analyze(self, session: Session) -> List[S3BucketPolicyAnalysis]:
         """
@@ -131,7 +140,11 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
             self.buckets_by_account[account_id].add(result.bucket_arn)
 
         if result.has_wildcard_principal or result.has_non_account_principals:
-            return (CheckCategory.VIOLATION, result_dict)
+            # No aws:PrincipalAccount list can express these grants, so the
+            # statement spares the bucket by ARN instead: it is an exemption,
+            # and the ARN is the value NotResource renders (INV-07).
+            self.exempt_bucket_arns.append(result.bucket_arn)
+            return (CheckCategory.EXEMPTION, result_dict)
         return (CheckCategory.COMPLIANT, result_dict)
 
     def build_summary_fields(self, check_result: CategorizedCheckResult) -> JsonDict:
@@ -146,11 +159,11 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         """
         total_buckets = len(check_result.violations) + len(check_result.exemptions) + len(check_result.compliant)
 
-        buckets_with_wildcards_and_third_party = sum(
-            1 for bucket in check_result.violations
+        exemptions_with_third_parties = sum(
+            1 for bucket in check_result.exemptions
             if bucket.get("third_party_account_ids")
         )
-        buckets_with_third_party_access = buckets_with_wildcards_and_third_party + len(check_result.compliant)
+        buckets_with_third_party_access = exemptions_with_third_parties + len(check_result.compliant)
 
         actions_by_account_serializable = sorted_values_by_account(self.actions_by_account)
 
@@ -159,10 +172,12 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         return {
             "total_buckets_analyzed": total_buckets,
             "buckets_third_parties_can_access": buckets_with_third_party_access,
-            "buckets_with_wildcards": len(check_result.violations),
+            "buckets_with_wildcards": len(check_result.exemptions),
             "violations": len(check_result.violations),
+            "exemptions": len(check_result.exemptions),
             "unique_third_party_accounts": sorted(list(self.all_third_party_accounts)),
             "third_party_account_count": len(self.all_third_party_accounts),
+            "exempt_bucket_arns": sorted(self.exempt_bucket_arns),
             "actions_by_third_party_account": actions_by_account_serializable,
             "buckets_by_third_party_account": buckets_by_account_serializable,
         }
@@ -172,6 +187,10 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         Build results data in the format expected by this check.
 
         Overrides the base implementation to use custom field names.
+        `buckets_with_wildcards` holds the exemptions: every bucket the
+        statement spares by ARN, whether for a wildcard, a non-account
+        principal, or a public ACL. `violations` is structurally empty and
+        is not written as a list; the summary carries its zero count.
 
         Args:
             check_result: Categorized check result
@@ -179,10 +198,10 @@ class DenyS3ThirdPartyAccessCheck(BaseCheck[S3BucketPolicyAnalysis]):
         Returns:
             Dictionary with results data
         """
-        buckets_with_third_party_access = check_result.violations + check_result.compliant
+        buckets_with_third_party_access = check_result.exemptions + check_result.compliant
 
         return {
             "summary": check_result.summary,
             "buckets_third_parties_can_access": buckets_with_third_party_access,
-            "buckets_with_wildcards": check_result.violations,
+            "buckets_with_wildcards": check_result.exemptions,
         }

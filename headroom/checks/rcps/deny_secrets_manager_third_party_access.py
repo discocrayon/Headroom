@@ -21,18 +21,23 @@ from ..registry import Allowlist, register_check
     "rcps",
     DENY_SECRETS_MANAGER_THIRD_PARTY_ACCESS,
     terraform_section=TerraformSection.SECRETS_MANAGER,
-    allowlist=Allowlist(
-        summary_key="unique_third_party_accounts",
-        # No `_access_` segment. Two counts are in play here and they
-        # differ: three of the seven allowlist variables lack that
-        # substring - this one, STS, and the confused-deputy check - while
-        # only two depart from the derivation rule, the check name without
-        # `deny_` plus `_account_ids_allowlist`. STS's check name carries
-        # no `_access_` either, so its variable follows that rule exactly;
-        # this one and the confused-deputy check are the two departures
-        # `spec/contracts/policy-model.md` counts. The Terraform module
-        # defines the variable this way; do not "fix" it here.
-        terraform_variable="secrets_manager_third_party_account_ids_allowlist",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_third_party_accounts",
+            # No `_access_` segment. Two counts are in play here and they
+            # differ: three of the nine allowlist variables lack that
+            # substring - this one, STS, and the confused-deputy check - while
+            # only two of the seven account-ID variables depart from the
+            # derivation rule, the check name without `deny_` plus
+            # `_account_ids_allowlist`; the S3 and SQS exempt-ARN variables
+            # name resources rather than accounts and fit neither count.
+            # STS's check name carries no `_access_` either, so its variable
+            # follows that rule exactly; this one and the confused-deputy
+            # check are the two departures `spec/contracts/policy-model.md`
+            # counts. The Terraform module defines the variable this way; do
+            # not "fix" it here.
+            terraform_variable="secrets_manager_third_party_account_ids_allowlist",
+        ),
     ),
 )
 class DenySecretsManagerThirdPartyAccessCheck(BaseCheck[SecretsPolicyAnalysis]):

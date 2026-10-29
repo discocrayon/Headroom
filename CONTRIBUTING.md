@@ -19,6 +19,11 @@ mypy headroom/ tests/            # type checking alone
 `tox` runs the tests under Python 3.12 and 3.13 with coverage, then `mypy`,
 then the pre-commit hooks. It is the gate: a change is done when `tox` passes.
 
+`tox` also needs `terraform` on the PATH. `tests/test_terraform_module_plans.py`
+plans both Terraform modules under `test_environment/modules/` through
+`terraform test`, with no AWS credentials, and the first run downloads the AWS
+provider into each module's git-ignored `.terraform/` directory.
+
 ## The quality bar
 
 - **100% line coverage**, for `headroom/` and for `tests/` alike. A test helper

@@ -122,9 +122,10 @@ def make_scp_result(
         compliant=1,
         compliance_percentage=0.0 if violations else 100.0,
         # deny_iam_user_creation declares an allowlist, so parsing gives it a
-        # list - empty for an account holding no IAM user. None is a state
-        # parsing cannot reach, and rendering rejects it (INV-01).
-        allowlist_values=[],
+        # list under its summary key - empty for an account holding no IAM
+        # user. A missing key is a state parsing cannot reach, and rendering
+        # rejects it (INV-01).
+        allowlist_values={"users": []},
     )
 
 
@@ -327,10 +328,10 @@ class TestNestedOuScpAllowlists:
         org = make_nested_hierarchy()
         payments = make_scp_result(PAYMENTS_ACCOUNT, "payments-core", 0)
         payments.check_name = "deny_iam_user_creation"
-        payments.allowlist_values = ["arn:aws:iam::222222222222:user/payments-svc"]
+        payments.allowlist_values = {"users": ["arn:aws:iam::222222222222:user/payments-svc"]}
         ledger = make_scp_result(LEDGER_ACCOUNT, "ledger-core", 0)
         ledger.check_name = "deny_iam_user_creation"
-        ledger.allowlist_values = ["arn:aws:iam::333333333333:user/ledger-svc"]
+        ledger.allowlist_values = {"users": ["arn:aws:iam::333333333333:user/ledger-svc"]}
 
         recommendations = determine_scp_placement(
             [make_scp_result(PROD_APP_ACCOUNT, "prod-app", 3), payments, ledger],
@@ -339,10 +340,10 @@ class TestNestedOuScpAllowlists:
         )
 
         ou_recs = [r for r in recommendations if r.recommended_level == "ou"]
-        assert ou_recs[0].allowlist_values == [
+        assert ou_recs[0].allowlist_values == {"users": [
             "arn:aws:iam::222222222222:user/payments-svc",
             "arn:aws:iam::333333333333:user/ledger-svc",
-        ]
+        ]}
 
     def test_violation_in_a_child_ou_keeps_the_scp_off_the_parent(self) -> None:
         """The reported OU is never one whose subtree holds a violation."""
@@ -610,7 +611,7 @@ class TestGeneratedTerraformResolves:
                 recommended_level="ou",
                 target_ou_id=PAYMENTS_OU,
                 affected_accounts=[PAYMENTS_ACCOUNT, LEDGER_ACCOUNT],
-                third_party_account_ids=["999999999999"],
+                allowlist_values={"unique_third_party_accounts": ["999999999999"]},
                 reasoning="Nested OU RCP",
             ),
             RCPPlacementRecommendations(
@@ -618,7 +619,7 @@ class TestGeneratedTerraformResolves:
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=[PROD_APP_ACCOUNT],
-                third_party_account_ids=["888888888888"],
+                allowlist_values={"unique_third_party_accounts": ["888888888888"]},
                 reasoning="Account RCP",
             ),
         ]

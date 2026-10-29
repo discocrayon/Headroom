@@ -20,14 +20,17 @@ or a document here names no registered check.
 | [`deny_eks_create_cluster_without_tag`](scps/deny_eks_create_cluster_without_tag.md) | 3 | Regional | — | — |
 | [`deny_iam_saml_provider_not_aws_sso`](scps/deny_iam_saml_provider_not_aws_sso.md) | 1 | Global | — | — |
 | [`deny_iam_user_creation`](scps/deny_iam_user_creation.md) | 5b | Global | `iam_allowed_users` | — |
-| [`deny_lambda_auth_type_none`](scps/deny_lambda_auth_type_none.md) | 2 | Regional | — | — |
+| [`deny_lambda_auth_type_none`](scps/deny_lambda_auth_type_none.md) | 6 | Regional | `lambda_allowed_public_function_urls` | Allowlisted URL |
 | [`deny_rds_unencrypted`](scps/deny_rds_unencrypted.md) | 2 | Regional | — | — |
 
 ## RCP checks
 
 The six third-party-access checks implement pattern 5a and generate the same
 statement shape, differing only in `Action` and in which allowlist variable
-feeds it. The shared statement is specified once in
+feeds it; `deny_s3_third_party_access` and `deny_sqs_third_party_access`
+compose that statement with a resource ARN allowlist (pattern 6), each
+specified in its own document. The shared statement
+is specified once in
 [`../contracts/policy-model.md`](../contracts/policy-model.md).
 
 `deny_service_confused_deputy` is not one of them. It implements pattern 6, the
@@ -41,18 +44,20 @@ than allowlisting `aws:PrincipalAccount`. What it generates is specified in
 |---|---|---|---|
 | [`deny_ecr_third_party_access`](rcps/deny_ecr_third_party_access.md) | Regional | `ecr:*` | Recorded as violations |
 | [`deny_kms_third_party_access`](rcps/deny_kms_third_party_access.md) | Regional | `kms:*` | Recorded as violations |
-| [`deny_s3_third_party_access`](rcps/deny_s3_third_party_access.md) | Global | `s3:*` | Recorded as violations |
+| [`deny_s3_third_party_access`](rcps/deny_s3_third_party_access.md) | Global | `s3:*` | **Recorded as exemptions** — the bucket ARN enters `exempt_bucket_arns`, and the statement spares the bucket by `NotResource`; the account is never blocked |
 | [`deny_secrets_manager_third_party_access`](rcps/deny_secrets_manager_third_party_access.md) | Regional | `secretsmanager:*` | Recorded as violations |
-| [`deny_sqs_third_party_access`](rcps/deny_sqs_third_party_access.md) | Regional | `sqs:*` | Recorded as violations |
+| [`deny_sqs_third_party_access`](rcps/deny_sqs_third_party_access.md) | Regional | `sqs:*` | **Recorded as exemptions** — the queue ARN enters `exempt_queue_arns`, and the statement spares the queue by `NotResource`; the account is never blocked |
 | [`deny_sts_third_party_assumerole`](rcps/deny_sts_third_party_assumerole.md) | Global | `sts:AssumeRole` | **Not a finding** — its RCP denies `sts:AssumeRole` alone, which a federated identity cannot call. A `CanonicalUser`, and a `Federated` principal granted the literal `sts:AssumeRole`, abort the run instead: **no results at all**, not a verdict |
 | [`deny_service_confused_deputy`](rcps/deny_service_confused_deputy.md) | Both | All six of the above | **Not read** — it measures source guards, not principals |
 
 All six read the `Principal` element through one function, `_read_principal`,
 and read it against its statement's `Condition` through one other,
 `read_statement_principals`, which answers four facts about who the statement
-reaches. The five resource-policy analyzers reach one verdict from them; the
-sixth reads all four and acts on every one but the third, for the reason its
-column gives.
+reaches. Three resource-policy analyzers reach one verdict from them;
+`deny_s3_third_party_access` and `deny_sqs_third_party_access` reach a
+different one, recorded as an exemption rather than a violation; the sixth
+reads all four and acts on every one but
+the third, for the reason its column gives.
 [`../contracts/policy-model.md`](../contracts/policy-model.md) owns the rule.
 
 The seventh re-runs all six analyzers rather than reading what they recorded, so
@@ -142,13 +147,15 @@ artifact claims to be the output of — and
 [`../README.md`](../README.md) requires reporting a conflict rather than guessing
 which side is right.
 
-**Three are open.**
+**Five are open.**
 
 | # | Where | Conflict |
 |---|---|---|
 | 7 | [`deny_ecr_third_party_access`](rcps/deny_ecr_third_party_access.md) | Four committed result files still carry `repositories_third_parties_can_access`, `repositories_with_wildcards`, and `total_repositories_analyzed`, which the check renamed to `policies_third_parties_can_access`, `policies_with_wildcards`, and `total_policies_analyzed`. Rewriting them would make evidence claim to be the output of a code version that never wrote it, and regenerating them needs a live run of the test organization |
 | 9 | `test_environment/rcps/` | Four registered RCP checks have no results directory under `test_environment/headroom_results/rcps/`, and `parse_rcp_result_files` raises on a missing directory. A run against this fixture aborts before rendering, so the committed RCP examples cannot be the output of any run of the current code. Regenerating them needs a live run of the test organization |
-| 10 | `test_environment/rcps/` | The committed calls disagree with what placement would produce from the committed results. `deny_s3_third_party_access` blocks only in fort-knox, so it is safe at OU `acme_acquisition` and at the account `security-tooling`, yet `acme_acquisition_ou_rcps.tf` and `security_tooling_rcps.tf` both render it `false`. `deny_ecr_third_party_access` is clean in all four results, which places it at the root, and no `root_rcps.tf` is committed at all — the `false` it shows in the two committed calls is what a root-placed check correctly renders below its target, so that boolean is not itself the defect. This is a spot check and not an inventory: conflict 9 means no run can produce the directory to compare against |
+| 10 | `test_environment/rcps/` | The committed calls disagree with what placement would produce from the committed results. `deny_s3_third_party_access` blocks only in fort-knox, so it is safe at OU `acme_acquisition` and at the account `security-tooling`, yet `acme_acquisition_ou_rcps.tf` and `security_tooling_rcps.tf` both render it `false`. Since `deny_s3_third_party_access` stopped producing violations, the committed calls are stale in a second way: a re-run would enable it everywhere with `s3_third_party_access_exempt_bucket_arns` carrying fort-knox's wildcard bucket. `deny_sqs_third_party_access` stopped producing violations the same way and now always places at root, but no SQS result is committed at all, so the `false` it shows in the two committed calls is the below-target rendering described next for ECR rather than a defect of its own. `deny_ecr_third_party_access` is clean in all four results, which places it at the root, and no `root_rcps.tf` is committed at all — the `false` it shows in the two committed calls is what a root-placed check correctly renders below its target, so that boolean is not itself the defect. This is a spot check and not an inventory: conflict 9 means no run can produce the directory to compare against |
+| 11 | [`deny_iam_user_creation`](scps/deny_iam_user_creation.md) | The check categorizes every existing user `COMPLIANT`, and its decision table says so, while [`../architecture/check-framework.md`](../architecture/check-framework.md#the-three-categories) defines `COMPLIANT` as a resource the statement would allow and `EXEMPTION` as one the statement would spare. A `Deny iam:CreateUser` scoped only by `NotResource` has no state a user can be in but spared, so by the framework's letter every user is an exemption — the reading `deny_lambda_auth_type_none` takes for the URLs its `NotResource` spares. Harmless in effect, since placement reads `violations` alone, and settling it moves every entry from `compliant_instances` to `exemptions` in the result file (INV-14), so it is recorded rather than made |
+| 12 | [`deny_iam_user_creation`](scps/deny_iam_user_creation.md) | [`../invariants.md`](../invariants.md#inv-06--an-empty-allowlist-is-never-rendered-as-an-empty-list) leaves this check off, with a comment, when the accounts a module covers hold no IAM user, while the three other `NotResource` statements — `deny_lambda_auth_type_none`, `deny_s3_third_party_access` and `deny_sqs_third_party_access` — render `Resource: "*"` in the same case and stay on. `Deny iam:CreateUser` on `Resource: "*"` is a correct full deny too, so the reason INV-06 once gave for the difference, that an SCP whose whole purpose is the sparing has nothing correct to render, no longer separates them. Moving the check changes what a module covering no IAM user renders, from `false` with a comment to `true` with an empty list and a statement denying every `iam:CreateUser`, so it is recorded rather than made |
 
 A resolved conflict leaves nothing behind here. What it was and how it was
 settled is in git history, and the rule it produced is in the document that owns
@@ -156,7 +163,7 @@ that rule — so a row kept after the fact would be a second copy of a settled
 rule, going stale on its own schedule.
 
 A number is allocated once and never reused, because commit messages cite them
-and git history cannot be edited. **The next conflict is 11.** Whoever opens it
+and git history cannot be edited. **The next conflict is 13.** Whoever opens it
 advances that number here.
 
 ## Statements with no check

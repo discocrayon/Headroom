@@ -129,13 +129,13 @@ the policy statement, the decision table, and the acceptance scenarios.
 | [`deny_eks_create_cluster_without_tag`](spec/checks/scps/deny_eks_create_cluster_without_tag.md) | An EKS cluster created without the `PavedRoad=true` tag | — |
 | [`deny_iam_saml_provider_not_aws_sso`](spec/checks/scps/deny_iam_saml_provider_not_aws_sso.md) | An IAM SAML provider, so federation goes through IAM Identity Center alone | — |
 | [`deny_iam_user_creation`](spec/checks/scps/deny_iam_user_creation.md) | A new IAM user, except the users that already exist | IAM users that exist |
-| [`deny_lambda_auth_type_none`](spec/checks/scps/deny_lambda_auth_type_none.md) | A Lambda function URL with `NONE` authentication | — |
+| [`deny_lambda_auth_type_none`](spec/checks/scps/deny_lambda_auth_type_none.md) | A Lambda function URL made public with `NONE` authentication, except the URLs that already are | Public function URLs that exist |
 | [`deny_rds_unencrypted`](spec/checks/scps/deny_rds_unencrypted.md) | An RDS instance or cluster without encryption at rest | — |
 | [`deny_ecr_third_party_access`](spec/checks/rcps/deny_ecr_third_party_access.md) | ECR access by any principal outside the organization | Third-party accounts repository policies already grant |
 | [`deny_kms_third_party_access`](spec/checks/rcps/deny_kms_third_party_access.md) | KMS access by any principal outside the organization | Third-party accounts key policies already grant |
-| [`deny_s3_third_party_access`](spec/checks/rcps/deny_s3_third_party_access.md) | S3 access by any principal outside the organization | Third-party accounts bucket policies already grant |
+| [`deny_s3_third_party_access`](spec/checks/rcps/deny_s3_third_party_access.md) | S3 access by any principal outside the organization | Third-party accounts bucket policies already grant, and the buckets whose grants no account list can express |
 | [`deny_secrets_manager_third_party_access`](spec/checks/rcps/deny_secrets_manager_third_party_access.md) | Secrets Manager access by any principal outside the organization | Third-party accounts secret policies already grant |
-| [`deny_sqs_third_party_access`](spec/checks/rcps/deny_sqs_third_party_access.md) | SQS access by any principal outside the organization | Third-party accounts queue policies already grant |
+| [`deny_sqs_third_party_access`](spec/checks/rcps/deny_sqs_third_party_access.md) | SQS access by any principal outside the organization | Third-party accounts queue policies already grant, and the queues whose grants no account list can express |
 | [`deny_sts_third_party_assumerole`](spec/checks/rcps/deny_sts_third_party_assumerole.md) | `sts:AssumeRole` by any principal outside the organization | Third-party accounts role trust policies already allow |
 | [`deny_service_confused_deputy`](spec/checks/rcps/deny_service_confused_deputy.md) | An AWS service acting for an account outside the organization, on calls that name the account they act for, across the six services above | Source accounts named in service-mediated grants |
 

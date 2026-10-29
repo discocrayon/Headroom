@@ -13,7 +13,7 @@ empty allowlist - arrives as data too.
 
 from collections import defaultdict
 from typing import (
-    Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, TypeVar,
+    Dict, FrozenSet, Iterable, List, Mapping, Sequence, Set, Tuple, TypeVar,
 )
 
 from .models import unbreakable, wrap_comment
@@ -84,7 +84,6 @@ NO_RESULTS = "No results for this check - not evidence of safety"
 
 def split_placements(
     recommendations: Sequence[RecommendationT],
-    allowlist_of: Callable[[RecommendationT], Optional[List[str]]],
     organization_hierarchy: OrganizationHierarchy,
 ) -> Tuple[Dict[str, FrozenSet[str]], Dict[str, FrozenSet[str]]]:
     """
@@ -98,8 +97,6 @@ def split_placements(
 
     Args:
         recommendations: Every placement of one policy type
-        allowlist_of: Reads the allowlist values a recommendation carries;
-            the field differs between the two recommendation types
         organization_hierarchy: Organization structure
 
     Returns:
@@ -107,20 +104,20 @@ def split_placements(
         shapes them
 
     Raises:
-        RuntimeError: If a declaring check's placing recommendation carries
-            None rather than a list, which `renders_enabled` refuses
+        RuntimeError: If a declaring check's placing recommendation lacks a
+            declared key, which `renders_enabled` refuses
     """
     live: List[RecommendationT] = []
     off: List[RecommendationT] = []
     for rec in recommendations:
         # A `none` recommendation places nothing, so there is nothing to file
-        # as live or flipped - and it carries no allowlist, since placement
-        # unioned one over no accounts. Asking `renders_enabled` about it
-        # would read that None as lost data and abort the whole generation
-        # stage over one check no account is safe for.
+        # as live or flipped - and it carries no allowlist values, since
+        # placement unioned over no accounts. Asking `renders_enabled` about
+        # it would read each missing key as lost data and abort the whole
+        # generation stage over one check no account is safe for.
         if rec.recommended_level == PlacementLevel.NONE.value:
             continue
-        if renders_enabled(get_check_definition(rec.check_name), allowlist_of(rec)):
+        if renders_enabled(get_check_definition(rec.check_name), values=rec.allowlist_values):
             live.append(rec)
             continue
         off.append(rec)

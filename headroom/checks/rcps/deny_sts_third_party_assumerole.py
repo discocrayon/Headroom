@@ -21,9 +21,11 @@ from ..registry import Allowlist, register_check
     "rcps",
     DENY_STS_THIRD_PARTY_ASSUMEROLE,
     terraform_section=TerraformSection.STS,
-    allowlist=Allowlist(
-        summary_key="unique_third_party_accounts",
-        terraform_variable="sts_third_party_assumerole_account_ids_allowlist",
+    allowlists=(
+        Allowlist(
+            summary_key="unique_third_party_accounts",
+            terraform_variable="sts_third_party_assumerole_account_ids_allowlist",
+        ),
     ),
 )
 class ThirdPartyAssumeRoleCheck(BaseCheck[TrustPolicyAnalysis]):

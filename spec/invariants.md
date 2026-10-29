@@ -143,19 +143,41 @@ The second shape is the wider blast radius of the two, because the rejected
 document is the module's whole policy rather than the one statement that was
 malformed.
 
-**Two RCP allowlist clauses are a third shape, and this invariant does not
-disable either.** The `aws:PrincipalAccount` clause on the six third-party-access
-checks, and `deny_service_confused_deputy`'s `aws:SourceAccount` clause, are each
-omitted from the rendered condition rather than written as `[]` when their
-allowlist is empty; the statement still renders and still denies every
-out-of-organization principal or source.
+**A third shape has a correct thing to render in place of the empty list, and
+this invariant does not disable any statement in it.** The `aws:PrincipalAccount`
+clause on the six third-party-access checks, and `deny_service_confused_deputy`'s
+`aws:SourceAccount` clause, are each omitted from the rendered condition rather
+than written as `[]` when their allowlist is empty; the statement still renders
+and still denies every out-of-organization principal or source.
 [`contracts/policy-model.md`](contracts/policy-model.md#the-rcp-allowlist-statement)
 states what the `aws:PrincipalAccount` omission changes and why;
 [`checks/rcps/deny_service_confused_deputy.md`](checks/rcps/deny_service_confused_deputy.md)
-does the same for `aws:SourceAccount`. Leaving either off for an empty allowlist
-would be wrong: it would disable the six checks on exactly the accounts that
-granted no third party anything, and `deny_service_confused_deputy` on exactly
-the accounts that pinned no third-party source.
+does the same for `aws:SourceAccount`. The `NotResource` on
+`deny_lambda_auth_type_none`, `deny_s3_third_party_access` and
+`deny_sqs_third_party_access` is the third: with no URL, bucket or queue to
+spare, the module renders `Resource: "*"` in its place, and the statement
+denies every new public function URL, or every out-of-organization principal
+on every bucket or queue. An empty `NotResource` would be malformed, as the
+second shape says — the difference is that these statements have a correct
+thing to render instead of the empty list.
+[`checks/scps/deny_lambda_auth_type_none.md`](checks/scps/deny_lambda_auth_type_none.md)
+states it for function URLs,
+[`checks/rcps/deny_s3_third_party_access.md`](checks/rcps/deny_s3_third_party_access.md)
+for buckets and
+[`checks/rcps/deny_sqs_third_party_access.md`](checks/rcps/deny_sqs_third_party_access.md)
+for queues. Leaving any of them off for an empty allowlist would be wrong:
+it would disable the six checks on exactly the accounts that granted no third
+party anything, `deny_service_confused_deputy` on exactly the accounts that
+pinned no third-party source, and the three `NotResource` statements on
+exactly the accounts with nothing to spare — for `deny_lambda_auth_type_none`,
+the organization with no public URL, which is the one the deny protects best,
+and the one that had the deny before the statement took an allowlist.
+
+`deny_iam_user_creation` is the one `NotResource` statement left in the second
+shape. `Resource: "*"` would be a correct full deny of `iam:CreateUser` there
+too, so the second shape no longer rests on a difference between the
+statements; whether that check should move is conflict 12 in
+[`checks/index.md`](checks/index.md#unresolved-conflicts).
 
 This is distinct from INV-01: observing nothing is a legitimate fact about those
 accounts, whereas failing to record an observation is a broken artifact and
@@ -279,24 +301,28 @@ locals they name, and the plan-time failure a second implementation produces.
 Between check collection and Terraform generation, no stage may branch on a
 hardcoded check name. A check registers itself with `@register_check`, which
 records a frozen `CheckDefinition` — class, name, type, the `TerraformSection`
-its parameters render under, and the `Allowlist` its statement is scoped by,
-if any — and every stage reads that definition rather than naming the check.
+its parameters render under, and the tuple of `Allowlist`s its statement is
+scoped by, empty when it takes none — and every stage reads that definition
+rather than naming the check.
 
 What each stage reads:
 
 | Stage | Reads from the definition |
 |---|---|
 | Collection, result writing, resume | Class, name, type; result writing resolves the check's directory through the name-to-type mirror `register_check` fills in `headroom/constants.py` |
-| SCP parsing | `allowlist.summary_key`, and whether to restore redacted account IDs. An unregistered check name aborts: the one the file's `summary.check` declares, or the directory's when the file declares none |
-| RCP parsing | `allowlist.summary_key`, through the same reader SCP parsing uses. A registered check with no results directory aborts, and so does a directory under `rcps/` naming no registered check |
-| SCP placement | Nothing. It unions whatever `allowlist_values` the results carry |
-| Both generators | `get_check_definitions(check_type)`: every definition of that type in render order, with its section, its boolean, and its allowlist variable. A recommendation naming an unregistered check aborts |
+| SCP parsing | Each entry's `summary_key` in `allowlists`, and whether to restore redacted account IDs. The values come back as one map keyed by summary key. An unregistered check name aborts: the one the file's `summary.check` declares, or the directory's when the file declares none |
+| RCP parsing | The same entries, through the same reader SCP parsing uses. A registered check with no results directory aborts, and so does a directory under `rcps/` naming no registered check |
+| SCP placement | The definition's entries, to union each declared key over the covered accounts through `parse_results.union_allowlist_values` — one rule for both policy types |
+| Both generators | `get_check_definitions(check_type)`: every definition of that type in render order, with its section, its boolean, and one variable per allowlist entry. A recommendation naming an unregistered check aborts |
 
 One rule reads a declared allowlist for both policy types:
 `parse_results._read_declared_allowlist` takes the key the definition names,
 aborts when it is absent, and restores the owning account ID when the
 definition says so. A change to that abort or that restoration is a change to
-SCP and RCP parsing together.
+SCP and RCP parsing together. One rule unions them too:
+`parse_results.union_allowlist_values` takes the definition and the covered
+accounts' observations and returns one sorted list per declared key, so a
+check with two allowlists is placed by the same code as a check with one.
 
 Render order is `(TerraformSection rank, check name)`, so neither import order
 nor registration order can move a parameter. `TerraformSection` in
@@ -481,6 +507,16 @@ placeholders, which cost nothing — Terraform builds those names at apply time
 from `data.aws_caller_identity`, so nothing reads the recorded value. A live run
 regenerates the files and reintroduces them, so it is a manual step after every
 refresh until the scenarios stop naming buckets after the account.
+`exempt_bucket_arns` opened a second route for the same names: they flow from
+`headroom_results/` through placement into the
+`s3_third_party_access_exempt_bucket_arns` Terraform variable, so a live run
+also writes them into the generated `test_environment/rcps/*.tf`. The manual
+rewrite after every refresh covers that generated Terraform as well as
+`test_environment/headroom_results/`. `exempt_queue_arns` is not a third route
+for the account field: a queue ARN's account is redacted on write and rewritten
+to the account's generated local on render, so the generated Terraform names
+the account only by reference. A queue *name* that embeds the account ID would
+still reach both places, as a bucket name does.
 
 The count above is not maintained by hand. `tests/test_data_standards.py` reads
 it back and fails when it disagrees with what the directory holds, which is how

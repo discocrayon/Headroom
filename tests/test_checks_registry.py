@@ -14,7 +14,6 @@ from headroom.checks.registry import (
     Allowlist,
     get_check_class,
     get_all_check_classes,
-    get_allowlist,
     get_check_definition,
     get_check_definitions,
     get_check_names,
@@ -209,8 +208,7 @@ def test_get_check_definition_carries_the_whole_registration() -> None:
     assert definition.check_class is DenyEc2AmiOwnerCheck
     assert definition.check_type == "scps"
     assert definition.terraform_section is TerraformSection.EC2
-    allowlist = definition.allowlist
-    assert allowlist is not None
+    (allowlist,) = definition.allowlists
     assert allowlist.summary_key == "unique_ami_owners"
     assert allowlist.terraform_variable == "ec2_allowed_ami_owners"
     assert allowlist.restores_account_ids is False
@@ -286,37 +284,57 @@ def test_render_order_is_independent_of_registration_order(monkeypatch: pytest.M
     assert rcp_names == RENDERED_RCP_ORDER
 
 
-def test_get_allowlist_returns_the_declared_allowlist() -> None:
+def test_a_declaring_check_records_its_allowlist_in_the_definition() -> None:
     """
-    The allowlist is the check's, not the caller's to remember.
-
-    Parsing reads the summary key to collect the values and rendering reads
-    the Terraform variable to write them. Both once named the pair beside the
-    check; this is the one record they read it from now (INV-13).
+    The allowlist a check declares is the one its definition carries.
     """
-    allowlist = get_allowlist("deny_iam_user_creation")
+    (allowlist,) = get_check_definition("deny_iam_user_creation").allowlists
 
     assert allowlist.summary_key == "users"
     assert allowlist.terraform_variable == "iam_allowed_users"
     assert allowlist.restores_account_ids is True
 
 
-def test_get_allowlist_check_without_an_allowlist_raises_value_error() -> None:
+def test_deny_lambda_auth_type_none_declares_the_public_function_url_allowlist() -> None:
     """
-    A check with no allowlist is a caller error, not an empty allowlist.
+    The Lambda check's one allowlist is the public function URL list.
 
-    deny_rds_unencrypted denies unconditionally: it has no allowlist to
-    return, and returning an empty one would render an allowlist parameter
-    the module never declared.
+    No comment turns the statement off on an empty list: the module renders
+    `Resource: "*"` in place of `NotResource`, the full deny rather than a
+    broken one, so an organization with no public URL keeps the protection
+    the statement had before it took an allowlist.
     """
-    with pytest.raises(ValueError, match="Check 'deny_rds_unencrypted' declares no allowlist"):
-        get_allowlist("deny_rds_unencrypted")
+    (allowlist,) = get_check_definition("deny_lambda_auth_type_none").allowlists
+
+    assert allowlist.summary_key == "public_function_urls"
+    assert allowlist.terraform_variable == "lambda_allowed_public_function_urls"
+    assert allowlist.restores_account_ids is True
+    assert allowlist.empty_allowlist_comment is None
 
 
-def test_get_allowlist_unknown_check_raises_value_error() -> None:
-    """An unregistered name fails as an unknown check, not as a missing allowlist."""
-    with pytest.raises(ValueError, match="Unknown check: nonexistent_check"):
-        get_allowlist("nonexistent_check")
+def test_deny_sqs_third_party_access_declares_the_exempt_queue_allowlist() -> None:
+    """
+    The SQS check's second allowlist is the queue ARN list its NotResource spares.
+
+    A queue ARN carries the account between the region and the queue name,
+    so `exclude_account_ids` redacts it on write and the definition must say
+    so for parsing to put it back. An empty list renders `Resource: "*"`,
+    the strongest form of the deny rather than a broken one, so no comment
+    turns the statement off.
+    """
+    (_, exempt) = get_check_definition("deny_sqs_third_party_access").allowlists
+
+    assert exempt.summary_key == "exempt_queue_arns"
+    assert exempt.terraform_variable == "sqs_third_party_access_exempt_queue_arns"
+    assert exempt.restores_account_ids is True
+    assert exempt.empty_allowlist_comment is None
+
+
+def test_a_check_without_an_allowlist_records_an_empty_tuple() -> None:
+    """
+    No allowlist is the empty tuple, never None: every reader iterates it.
+    """
+    assert get_check_definition("deny_rds_unencrypted").allowlists == ()
 
 
 def test_registering_a_name_twice_raises_and_keeps_the_first_class(
@@ -494,7 +512,7 @@ def test_registering_an_allowlist_missing_a_field_raises(
             "scps",
             "deny_ec2_half_declared",
             terraform_section=TerraformSection.EC2,
-            allowlist=allowlist,
+            allowlists=(allowlist,),
         )(HalfDeclaredCheck)
 
     assert "deny_ec2_half_declared" not in get_check_names()
@@ -533,9 +551,11 @@ def test_registering_a_claimed_terraform_variable_raises(
             "scps",
             "deny_ec2_colliding",
             terraform_section=TerraformSection.EC2,
-            allowlist=Allowlist(
-                summary_key="unique_collisions",
-                terraform_variable=terraform_variable,
+            allowlists=(
+                Allowlist(
+                    summary_key="unique_collisions",
+                    terraform_variable=terraform_variable,
+                ),
             ),
         )(CollidingVariableCheck)
 
@@ -566,9 +586,11 @@ def test_registering_an_allowlist_variable_matching_its_own_name_raises(
             "scps",
             "ec2_self_collide",
             terraform_section=TerraformSection.EC2,
-            allowlist=Allowlist(
-                summary_key="unique_collisions",
-                terraform_variable="ec2_self_collide",
+            allowlists=(
+                Allowlist(
+                    summary_key="unique_collisions",
+                    terraform_variable="ec2_self_collide",
+                ),
             ),
         )(SelfCollidingCheck)
 
@@ -639,10 +661,96 @@ def test_registering_an_empty_allowlist_comment_raises(
             "scps",
             "deny_ec2_empty_comment",
             terraform_section=TerraformSection.EC2,
-            allowlist=Allowlist("unique_widgets", "ec2_allowed_widgets", empty_allowlist_comment=comment),
+            allowlists=(
+                Allowlist("unique_widgets", "ec2_allowed_widgets", empty_allowlist_comment=comment),
+            ),
         )(EmptyCommentCheck)
 
     assert "deny_ec2_empty_comment" not in get_check_names()
+
+
+def test_a_check_records_two_allowlists_in_declaration_order(isolated_registry: None) -> None:
+    """
+    A statement scoped by two lists renders two variables, in the order declared.
+    """
+
+    class TwoAllowlistCheck(DenyEc2PublicIpCheck):
+        """A check declaring two allowlists, in order."""
+
+    first = Allowlist(summary_key="unique_widgets", terraform_variable="ec2_allowed_widgets")
+    second = Allowlist(summary_key="exempt_gadget_arns", terraform_variable="ec2_exempt_gadget_arns")
+
+    register_check(
+        "scps", "deny_ec2_widgets", terraform_section=TerraformSection.EC2, allowlists=(first, second),
+    )(TwoAllowlistCheck)
+
+    assert get_check_definition("deny_ec2_widgets").allowlists == (first, second)
+
+
+def test_two_allowlists_sharing_a_summary_key_are_rejected(isolated_registry: None) -> None:
+    """
+    Values are keyed by summary key, so two entries under one key would merge.
+    """
+
+    class DuplicateSummaryKeyCheck(DenyEc2PublicIpCheck):
+        """A check whose two allowlists share a summary key."""
+
+    with pytest.raises(ValueError, match="Check 'deny_ec2_widgets' declares the summary_key 'unique_widgets' twice"):
+        register_check(
+            "scps",
+            "deny_ec2_widgets",
+            terraform_section=TerraformSection.EC2,
+            allowlists=(
+                Allowlist(summary_key="unique_widgets", terraform_variable="ec2_allowed_widgets"),
+                Allowlist(summary_key="unique_widgets", terraform_variable="ec2_exempt_widgets"),
+            ),
+        )(DuplicateSummaryKeyCheck)
+
+    assert "deny_ec2_widgets" not in get_check_names()
+
+
+def test_two_allowlists_sharing_a_terraform_variable_are_rejected(isolated_registry: None) -> None:
+    """
+    One check's second variable collides with its first the way another check's would.
+    """
+
+    class DuplicateVariableCheck(DenyEc2PublicIpCheck):
+        """A check whose two allowlists share a Terraform variable."""
+
+    with pytest.raises(ValueError, match="allowlist variable 'ec2_allowed_widgets' is already claimed by 'deny_ec2_widgets'"):
+        register_check(
+            "scps",
+            "deny_ec2_widgets",
+            terraform_section=TerraformSection.EC2,
+            allowlists=(
+                Allowlist(summary_key="unique_widgets", terraform_variable="ec2_allowed_widgets"),
+                Allowlist(summary_key="exempt_widgets", terraform_variable="ec2_allowed_widgets"),
+            ),
+        )(DuplicateVariableCheck)
+
+    assert "deny_ec2_widgets" not in get_check_names()
+
+
+def test_two_allowlists_each_carrying_an_empty_comment_are_rejected(isolated_registry: None) -> None:
+    """
+    The renderer turns a statement off over one comment; two would be ambiguous.
+    """
+
+    class DoubleCommentedCheck(DenyEc2PublicIpCheck):
+        """A check whose two allowlists both carry an empty-allowlist comment."""
+
+    with pytest.raises(ValueError, match="Check 'deny_ec2_widgets' declares empty_allowlist_comment on two allowlists"):
+        register_check(
+            "scps",
+            "deny_ec2_widgets",
+            terraform_section=TerraformSection.EC2,
+            allowlists=(
+                Allowlist(summary_key="a", terraform_variable="ec2_a", empty_allowlist_comment="a stays off"),
+                Allowlist(summary_key="b", terraform_variable="ec2_b", empty_allowlist_comment="b stays off"),
+            ),
+        )(DoubleCommentedCheck)
+
+    assert "deny_ec2_widgets" not in get_check_names()
 
 
 @pytest.mark.parametrize("accessor", [get_check_names, get_all_check_classes], ids=["names", "classes"])
@@ -669,7 +777,7 @@ def test_the_filtering_accessors_reject_an_unknown_check_type(
 
 def test_every_rcp_allowlist_collects_third_party_accounts() -> None:
     """
-    Every RCP is scoped by the same summary key, and must keep saying so.
+    The first allowlist every RCP declares is scoped by the same summary key.
 
     RCP placement reads `unique_third_party_accounts` out of each result file
     to union the allowlist. A check whose results carry the accounts under
@@ -678,18 +786,18 @@ def test_every_rcp_allowlist_collects_third_party_accounts() -> None:
     (INV-01).
     """
     summary_keys = {
-        definition.check_name: get_allowlist(definition.check_name).summary_key
+        definition.check_name: [entry.summary_key for entry in definition.allowlists]
         for definition in get_check_definitions("rcps")
     }
 
     assert summary_keys == {
-        "deny_ecr_third_party_access": "unique_third_party_accounts",
-        "deny_kms_third_party_access": "unique_third_party_accounts",
-        "deny_s3_third_party_access": "unique_third_party_accounts",
-        "deny_secrets_manager_third_party_access": "unique_third_party_accounts",
-        "deny_sqs_third_party_access": "unique_third_party_accounts",
-        "deny_sts_third_party_assumerole": "unique_third_party_accounts",
-        "deny_service_confused_deputy": "unique_third_party_accounts",
+        "deny_ecr_third_party_access": ["unique_third_party_accounts"],
+        "deny_kms_third_party_access": ["unique_third_party_accounts"],
+        "deny_s3_third_party_access": ["unique_third_party_accounts", "exempt_bucket_arns"],
+        "deny_secrets_manager_third_party_access": ["unique_third_party_accounts"],
+        "deny_sqs_third_party_access": ["unique_third_party_accounts", "exempt_queue_arns"],
+        "deny_sts_third_party_assumerole": ["unique_third_party_accounts"],
+        "deny_service_confused_deputy": ["unique_third_party_accounts"],
     }
 
 

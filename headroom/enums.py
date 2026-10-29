@@ -77,9 +77,13 @@ class CheckCategory(str, Enum):
     EXEMPTION means the resource matches the deny's condition but the policy
     will spare it, so it must not count against deployability. Only claim it
     where the scan can see the dimension the exemption turns on, or something
-    that reliably stands in for it - `deny_ec2_imds_v1` is the sole producer,
-    and it reads an instance tag as a proxy for the launch request's tag. See
-    AP-011 in HOW_TO_ADD_A_CHECK.md for the shape of that argument.
+    that reliably stands in for it. `deny_lambda_auth_type_none` sees it
+    directly: the ARN it records is the one its NotResource spares.
+    `deny_s3_third_party_access` and `deny_sqs_third_party_access` see it the
+    same way, for the bucket or queue ARN their NotResource spares.
+    `deny_ec2_imds_v1` reads an instance tag as a proxy for the launch
+    request's tag. See AP-011 in HOW_TO_ADD_A_CHECK.md for the shape of that
+    argument.
     """
     VIOLATION = "violation"
     EXEMPTION = "exemption"

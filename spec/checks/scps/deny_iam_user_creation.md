@@ -138,6 +138,10 @@ the reason, logs a warning, and continues — an account holding no IAM user is 
 ordinary fact about that account, not a broken run.
 
 [`deny_ec2_ami_owner`](deny_ec2_ami_owner.md) guards the identical case.
+[`deny_lambda_auth_type_none`](deny_lambda_auth_type_none.md) does not: its
+module renders `Resource: "*"` for an empty list and the statement stays on.
+Whether this check should do the same is conflict 12 in
+[`../index.md`](../index.md#unresolved-conflicts).
 
 ## Accepted limitations
 
@@ -146,6 +150,16 @@ ordinary fact about that account, not a broken run.
 2. A user deleted after the scan stays in the allowlist, which is harmless: the
    `NotResource` entry simply matches nothing.
 3. Service-linked roles and IAM roles are out of scope; only users are read.
+4. An account excluded from analysis — one in `skip_account_ids`, in a
+   non-ACTIVE lifecycle state, or created between the scan and the apply —
+   contributes no user, and the root placement this check always produces
+   reaches it anyway. The management account is not part of this gap, since
+   no SCP reaches it.
+   [`../../contracts/placement.md`](../../contracts/placement.md#scp-placement)
+   records the general case as "excluded from analysis" and calls it open and
+   deliberate. Recreating a user that already exists in such an account is
+   denied, as limitation 1 describes for a user created after the scan, while
+   the check itself reports every analyzed account compliant.
 
 ## Acceptance scenarios
 
@@ -161,6 +175,27 @@ ordinary fact about that account, not a broken run.
 5. An ARN naming an account absent from the hierarchy → emitted literally rather
    than as a `local.` reference.
 
+## Known conflict: every user is `COMPLIANT`, where the framework reads `EXEMPTION`
+
+Status: unresolved. Conflict 11 in
+[`../index.md`](../index.md).
+
+The decision table above categorizes every user found as `COMPLIANT`, and the
+check does. [`../../architecture/check-framework.md`](../../architecture/check-framework.md#the-three-categories)
+defines `COMPLIANT` as a resource the statement would allow and `EXEMPTION` as
+one the statement's condition would spare. This statement has no `Condition`,
+and a `Deny iam:CreateUser` scoped by `NotResource` alone has no state a user
+can be in but spared: a user is not denied only because its ARN is on the list.
+By the framework's letter that is an exemption, which is the reading
+[`deny_lambda_auth_type_none`](deny_lambda_auth_type_none.md) takes for the
+URLs its own `NotResource` spares.
+
+Nothing downstream turns on the difference. Placement reads `violations`
+alone, and no reader reads the entry lists. Settling it is not a prose change:
+every entry would move from `compliant_instances` to `exemptions` in the result
+file, and `total_users` would be read off the other list, so it is a wire
+change (INV-14) and is recorded rather than made.
+
 ## Referenced invariants
 
 INV-02, INV-06, INV-07, INV-13.
@@ -169,7 +204,7 @@ INV-02, INV-06, INV-07, INV-13.
 
 - `headroom/checks/scps/deny_iam_user_creation.py`
 - `headroom/aws/iam/users.py` — `get_iam_users_analysis`
-- `headroom/parse_results.py` — `_read_declared_allowlist`, `_union_allowlist_values`
+- `headroom/parse_results.py` — `_read_declared_allowlist`, `union_allowlist_values`
 - `headroom/terraform/parameters.py` — `render_check_parameters`,
   `_replace_account_id_in_arn`
 - Tests: `tests/test_checks_deny_iam_user_creation.py`, `tests/test_aws_iam.py`,

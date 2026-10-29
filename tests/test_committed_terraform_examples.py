@@ -140,8 +140,8 @@ def undeclared_module_variables(policy_type: str) -> List[str]:
     passed: List[str] = []
     for definition in get_check_definitions(policy_type):
         passed.append(definition.check_name)
-        if definition.allowlist is not None:
-            passed.append(definition.allowlist.terraform_variable)
+        for allowlist in definition.allowlists:
+            passed.append(allowlist.terraform_variable)
     return [name for name in passed if name not in declared]
 
 
@@ -177,7 +177,7 @@ def test_the_declaration_guard_names_an_undeclared_check_and_its_allowlist(
             check_name="deny_ec2_undeclared",
             check_type="scps",
             terraform_section=TerraformSection.EC2,
-            allowlist=Allowlist("unique_widgets", "ec2_allowed_widgets"),
+            allowlists=(Allowlist("unique_widgets", "ec2_allowed_widgets"),),
         ),
     )
 
@@ -227,10 +227,9 @@ def unread_module_variables(policy_type: str) -> List[str]:
     for definition in get_check_definitions(policy_type):
         if not re.search(rf"include\s*=\s*var\.{definition.check_name}\b", statements):
             unread.append(definition.check_name)
-        if definition.allowlist is None:
-            continue
-        if not re.search(rf"\bvar\.{definition.allowlist.terraform_variable}\b", statements):
-            unread.append(definition.allowlist.terraform_variable)
+        for allowlist in definition.allowlists:
+            if not re.search(rf"\bvar\.{allowlist.terraform_variable}\b", statements):
+                unread.append(allowlist.terraform_variable)
     return unread
 
 
@@ -265,7 +264,7 @@ def test_the_statement_guard_names_an_unread_check_and_its_allowlist(
             check_name="deny_ec2_unread",
             check_type="scps",
             terraform_section=TerraformSection.EC2,
-            allowlist=Allowlist("unique_gadgets", "ec2_allowed_gadgets"),
+            allowlists=(Allowlist("unique_gadgets", "ec2_allowed_gadgets"),),
         ),
     )
 

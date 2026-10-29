@@ -48,6 +48,7 @@ The `deny_s3_third_party_access` RCP denies all `s3:*` actions unless one of the
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `s3_third_party_access_account_ids_allowlist`
 3. The principal is an AWS service
+4. The bucket is in `s3_third_party_access_exempt_bucket_arns`: the statement lists each such bucket and its objects under `NotResource`, so a bucket whose grants no account allowlist can express keeps working. With no exempt bucket the statement covers every resource
 
 ### Secrets Manager Secret Access Restriction
 
@@ -64,6 +65,7 @@ The `deny_sqs_third_party_access` RCP denies all `sqs:*` actions unless one of t
 1. The principal belongs to the organization (checked via `aws:PrincipalOrgID`)
 2. The principal account is in the `sqs_third_party_access_account_ids_allowlist`
 3. The principal is an AWS service
+4. The queue is in `sqs_third_party_access_exempt_queue_arns`: the statement lists each such queue under `NotResource`, so a queue whose grants no account allowlist can express keeps working. With no exempt queue the statement covers every resource
 
 ### IAM AssumeRole Restriction
 
@@ -110,6 +112,7 @@ module "account_rcp" {
   s3_third_party_access_account_ids_allowlist = [
     "444444444444"
   ]
+  s3_third_party_access_exempt_bucket_arns = ["arn:aws:s3:::public-website-bucket"]
 
   # Secrets Manager
   deny_secrets_manager_third_party_access = true
@@ -122,6 +125,7 @@ module "account_rcp" {
   sqs_third_party_access_account_ids_allowlist = [
     "555555555555"
   ]
+  sqs_third_party_access_exempt_queue_arns = ["arn:aws:sqs:us-east-1:111111111111:public-events-queue"]
 
   # STS
   deny_sts_third_party_assumerole = true
@@ -156,8 +160,10 @@ module "account_rcp" {
 - `ecr_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access ECR repositories
 - `kms_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access KMS keys
 - `s3_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access S3 buckets
+- `s3_third_party_access_exempt_bucket_arns` (list(string), default: []): Bucket ARNs spared by NotResource, expanded to the bucket and its objects; buckets whose grants no account allowlist can express
 - `secrets_manager_third_party_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access Secrets Manager secrets
 - `sqs_third_party_access_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to access SQS queues
+- `sqs_third_party_access_exempt_queue_arns` (list(string), default: []): Queue ARNs spared by NotResource; queues whose grants no account allowlist can express
 - `sts_third_party_assumerole_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs that are permitted to assume roles
 - `service_confused_deputy_source_account_ids_allowlist` (list(string), default: []): Allowlist of third-party AWS account IDs permitted to drive AWS service calls into resources
 
@@ -165,3 +171,20 @@ module "account_rcp" {
 
 - RCPs have a maximum size of 5,120 bytes
 - There is a maximum limit of 5 direct RCP attachments per target
+
+## Testing
+
+`tests/plan.tftest.hcl` plans this module with the real provider and no AWS
+credentials, and asserts on the policy document the provider renders. Run it
+from this directory:
+
+```bash
+terraform init
+terraform test
+```
+
+`tox` at the repository root runs it too, through
+`tests/test_terraform_module_plans.py`. It is a plan rather than a validate
+because the clauses built from conditionals in `locals.tf` are typed only once
+their lists are known, and `terraform validate` accepts a conditional that
+`terraform plan` refuses.

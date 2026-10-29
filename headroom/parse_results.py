@@ -9,12 +9,12 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, cast
+from typing import Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, cast
 
 from .config import HeadroomConfig
 from .types import (
-    CheckCoverage, JsonDict, OrganizationalUnit, OrganizationHierarchy, PolicyRecommendation,
-    SCPCheckResult, SCPPlacementRecommendations, RCPPlacementRecommendations
+    AllowlistValues, CheckCoverage, JsonDict, OrganizationalUnit, OrganizationHierarchy,
+    PolicyRecommendation, SCPCheckResult, SCPPlacementRecommendations, RCPPlacementRecommendations
 )
 from .aws.organization import lookup_account_id_by_name
 from .checks.registry import Allowlist, CheckDefinition, get_check_definition, get_check_names
@@ -276,9 +276,9 @@ def _read_allowlist_values(
     definition: CheckDefinition,
     account_id: str,
     result_file: Path
-) -> Optional[List[str]]:
+) -> AllowlistValues:
     """
-    Read the allowlist values one result observed, if its check declares one.
+    Read the values one result observed under each allowlist its check declares.
 
     Args:
         summary: The result file's summary block
@@ -287,22 +287,23 @@ def _read_allowlist_values(
         result_file: Path to the file, used in the error
 
     Returns:
-        The observed values, or None when the check declares no allowlist
+        Each declared allowlist's summary key, mapped to the values observed
+        under it; {} when the check declares none
 
     Raises:
-        RuntimeError: If the check declares an allowlist and the file's
-            summary has no such key
+        RuntimeError: If the file's summary lacks a declared key, or holds
+            anything but a list under one
     """
-    if definition.allowlist is None:
-        return None
-
-    return _read_declared_allowlist(
-        summary,
-        definition.check_name,
-        definition.allowlist,
-        account_id,
-        result_file
-    )
+    return {
+        allowlist.summary_key: _read_declared_allowlist(
+            summary,
+            definition.check_name,
+            allowlist,
+            account_id,
+            result_file
+        )
+        for allowlist in definition.allowlists
+    }
 
 
 def _read_violations_count(summary: JsonDict, result_file: Path) -> int:
@@ -564,34 +565,74 @@ def _create_no_deployment_recommendation(
     )
 
 
-def _union_allowlist_values(
+def _observations_for(
     check_results: List[SCPCheckResult],
+    *,
     affected_accounts: List[str]
-) -> Optional[List[str]]:
+) -> List[AllowlistValues]:
+    """
+    Filter to the allowlist values of the accounts a recommendation covers.
+
+    One entry per result in `check_results` whose account is in `affected_accounts`.
+    """
+    return [
+        result.allowlist_values
+        for result in check_results
+        if result.account_id in affected_accounts
+    ]
+
+
+def union_allowlist_values(
+    definition: CheckDefinition,
+    *,
+    observations: Sequence[AllowlistValues]
+) -> AllowlistValues:
     """
     Union the allowlist values the accounts a recommendation covers observed.
 
-    An empty union and no union at all are distinct: covered accounts that
-    observed nothing leave the check's policy off (INV-06), while a check
-    with no allowlist renders its statement unconditionally.
+    One rule for both policy types and every level. Each allowlist the
+    check declares gets one sorted list, empty when no covered account
+    observed a value under it - an empty union is a fact about those
+    accounts and generation decides what it renders as (INV-06). A check
+    declaring no allowlist unions to {}.
 
     Args:
-        check_results: Results for the check being placed
-        affected_accounts: Accounts the recommendation covers
+        definition: The check being placed
+        observations: The values each covered account's result carried
 
     Returns:
-        The sorted union over the covered accounts, or None when no covered
-        account carried an allowlist
-    """
-    observed = [
-        result.allowlist_values
-        for result in check_results
-        if result.account_id in affected_accounts and result.allowlist_values is not None
-    ]
-    if not observed:
-        return None
+        Each declared summary key, mapped to the sorted union under it
 
-    return sorted({value for values in observed for value in values})
+    Raises:
+        RuntimeError: If an observation lacks a declared key, which parsing
+            never produces (INV-01)
+    """
+    union: AllowlistValues = {}
+    for allowlist in definition.allowlists:
+        values: Set[str] = set()
+        for observation in observations:
+            if allowlist.summary_key not in observation:
+                raise RuntimeError(
+                    f"{definition.check_name} declares the allowlist {allowlist.summary_key!r} "
+                    f"but an observation carries no values for it"
+                )
+            values.update(observation[allowlist.summary_key])
+        union[allowlist.summary_key] = sorted(values)
+    return union
+
+
+def describe_allowlist_union(values: AllowlistValues) -> str:
+    """
+    Say how many values a recommendation carries under each allowlist.
+
+    Args:
+        values: A recommendation's unioned values
+
+    Returns:
+        One clause per key in declaration order, like
+        "3 unique_third_party_accounts, 0 exempt_bucket_arns"; "" for {}
+    """
+    return ", ".join(f"{len(entries)} {key}" for key, entries in values.items())
 
 
 def _plural(count: int, singular: str, plural: str) -> str:
@@ -654,7 +695,10 @@ def _build_root_recommendation(
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
         reasoning=_coverage_reasoning(len(affected_accounts), reached, "reached by root", "root"),
-        allowlist_values=_union_allowlist_values(check_results, affected_accounts)
+        allowlist_values=union_allowlist_values(
+            get_check_definition(check_name),
+            observations=_observations_for(check_results, affected_accounts=affected_accounts),
+        ),
     )
 
 
@@ -696,7 +740,10 @@ def _build_ou_recommendation(
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
         reasoning=reasoning,
-        allowlist_values=_union_allowlist_values(check_results, affected_accounts)
+        allowlist_values=union_allowlist_values(
+            get_check_definition(check_name),
+            observations=_observations_for(check_results, affected_accounts=affected_accounts),
+        ),
     )
 
 
@@ -730,7 +777,10 @@ def _build_account_recommendation(
         affected_accounts=affected_accounts,
         compliance_percentage=100.0,
         reasoning=f"Only {safe_count} out of {total_results} accounts have zero violations - deploy at individual account level",
-        allowlist_values=_union_allowlist_values([result], affected_accounts)
+        allowlist_values=union_allowlist_values(
+            get_check_definition(check_name),
+            observations=[result.allowlist_values],
+        ),
     )
 
 
@@ -889,7 +939,7 @@ def print_policy_recommendations(
             if isinstance(rec, SCPPlacementRecommendations):
                 print(f"  Compliance (affected accounts): {rec.compliance_percentage:.1f}%")
             elif isinstance(rec, RCPPlacementRecommendations):
-                print(f"  Third-Party Accounts: {len(rec.third_party_account_ids)}")
+                print(f"  Allowlist union: {describe_allowlist_union(rec.allowlist_values)}")
 
             print(f"  Reasoning: {rec.reasoning}")
             print("  " + "-" * 38)

@@ -7,7 +7,7 @@ Tests SCP/RCP compliance results analysis and placement recommendations.
 import json
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 from unittest.mock import Mock, patch
 
 import pytest
@@ -17,13 +17,16 @@ from headroom.parse_results import (
     parse_scp_result_files,
     determine_scp_placement,
     analyze_scp_compliance,
+    describe_allowlist_union,
     print_policy_recommendations,
     scp_check_coverage,
+    union_allowlist_values,
     verify_one_result_file_per_account,
 )
-from headroom.checks.registry import get_check_names
+from headroom.checks.registry import get_check_definition, get_check_names
 from headroom.terraform.generate_scps import render_scp_terraform
 from headroom.types import (
+    AllowlistValues,
     CheckCoverage,
     JsonDict,
     OrganizationHierarchy,
@@ -94,7 +97,7 @@ def make_hierarchy_with_production_ou(ou_account_ids: List[str]) -> Organization
 def make_scp_result(
     account_id: str,
     check_name: str,
-    allowlist_values: Optional[List[str]],
+    allowlist_values: AllowlistValues,
     violations: int = 0
 ) -> SCPCheckResult:
     """
@@ -520,11 +523,10 @@ class TestResultFileParsing:
             result = parse_scp_result_files(temp_dir, org_hierarchy)
 
             assert len(result) == 1
-            assert result[0].allowlist_values is not None
-            assert len(result[0].allowlist_values) == 2
+            assert len(result[0].allowlist_values["users"]) == 2
             # Check that REDACTED was replaced with actual account ID
-            assert "arn:aws:iam::111111111111:user/terraform-user" in result[0].allowlist_values
-            assert "arn:aws:iam::111111111111:user/service/github-actions" in result[0].allowlist_values
+            assert "arn:aws:iam::111111111111:user/terraform-user" in result[0].allowlist_values["users"]
+            assert "arn:aws:iam::111111111111:user/service/github-actions" in result[0].allowlist_values["users"]
 
 
 class TestSCPPlacementDetermination:
@@ -657,10 +659,10 @@ class TestSCPPlacementDetermination:
                 compliant=2,
                 compliance_percentage=100.0,
                 total_instances=2,
-                allowlist_values=[
+                allowlist_values={"users": [
                     "arn:aws:iam::111111111111:user/terraform-user",
                     "arn:aws:iam::111111111111:user/github-actions"
-                ]
+                ]}
             ),
             SCPCheckResult(
                 account_id="222222222222",
@@ -671,9 +673,9 @@ class TestSCPPlacementDetermination:
                 compliant=1,
                 compliance_percentage=100.0,
                 total_instances=1,
-                allowlist_values=[
+                allowlist_values={"users": [
                     "arn:aws:iam::222222222222:user/cicd-deployer"
-                ]
+                ]}
             ),
         ]
 
@@ -690,14 +692,13 @@ class TestSCPPlacementDetermination:
 
         assert len(result) == 1
         assert result[0].recommended_level == "root"
-        assert result[0].allowlist_values is not None
-        assert len(result[0].allowlist_values) == 3
+        assert len(result[0].allowlist_values["users"]) == 3
         # Check all ARNs are present and sorted
-        assert result[0].allowlist_values == [
+        assert result[0].allowlist_values == {"users": [
             "arn:aws:iam::111111111111:user/github-actions",
             "arn:aws:iam::111111111111:user/terraform-user",
             "arn:aws:iam::222222222222:user/cicd-deployer"
-        ]
+        ]}
 
     def test_determine_scp_placement_missing_account_in_hierarchy(self) -> None:
         """Test handling when account is not found in organization hierarchy."""
@@ -785,7 +786,7 @@ class TestRootReasoning:
             ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
         )
         results = [
-            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            make_scp_result(account_id, "deny_ec2_imds_v1", {})
             for account_id in ["111111111111", "222222222222", "333333333333"]
         ]
 
@@ -800,7 +801,7 @@ class TestRootReasoning:
             ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
         )
         results = [
-            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            make_scp_result(account_id, "deny_ec2_imds_v1", {})
             for account_id in ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
         ]
 
@@ -818,7 +819,7 @@ class TestRootReasoning:
         """
         hierarchy = make_test_org_hierarchy()
         results = [
-            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            make_scp_result(account_id, "deny_ec2_imds_v1", {})
             for account_id in ["111111111111", "222222222222"]
         ]
 
@@ -831,7 +832,7 @@ class TestRootReasoning:
         """One account left unanalyzed is named in the singular."""
         hierarchy = make_hierarchy_with_management_account(["111111111111", "222222222222", "333333333333"])
         results = [
-            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            make_scp_result(account_id, "deny_ec2_imds_v1", {})
             for account_id in ["111111111111", "222222222222"]
         ]
 
@@ -843,7 +844,7 @@ class TestRootReasoning:
     def test_root_reasoning_agrees_in_number_with_one_analyzed_account(self) -> None:
         """One account analyzed takes a singular verb and drops the 'all'."""
         hierarchy = make_hierarchy_with_management_account(["111111111111", "222222222222", "333333333333"])
-        results = [make_scp_result("111111111111", "deny_ec2_imds_v1", None)]
+        results = [make_scp_result("111111111111", "deny_ec2_imds_v1", {})]
 
         recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
 
@@ -853,7 +854,7 @@ class TestRootReasoning:
     def test_root_reasoning_names_the_only_reached_account(self) -> None:
         """A one-member organization is described as the only account, not as 'All 1 accounts'."""
         hierarchy = make_hierarchy_with_management_account(["111111111111"])
-        results = [make_scp_result("111111111111", "deny_ec2_imds_v1", None)]
+        results = [make_scp_result("111111111111", "deny_ec2_imds_v1", {})]
 
         recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
 
@@ -866,7 +867,7 @@ class TestRootReasoning:
             ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
         )
         results = [
-            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            make_scp_result(account_id, "deny_ec2_imds_v1", {})
             for account_id in ["111111111111", "222222222222", "333333333333"]
         ]
 
@@ -891,9 +892,9 @@ class TestOUReasoning:
         """Two of the four accounts under Workloads analyzed names the two that inherit unmeasured."""
         hierarchy = make_hierarchy_with_workloads_ou(["111111111111", "222222222222"])
         results = [
-            make_scp_result("111111111111", "deny_ec2_imds_v1", None),
-            make_scp_result("222222222222", "deny_ec2_imds_v1", None),
-            make_scp_result("555555555555", "deny_ec2_imds_v1", None, violations=1),
+            make_scp_result("111111111111", "deny_ec2_imds_v1", {}),
+            make_scp_result("222222222222", "deny_ec2_imds_v1", {}),
+            make_scp_result("555555555555", "deny_ec2_imds_v1", {}, violations=1),
         ]
 
         recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
@@ -906,10 +907,10 @@ class TestOUReasoning:
         """All four accounts under Workloads analyzed leaves nothing to inherit the policy unmeasured."""
         hierarchy = make_hierarchy_with_workloads_ou(["111111111111", "222222222222"])
         results = [
-            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            make_scp_result(account_id, "deny_ec2_imds_v1", {})
             for account_id in ["111111111111", "222222222222", "333333333333", "444444444444"]
         ]
-        results.append(make_scp_result("555555555555", "deny_ec2_imds_v1", None, violations=1))
+        results.append(make_scp_result("555555555555", "deny_ec2_imds_v1", {}, violations=1))
 
         recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
 
@@ -926,10 +927,10 @@ class TestOUReasoning:
         """
         hierarchy = make_hierarchy_with_workloads_ou(["111111111111", "222222222222", MANAGEMENT_ACCOUNT_ID])
         results = [
-            make_scp_result(account_id, "deny_ec2_imds_v1", None)
+            make_scp_result(account_id, "deny_ec2_imds_v1", {})
             for account_id in ["111111111111", "222222222222", "333333333333", "444444444444"]
         ]
-        results.append(make_scp_result("555555555555", "deny_ec2_imds_v1", None, violations=1))
+        results.append(make_scp_result("555555555555", "deny_ec2_imds_v1", {}, violations=1))
 
         recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
 
@@ -941,8 +942,8 @@ class TestOUReasoning:
         """An OU whose subtree holds one account is described as the only account, not as 'All 1 accounts'."""
         hierarchy = make_hierarchy_with_production_ou(["222222222222"])
         results = [
-            make_scp_result("111111111111", "deny_ec2_imds_v1", None, violations=1),
-            make_scp_result("222222222222", "deny_ec2_imds_v1", None),
+            make_scp_result("111111111111", "deny_ec2_imds_v1", {}, violations=1),
+            make_scp_result("222222222222", "deny_ec2_imds_v1", {}),
         ]
 
         recommendations = determine_scp_placement(results, hierarchy, MANAGEMENT_ACCOUNT_ID)
@@ -1025,7 +1026,7 @@ def test_analyze_scp_compliance_returns_coverage_beside_recommendations() -> Non
         security_analysis_account_id="111111111111",
         management_account_id="222222222222"
     )
-    parsed = [make_scp_result("111111111111", "deny_ec2_imds_v1", None)]
+    parsed = [make_scp_result("111111111111", "deny_ec2_imds_v1", {})]
 
     with patch('headroom.parse_results.parse_scp_result_files', return_value=parsed):
         recommendations, coverage = analyze_scp_compliance(config, make_test_org_hierarchy())
@@ -1607,7 +1608,7 @@ class TestPrintPolicyRecommendations:
                 recommended_level="account",
                 target_ou_id=None,
                 affected_accounts=["111111111111"],
-                third_party_account_ids=["999999999999", "888888888888"],
+                allowlist_values={"unique_third_party_accounts": ["999999999999", "888888888888"]},
                 reasoning="Test reasoning for RCP"
             )
         ]
@@ -1619,7 +1620,7 @@ class TestPrintPolicyRecommendations:
 
         assert any("RCP RECOMMENDATIONS" in str(call) for call in printed_calls)
         assert any("deny_sts_third_party_assumerole" in str(call) for call in printed_calls)
-        assert any("Third-Party Accounts: 2" in str(call) for call in printed_calls)
+        assert any("Allowlist union: 2 unique_third_party_accounts" in str(call) for call in printed_calls)
 
 
 class TestRootParentedAccountPlacement:
@@ -1899,9 +1900,10 @@ class TestAmiOwnerValuesAreParsed:
     """
     The parser carries deny_ec2_ami_owner's summary values into a result.
 
-    `unique_ami_owners` reaches `SCPCheckResult.allowlist_values` unchanged:
-    a populated list, an empty list (the check ran and observed nothing),
-    and an absent key (a stale result, rejected rather than read as empty).
+    `unique_ami_owners` reaches `SCPCheckResult.allowlist_values` under its
+    own summary key: a populated list, an empty list (the check ran and
+    observed nothing), and an absent key (a stale result, rejected rather
+    than read as empty).
     """
     OBSERVED_OWNERS = ["amazon", "aws-marketplace"]
 
@@ -1935,7 +1937,7 @@ class TestAmiOwnerValuesAreParsed:
             result = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
 
             assert len(result) == 1
-            assert result[0].allowlist_values == self.OBSERVED_OWNERS
+            assert result[0].allowlist_values == {"unique_ami_owners": self.OBSERVED_OWNERS}
 
     def test_parse_rejects_a_result_file_predating_ami_owner_collection(self) -> None:
         """
@@ -2008,7 +2010,7 @@ class TestAmiOwnerValuesAreParsed:
             result = parse_scp_result_files(temp_dir, make_test_org_hierarchy())
 
             assert len(result) == 1
-            assert result[0].allowlist_values == []
+            assert result[0].allowlist_values == {"unique_ami_owners": []}
 
 
 class TestAMissingViolationCountIsRejected:
@@ -2172,7 +2174,7 @@ class TestAllowlistValuesFollowTheRegistry:
         })
 
         assert [result.allowlist_values for result in parsed] == [
-            ["amazon", "444444444444"]
+            {"unique_ami_owners": ["amazon", "444444444444"]}
         ]
 
     def test_iam_user_values_restore_the_redacted_account_id(self) -> None:
@@ -2192,7 +2194,7 @@ class TestAllowlistValuesFollowTheRegistry:
         })
 
         assert [result.allowlist_values for result in parsed] == [
-            ["arn:aws:iam::111111111111:user/terraform-user"]
+            {"users": ["arn:aws:iam::111111111111:user/terraform-user"]}
         ]
 
     def test_the_restore_touches_only_the_arn_account_field(self) -> None:
@@ -2214,7 +2216,7 @@ class TestAllowlistValuesFollowTheRegistry:
         })
 
         assert [result.allowlist_values for result in parsed] == [
-            ["arn:aws:iam::111111111111:user/REDACTED-svc"]
+            {"users": ["arn:aws:iam::111111111111:user/REDACTED-svc"]}
         ]
 
     @pytest.mark.parametrize(
@@ -2257,8 +2259,9 @@ class TestAllowlistValuesFollowTheRegistry:
 
         The summary here also holds another check's summary key. The values
         belong to the check that declared the key, so this one still carries
-        nothing: None is "this check has no allowlist", not "the file had no
-        recognizable key".
+        nothing: {} is "this check has no allowlist", not "the file had no
+        recognizable key". `[{}]` is what the union sees for one such
+        account: one observation, carrying no declared key.
         """
         parsed = self.parse_one_summary("deny_rds_unencrypted", {
             "account_name": "test-account",
@@ -2268,7 +2271,7 @@ class TestAllowlistValuesFollowTheRegistry:
             "unique_ami_owners": ["amazon"],
         })
 
-        assert [result.allowlist_values for result in parsed] == [None]
+        assert [result.allowlist_values for result in parsed] == [{}]
 
     def test_an_absent_summary_key_aborts_naming_the_check_and_the_variable(self) -> None:
         """
@@ -2328,7 +2331,7 @@ class TestAllowlistValuesFollowTheRegistry:
             "unique_ami_owners": [],
         })
 
-        assert [result.allowlist_values for result in parsed] == [[]]
+        assert [result.allowlist_values for result in parsed] == [{"unique_ami_owners": []}]
 
     def test_an_unregistered_check_is_rejected_before_its_summary_is_read(self) -> None:
         """
@@ -2447,21 +2450,21 @@ class TestPlacementUnionsAllowlistValues:
     def test_root_placement_unions_every_accounts_values(self) -> None:
         """A root attachment reaches every account, so it allowlists every value."""
         results_data = [
-            make_scp_result("111111111111", "deny_ec2_ami_owner", ["amazon"]),
-            make_scp_result("222222222222", "deny_ec2_ami_owner", ["444444444444", "amazon"]),
+            make_scp_result("111111111111", "deny_ec2_ami_owner", {"unique_ami_owners": ["amazon"]}),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", {"unique_ami_owners": ["444444444444", "amazon"]}),
         ]
 
         recommendations = determine_scp_placement(results_data, make_test_org_hierarchy(), MANAGEMENT_ACCOUNT_ID)
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "root"
-        assert recommendations[0].allowlist_values == ["444444444444", "amazon"]
+        assert recommendations[0].allowlist_values == {"unique_ami_owners": ["444444444444", "amazon"]}
 
     def test_ou_placement_unions_only_the_accounts_the_ou_reaches(self) -> None:
         """An account outside the OU cannot widen that OU's allowlist."""
         results_data = [
-            make_scp_result("111111111111", "deny_ec2_ami_owner", ["outside"], violations=2),
-            make_scp_result("222222222222", "deny_ec2_ami_owner", ["amazon"]),
+            make_scp_result("111111111111", "deny_ec2_ami_owner", {"unique_ami_owners": ["outside"]}, violations=2),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", {"unique_ami_owners": ["amazon"]}),
         ]
 
         recommendations = determine_scp_placement(
@@ -2472,14 +2475,14 @@ class TestPlacementUnionsAllowlistValues:
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "ou"
-        assert recommendations[0].allowlist_values == ["amazon"]
+        assert recommendations[0].allowlist_values == {"unique_ami_owners": ["amazon"]}
 
     def test_account_placement_carries_that_accounts_own_values(self) -> None:
         """An account-level attachment reaches one account, so it allowlists one."""
         results_data = [
-            make_scp_result("111111111111", "deny_ec2_ami_owner", ["outside"], violations=2),
-            make_scp_result("222222222222", "deny_ec2_ami_owner", ["amazon"]),
-            make_scp_result("333333333333", "deny_ec2_ami_owner", ["444444444444"], violations=1),
+            make_scp_result("111111111111", "deny_ec2_ami_owner", {"unique_ami_owners": ["outside"]}, violations=2),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", {"unique_ami_owners": ["amazon"]}),
+            make_scp_result("333333333333", "deny_ec2_ami_owner", {"unique_ami_owners": ["444444444444"]}, violations=1),
         ]
 
         recommendations = determine_scp_placement(
@@ -2490,7 +2493,7 @@ class TestPlacementUnionsAllowlistValues:
 
         assert len(recommendations) == 1
         assert recommendations[0].recommended_level == "account"
-        assert recommendations[0].allowlist_values == ["amazon"]
+        assert recommendations[0].allowlist_values == {"unique_ami_owners": ["amazon"]}
 
     def test_each_safe_account_gets_only_the_values_it_observed(self) -> None:
         """
@@ -2507,20 +2510,20 @@ class TestPlacementUnionsAllowlistValues:
             make_scp_result(
                 "111111111111",
                 "deny_iam_user_creation",
-                ["arn:aws:iam::111111111111:user/alpha-user"]
+                {"users": ["arn:aws:iam::111111111111:user/alpha-user"]}
             ),
             make_scp_result(
                 "222222222222",
                 "deny_iam_user_creation",
-                ["arn:aws:iam::222222222222:user/beta-user"]
+                {"users": ["arn:aws:iam::222222222222:user/beta-user"]}
             ),
             make_scp_result(
                 "333333333333",
                 "deny_iam_user_creation",
-                ["arn:aws:iam::333333333333:user/gamma-user"],
+                {"users": ["arn:aws:iam::333333333333:user/gamma-user"]},
                 violations=2
             ),
-            make_scp_result("444444444444", "deny_iam_user_creation", []),
+            make_scp_result("444444444444", "deny_iam_user_creation", {"users": []}),
         ]
         hierarchy = OrganizationHierarchy(
             root_id="r-1111",
@@ -2567,14 +2570,14 @@ class TestPlacementUnionsAllowlistValues:
         accounts observed nothing leaves its statement off (INV-06).
         """
         results_data = [
-            make_scp_result("111111111111", "deny_ec2_imds_v1", None),
-            make_scp_result("222222222222", "deny_ec2_imds_v1", None),
+            make_scp_result("111111111111", "deny_ec2_imds_v1", {}),
+            make_scp_result("222222222222", "deny_ec2_imds_v1", {}),
         ]
 
         recommendations = determine_scp_placement(results_data, make_test_org_hierarchy(), MANAGEMENT_ACCOUNT_ID)
 
         assert len(recommendations) == 1
-        assert recommendations[0].allowlist_values is None
+        assert recommendations[0].allowlist_values == {}
 
     def test_covered_accounts_that_observed_nothing_union_to_an_empty_allowlist(self) -> None:
         """
@@ -2586,14 +2589,71 @@ class TestPlacementUnionsAllowlistValues:
         unconditionally.
         """
         results_data = [
-            make_scp_result("111111111111", "deny_ec2_ami_owner", []),
-            make_scp_result("222222222222", "deny_ec2_ami_owner", []),
+            make_scp_result("111111111111", "deny_ec2_ami_owner", {"unique_ami_owners": []}),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", {"unique_ami_owners": []}),
         ]
 
         recommendations = determine_scp_placement(results_data, make_test_org_hierarchy(), MANAGEMENT_ACCOUNT_ID)
 
         assert len(recommendations) == 1
-        assert recommendations[0].allowlist_values == []
+        assert recommendations[0].allowlist_values == {"unique_ami_owners": []}
+
+
+def test_union_allowlist_values_unions_each_declared_key_sorted() -> None:
+    """
+    Two accounts' observations become one sorted list per declared key.
+    """
+    definition = get_check_definition("deny_ec2_ami_owner")
+
+    unioned = union_allowlist_values(
+        definition,
+        observations=[{"unique_ami_owners": ["222222222222", "amazon"]}, {"unique_ami_owners": ["111111111111", "amazon"]}],
+    )
+
+    assert unioned == {"unique_ami_owners": ["111111111111", "222222222222", "amazon"]}
+
+
+def test_union_allowlist_values_over_no_observations_is_empty_per_key() -> None:
+    """
+    A declaring check placed over accounts that observed nothing carries [] under each key, never a missing key.
+    """
+    unioned = union_allowlist_values(get_check_definition("deny_ec2_ami_owner"), observations=[])
+
+    assert unioned == {"unique_ami_owners": []}
+
+
+def test_union_allowlist_values_for_a_check_without_an_allowlist_is_empty() -> None:
+    """
+    A check whose statement takes no allowlist unions to {}.
+    """
+    assert union_allowlist_values(get_check_definition("deny_rds_unencrypted"), observations=[{}, {}]) == {}
+
+
+def test_union_allowlist_values_aborts_when_an_observation_lacks_a_declared_key() -> None:
+    """
+    An observation missing a declared key is lost data, not an empty allowlist.
+
+    Every observation reaching this function comes from a reader that is
+    total over the declared keys, so this never fires from a real parse; it
+    exists so a caller that skips the reader fails loudly by name instead of
+    dropping the gap into a silent empty union (INV-01).
+    """
+    definition = get_check_definition("deny_ec2_ami_owner")
+
+    with pytest.raises(
+        RuntimeError,
+        match="deny_ec2_ami_owner declares the allowlist 'unique_ami_owners' but an observation carries no values for it",
+    ):
+        union_allowlist_values(definition, observations=[{}])
+
+
+def test_describe_allowlist_union_names_each_key_with_its_count() -> None:
+    """
+    The reasoning and the printout say how many values each allowlist carries.
+    """
+    described = describe_allowlist_union({"unique_third_party_accounts": ["111111111111"], "exempt_bucket_arns": []})
+
+    assert described == "1 unique_third_party_accounts, 0 exempt_bucket_arns"
 
 
 class TestVerifyOneResultFilePerAccount:
@@ -2988,9 +3048,9 @@ class TestTheAccountTierPlacesEachAccountSeparately:
         follows collection order.
         """
         results_data = [
-            make_scp_result("222222222222", "deny_ec2_ami_owner", ["amazon"]),
-            make_scp_result("111111111111", "deny_ec2_ami_owner", ["amazon"]),
-            make_scp_result("333333333333", "deny_ec2_ami_owner", ["outside"], violations=2),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", {"unique_ami_owners": ["amazon"]}),
+            make_scp_result("111111111111", "deny_ec2_ami_owner", {"unique_ami_owners": ["amazon"]}),
+            make_scp_result("333333333333", "deny_ec2_ami_owner", {"unique_ami_owners": ["outside"]}, violations=2),
         ]
 
         recommendations = determine_scp_placement(
@@ -3013,9 +3073,9 @@ class TestTheAccountTierPlacesEachAccountSeparately:
         the reasoning still reports the tier's org-wide reach.
         """
         results_data = [
-            make_scp_result("111111111111", "deny_ec2_ami_owner", ["amazon"]),
-            make_scp_result("222222222222", "deny_ec2_ami_owner", ["444444444444"]),
-            make_scp_result("333333333333", "deny_ec2_ami_owner", ["outside"], violations=2),
+            make_scp_result("111111111111", "deny_ec2_ami_owner", {"unique_ami_owners": ["amazon"]}),
+            make_scp_result("222222222222", "deny_ec2_ami_owner", {"unique_ami_owners": ["444444444444"]}),
+            make_scp_result("333333333333", "deny_ec2_ami_owner", {"unique_ami_owners": ["outside"]}, violations=2),
         ]
 
         recommendations = determine_scp_placement(
@@ -3031,6 +3091,6 @@ class TestTheAccountTierPlacesEachAccountSeparately:
             assert recommendation.compliance_percentage == 100.0
             assert "Only 2 out of 3 accounts have zero violations" in recommendation.reasoning
         assert recommendations[0].affected_accounts == ["111111111111"]
-        assert recommendations[0].allowlist_values == ["amazon"]
+        assert recommendations[0].allowlist_values == {"unique_ami_owners": ["amazon"]}
         assert recommendations[1].affected_accounts == ["222222222222"]
-        assert recommendations[1].allowlist_values == ["444444444444"]
+        assert recommendations[1].allowlist_values == {"unique_ami_owners": ["444444444444"]}
